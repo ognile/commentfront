@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2 } from "lucide-react"
 
-const API_BASE = "https://commentbot-production.up.railway.app";
+const API_BASE = import.meta.env.VITE_API_BASE || "https://commentbot-production.up.railway.app";
 
 interface Session {
   file: string;

@@ -114,7 +114,7 @@ async def get_sessions() -> List[SessionInfo]:
             user_id=s.get("user_id"),
             extracted_at=s["extracted_at"],
             valid=s["has_valid_cookies"],
-            proxy=s.get("proxy") # Return proxy info
+            proxy=("session" if s.get("proxy") else ("service" if PROXY_URL else None)),
         )
         for s in sessions
     ]
@@ -205,7 +205,7 @@ async def run_campaign(request: CampaignRequest) -> Dict:
 async def get_config() -> Dict:
     """Get current configuration."""
     return {
-        "proxy_url": PROXY_URL if PROXY_URL else None,
+        "proxy_configured": bool(PROXY_URL),
         "viewport": MOBILE_VIEWPORT,
         "user_agent": DEFAULT_USER_AGENT
     }
