@@ -413,7 +413,12 @@ async def post_comment(
         session_proxy = session.get_proxy()
         active_proxy = session_proxy if session_proxy else proxy
 
-        context_options = {"user_agent": user_agent, "viewport": viewport, "ignore_https_errors": True}
+        context_options = {
+            "user_agent": user_agent,
+            "viewport": viewport,
+            "ignore_https_errors": True,
+            "device_scale_factor": 1  # Force 1:1 pixel mapping for vision coordinates
+        }
         if active_proxy:
             context_options["proxy"] = _build_playwright_proxy(active_proxy)
             logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
@@ -550,7 +555,12 @@ async def post_comment_verified(
         session_proxy = session.get_proxy()
         active_proxy = session_proxy if session_proxy else proxy
 
-        context_options = {"user_agent": user_agent, "viewport": viewport, "ignore_https_errors": True}
+        context_options = {
+            "user_agent": user_agent,
+            "viewport": viewport,
+            "ignore_https_errors": True,
+            "device_scale_factor": 1  # Force 1:1 pixel mapping for vision coordinates
+        }
         if active_proxy:
             context_options["proxy"] = _build_playwright_proxy(active_proxy)
             logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
@@ -723,6 +733,7 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
             "user_agent": user_agent,
             "viewport": viewport,
             "ignore_https_errors": True,
+            "device_scale_factor": 1,  # Force 1:1 pixel mapping
         }
         if active_proxy:
             context_options["proxy"] = _build_playwright_proxy(active_proxy)
