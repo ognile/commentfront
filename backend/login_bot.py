@@ -331,10 +331,35 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     if '/checkpoint/' in url:
         return 'checkpoint'
 
+    # Check for device approval / notification approval screen
+    # This is when FB asks to approve on another device with "Try another way" option
+    for el in elements:
+        text = el.get('text', '').lower()
+        aria = el.get('ariaLabel', '').lower()
+        if 'waiting for approval' in text or 'waiting for approval' in aria:
+            return 'device_approval'
+        if 'check your notifications' in text or 'check your notifications' in aria:
+            return 'device_approval'
+        if 'try another way' in text or 'try another way' in aria:
+            # Also check if we're on a 2FA related page
+            return 'device_approval'
+
     # Handle URLs like /login, /login/, /login#, /login?...
+    # BUT only if we actually have email/password inputs (not device approval)
     url_path = url.split('?')[0].split('#')[0]  # Remove query and hash
     if '/login' in url_path:
-        return 'login_form'
+        # Need to verify this is actually a login form with inputs
+        has_email = False
+        has_pass = False
+        for el in elements:
+            name = el.get('name', '').lower()
+            el_type = el.get('type', '').lower()
+            if name == 'email' or el_type == 'email':
+                has_email = True
+            if name == 'pass' or el_type == 'password':
+                has_pass = True
+        if has_email and has_pass:
+            return 'login_form'
 
     # Check for login form indicators
     email_input_found = False
@@ -892,6 +917,43 @@ async def login_facebook(
                     await asyncio.sleep(3)
                     elements = await dump_interactive_elements(page, "AFTER LOADING WAIT")
                     # Continue loop - will re-check state
+
+                elif state == "device_approval":
+                    # Facebook is asking to approve on another device
+                    # Click "Try another way" to get to authenticator code entry
+                    result["step"] = "device_approval"
+                    logger.info("Device approval screen detected, clicking 'Try another way'...")
+                    await broadcast("device_approval", "handling")
+
+                    try_another_selectors = [
+                        'div[role="button"]:has-text("Try another way")',
+                        'div[role="button"][aria-label*="Try another way"]',
+                        'button:has-text("Try another way")',
+                    ]
+
+                    if await smart_click(page, try_another_selectors, "Try another way"):
+                        await asyncio.sleep(2)
+                        elements = await dump_interactive_elements(page, "AFTER TRY ANOTHER WAY")
+                        # Continue loop - should now see 2FA selection or code input
+                    else:
+                        # Try text-based click
+                        try:
+                            locator = page.get_by_text("Try another way", exact=False).first
+                            if await locator.count() > 0 and await locator.is_visible():
+                                await locator.click()
+                                logger.info("Clicked 'Try another way' via text match")
+                                await asyncio.sleep(2)
+                                elements = await dump_interactive_elements(page, "AFTER TRY ANOTHER WAY (TEXT)")
+                            else:
+                                result["error"] = "Could not find 'Try another way' button"
+                                result["needs_attention"] = True
+                                await broadcast("device_approval", "needs_attention", {"error": result["error"]})
+                                break
+                        except Exception as e:
+                            result["error"] = f"Failed to click 'Try another way': {e}"
+                            result["needs_attention"] = True
+                            await broadcast("device_approval", "failed", {"error": result["error"]})
+                            break
 
                 elif state == "error":
                     # Found error message on page - extract and fail immediately
