@@ -86,10 +86,13 @@ REELS = {
 # Comment Selectors
 COMMENT = {
     "comment_button": [
+        # More specific selectors first - avoid generic text matches
         'div[aria-label="Comment"]',
-        'span:has-text("Comment")',
-        'div[role="button"]:has-text("Comment")',
-        'a[href*="comment"]',
+        'div[aria-label="Leave a comment"]',
+        '[data-sigil*="comment"]',
+        'div[role="button"][aria-label*="omment"]',  # Comment or comment
+        # Last resort - but these are risky as they may match wrong elements
+        # 'span:has-text("Comment")' - REMOVED: too generic, navigates to wrong post
     ],
     "comment_input": [
         # Facebook mobile comment input - various possible selectors
@@ -104,6 +107,7 @@ COMMENT = {
     ],
     "comment_submit": [
         # Facebook mobile send/post button
+        'div[aria-label="Post a comment"]',  # Found via element audit
         'div[aria-label="Post"]',
         'div[aria-label="Send"]',
         'div[aria-label="Submit"]',

@@ -63,6 +63,64 @@ async def save_debug_screenshot(page: Page, name: str) -> str:
         return ""
 
 
+async def dump_interactive_elements(page: Page, context: str = "") -> List[dict]:
+    """
+    Dump all interactive elements on the page with their selectors.
+    Like 'Inspect Element' - shows what's ACTUALLY clickable.
+
+    Args:
+        page: Playwright page
+        context: Description of when this is being called (e.g., "after page load")
+
+    Returns:
+        List of element info dicts
+    """
+    try:
+        elements = await page.evaluate('''() => {
+            const elements = [];
+            document.querySelectorAll(
+                'button, [role="button"], a[href], input, textarea, ' +
+                '[contenteditable="true"], [data-sigil], [aria-label]'
+            ).forEach((el, i) => {
+                const rect = el.getBoundingClientRect();
+                // Only include visible elements in viewport
+                if (rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight && rect.top > -100) {
+                    elements.push({
+                        tag: el.tagName,
+                        text: (el.innerText || '').slice(0, 30).replace(/\\n/g, ' '),
+                        ariaLabel: el.getAttribute('aria-label') || '',
+                        role: el.getAttribute('role') || '',
+                        sigil: el.getAttribute('data-sigil') || '',
+                        placeholder: el.getAttribute('placeholder') || '',
+                        contentEditable: el.getAttribute('contenteditable') || '',
+                        bounds: {x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height)}
+                    });
+                }
+            });
+            return elements;
+        }''')
+
+        # Log the elements
+        if context:
+            logger.info(f"=== {context.upper()} ===")
+        logger.info(f"Found {len(elements)} interactive elements:")
+        for i, el in enumerate(elements):
+            text_info = el.get('text', '')[:20] or el.get('ariaLabel', '')[:20] or el.get('placeholder', '')[:20]
+            role_info = f"role=\"{el['role']}\"" if el['role'] else ""
+            aria_info = f"aria-label=\"{el['ariaLabel']}\"" if el['ariaLabel'] else ""
+            sigil_info = f"data-sigil=\"{el['sigil']}\"" if el['sigil'] else ""
+            editable_info = "contenteditable" if el['contentEditable'] == 'true' else ""
+
+            attrs = " ".join(filter(None, [role_info, aria_info, sigil_info, editable_info]))
+            bounds = el['bounds']
+            logger.info(f"  [{i}] {el['tag']} {attrs} text=\"{text_info}\" ({bounds['x']},{bounds['y']} {bounds['w']}x{bounds['h']})")
+
+        return elements
+    except Exception as e:
+        logger.warning(f"Failed to dump interactive elements: {e}")
+        return []
+
+
 async def vision_click(page: Page, element_type: str, fallback_selectors: List[str], description: str) -> Dict[str, Any]:
     """Click an element using Gemini vision with CSS selector fallback."""
     result = {"success": False, "method": "none", "confidence": 0}
@@ -137,7 +195,8 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
     Try to click an element using multiple selectors.
     Scrolls into view and waits for visibility.
     """
-    logger.info(f"smart_click: Looking for '{description}' with {len(selectors)} selectors")
+    logger.info(f"=== ATTEMPTING CLICK: {description} ===")
+    logger.info(f"Trying {len(selectors)} selectors...")
     for selector in selectors:
         try:
             # Check count first to avoid waiting unnecessarily
@@ -153,10 +212,12 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
                 
                 if await locator.is_visible():
                     await locator.dispatch_event('click')
-                    logger.info(f"Clicked '{description}' using dispatch_event: {selector}")
+                    logger.info(f"  → CLICKED successfully via: {selector}")
                     # Snapshot after action
                     await save_debug_screenshot(page, f"post_click_{description.replace(' ', '_')}")
                     return True
+                else:
+                    logger.info(f"  → Found but not visible, skipping")
         except Exception as e:
             continue
             
@@ -171,7 +232,7 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
     except:
         pass
 
-    logger.warning(f"Failed to find/click: {description}")
+    logger.warning(f"  → FAILED: No selector matched for '{description}'")
     await save_debug_screenshot(page, f"failed_click_{description.replace(' ', '_')}")
     return False
 
@@ -586,6 +647,8 @@ async def wait_for_post_visible(page: Page, vision, max_attempts: int = 4) -> bo
 
         if verification.success:
             logger.info(f"Post visible on attempt {attempt + 1} (confidence: {verification.confidence:.0%})")
+            # PROACTIVE AUDIT: Dump all interactive elements now that page is loaded
+            await dump_interactive_elements(page, "PAGE LOADED - Gemini confirmed post visible")
             return True
 
         # Exponential backoff: 1s, 2s, 4s, 8s
@@ -836,6 +899,9 @@ async def post_comment_verified(
             result["steps_completed"].append("comments_opened")
             logger.info(f"✓ Step 2: Comments section opened (confidence: {verification.confidence:.0%})")
 
+            # PROACTIVE AUDIT: Dump elements now that comments section is open
+            await dump_interactive_elements(page, "COMMENTS SECTION OPENED - looking for input field")
+
             # ========== STEP 3: Focus comment input ==========
             logger.info("Step 3: Focusing comment input")
 
@@ -862,22 +928,29 @@ async def post_comment_verified(
 
             await asyncio.sleep(0.8)
 
-            # Verify input is active
+            # Verify input is active (but don't fail if just cursor/keyboard not visible)
+            # Playwright headless doesn't show virtual keyboard, so Gemini may report "not active"
+            # We'll verify by actually trying to type and checking if text appears
             screenshot = await save_debug_screenshot(page, "step3_post_focus")
             verification = await vision.verify_state(screenshot, "input_active")
 
-            if not verification.success:
-                # One more retry
+            if not verification.success and focus_success:
+                # We clicked input successfully but Gemini says no cursor - this is expected in Playwright
+                # Proceed anyway, Step 4 will verify if typing worked
+                logger.info(f"Gemini says input not active ('{verification.message}') but we clicked it - proceeding to type")
+            elif not verification.success:
+                # Didn't click input AND Gemini says not active - try one more time
                 logger.warning("Input not active, retrying focus...")
                 await smart_focus(page, fb_selectors.COMMENT["comment_input"], "Comment input retry")
                 await asyncio.sleep(0.8)
                 screenshot = await save_debug_screenshot(page, "step3_retry")
                 verification = await vision.verify_state(screenshot, "input_active")
                 if not verification.success:
-                    raise Exception(f"Step 3 FAILED - Input not active: {verification.message}")
+                    # Last resort: just try typing anyway
+                    logger.warning(f"Gemini still says not active ('{verification.message}') - trying to type anyway")
 
-            result["steps_completed"].append("input_active")
-            logger.info(f"✓ Step 3: Input field active (confidence: {verification.confidence:.0%})")
+            result["steps_completed"].append("input_clicked")
+            logger.info(f"✓ Step 3: Input field clicked (Gemini confidence: {verification.confidence:.0%})")
 
             # ========== STEP 4: Type comment and verify text appears ==========
             logger.info(f"Step 4: Typing comment: {comment[:30]}...")
