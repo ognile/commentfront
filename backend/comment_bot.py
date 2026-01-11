@@ -171,6 +171,37 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
     return False
 
 
+async def smart_focus(page: Page, selectors: List[str], description: str) -> bool:
+    """
+    Focus a text input field (contenteditable, textbox, textarea).
+    Uses focus() instead of dispatch_event('click') which doesn't work for inputs.
+    FB_LOGIN_GUIDE.md: dispatch_event works for buttons, but text fields need focus().
+    """
+    logger.info(f"smart_focus: Looking for '{description}' with {len(selectors)} selectors")
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            count = await locator.count()
+            logger.info(f"  Selector '{selector}' → found {count} element(s)")
+            if count > 0:
+                await locator.scroll_into_view_if_needed()
+                await asyncio.sleep(0.3)
+                await save_debug_screenshot(page, f"pre_focus_{description.replace(' ', '_')}")
+
+                if await locator.is_visible():
+                    await locator.focus()
+                    logger.info(f"Focused '{description}' using: {selector}")
+                    await save_debug_screenshot(page, f"post_focus_{description.replace(' ', '_')}")
+                    return True
+        except Exception as e:
+            logger.warning(f"  Focus error on '{selector}': {e}")
+            continue
+
+    logger.warning(f"Failed to focus: {description}")
+    await save_debug_screenshot(page, f"failed_focus_{description.replace(' ', '_')}")
+    return False
+
+
 async def open_comment_box(page: Page) -> bool:
     """Open the comment input box."""
     selectors = [
@@ -194,9 +225,9 @@ async def type_comment(page: Page, comment: str) -> bool:
         'div:text("Write a comment")'
     ]
     
-    if not await smart_click(page, input_selectors, "Comment Input"):
+    if not await smart_focus(page, input_selectors, "Comment Input"):
         return False
-        
+
     await asyncio.sleep(0.5)
     
     # 2. Type the text
@@ -340,12 +371,18 @@ async def post_comment(
 
             await asyncio.sleep(1)
 
-            # 2. Click Input (Vision + Fallback)
+            # 2. Focus Input Field (use focus() for text fields, NOT dispatch_event)
             input_selectors = ['div[role="textbox"]', '[contenteditable="true"]', 'textarea', 'div[aria-label="Write a comment"]']
             if use_vision:
-                await vision_click(page, "comment_input", input_selectors, "Comment input")
+                click_result = await vision_click(page, "comment_input", input_selectors, "Comment input")
+                if not click_result["success"]:
+                    # Vision failed, try focus fallback
+                    logger.info("Vision failed for input, trying focus fallback")
+                    if not await smart_focus(page, input_selectors, "Comment Input"):
+                        raise Exception("Could not activate comment input field")
             else:
-                await smart_click(page, input_selectors, "Comment Input")
+                if not await smart_focus(page, input_selectors, "Comment Input"):
+                    raise Exception("Could not activate comment input field")
 
             await asyncio.sleep(0.5)
 
