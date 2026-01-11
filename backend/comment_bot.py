@@ -147,8 +147,8 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
                 await save_debug_screenshot(page, f"pre_click_{description.replace(' ', '_')}")
                 
                 if await locator.is_visible():
-                    await locator.click()
-                    logger.info(f"Clicked '{description}' using selector: {selector}")
+                    await locator.dispatch_event('click')
+                    logger.info(f"Clicked '{description}' using dispatch_event: {selector}")
                     # Snapshot after action
                     await save_debug_screenshot(page, f"post_click_{description.replace(' ', '_')}")
                     return True
@@ -160,8 +160,8 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
         text_locator = page.get_by_text(description, exact=False).first
         if await text_locator.count() > 0 and await text_locator.is_visible():
             await text_locator.scroll_into_view_if_needed()
-            await text_locator.click()
-            logger.info(f"Clicked '{description}' using text match")
+            await text_locator.dispatch_event('click')
+            logger.info(f"Clicked '{description}' using text match dispatch_event")
             return True
     except:
         pass
@@ -231,6 +231,26 @@ async def click_send_button(page: Page) -> bool:
     # Enter key fallback removed - doesn't work on mobile FB
     logger.warning("Failed to find Send button")
     return False
+
+
+async def verify_send_clicked(page: Page) -> bool:
+    """Verify the comment was actually sent by checking if input is cleared."""
+    await asyncio.sleep(1)
+    try:
+        # Check if the textbox is now empty (comment was sent)
+        input_selectors = ['div[role="textbox"]', '[contenteditable="true"]']
+        for selector in input_selectors:
+            locator = page.locator(selector).first
+            if await locator.count() > 0:
+                text = await locator.inner_text()
+                if text.strip() == "":
+                    logger.info("Send verified: input field is now empty")
+                    return True
+        logger.warning("Send verification failed: input field still has content")
+        return False
+    except Exception as e:
+        logger.warning(f"Send verification error: {e}")
+        return False
 
 
 async def verify_post_loaded(page: Page) -> bool:
@@ -357,17 +377,29 @@ async def post_comment(
                 if not await click_send_button(page):
                     raise Exception("Could not find Send button")
 
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
 
-            # 5. Verify comment posted
+            # 5. Take post-send screenshot for debugging
+            await save_debug_screenshot(page, "post_send")
+
+            # 6. Verify send button actually worked (check if input is cleared)
+            send_verified = await verify_send_clicked(page)
+            if not send_verified:
+                await save_debug_screenshot(page, "send_failed")
+                raise Exception("Send button clicked but comment not sent - input not cleared")
+
+            # 7. Take final verification screenshot
+            await save_debug_screenshot(page, "comment_posted")
+
+            # 8. Optional: Visual verification via Gemini
             if verify_post and use_vision:
                 verification = await verify_comment_visually(page, comment)
                 result["verified"] = verification["verified"]
                 result["verification_confidence"] = verification.get("confidence", 0)
             else:
-                result["verified"] = True
+                result["verified"] = send_verified
 
-            result["success"] = True
+            result["success"] = send_verified
 
         except Exception as e:
             result["error"] = str(e)
