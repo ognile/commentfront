@@ -1,0 +1,108 @@
+2026-01-11 00:45:55,431 - GeeLarkClient - INFO - GeeLark client initialized
+2026-01-11 00:45:55,431 - GeeLarkClient - DEBUG - POST https://openapi.geelark.com/open/v1/phone/list
+2026-01-11 00:45:55,431 - GeeLarkClient - DEBUG - Data: {
+  "page": 1,
+  "pageSize": 1
+}
+2026-01-11 00:45:55,431 - httpcore.connection - DEBUG - connect_tcp.started host='openapi.geelark.com' port=443 local_address=None timeout=60.0 socket_options=None
+2026-01-11 00:45:55,507 - httpcore.connection - DEBUG - connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x10582aea0>
+2026-01-11 00:45:55,507 - httpcore.connection - DEBUG - start_tls.started ssl_context=<ssl.SSLContext object at 0x1059855d0> server_hostname='openapi.geelark.com' timeout=60.0
+2026-01-11 00:45:55,610 - httpcore.connection - DEBUG - start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x104994f20>
+2026-01-11 00:45:55,610 - httpcore.http11 - DEBUG - send_request_headers.started request=<Request [b'POST']>
+2026-01-11 00:45:55,611 - httpcore.http11 - DEBUG - send_request_headers.complete
+2026-01-11 00:45:55,611 - httpcore.http11 - DEBUG - send_request_body.started request=<Request [b'POST']>
+2026-01-11 00:45:55,611 - httpcore.http11 - DEBUG - send_request_body.complete
+2026-01-11 00:45:55,611 - httpcore.http11 - DEBUG - receive_response_headers.started request=<Request [b'POST']>
+2026-01-11 00:45:55,934 - httpcore.http11 - DEBUG - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Server', b'ZenZGA/2.4'), (b'Date', b'Sat, 10 Jan 2026 23:45:55 GMT'), (b'Content-Type', b'application/json; charset=utf-8'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Access-Control-Allow-Credentials', b'true'), (b'Access-Control-Allow-Headers', b'Content-Type,AccessToken,X-CSRF-Token, Authorization, Token,X-Token,X-User-Id,x-machine-id,appVer,traceId,beta,x-language,x-ip,x-version,appVer,x-time-zone,x-os-release,x-os,x-platform,x-arch,x-device-id,x-chan'), (b'Access-Control-Allow-Methods', b'POST, GET'), (b'Access-Control-Expose-Headers', b'Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Content-Type'), (b'X-XSS-Protection', b'1;mode=block'), (b'X-Frame-Options', b'SAMEORIGIN'), (b'X-Content-Type-Options', b'nosniff'), (b'Strict-Transport-Security', b'max-age=63072000;includeSubDomains;preload'), (b'Content-Encoding', b'gzip')])
+2026-01-11 00:45:55,935 - httpx - INFO - HTTP Request: POST https://openapi.geelark.com/open/v1/phone/list "HTTP/1.1 200 OK"
+2026-01-11 00:45:55,935 - httpcore.http11 - DEBUG - receive_response_body.started request=<Request [b'POST']>
+2026-01-11 00:45:55,936 - httpcore.http11 - DEBUG - receive_response_body.complete
+2026-01-11 00:45:55,936 - httpcore.http11 - DEBUG - response_closed.started
+2026-01-11 00:45:55,936 - httpcore.http11 - DEBUG - response_closed.complete
+2026-01-11 00:45:55,936 - GeeLarkClient - DEBUG - Response: 200
+2026-01-11 00:45:55,936 - GeeLarkClient - INFO - Connection successful. Found 1 device(s)
+2026-01-11 00:45:55,936 - JobManager - INFO - ✓ GeeLark client initialized and connected
+2026-01-11 00:45:55,936 - CredentialManager - WARNING - Credential file not found at ../accounts info.txt
+2026-01-11 00:45:55,936 - CredentialManager - WARNING - Credential file not found at ../accounts info.txt
+2026-01-11 00:45:55,956 - GeeLarkClient - INFO - GeeLark client initialized
+2026-01-11 00:45:55,956 - API - INFO - GeeLark client initialized
+2026-01-11 00:45:55,979 - asyncio - DEBUG - Using selector: KqueueSelector
+2026-01-11 00:45:57,989 - GeeLarkClient - DEBUG - POST https://openapi.geelark.com/open/v1/phone/list
+2026-01-11 00:45:57,989 - GeeLarkClient - DEBUG - Data: {
+  "page": 1,
+  "pageSize": 100
+}
+2026-01-11 00:45:57,990 - httpcore.connection - DEBUG - connect_tcp.started host='openapi.geelark.com' port=443 local_address=None timeout=60.0 socket_options=None
+2026-01-11 00:45:58,005 - httpcore.connection - DEBUG - connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x105b4abd0>
+2026-01-11 00:45:58,005 - httpcore.connection - DEBUG - start_tls.started ssl_context=<ssl.SSLContext object at 0x105986ad0> server_hostname='openapi.geelark.com' timeout=60.0
+2026-01-11 00:45:58,021 - httpcore.connection - DEBUG - start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x105ab2ea0>
+2026-01-11 00:45:58,021 - httpcore.http11 - DEBUG - send_request_headers.started request=<Request [b'POST']>
+2026-01-11 00:45:58,021 - httpcore.http11 - DEBUG - send_request_headers.complete
+2026-01-11 00:45:58,021 - httpcore.http11 - DEBUG - send_request_body.started request=<Request [b'POST']>
+2026-01-11 00:45:58,021 - httpcore.http11 - DEBUG - send_request_body.complete
+2026-01-11 00:45:58,021 - httpcore.http11 - DEBUG - receive_response_headers.started request=<Request [b'POST']>
+2026-01-11 00:45:58,361 - httpcore.http11 - DEBUG - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Server', b'ZenZGA/2.4'), (b'Date', b'Sat, 10 Jan 2026 23:45:58 GMT'), (b'Content-Type', b'application/json; charset=utf-8'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Access-Control-Allow-Credentials', b'true'), (b'Access-Control-Allow-Headers', b'Content-Type,AccessToken,X-CSRF-Token, Authorization, Token,X-Token,X-User-Id,x-machine-id,appVer,traceId,beta,x-language,x-ip,x-version,appVer,x-time-zone,x-os-release,x-os,x-platform,x-arch,x-device-id,x-chan'), (b'Access-Control-Allow-Methods', b'POST, GET'), (b'Access-Control-Expose-Headers', b'Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Content-Type'), (b'X-XSS-Protection', b'1;mode=block'), (b'X-Frame-Options', b'SAMEORIGIN'), (b'X-Content-Type-Options', b'nosniff'), (b'Strict-Transport-Security', b'max-age=63072000;includeSubDomains;preload'), (b'Content-Encoding', b'gzip')])
+2026-01-11 00:45:58,362 - httpx - INFO - HTTP Request: POST https://openapi.geelark.com/open/v1/phone/list "HTTP/1.1 200 OK"
+2026-01-11 00:45:58,362 - httpcore.http11 - DEBUG - receive_response_body.started request=<Request [b'POST']>
+2026-01-11 00:45:58,362 - httpcore.http11 - DEBUG - receive_response_body.complete
+2026-01-11 00:45:58,362 - httpcore.http11 - DEBUG - response_closed.started
+2026-01-11 00:45:58,362 - httpcore.http11 - DEBUG - response_closed.complete
+2026-01-11 00:45:58,362 - GeeLarkClient - DEBUG - Response: 200
+2026-01-11 01:05:44,611 - GeeLarkClient - INFO - GeeLark client initialized
+2026-01-11 01:05:44,611 - GeeLarkClient - DEBUG - POST https://openapi.geelark.com/open/v1/phone/list
+2026-01-11 01:05:44,611 - GeeLarkClient - DEBUG - Data: {
+  "page": 1,
+  "pageSize": 1
+}
+2026-01-11 01:05:44,612 - httpcore.connection - DEBUG - connect_tcp.started host='openapi.geelark.com' port=443 local_address=None timeout=60.0 socket_options=None
+2026-01-11 01:05:44,738 - httpcore.connection - DEBUG - connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x106a806b0>
+2026-01-11 01:05:44,738 - httpcore.connection - DEBUG - start_tls.started ssl_context=<ssl.SSLContext object at 0x106a4d7d0> server_hostname='openapi.geelark.com' timeout=60.0
+2026-01-11 01:05:44,758 - httpcore.connection - DEBUG - start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x105c73f80>
+2026-01-11 01:05:44,758 - httpcore.http11 - DEBUG - send_request_headers.started request=<Request [b'POST']>
+2026-01-11 01:05:44,759 - httpcore.http11 - DEBUG - send_request_headers.complete
+2026-01-11 01:05:44,759 - httpcore.http11 - DEBUG - send_request_body.started request=<Request [b'POST']>
+2026-01-11 01:05:44,759 - httpcore.http11 - DEBUG - send_request_body.complete
+2026-01-11 01:05:44,759 - httpcore.http11 - DEBUG - receive_response_headers.started request=<Request [b'POST']>
+2026-01-11 01:05:45,080 - httpcore.http11 - DEBUG - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Server', b'ZenZGA/2.4'), (b'Date', b'Sun, 11 Jan 2026 00:05:45 GMT'), (b'Content-Type', b'application/json; charset=utf-8'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Access-Control-Allow-Credentials', b'true'), (b'Access-Control-Allow-Headers', b'Content-Type,AccessToken,X-CSRF-Token, Authorization, Token,X-Token,X-User-Id,x-machine-id,appVer,traceId,beta,x-language,x-ip,x-version,appVer,x-time-zone,x-os-release,x-os,x-platform,x-arch,x-device-id,x-chan'), (b'Access-Control-Allow-Methods', b'POST, GET'), (b'Access-Control-Expose-Headers', b'Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Content-Type'), (b'X-XSS-Protection', b'1;mode=block'), (b'X-Frame-Options', b'SAMEORIGIN'), (b'X-Content-Type-Options', b'nosniff'), (b'Strict-Transport-Security', b'max-age=63072000;includeSubDomains;preload'), (b'Content-Encoding', b'gzip')])
+2026-01-11 01:05:45,080 - httpx - INFO - HTTP Request: POST https://openapi.geelark.com/open/v1/phone/list "HTTP/1.1 200 OK"
+2026-01-11 01:05:45,081 - httpcore.http11 - DEBUG - receive_response_body.started request=<Request [b'POST']>
+2026-01-11 01:05:45,082 - httpcore.http11 - DEBUG - receive_response_body.complete
+2026-01-11 01:05:45,082 - httpcore.http11 - DEBUG - response_closed.started
+2026-01-11 01:05:45,082 - httpcore.http11 - DEBUG - response_closed.complete
+2026-01-11 01:05:45,082 - GeeLarkClient - DEBUG - Response: 200
+2026-01-11 01:05:45,082 - GeeLarkClient - INFO - Connection successful. Found 1 device(s)
+2026-01-11 01:05:45,082 - JobManager - INFO - ✓ GeeLark client initialized and connected
+2026-01-11 01:05:45,082 - CredentialManager - WARNING - Credential file not found at ../accounts info.txt
+2026-01-11 01:05:45,082 - CredentialManager - WARNING - Credential file not found at ../accounts info.txt
+2026-01-11 01:05:45,101 - GeeLarkClient - INFO - GeeLark client initialized
+2026-01-11 01:05:45,102 - API - INFO - GeeLark client initialized
+2026-01-11 01:05:45,130 - asyncio - DEBUG - Using selector: KqueueSelector
+2026-01-11 01:19:20,211 - GeeLarkClient - INFO - GeeLark client initialized
+2026-01-11 01:19:20,211 - GeeLarkClient - DEBUG - POST https://openapi.geelark.com/open/v1/phone/list
+2026-01-11 01:19:20,211 - GeeLarkClient - DEBUG - Data: {
+  "page": 1,
+  "pageSize": 1
+}
+2026-01-11 01:19:20,212 - httpcore.connection - DEBUG - connect_tcp.started host='openapi.geelark.com' port=443 local_address=None timeout=60.0 socket_options=None
+2026-01-11 01:19:20,356 - httpcore.connection - DEBUG - connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x1098809b0>
+2026-01-11 01:19:20,356 - httpcore.connection - DEBUG - start_tls.started ssl_context=<ssl.SSLContext object at 0x10984d7d0> server_hostname='openapi.geelark.com' timeout=60.0
+2026-01-11 01:19:20,373 - httpcore.connection - DEBUG - start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x108cc54f0>
+2026-01-11 01:19:20,373 - httpcore.http11 - DEBUG - send_request_headers.started request=<Request [b'POST']>
+2026-01-11 01:19:20,374 - httpcore.http11 - DEBUG - send_request_headers.complete
+2026-01-11 01:19:20,374 - httpcore.http11 - DEBUG - send_request_body.started request=<Request [b'POST']>
+2026-01-11 01:19:20,374 - httpcore.http11 - DEBUG - send_request_body.complete
+2026-01-11 01:19:20,374 - httpcore.http11 - DEBUG - receive_response_headers.started request=<Request [b'POST']>
+2026-01-11 01:19:20,692 - httpcore.http11 - DEBUG - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Server', b'ZenZGA/2.4'), (b'Date', b'Sun, 11 Jan 2026 00:19:20 GMT'), (b'Content-Type', b'application/json; charset=utf-8'), (b'Transfer-Encoding', b'chunked'), (b'Connection', b'keep-alive'), (b'Access-Control-Allow-Credentials', b'true'), (b'Access-Control-Allow-Headers', b'Content-Type,AccessToken,X-CSRF-Token, Authorization, Token,X-Token,X-User-Id,x-machine-id,appVer,traceId,beta,x-language,x-ip,x-version,appVer,x-time-zone,x-os-release,x-os,x-platform,x-arch,x-device-id,x-chan'), (b'Access-Control-Allow-Methods', b'POST, GET'), (b'Access-Control-Expose-Headers', b'Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Content-Type'), (b'X-XSS-Protection', b'1;mode=block'), (b'X-Frame-Options', b'SAMEORIGIN'), (b'X-Content-Type-Options', b'nosniff'), (b'Strict-Transport-Security', b'max-age=63072000;includeSubDomains;preload'), (b'Content-Encoding', b'gzip')])
+2026-01-11 01:19:20,692 - httpx - INFO - HTTP Request: POST https://openapi.geelark.com/open/v1/phone/list "HTTP/1.1 200 OK"
+2026-01-11 01:19:20,692 - httpcore.http11 - DEBUG - receive_response_body.started request=<Request [b'POST']>
+2026-01-11 01:19:20,693 - httpcore.http11 - DEBUG - receive_response_body.complete
+2026-01-11 01:19:20,693 - httpcore.http11 - DEBUG - response_closed.started
+2026-01-11 01:19:20,693 - httpcore.http11 - DEBUG - response_closed.complete
+2026-01-11 01:19:20,693 - GeeLarkClient - DEBUG - Response: 200
+2026-01-11 01:19:20,693 - GeeLarkClient - INFO - Connection successful. Found 1 device(s)
+2026-01-11 01:19:20,693 - JobManager - INFO - ✓ GeeLark client initialized and connected
+2026-01-11 01:19:20,693 - CredentialManager - WARNING - Credential file not found at ../accounts info.txt
+2026-01-11 01:19:20,693 - CredentialManager - WARNING - Credential file not found at ../accounts info.txt
+2026-01-11 01:19:20,712 - GeeLarkClient - INFO - GeeLark client initialized
+2026-01-11 01:19:20,712 - API - INFO - GeeLark client initialized
+2026-01-11 01:19:20,739 - asyncio - DEBUG - Using selector: KqueueSelector

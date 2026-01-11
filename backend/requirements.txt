@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+playwright
+playwright-stealth
+python-dotenv
+httpx
+pyotp
+requests

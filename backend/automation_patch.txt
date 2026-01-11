@@ -1,0 +1,6 @@
+                # Level 1: The Parent (likely the button container)
+                await target.locator("..").evaluate("el => el.click()")
+                await asyncio.sleep(0.5)
+                
+                # Level 2: The Grandparent (in case of nested styling)
+                await target.locator("../..").evaluate("el => el.click()")
