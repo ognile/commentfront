@@ -937,29 +937,11 @@ async def post_comment_verified(
 
             await asyncio.sleep(0.8)
 
-            # Verify input is active (but don't fail if just cursor/keyboard not visible)
-            # Playwright headless doesn't show virtual keyboard, so Gemini may report "not active"
-            # We'll verify by actually trying to type and checking if text appears
-            screenshot = await save_debug_screenshot(page, "step3_post_focus")
-            verification = await vision.verify_state(screenshot, "input_active")
-
-            if not verification.success and focus_success:
-                # We clicked input successfully but Gemini says no cursor - this is expected in Playwright
-                # Proceed anyway, Step 4 will verify if typing worked
-                logger.info(f"Gemini says input not active ('{verification.message}') but we clicked it - proceeding to type")
-            elif not verification.success:
-                # Didn't click input AND Gemini says not active - try one more time
-                logger.warning("Input not active, retrying focus...")
-                await smart_focus(page, fb_selectors.COMMENT["comment_input"], "Comment input retry")
-                await asyncio.sleep(0.8)
-                screenshot = await save_debug_screenshot(page, "step3_retry")
-                verification = await vision.verify_state(screenshot, "input_active")
-                if not verification.success:
-                    # Last resort: just try typing anyway
-                    logger.warning(f"Gemini still says not active ('{verification.message}') - trying to type anyway")
-
+            # Skip Gemini verification for input_active - it always returns 0% in headless
+            # (Playwright doesn't show visual cursor, so Gemini can't verify)
+            # Step 4 will verify if typing worked by checking if text appears
             result["steps_completed"].append("input_clicked")
-            logger.info(f"✓ Step 3: Input field clicked (Gemini confidence: {verification.confidence:.0%})")
+            logger.info("✓ Step 3: Input field clicked (skipping Gemini - cursor not visible in headless)")
 
             # ========== STEP 4: Type comment and verify text appears ==========
             logger.info(f"Step 4: Typing comment: {comment[:30]}...")
@@ -967,7 +949,7 @@ async def post_comment_verified(
             await asyncio.sleep(0.8)
 
             screenshot = await save_debug_screenshot(page, "step4_typed")
-            verification = await vision.verify_state(screenshot, "text_typed", expected_text=comment[:50])
+            verification = await vision.verify_state(screenshot, "text_typed", expected_text=comment[-50:])
             if not verification.success:
                 raise Exception(f"Step 4 FAILED - Typed text not visible: {verification.message}")
 
@@ -994,7 +976,7 @@ async def post_comment_verified(
 
             # Verify comment was posted
             verify_screenshot = await save_debug_screenshot(page, "step5_verify")
-            verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[:50])
+            verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-50:])
 
             if not verification.success:
                 if verification.status == "pending":
