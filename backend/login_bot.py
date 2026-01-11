@@ -331,17 +331,32 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     if '/checkpoint/' in url:
         return 'checkpoint'
 
+    # IMPORTANT: Check for 2FA code input FIRST (before device_approval)
+    # Because the 2FA code entry screen also has "Try another way" text
+    for el in elements:
+        name = el.get('name', '').lower()
+        placeholder = el.get('placeholder', '').lower()
+        text = el.get('text', '').lower()
+        aria = el.get('ariaLabel', '').lower()
+        el_type = el.get('type', '').lower()
+
+        # Match input with aria-label="Code" (Facebook mobile 2FA)
+        if aria == 'code' and el_type == 'text':
+            return '2fa_code_input'
+        if 'approvals_code' in name:
+            return '2fa_code_input'
+        if 'enter code' in placeholder or 'enter the 6' in text or '6-digit' in text:
+            return '2fa_code_input'
+
     # Check for device approval / notification approval screen
     # This is when FB asks to approve on another device with "Try another way" option
+    # But ONLY if we don't have a code input field (checked above)
     for el in elements:
         text = el.get('text', '').lower()
         aria = el.get('ariaLabel', '').lower()
         if 'waiting for approval' in text or 'waiting for approval' in aria:
             return 'device_approval'
         if 'check your notifications' in text or 'check your notifications' in aria:
-            return 'device_approval'
-        if 'try another way' in text or 'try another way' in aria:
-            # Also check if we're on a 2FA related page
             return 'device_approval'
 
     # Handle URLs like /login, /login/, /login#, /login?...
@@ -409,16 +424,8 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     if len(verification_options) >= 2:
         return '2fa_selection'
 
-    # Check for 2FA code input
-    for el in elements:
-        name = el.get('name', '').lower()
-        placeholder = el.get('placeholder', '').lower()
-        text = el.get('text', '').lower()
-
-        if 'approvals_code' in name:
-            return '2fa_code_input'
-        if 'enter code' in placeholder or 'enter the 6' in text or '6-digit' in text:
-            return '2fa_code_input'
+    # NOTE: 2FA code input check has been moved to the top of this function
+    # to prevent false device_approval detection on the 2FA code entry screen
 
     # Check for logged in state
     logged_in_indicators = ['create a post', 'notifications', 'what\'s on your mind']
