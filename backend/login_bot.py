@@ -739,6 +739,55 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
         # Check for profile indicators and extract profile name
         elements = await dump_interactive_elements(page, "VERIFY LOGGED IN - /me/ page")
 
+        # Check if we're on homepage (redirected from /me/) - need to click "Go to profile"
+        # This happens when /me/ redirects to m.facebook.com/ instead of profile page
+        is_homepage = url.rstrip('/').endswith('m.facebook.com') or url.rstrip('/').endswith('facebook.com')
+
+        if is_homepage:
+            logger.info("Redirected to homepage instead of profile - clicking 'Go to profile'")
+            # Find and click "Go to profile" button
+            go_to_profile_clicked = False
+            for el in elements:
+                aria = el.get('ariaLabel', '').lower()
+                text = el.get('text', '').lower()
+                if 'go to profile' in aria or 'go to profile' in text:
+                    # Click the element
+                    try:
+                        locator = page.locator(f'[aria-label="Go to profile"]').first
+                        if await locator.count() > 0 and await locator.is_visible():
+                            await locator.click()
+                            go_to_profile_clicked = True
+                            logger.info("Clicked 'Go to profile' button")
+                            await asyncio.sleep(2)
+                            break
+                    except Exception as e:
+                        logger.warning(f"Failed to click 'Go to profile': {e}")
+
+            if not go_to_profile_clicked:
+                # Try alternative selectors
+                profile_selectors = [
+                    '[aria-label="Go to profile"]',
+                    'div[role="button"]:has-text("Go to profile")',
+                    'a[href*="/me"]',
+                ]
+                for selector in profile_selectors:
+                    try:
+                        locator = page.locator(selector).first
+                        if await locator.count() > 0 and await locator.is_visible():
+                            await locator.click()
+                            go_to_profile_clicked = True
+                            logger.info(f"Clicked profile link via: {selector}")
+                            await asyncio.sleep(2)
+                            break
+                    except:
+                        continue
+
+            if go_to_profile_clicked:
+                # Re-fetch elements after navigation
+                url = page.url.lower()
+                logger.info(f"After clicking Go to profile, URL is: {url}")
+                elements = await dump_interactive_elements(page, "AFTER GO TO PROFILE CLICK")
+
         # Try to extract profile name from page title first
         page_title = await page.title()
         logger.info(f"Page title: {page_title}")

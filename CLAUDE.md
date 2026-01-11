@@ -1,5 +1,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-IMPORTANT: ALWAYS THINK FROM HIGH LEVEL ARCHITECTURAL PERSPECTIVE.
+IMPORTANT: 
+- ALWAYS THINK FROM HIGH LEVEL ARCHITECTURAL PERSPECTIVE.
+- ALWAYS LOOK FOR OPPORTUNITY TO UTILIZE SUBAGENTS FOR A MORE COMPREHENSIVE AND FAST INFO GATHERING AND EXECUTION.
 ## Project Overview
 
 CommentBot is a Facebook comment automation system with a React frontend and FastAPI backend. It uses Playwright for browser automation and Google Gemini Vision for visual element detection.

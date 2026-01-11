@@ -183,12 +183,19 @@
       "bases:Create new base": false
     }
   },
-  "active": "c3f3696999f1be5c",
+  "active": "0700746293ce4c1f",
   "lastOpenFiles": [
+    "Untitled.md",
+    "CLAUDE.md",
+    "backend/__pycache__/login_bot.cpython-312.pyc",
+    "backend/__pycache__/proxy_manager.cpython-312.pyc",
+    "frontend/dist/assets/index-CwiJivwm.css",
+    "frontend/dist/assets/index-ChETTs-n.js",
+    "backend/login_bot.py",
+    "backend/proxy_manager.py",
     "frontend/dist/assets/index-DZgwtya8.css",
     "frontend/dist/assets/index-COFJXqWK.js",
     "AGENTS.md",
-    "CLAUDE.md",
     "backend/debug/step5_verify.png",
     "backend/debug/post_click_Send_button.png",
     "backend/debug/pre_click_Send_button.png",
