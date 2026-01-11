@@ -14,6 +14,14 @@ from urllib.parse import urlparse, unquote
 
 from fb_session import FacebookSession, apply_session_to_context
 
+# Vision integration (optional - will work without it)
+try:
+    from gemini_vision import get_vision_client
+    VISION_AVAILABLE = True
+except ImportError:
+    VISION_AVAILABLE = False
+    get_vision_client = lambda: None
+
 logger = logging.getLogger("CommentBot")
 
 MOBILE_VIEWPORT = {"width": 393, "height": 873}
@@ -35,20 +43,87 @@ def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
     return {"server": proxy_url}
 
 
-async def save_debug_screenshot(page: Page, name: str):
-    """Save a screenshot for debugging."""
+async def save_debug_screenshot(page: Page, name: str) -> str:
+    """Save a screenshot for debugging. Returns the path."""
     try:
-        # Save specific step
         path = os.path.join(DEBUG_DIR, f"{name}.png")
         await page.screenshot(path=path)
-        
-        # Save latest for live view
         latest_path = os.path.join(DEBUG_DIR, "latest.png")
         await page.screenshot(path=latest_path)
-        
         logger.info(f"Saved debug screenshot: {path}")
+        return path
     except Exception as e:
         logger.warning(f"Failed to save screenshot: {e}")
+        return ""
+
+
+async def vision_click(page: Page, element_type: str, fallback_selectors: List[str], description: str) -> Dict[str, Any]:
+    """Click an element using Gemini vision with CSS selector fallback."""
+    result = {"success": False, "method": "none", "confidence": 0}
+    vision = get_vision_client() if VISION_AVAILABLE else None
+
+    if vision:
+        for attempt in range(2):
+            try:
+                screenshot_path = await save_debug_screenshot(page, f"vision_{element_type}_{attempt}")
+                if not screenshot_path:
+                    continue
+                location = await vision.find_element(screenshot_path=screenshot_path, element_type=element_type)
+                if location and location.found and location.confidence > 0.7:
+                    logger.info(f"Vision found {description} at ({location.x}, {location.y}) conf={location.confidence:.0%}")
+                    await page.mouse.click(location.x, location.y)
+                    await save_debug_screenshot(page, f"post_vision_click_{element_type}")
+                    result["success"] = True
+                    result["method"] = "vision"
+                    result["confidence"] = location.confidence
+                    return result
+                elif location and location.found and location.confidence > 0.5:
+                    logger.info(f"Vision low confidence ({location.confidence:.0%}), scrolling...")
+                    await page.evaluate("window.scrollBy(0, 200)")
+                    await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"Vision error attempt {attempt+1}: {e}")
+
+    logger.info(f"Falling back to CSS selectors for {description}")
+    if await smart_click(page, fallback_selectors, description):
+        result["success"] = True
+        result["method"] = "selector"
+    return result
+
+
+async def verify_comment_visually(page: Page, comment_text: str) -> Dict[str, Any]:
+    """Verify that a comment was posted using vision."""
+    result = {"verified": False, "confidence": 0, "message": ""}
+    vision = get_vision_client() if VISION_AVAILABLE else None
+    if not vision:
+        result["verified"] = True
+        result["message"] = "Vision not available, assuming success"
+        return result
+
+    await asyncio.sleep(2)
+    screenshot_path = await save_debug_screenshot(page, "verify_comment")
+    if not screenshot_path:
+        result["message"] = "Failed to take screenshot"
+        return result
+
+    try:
+        verification = await vision.verify_comment_posted(screenshot_path=screenshot_path, expected_comment=comment_text)
+        result["confidence"] = verification.confidence
+        result["message"] = verification.message
+        if verification.success:
+            logger.info(f"Comment verified: {verification.message}")
+            result["verified"] = True
+        elif verification.status == "pending":
+            await asyncio.sleep(3)
+            screenshot_path = await save_debug_screenshot(page, "verify_retry")
+            if screenshot_path:
+                verification = await vision.verify_comment_posted(screenshot_path, comment_text)
+                result["verified"] = verification.success
+                result["confidence"] = verification.confidence
+    except Exception as e:
+        logger.error(f"Verification error: {e}")
+        result["message"] = str(e)
+    return result
 
 
 async def smart_click(page: Page, selectors: List[str], description: str) -> bool:
@@ -142,14 +217,10 @@ async def click_send_button(page: Page) -> bool:
     
     if await smart_click(page, send_selectors, "Send Button"):
         return True
-        
-    # Fallback: Enter key
-    try:
-        await page.keyboard.press("Enter")
-        logger.info("Pressed Enter fallback")
-        return True
-    except:
-        return False
+
+    # Enter key fallback removed - doesn't work on mobile FB
+    logger.warning("Failed to find Send button")
+    return False
 
 
 async def verify_post_loaded(page: Page) -> bool:
@@ -177,87 +248,105 @@ async def post_comment(
     session: FacebookSession,
     url: str,
     comment: str,
-    proxy: Optional[str] = None
+    proxy: Optional[str] = None,
+    use_vision: bool = True,
+    verify_post: bool = True
 ) -> Dict[str, Any]:
-    """
-    Post a comment using a saved session.
-    """
+    """Post a comment using a saved session with optional AI vision."""
     result = {
         "success": False,
         "url": url,
         "comment": comment,
-        "error": None
+        "error": None,
+        "verified": False,
+        "method": "unknown"
     }
-    
+
+    if use_vision and not VISION_AVAILABLE:
+        logger.warning("Vision requested but not available, using selectors")
+        use_vision = False
+
     async with async_playwright() as p:
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
-        
-        # PRIORITIZE SESSION PROXY
-        # If session has a proxy saved, use it. Otherwise fall back to global arg.
         session_proxy = session.get_proxy()
         active_proxy = session_proxy if session_proxy else proxy
-        
-        context_options = {
-            "user_agent": user_agent,
-            "viewport": viewport,
-            "ignore_https_errors": True
-        }
-        
+
+        context_options = {"user_agent": user_agent, "viewport": viewport, "ignore_https_errors": True}
         if active_proxy:
-            proxy_cfg = _build_playwright_proxy(active_proxy)
-            context_options["proxy"] = proxy_cfg
-            logger.info(f"Using proxy server: {proxy_cfg.get('server')}")
-        
-        # Launch options
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-notifications", "--disable-geolocation"]
-        )
-        
+            context_options["proxy"] = _build_playwright_proxy(active_proxy)
+            logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
+
+        browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
         context = await browser.new_context(**context_options)
-        
+
         if Stealth:
-            stealth = Stealth()
-            await stealth.apply_stealth_async(context)
-        
+            await Stealth().apply_stealth_async(context)
+
         try:
             page = await context.new_page()
-            
-            # Apply cookies
             if not await apply_session_to_context(context, session):
                 raise Exception("Failed to apply cookies")
-            
-            # Navigate
+
             logger.info(f"Navigating to {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
             await save_debug_screenshot(page, "navigated")
             await asyncio.sleep(3)
-            
-            # 1. Verify
+
             if not await verify_post_loaded(page):
-                logger.warning("Could not verify post loaded, but trying anyway...")
-            
-            # 2. Open Comment Box
-            if not await open_comment_box(page):
-                raise Exception("Could not find 'Comment' button")
-            
+                logger.warning("Could not verify post loaded, trying anyway...")
+
+            # 1. Open Comment Box (Vision + Fallback)
+            comment_selectors = ['[data-action-id="32607"]', 'div[role="button"][aria-label*="Comment"]', 'div[aria-label="Comment"]', 'span:text("Comment")']
+            if use_vision:
+                click_result = await vision_click(page, "comment_button", comment_selectors, "Comment button")
+                if not click_result["success"]:
+                    raise Exception("Could not find Comment button")
+                result["method"] = click_result["method"]
+            else:
+                if not await open_comment_box(page):
+                    raise Exception("Could not find Comment button")
+                result["method"] = "selector"
+
             await asyncio.sleep(1)
-            
-            # 3. Type
-            if not await type_comment(page, comment):
-                raise Exception("Could not type in comment box")
-            
+
+            # 2. Click Input (Vision + Fallback)
+            input_selectors = ['div[role="textbox"]', '[contenteditable="true"]', 'textarea', 'div[aria-label="Write a comment"]']
+            if use_vision:
+                await vision_click(page, "comment_input", input_selectors, "Comment input")
+            else:
+                await smart_click(page, input_selectors, "Comment Input")
+
+            await asyncio.sleep(0.5)
+
+            # 3. Type comment
+            await page.keyboard.type(comment, delay=50)
+            logger.info(f"Typed: {comment[:30]}...")
             await save_debug_screenshot(page, "typed_comment")
             await asyncio.sleep(1)
-            
-            # 4. Send
-            if not await click_send_button(page):
-                raise Exception("Could not find 'Send' button")
-            
+
+            # 4. Click Send (Vision + Fallback)
+            send_selectors = ['div[aria-label="Send"]', 'div[aria-label="Post"]', '[data-sigil="touchable submit-comment"]', 'div[role="button"]:has-text("Post")']
+            if use_vision:
+                click_result = await vision_click(page, "send_button", send_selectors, "Send button")
+                if not click_result["success"]:
+                    raise Exception("Could not find Send button")
+            else:
+                if not await click_send_button(page):
+                    raise Exception("Could not find Send button")
+
             await asyncio.sleep(3)
+
+            # 5. Verify comment posted
+            if verify_post and use_vision:
+                verification = await verify_comment_visually(page, comment)
+                result["verified"] = verification["verified"]
+                result["verification_confidence"] = verification.get("confidence", 0)
+            else:
+                result["verified"] = True
+
             result["success"] = True
-            
+
         except Exception as e:
             result["error"] = str(e)
             logger.error(f"Error: {e}")
@@ -265,7 +354,7 @@ async def post_comment(
                 await save_debug_screenshot(page, "error_final")
         finally:
             await browser.close()
-            
+
     return result
 
 # Re-export other functions needed by main.py

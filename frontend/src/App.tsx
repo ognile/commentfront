@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -6,9 +6,10 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2 } from "lucide-react"
+import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye } from "lucide-react"
 
 const API_BASE = import.meta.env.VITE_API_BASE || "https://commentbot-production.up.railway.app";
+const WS_BASE = API_BASE.replace('https://', 'wss://').replace('http://', 'ws://');
 
 interface Session {
   file: string;
@@ -23,6 +24,15 @@ interface Job {
   profile_name: string;
   comment: string;
   status: 'pending' | 'success' | 'failed';
+  verified?: boolean;
+  method?: string;
+}
+
+interface LiveStatus {
+  connected: boolean;
+  currentStep: string;
+  currentJob: number;
+  totalJobs: number;
 }
 
 interface Credential {
@@ -55,6 +65,101 @@ function App() {
   const [newSecret, setNewSecret] = useState('');
   const [newProfileName, setNewProfileName] = useState('');
   const [otpData, setOtpData] = useState<Record<string, OTPData>>({});
+
+  // WebSocket and live status
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>({
+    connected: false,
+    currentStep: 'idle',
+    currentJob: 0,
+    totalJobs: 0
+  });
+  const [screenshotKey, setScreenshotKey] = useState(0);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // WebSocket connection
+  useEffect(() => {
+    const connectWebSocket = () => {
+      try {
+        const ws = new WebSocket(`${WS_BASE}/ws/live`);
+
+        ws.onopen = () => {
+          console.log('WebSocket connected');
+          setLiveStatus(prev => ({ ...prev, connected: true }));
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const update = JSON.parse(event.data);
+            console.log('WS update:', update);
+
+            switch (update.type) {
+              case 'campaign_start':
+                setLiveStatus(prev => ({
+                  ...prev,
+                  currentStep: 'Starting campaign',
+                  totalJobs: update.data.total_jobs,
+                  currentJob: 0
+                }));
+                break;
+              case 'job_start':
+                setLiveStatus(prev => ({
+                  ...prev,
+                  currentStep: `Processing ${update.data.profile_name}`,
+                  currentJob: update.data.job_index + 1
+                }));
+                setScreenshotKey(k => k + 1);
+                break;
+              case 'job_complete':
+                setJobs(prev => prev.map((job, i) =>
+                  i === update.data.job_index
+                    ? {
+                        ...job,
+                        status: update.data.success ? 'success' : 'failed',
+                        verified: update.data.verified,
+                        method: update.data.method
+                      }
+                    : job
+                ));
+                setScreenshotKey(k => k + 1);
+                break;
+              case 'campaign_complete':
+                setLiveStatus(prev => ({
+                  ...prev,
+                  currentStep: `Done: ${update.data.success}/${update.data.total} successful`
+                }));
+                break;
+            }
+          } catch (e) {
+            console.error('Error parsing WS message:', e);
+          }
+        };
+
+        ws.onclose = () => {
+          console.log('WebSocket disconnected');
+          setLiveStatus(prev => ({ ...prev, connected: false }));
+          // Reconnect after 3 seconds
+          setTimeout(connectWebSocket, 3000);
+        };
+
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+        };
+
+        wsRef.current = ws;
+      } catch (error) {
+        console.error('Failed to connect WebSocket:', error);
+        setTimeout(connectWebSocket, 3000);
+      }
+    };
+
+    connectWebSocket();
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
 
   const fetchSessions = async () => {
     try {
@@ -323,17 +428,33 @@ function App() {
           <TabsContent value="live" className="mt-6">
             <Card className="shadow-md border-slate-200">
               <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <span className="relative flex h-3 w-3">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
-                  </span>
-                  Live Automation View
+                <CardTitle className="text-lg flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex h-3 w-3">
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${liveStatus.connected ? 'bg-green-400' : 'bg-red-400'} opacity-75`}></span>
+                      <span className={`relative inline-flex rounded-full h-3 w-3 ${liveStatus.connected ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                    </span>
+                    Live Automation View
+                  </div>
+                  <div className="flex items-center gap-2 text-sm font-normal">
+                    {liveStatus.connected ? (
+                      <Badge variant="default" className="bg-green-500">
+                        <Wifi className="w-3 h-3 mr-1" />
+                        Connected
+                      </Badge>
+                    ) : (
+                      <Badge variant="destructive">
+                        <WifiOff className="w-3 h-3 mr-1" />
+                        Disconnected
+                      </Badge>
+                    )}
+                  </div>
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-0 bg-black">
                 <div className="relative aspect-video flex items-center justify-center overflow-hidden">
-                  <img 
+                  <img
+                    key={screenshotKey}
                     src={`${API_BASE}/debug/latest.png?t=${Date.now()}`}
                     alt="Live Bot View"
                     className="max-h-full max-w-full object-contain"
@@ -347,8 +468,20 @@ function App() {
                       }, 1000);
                     }}
                   />
+                  {/* Status overlay */}
+                  <div className="absolute top-4 left-4 bg-black/70 text-white px-3 py-2 rounded-lg text-sm font-mono backdrop-blur-sm">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Eye className="w-4 h-4" />
+                      <span className="font-semibold">{liveStatus.currentStep}</span>
+                    </div>
+                    {liveStatus.totalJobs > 0 && (
+                      <div className="text-xs text-slate-300">
+                        Job {liveStatus.currentJob} of {liveStatus.totalJobs}
+                      </div>
+                    )}
+                  </div>
                   <div className="absolute bottom-4 left-4 bg-black/50 text-white px-2 py-1 rounded text-xs font-mono backdrop-blur-sm">
-                    User-Agent: iOS / Android Mobile
+                    Viewport: iPhone 12 Pro (393x873) | Vision: Gemini 3 Flash
                   </div>
                 </div>
               </CardContent>

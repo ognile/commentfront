@@ -2,14 +2,16 @@
 CommentBot API - Streamlined Facebook Comment Automation
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Set
 import logging
 import os
 import asyncio
+import json
+from datetime import datetime
 import nest_asyncio
 
 # Patch asyncio to allow nested event loops (crucial for Playwright in FastAPI)
@@ -41,6 +43,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# WebSocket connections
+active_connections: Set[WebSocket] = set()
+
+async def broadcast_update(update_type: str, data: dict):
+    """Broadcast to all WebSocket clients."""
+    if not active_connections:
+        return
+    message = json.dumps({"type": update_type, "data": data, "timestamp": datetime.now().isoformat()})
+    disconnected = set()
+    for ws in active_connections:
+        try:
+            await ws.send_text(message)
+        except:
+            disconnected.add(ws)
+    for ws in disconnected:
+        active_connections.discard(ws)
 
 # Get proxy from environment
 PROXY_URL = os.getenv("PROXY_URL", "")
@@ -105,6 +124,22 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.websocket("/ws/live")
+async def websocket_live(websocket: WebSocket):
+    """WebSocket endpoint for live updates."""
+    await websocket.accept()
+    active_connections.add(websocket)
+    logger.info(f"WS connected. Total: {len(active_connections)}")
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        active_connections.discard(websocket)
+        logger.info(f"WS disconnected. Total: {len(active_connections)}")
+
+
 @app.get("/sessions")
 async def get_sessions() -> List[SessionInfo]:
     """Get all saved sessions."""
@@ -162,45 +197,57 @@ async def post_comment_endpoint(request: CommentRequest) -> Dict:
 async def run_campaign(request: CampaignRequest) -> Dict:
     """Run a campaign with multiple comments."""
     results = []
-    
+    total_jobs = min(len(request.profile_names), len(request.comments))
+
+    await broadcast_update("campaign_start", {"url": request.url, "total_jobs": total_jobs})
+
     for i, profile_name in enumerate(request.profile_names):
         if i >= len(request.comments):
             break
-        
+
         comment = request.comments[i]
         session = FacebookSession(profile_name)
-        
+
+        await broadcast_update("job_start", {"job_index": i, "profile_name": profile_name, "comment": comment[:50]})
+
         if not session.load():
-            results.append({
-                "profile_name": profile_name,
-                "success": False,
-                "error": "Session not found"
-            })
+            await broadcast_update("job_error", {"job_index": i, "error": "Session not found"})
+            results.append({"profile_name": profile_name, "success": False, "error": "Session not found"})
             continue
-        
+
         result = await post_comment(
             session=session,
             url=request.url,
             comment=comment,
-            proxy=PROXY_URL if PROXY_URL else None
+            proxy=PROXY_URL if PROXY_URL else None,
+            use_vision=True,
+            verify_post=True
         )
-        
+
+        await broadcast_update("job_complete", {
+            "job_index": i,
+            "profile_name": profile_name,
+            "success": result["success"],
+            "verified": result.get("verified", False),
+            "method": result.get("method", "unknown"),
+            "error": result.get("error")
+        })
+
         results.append({
             "profile_name": profile_name,
             "comment": comment,
             "success": result["success"],
+            "verified": result.get("verified", False),
+            "method": result.get("method", "unknown"),
             "error": result.get("error")
         })
-        
-        # Wait between comments
+
         await asyncio.sleep(2)
-    
-    return {
-        "url": request.url,
-        "total": len(results),
-        "success": sum(1 for r in results if r["success"]),
-        "results": results
-    }
+
+    success_count = sum(1 for r in results if r["success"])
+    await broadcast_update("campaign_complete", {"total": len(results), "success": success_count})
+
+    return {"url": request.url, "total": len(results), "success": success_count, "results": results}
 
 
 @app.get("/config")
