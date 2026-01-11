@@ -131,11 +131,14 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
     Try to click an element using multiple selectors.
     Scrolls into view and waits for visibility.
     """
+    logger.info(f"smart_click: Looking for '{description}' with {len(selectors)} selectors")
     for selector in selectors:
         try:
             # Check count first to avoid waiting unnecessarily
             locator = page.locator(selector).first
-            if await locator.count() > 0:
+            count = await locator.count()
+            logger.info(f"  Selector '{selector}' → found {count} element(s)")
+            if count > 0:
                 # Scroll into view
                 await locator.scroll_into_view_if_needed()
                 await asyncio.sleep(0.5)
@@ -210,9 +213,16 @@ async def click_send_button(page: Page) -> bool:
     """Click the send/post button."""
     send_selectors = [
         'div[aria-label="Send"]',
+        'button[aria-label="Send"]',
+        '[aria-label="Send"]',
         'div[aria-label="Post"]',
+        'button[aria-label="Post"]',
+        '[aria-label="Post"]',
         '[data-sigil="touchable submit-comment"]',
-        'div[role="button"]:has-text("Post")'
+        '[data-sigil*="submit"]',
+        'div[role="button"]:has-text("Post")',
+        '[role="button"][aria-label*="send" i]',
+        '[role="button"][aria-label*="post" i]',
     ]
     
     if await smart_click(page, send_selectors, "Send Button"):
@@ -326,7 +336,19 @@ async def post_comment(
             await asyncio.sleep(1)
 
             # 4. Click Send (Vision + Fallback)
-            send_selectors = ['div[aria-label="Send"]', 'div[aria-label="Post"]', '[data-sigil="touchable submit-comment"]', 'div[role="button"]:has-text("Post")']
+            send_selectors = [
+                'div[aria-label="Send"]',
+                'button[aria-label="Send"]',
+                '[aria-label="Send"]',
+                'div[aria-label="Post"]',
+                'button[aria-label="Post"]',
+                '[aria-label="Post"]',
+                '[data-sigil="touchable submit-comment"]',
+                '[data-sigil*="submit"]',
+                'div[role="button"]:has-text("Post")',
+                '[role="button"][aria-label*="send" i]',
+                '[role="button"][aria-label*="post" i]',
+            ]
             if use_vision:
                 click_result = await vision_click(page, "send_button", send_selectors, "Send button")
                 if not click_result["success"]:
