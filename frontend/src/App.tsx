@@ -103,6 +103,10 @@ function App() {
   const [creatingSession, setCreatingSession] = useState<string | null>(null);
   const [sessionCreateStatus, setSessionCreateStatus] = useState<Record<string, SessionCreateStatus>>({});
 
+  // Session refresh state
+  const [refreshingSession, setRefreshingSession] = useState<string | null>(null);
+  const [refreshingAll, setRefreshingAll] = useState(false);
+
   // WebSocket and live status
   const [liveStatus, setLiveStatus] = useState<LiveStatus>({
     connected: false,
@@ -531,6 +535,61 @@ function App() {
     }
   };
 
+  // Session profile name refresh functions
+  const refreshSessionName = async (profileName: string) => {
+    setRefreshingSession(profileName);
+    try {
+      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/refresh-name`, {
+        method: 'POST'
+      });
+      const result = await res.json();
+
+      if (result.success) {
+        if (result.new_profile_name !== result.old_profile_name) {
+          alert(`Profile name updated: ${result.old_profile_name} → ${result.new_profile_name}`);
+        } else {
+          alert(`Profile name confirmed: ${result.new_profile_name}`);
+        }
+        fetchSessions();
+        fetchCredentials();
+      } else {
+        alert(`Failed to refresh: ${result.error}`);
+      }
+    } catch (error) {
+      alert(`Error: ${error}`);
+    } finally {
+      setRefreshingSession(null);
+    }
+  };
+
+  const refreshAllSessionNames = async () => {
+    setRefreshingAll(true);
+    try {
+      const res = await fetch(`${API_BASE}/sessions/refresh-all-names`, {
+        method: 'POST'
+      });
+      const result = await res.json();
+
+      let message = `Refreshed ${result.success}/${result.total} sessions.\n\n`;
+      if (result.updates && result.updates.length > 0) {
+        const changes = result.updates.filter((u: { old_name: string; new_name: string }) => u.old_name !== u.new_name && u.new_name);
+        if (changes.length > 0) {
+          message += "Name changes:\n";
+          changes.forEach((u: { old_name: string; new_name: string }) => {
+            message += `• ${u.old_name} → ${u.new_name}\n`;
+          });
+        }
+      }
+      alert(message);
+      fetchSessions();
+      fetchCredentials();
+    } catch (error) {
+      alert(`Error: ${error}`);
+    } finally {
+      setRefreshingAll(false);
+    }
+  };
+
   useEffect(() => {
     const interval = setInterval(() => {
       credentials.forEach(cred => {
@@ -718,10 +777,25 @@ function App() {
             <Card className="shadow-md border-slate-200">
               <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4 flex flex-row justify-between items-center">
                 <CardTitle className="text-lg">Sessions ({sessions.length})</CardTitle>
-                <Button size="sm" variant="outline" onClick={fetchSessions}>
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  Refresh
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={refreshAllSessionNames}
+                    disabled={refreshingAll || sessions.length === 0}
+                  >
+                    {refreshingAll ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                    )}
+                    Refresh All Names
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={fetchSessions}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Reload
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 {loading ? (
@@ -758,6 +832,18 @@ function App() {
                           <Badge variant={session.valid ? 'default' : 'destructive'}>
                             {session.valid ? 'Valid' : 'Invalid'}
                           </Badge>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => refreshSessionName(session.profile_name)}
+                            disabled={refreshingSession === session.profile_name || refreshingAll}
+                          >
+                            {refreshingSession === session.profile_name ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-3 h-3" />
+                            )}
+                          </Button>
                           <Button size="sm" variant="outline" onClick={() => testSession(session.profile_name)}>
                             Test
                           </Button>

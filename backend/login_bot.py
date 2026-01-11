@@ -725,8 +725,8 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
     profile_name = None
 
     try:
-        await page.goto("https://m.facebook.com/me/", wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        await page.goto("https://m.facebook.com/me/", wait_until="networkidle", timeout=30000)
+        await asyncio.sleep(3)  # Extra wait for dynamic content
 
         url = page.url.lower()
         logger.info(f"After /me/ navigation, URL is: {url}")
@@ -758,7 +758,7 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
                             await locator.click()
                             go_to_profile_clicked = True
                             logger.info("Clicked 'Go to profile' button")
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(3)
                             break
                     except Exception as e:
                         logger.warning(f"Failed to click 'Go to profile': {e}")
@@ -777,12 +777,15 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
                             await locator.click()
                             go_to_profile_clicked = True
                             logger.info(f"Clicked profile link via: {selector}")
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(3)
                             break
                     except:
                         continue
 
             if go_to_profile_clicked:
+                # Wait for profile page to load
+                await page.wait_for_load_state("networkidle", timeout=15000)
+                await asyncio.sleep(2)
                 # Re-fetch elements after navigation
                 url = page.url.lower()
                 logger.info(f"After clicking Go to profile, URL is: {url}")
@@ -809,7 +812,66 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
                 # Once we have a good name from title, skip element-based extraction
                 # to avoid picking up "Edit profile" button text
 
-        # Also try to find name from elements with aria-label "Go to profile" or similar
+        # Strategy 2: Look for h1/h2 headings on the profile page
+        if not profile_name:
+            try:
+                # Try to find the main profile name heading
+                heading_selectors = [
+                    'h1',
+                    'h2',
+                    '[role="heading"][aria-level="1"]',
+                    '[role="heading"][aria-level="2"]',
+                ]
+                for selector in heading_selectors:
+                    try:
+                        locator = page.locator(selector).first
+                        if await locator.count() > 0 and await locator.is_visible():
+                            heading_text = await locator.text_content()
+                            if heading_text:
+                                heading_text = heading_text.strip()
+                                # Skip generic headings
+                                excluded = ['posts', 'about', 'friends', 'photos', 'videos', 'more',
+                                           'edit profile', 'facebook', 'home', 'news feed']
+                                if heading_text.lower() not in excluded and len(heading_text) > 1 and len(heading_text) < 50:
+                                    profile_name = heading_text
+                                    logger.info(f"Extracted profile name from heading ({selector}): {profile_name}")
+                                    break
+                    except:
+                        continue
+            except Exception as e:
+                logger.warning(f"Error extracting from headings: {e}")
+
+        # Strategy 3: Look for profile picture's aria-label which often contains the name
+        if not profile_name:
+            try:
+                # Profile picture often has aria-label like "John Smith's profile picture"
+                profile_pic_selectors = [
+                    'img[aria-label*="profile picture"]',
+                    'img[alt*="profile picture"]',
+                    'div[aria-label*="profile picture"]',
+                ]
+                for selector in profile_pic_selectors:
+                    try:
+                        locator = page.locator(selector).first
+                        if await locator.count() > 0:
+                            aria_label = await locator.get_attribute('aria-label')
+                            if not aria_label:
+                                aria_label = await locator.get_attribute('alt')
+                            if aria_label and 'profile picture' in aria_label.lower():
+                                # Extract name from "John Smith's profile picture"
+                                name = aria_label.replace("'s profile picture", "").replace("'s profile photo", "")
+                                name = name.replace("Profile picture of ", "").replace("profile picture", "")
+                                name = name.strip()
+                                if name and len(name) > 1 and len(name) < 50:
+                                    profile_name = name
+                                    logger.info(f"Extracted profile name from profile picture: {profile_name}")
+                                    break
+                    except:
+                        continue
+            except Exception as e:
+                logger.warning(f"Error extracting from profile picture: {e}")
+
+        # Strategy 4: Use elements from dump
         if not profile_name:
             for el in elements:
                 text = el.get('text', '').strip()
@@ -820,20 +882,34 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
                 # On mobile FB, there's often a prominent text showing the profile name
                 if role == 'heading' and text and len(text) > 1 and len(text) < 50:
                     # Avoid generic headings
-                    if text.lower() not in ['posts', 'about', 'friends', 'photos', 'videos', 'more']:
+                    excluded = ['posts', 'about', 'friends', 'photos', 'videos', 'more',
+                               'edit profile', 'facebook', 'home', 'news feed']
+                    if text.lower() not in excluded:
                         profile_name = text
-                        logger.info(f"Extracted profile name from heading: {profile_name}")
+                        logger.info(f"Extracted profile name from heading element: {profile_name}")
                         break
 
-        # Try finding profile name from "Tap to open profile page" or similar elements
+        # Strategy 5: Look for name in profile-related aria-labels
         if not profile_name:
             for el in elements:
-                aria = el.get('ariaLabel', '').lower()
+                aria = el.get('ariaLabel', '')
                 text = el.get('text', '').strip()
-                if 'profile' in aria and text and len(text) > 1 and len(text) < 50:
+
+                # Check if aria-label contains profile picture reference
+                if 'profile picture' in aria.lower() or 'profile photo' in aria.lower():
+                    name = aria.replace("'s profile picture", "").replace("'s profile photo", "")
+                    name = name.replace("Profile picture of ", "").strip()
+                    if name and len(name) > 1 and len(name) < 50 and name.lower() != 'profile picture':
+                        profile_name = name
+                        logger.info(f"Extracted profile name from aria-label: {profile_name}")
+                        break
+
+                # Try to get name from profile-related text elements
+                if 'profile' in aria.lower() and text and len(text) > 1 and len(text) < 50:
                     # Clean up any icons or extra text
                     clean_name = text.split('󳂊')[0].strip()  # Remove FB icon
-                    if clean_name and clean_name.lower() not in ['profile', 'go to profile']:
+                    excluded = ['profile', 'go to profile', 'edit profile', 'view profile']
+                    if clean_name and clean_name.lower() not in excluded:
                         profile_name = clean_name
                         logger.info(f"Extracted profile name from profile element: {profile_name}")
                         break
