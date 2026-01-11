@@ -202,6 +202,41 @@ async def smart_focus(page: Page, selectors: List[str], description: str) -> boo
     return False
 
 
+async def vision_element_click(page: Page, x: int, y: int) -> bool:
+    """
+    Click an element at vision coordinates using dispatch_event.
+    This combines vision's coordinate accuracy with dispatch_event that works on Facebook.
+
+    page.mouse.click() doesn't work on Facebook - we need to:
+    1. Find the DOM element at those coordinates using elementFromPoint
+    2. Dispatch a click event on that element
+    """
+    try:
+        result = await page.evaluate('''(coords) => {
+            const element = document.elementFromPoint(coords.x, coords.y);
+            if (element) {
+                // Use dispatchEvent - the only click method that works on FB mobile
+                element.dispatchEvent(new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+                return {success: true, tagName: element.tagName, className: element.className.substring(0, 50)};
+            }
+            return {success: false, reason: "No element at coordinates"};
+        }''', {"x": x, "y": y})
+
+        if result.get("success"):
+            logger.info(f"Clicked element <{result.get('tagName')}> at ({x}, {y})")
+            return True
+        else:
+            logger.warning(f"No element at ({x}, {y}): {result.get('reason')}")
+            return False
+    except Exception as e:
+        logger.error(f"vision_element_click error: {e}")
+        return False
+
+
 async def open_comment_box(page: Page) -> bool:
     """Open the comment input box."""
     selectors = [
@@ -509,7 +544,8 @@ async def post_comment_verified(
                 raise Exception(f"Step 2 FAILED - Comment button confidence too low: {location.confidence:.0%}")
 
             logger.info(f"Found comment button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
-            await page.mouse.click(location.x, location.y)
+            if not await vision_element_click(page, location.x, location.y):
+                raise Exception("Step 2 FAILED - Could not click element at coordinates")
             await asyncio.sleep(2)
 
             screenshot = await save_debug_screenshot(page, "step2_post_click")
@@ -535,19 +571,19 @@ async def post_comment_verified(
                 if await input_locator.count() > 0:
                     await input_locator.focus()
                 else:
-                    # Fallback to click at coordinates
-                    await page.mouse.click(location.x, location.y)
+                    # Fallback to click at coordinates using dispatch_event
+                    await vision_element_click(page, location.x, location.y)
             except:
-                await page.mouse.click(location.x, location.y)
+                await vision_element_click(page, location.x, location.y)
 
             await asyncio.sleep(0.8)
 
             screenshot = await save_debug_screenshot(page, "step3_post_focus")
             verification = await vision.verify_state(screenshot, "input_active")
             if not verification.success:
-                # Retry with direct click
-                logger.warning("Input not active, retrying with click...")
-                await page.mouse.click(location.x, location.y)
+                # Retry with direct click using dispatch_event
+                logger.warning("Input not active, retrying with vision_element_click...")
+                await vision_element_click(page, location.x, location.y)
                 await asyncio.sleep(0.8)
                 screenshot = await save_debug_screenshot(page, "step3_retry")
                 verification = await vision.verify_state(screenshot, "input_active")
@@ -581,7 +617,8 @@ async def post_comment_verified(
                 raise Exception(f"Step 5 FAILED - Send button confidence too low: {location.confidence:.0%}")
 
             logger.info(f"Found send button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
-            await page.mouse.click(location.x, location.y)
+            if not await vision_element_click(page, location.x, location.y):
+                raise Exception("Step 5 FAILED - Could not click send button element")
             await asyncio.sleep(3)
 
             screenshot = await save_debug_screenshot(page, "step5_post_send")
