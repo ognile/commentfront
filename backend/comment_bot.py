@@ -84,9 +84,9 @@ async def vision_click(page: Page, element_type: str, fallback_selectors: List[s
                     result["confidence"] = location.confidence
                     return result
                 elif location and location.found and location.confidence > 0.5:
-                    logger.info(f"Vision low confidence ({location.confidence:.0%}), scrolling...")
-                    await page.evaluate("window.scrollBy(0, 200)")
-                    await asyncio.sleep(0.5)
+                    # Low confidence - just retry without scrolling
+                    logger.info(f"Vision low confidence ({location.confidence:.0%}), retrying...")
+                    await asyncio.sleep(0.3)
             except Exception as e:
                 logger.warning(f"Vision error attempt {attempt+1}: {e}")
 
@@ -145,10 +145,9 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
             count = await locator.count()
             logger.info(f"  Selector '{selector}' → found {count} element(s)")
             if count > 0:
-                # Scroll into view
-                await locator.scroll_into_view_if_needed()
-                await asyncio.sleep(0.5)
-                
+                # No scroll - element should already be visible on permalink page
+                # scroll_into_view_if_needed() was causing navigation to wrong posts
+
                 # Snapshot before action for live view
                 await save_debug_screenshot(page, f"pre_click_{description.replace(' ', '_')}")
                 
@@ -165,7 +164,7 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
     try:
         text_locator = page.get_by_text(description, exact=False).first
         if await text_locator.count() > 0 and await text_locator.is_visible():
-            await text_locator.scroll_into_view_if_needed()
+            # No scroll - element should already be visible
             await text_locator.dispatch_event('click')
             logger.info(f"Clicked '{description}' using text match dispatch_event")
             return True
@@ -190,8 +189,7 @@ async def smart_focus(page: Page, selectors: List[str], description: str) -> boo
             count = await locator.count()
             logger.info(f"  Selector '{selector}' → found {count} element(s)")
             if count > 0:
-                await locator.scroll_into_view_if_needed()
-                await asyncio.sleep(0.3)
+                # No scroll - element should already be visible
                 await save_debug_screenshot(page, f"pre_focus_{description.replace(' ', '_')}")
 
                 if await locator.is_visible():
@@ -210,8 +208,8 @@ async def smart_focus(page: Page, selectors: List[str], description: str) -> boo
 
 async def find_comment_input(page: Page) -> bool:
     """
-    Find and click the comment input using Playwright's semantic locators.
-    These are more reliable than CSS selectors for finding elements by visible text.
+    Find and activate the comment input using Playwright's semantic locators.
+    After clicking the placeholder, we need to wait and then focus the actual input.
     """
     logger.info("find_comment_input: Trying Playwright semantic locators")
 
@@ -229,11 +227,32 @@ async def find_comment_input(page: Page) -> bool:
             count = await locator.count()
             logger.info(f"  {name} → found {count} element(s)")
             if count > 0:
-                await locator.first.scroll_into_view_if_needed()
-                await asyncio.sleep(0.2)
+                # No scroll - element should already be visible
                 if await locator.first.is_visible():
+                    # Click to activate the input
                     await locator.first.click()
                     logger.info(f"Clicked comment input using: {name}")
+
+                    # Wait for UI to respond after click
+                    await asyncio.sleep(0.5)
+
+                    # After clicking placeholder, try to focus the actual input element
+                    # On mobile FB, clicking placeholder reveals/activates a contenteditable div
+                    focus_selectors = [
+                        'div[contenteditable="true"]',
+                        'div[role="textbox"]',
+                        '[contenteditable="true"]',
+                    ]
+                    for focus_sel in focus_selectors:
+                        try:
+                            focus_loc = page.locator(focus_sel).first
+                            if await focus_loc.count() > 0 and await focus_loc.is_visible():
+                                await focus_loc.focus()
+                                logger.info(f"Focused element using: {focus_sel}")
+                                break
+                        except Exception:
+                            pass
+
                     await save_debug_screenshot(page, "clicked_comment_input")
                     return True
         except Exception as e:
@@ -343,11 +362,8 @@ async def click_with_healing(
                     selectors = [new_selector] + selectors
 
             elif action == "SCROLL":
-                direction = decision.get("direction", "down")
-                pixels = 300 if direction == "down" else -300
-                logger.info(f"Scrolling {direction}")
-                await page.evaluate(f"window.scrollBy(0, {pixels})")
-                await asyncio.sleep(0.5)
+                # Ignore scroll suggestions - we don't scroll on permalink pages
+                logger.info(f"Ignoring scroll suggestion (not needed for permalinks)")
 
             # RETRY just continues the loop
         else:
