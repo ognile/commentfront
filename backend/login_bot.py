@@ -793,12 +793,21 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
         logger.info(f"Page title: {page_title}")
 
         # Facebook mobile titles often include the profile name
-        # Format is usually "Profile Name | Facebook" or just "Profile Name"
-        if page_title and 'facebook' in page_title.lower():
-            name_part = page_title.split('|')[0].strip()
-            if name_part and name_part.lower() not in ['facebook', 'log in', 'login']:
+        # Format is usually "Profile Name | Facebook" or just "Profile Name" (on profile page)
+        if page_title:
+            # If it has " | " separator, take the first part
+            if '|' in page_title:
+                name_part = page_title.split('|')[0].strip()
+            else:
+                name_part = page_title.strip()
+
+            # Validate it's actually a profile name, not a generic page title
+            excluded_titles = ['facebook', 'log in', 'login', 'home', 'news feed', 'feed']
+            if name_part and name_part.lower() not in excluded_titles and len(name_part) > 1:
                 profile_name = name_part
                 logger.info(f"Extracted profile name from title: {profile_name}")
+                # Once we have a good name from title, skip element-based extraction
+                # to avoid picking up "Edit profile" button text
 
         # Also try to find name from elements with aria-label "Go to profile" or similar
         if not profile_name:
