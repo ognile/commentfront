@@ -84,3 +84,76 @@ In production, screenshots are saved to Railway's ephemeral container filesystem
 
 This project has **Railway MCP** access configured. You can use Railway MCP tools for maximum access and testing.
 Use these tools when debugging production issues.
+
+## Critical Decision-Making Principles
+
+### 1. NEVER GUESS - ALWAYS VERIFY WITH DATA
+
+**Before making ANY code change, you MUST have concrete evidence:**
+- Don't guess what selectors exist → Use `dump_interactive_elements()` to see what's actually on the page
+- Don't assume screenshots show what you think → Actually READ the screenshots
+- Don't assume code is deployed → Check Railway logs to see what's ACTUALLY running
+- Don't assume an element is/isn't visible → Check the audit trail output
+
+**The Pattern:**
+1. Gather data first (logs, screenshots, selector audits)
+2. Analyze the data
+3. Form hypothesis based on evidence
+4. Only THEN make changes
+
+### 2. PROACTIVE AUDIT TRAIL
+
+When debugging automation failures, you need visibility into:
+- What elements were available on the page (use `dump_interactive_elements()`)
+- Which selectors matched / didn't match
+- What was clicked and when
+- What Gemini decided and why
+
+**Key function:** `dump_interactive_elements(page, context)` in `comment_bot.py` dumps all interactive elements with their aria-labels, roles, text content, and positions. Call this:
+- After page load confirmed
+- After major state changes (comments opened, etc.)
+- Before attempting clicks
+
+### 3. CSS SELECTORS FOR CLICKING, GEMINI FOR VERIFICATION
+
+- **Clicking:** Use deterministic CSS selectors. Gemini coordinates can hallucinate.
+- **Verification:** Use Gemini to verify state (post visible, comments opened, text typed)
+- **Self-healing:** If CSS selectors fail, ask Gemini for guidance on WHAT to try, not WHERE to click
+
+### 4. NO SCROLLING ON PERMALINK PAGES
+
+Permalink URLs show a single post. Everything needed is in viewport.
+`scroll_into_view_if_needed()` causes navigation to wrong elements (e.g., Reels section below).
+
+### 5. DEBUGGING PRODUCTION FAILURES
+
+When a task fails in production:
+1. **Check Railway logs FIRST** - See what actually happened, not what you assume
+2. **Verify deployment** - Is Railway running the latest code? Check commit hash
+3. **Read the audit trail** - What elements were found? What selectors matched?
+4. **Look at screenshots** - What does the page actually show?
+
+**Railway MCP commands:**
+- `mcp__railway__get-logs` - Get deployment logs
+- `mcp__railway__list-deployments` - Check deployment status and commit hash
+
+### 6. SELECTOR DISCOVERY PROCESS
+
+When a selector doesn't work:
+1. Run `dump_interactive_elements()` to see what's actually on the page
+2. Look at the aria-label, role, and text of the target element
+3. Create selector based on ACTUAL attributes, not guesses
+4. Add to `fb_selectors.py` with comment explaining where it came from
+
+**Example:** Send button had `aria-label="Post a comment"` not "Post" or "Send"
+
+### 7. DEPLOYMENT WORKFLOW
+
+Local changes mean NOTHING until deployed:
+1. Make changes locally
+2. Test locally with full logging
+3. `git add` + `git commit` + `git push`
+4. Verify Railway deployment succeeds (check `mcp__railway__list-deployments`)
+5. THEN test from frontend
+
+Never assume Railway has latest code - always verify.
