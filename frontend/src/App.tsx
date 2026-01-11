@@ -15,6 +15,7 @@ interface Session {
   user_id: string | null;
   extracted_at: string;
   valid: boolean;
+  proxy?: string; // Added proxy field
 }
 
 interface Job {
@@ -209,6 +210,43 @@ function App() {
           </Card>
         )}
 
+        {/* Live View */}
+        {isProcessing && (
+          <Card className="shadow-md border-slate-200">
+            <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                </span>
+                Live Automation View
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 bg-black">
+              <div className="relative aspect-video flex items-center justify-center overflow-hidden">
+                <img 
+                  src={`${API_BASE}/debug/latest.png?t=${Date.now()}`}
+                  alt="Live Bot View"
+                  className="max-h-full max-w-full object-contain"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
+                  onLoad={(e) => {
+                     // Simple poll mechanism: reload image every 1s
+                     setTimeout(() => {
+                        const img = e.target as HTMLImageElement;
+                        if (img) img.src = `${API_BASE}/debug/latest.png?t=${Date.now()}`;
+                     }, 1000);
+                  }}
+                />
+                <div className="absolute bottom-4 left-4 bg-black/50 text-white px-2 py-1 rounded text-xs font-mono backdrop-blur-sm">
+                  User-Agent: iOS / Android Mobile
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Sessions */}
         <Card className="shadow-md border-slate-200">
           <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4 flex flex-row justify-between items-center">
@@ -237,6 +275,17 @@ function App() {
                       <div className="text-sm text-slate-500">
                         User: {session.user_id || 'Unknown'} • {session.extracted_at.split('T')[0]}
                       </div>
+                      {session.proxy ? (
+                         <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                           <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                           Proxy: {session.proxy}
+                         </div>
+                      ) : (
+                         <div className="text-xs text-red-400 mt-1 flex items-center gap-1">
+                           <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                           No Proxy
+                         </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge variant={session.valid ? 'default' : 'destructive'}>

@@ -4,11 +4,16 @@ CommentBot API - Streamlined Facebook Comment Automation
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 import logging
 import os
 import asyncio
+import nest_asyncio
+
+# Patch asyncio to allow nested event loops (crucial for Playwright in FastAPI)
+nest_asyncio.apply()
 
 from comment_bot import post_comment, test_session, MOBILE_VIEWPORT, DEFAULT_USER_AGENT
 from fb_session import FacebookSession, list_saved_sessions
@@ -21,6 +26,11 @@ logging.basicConfig(
 logger = logging.getLogger("API")
 
 app = FastAPI()
+
+# Mount debug directory for screenshots
+debug_path = os.path.join(os.path.dirname(__file__), "debug")
+os.makedirs(debug_path, exist_ok=True)
+app.mount("/debug", StaticFiles(directory=debug_path), name="debug")
 
 # CORS
 app.add_middleware(
@@ -54,6 +64,7 @@ class SessionInfo(BaseModel):
     user_id: Optional[str]
     extracted_at: str
     valid: bool
+    proxy: Optional[str] = None
 
 
 # Endpoints
@@ -77,7 +88,8 @@ async def get_sessions() -> List[SessionInfo]:
             profile_name=s["profile_name"],
             user_id=s.get("user_id"),
             extracted_at=s["extracted_at"],
-            valid=s["has_valid_cookies"]
+            valid=s["has_valid_cookies"],
+            proxy=s.get("proxy") # Return proxy info
         )
         for s in sessions
     ]
@@ -112,7 +124,9 @@ async def post_comment_endpoint(request: CommentRequest) -> Dict:
     )
     
     if not result["success"]:
-        raise HTTPException(status_code=500, detail=result["error"])
+        # Return error but don't crash - let frontend see the error details
+        return result
+        # raise HTTPException(status_code=500, detail=result["error"])
     
     return result
 
