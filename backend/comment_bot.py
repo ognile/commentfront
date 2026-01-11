@@ -788,8 +788,34 @@ async def post_comment_verified(
             # ========== STEP 3: Focus comment input using CSS selectors ==========
             logger.info("Step 3: Focusing comment input (CSS selectors)")
 
+            # First, scroll down to reveal comment input (often at bottom of comments section)
+            logger.info("Scrolling down to reveal comment input...")
+            await page.evaluate("window.scrollBy(0, 300)")
+            await asyncio.sleep(1.0)
+
+            # Try to find and click on "Write a comment" text element first
+            write_comment_selectors = [
+                'text="Write a comment..."',
+                'text="Write a comment"',
+                ':text("Write a comment")',
+                '[data-placeholder="Write a comment..."]',
+            ]
+
+            # First attempt: text-based selectors
+            text_clicked = await smart_click(page, write_comment_selectors, "Write a comment text")
+            if text_clicked:
+                logger.info("Clicked 'Write a comment' placeholder text")
+                await asyncio.sleep(0.5)
+
             # Use smart_focus with CSS selectors
             focus_success = await smart_focus(page, fb_selectors.COMMENT["comment_input"], "Comment input")
+
+            if not focus_success:
+                # Try scrolling more and retrying
+                logger.warning("smart_focus failed, scrolling more...")
+                await page.evaluate("window.scrollBy(0, 200)")
+                await asyncio.sleep(0.5)
+                focus_success = await smart_focus(page, fb_selectors.COMMENT["comment_input"], "Comment input")
 
             if not focus_success:
                 # Fallback: try clicking with healing
