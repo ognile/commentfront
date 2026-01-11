@@ -372,6 +372,11 @@ class GeminiVisionClient:
         """Parse Gemini response for element location."""
         response_upper = response.upper()
 
+        # Viewport bounds (mobile viewport)
+        MAX_X = 393
+        MAX_Y = 873
+        MARGIN = 10  # Pixels from edge
+
         if "FOUND" in response_upper and "NOT_FOUND" not in response_upper:
             try:
                 # Extract coordinates
@@ -380,6 +385,14 @@ class GeminiVisionClient:
                 confidence = self._extract_float(response, "confidence=")
 
                 if x > 0 and y > 0:
+                    # VALIDATE & CLIP BOUNDS
+                    original_x, original_y = x, y
+                    x = min(max(x, MARGIN), MAX_X - MARGIN)
+                    y = min(max(y, MARGIN), MAX_Y - MARGIN)
+
+                    if original_x != x or original_y != y:
+                        logger.warning(f"Vision coords clipped: ({original_x},{original_y}) → ({x},{y})")
+
                     return ElementLocation(
                         found=True,
                         x=x,

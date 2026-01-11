@@ -364,25 +364,68 @@ async def verify_send_clicked(page: Page) -> bool:
         return False
 
 
+def is_reels_page(url: str) -> bool:
+    """Check if URL is a Reels/Watch page (not a regular post)."""
+    return "/reel/" in url or "/watch/" in url or "/videos/" in url
+
+
 async def verify_post_loaded(page: Page) -> bool:
-    """Verify we're on a valid post page."""
+    """Verify we're on a valid post page, not Reels."""
     try:
+        # FAIL FAST: Reject Reels pages
+        if is_reels_page(page.url):
+            logger.error(f"Landed on Reels page: {page.url}")
+            return False
+
         # 1. Check for 'From your link' (redirect success)
         if await page.get_by_text("From your link").count() > 0:
             return True
-            
+
         # 2. Check URL structure
         if "story.php" in page.url or "/posts/" in page.url:
             return True
-            
+
         # 3. Check for specific post elements
         if await page.locator('[data-sigil="m-feed-voice-subtitle"]').count() > 0:
             return True
-            
+
         await save_debug_screenshot(page, "verification_failed")
         return False # Return False if we can't confirm, but caller might proceed anyway
     except:
         return False
+
+
+async def wait_for_post_visible(page: Page, vision, max_attempts: int = 4) -> bool:
+    """
+    Smart wait: Take screenshot, check if post visible, retry with backoff if not.
+
+    Instead of static sleep, we:
+    1. Take a screenshot
+    2. Ask vision if post is visible
+    3. If not, wait with exponential backoff and retry
+    """
+    base_wait = 1.0  # Start with 1 second
+
+    for attempt in range(max_attempts):
+        # Check for Reels FIRST (fail fast)
+        if is_reels_page(page.url):
+            logger.error(f"Landed on Reels page: {page.url}")
+            return False
+
+        screenshot = await save_debug_screenshot(page, f"wait_attempt_{attempt}")
+        verification = await vision.verify_state(screenshot, "post_visible")
+
+        if verification.success:
+            logger.info(f"Post visible on attempt {attempt + 1} (confidence: {verification.confidence:.0%})")
+            return True
+
+        # Exponential backoff: 1s, 2s, 4s, 8s
+        wait_time = base_wait * (2 ** attempt)
+        logger.info(f"Post not visible yet, waiting {wait_time:.1f}s... (attempt {attempt + 1}/{max_attempts})")
+        await asyncio.sleep(wait_time)
+
+    logger.error(f"Post not visible after {max_attempts} attempts")
+    return False
 
 
 async def post_comment(
@@ -579,36 +622,64 @@ async def post_comment_verified(
             # ========== STEP 1: Navigate and verify post is visible ==========
             logger.info(f"Step 1: Navigating to {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await asyncio.sleep(4)  # Wait for Facebook to fully load
 
-            screenshot = await save_debug_screenshot(page, "step1_navigated")
-            verification = await vision.verify_state(screenshot, "post_visible")
-            if not verification.success:
-                raise Exception(f"Step 1 FAILED - Post not visible: {verification.message}")
+            # Check for Reels redirect immediately
+            if is_reels_page(page.url):
+                raise Exception(f"Step 1 FAILED - Navigated to Reels instead of post: {page.url}")
+
+            # SMART WAIT: Retry with exponential backoff until post is visible
+            if not await wait_for_post_visible(page, vision, max_attempts=4):
+                raise Exception("Step 1 FAILED - Post not visible after 4 attempts")
+
             result["steps_completed"].append("post_visible")
-            logger.info(f"✓ Step 1: Post visible (confidence: {verification.confidence:.0%})")
+            logger.info("✓ Step 1: Post visible")
 
             # ========== STEP 2: Find and click comment button, verify comments opened ==========
             logger.info("Step 2: Finding and clicking comment button")
-            screenshot = await save_debug_screenshot(page, "step2_pre_click")
-            location = await vision.find_element(screenshot, "comment_button")
+            step2_success = False
+            step2_base_wait = 0.5
 
-            if not location or not location.found:
-                raise Exception("Step 2 FAILED - Comment button not found by vision")
-            if location.confidence < 0.8:
-                raise Exception(f"Step 2 FAILED - Comment button confidence too low: {location.confidence:.0%}")
+            for step2_attempt in range(3):  # 3 attempts
+                screenshot = await save_debug_screenshot(page, f"step2_attempt_{step2_attempt}")
+                location = await vision.find_element(screenshot, "comment_button")
 
-            logger.info(f"Found comment button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
-            if not await vision_element_click(page, location.x, location.y):
-                raise Exception("Step 2 FAILED - Could not click element at coordinates")
-            await asyncio.sleep(2)
+                if not location or not location.found:
+                    logger.warning(f"Step 2 attempt {step2_attempt + 1}: Comment button not found")
+                    wait_time = step2_base_wait * (2 ** step2_attempt)
+                    await asyncio.sleep(wait_time)
+                    continue
 
-            screenshot = await save_debug_screenshot(page, "step2_post_click")
-            verification = await vision.verify_state(screenshot, "comments_opened")
-            if not verification.success:
-                raise Exception(f"Step 2 FAILED - Comments section did not open: {verification.message}")
+                if location.confidence < 0.7:
+                    logger.warning(f"Step 2 attempt {step2_attempt + 1}: Low confidence {location.confidence:.0%}")
+                    wait_time = step2_base_wait * (2 ** step2_attempt)
+                    await asyncio.sleep(wait_time)
+                    continue
+
+                logger.info(f"Found comment button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
+                if not await vision_element_click(page, location.x, location.y):
+                    logger.warning(f"Step 2 attempt {step2_attempt + 1}: Click failed")
+                    wait_time = step2_base_wait * (2 ** step2_attempt)
+                    await asyncio.sleep(wait_time)
+                    continue
+
+                await asyncio.sleep(1.5)
+
+                # Verify it worked
+                verify_screenshot = await save_debug_screenshot(page, f"step2_verify_{step2_attempt}")
+                verification = await vision.verify_state(verify_screenshot, "comments_opened")
+
+                if verification.success:
+                    step2_success = True
+                    logger.info(f"✓ Step 2: Comments section opened (confidence: {verification.confidence:.0%})")
+                    break
+                else:
+                    logger.warning(f"Step 2 attempt {step2_attempt + 1}: Comments not opened - {verification.message}")
+                    wait_time = step2_base_wait * (2 ** step2_attempt)
+                    await asyncio.sleep(wait_time)
+
+            if not step2_success:
+                raise Exception("Step 2 FAILED - Could not open comments after 3 attempts")
             result["steps_completed"].append("comments_opened")
-            logger.info(f"✓ Step 2: Comments section opened (confidence: {verification.confidence:.0%})")
 
             # ========== STEP 3: Find input, focus, verify active ==========
             logger.info("Step 3: Finding and focusing comment input")
@@ -664,30 +735,59 @@ async def post_comment_verified(
 
             # ========== STEP 5: Find send button, click, verify comment posted ==========
             logger.info("Step 5: Finding and clicking send button")
-            screenshot = await save_debug_screenshot(page, "step5_pre_send")
-            location = await vision.find_element(screenshot, "send_button")
+            step5_success = False
+            step5_base_wait = 1.0
 
-            if not location or not location.found:
-                raise Exception("Step 5 FAILED - Send button not found by vision")
-            if location.confidence < 0.8:
-                raise Exception(f"Step 5 FAILED - Send button confidence too low: {location.confidence:.0%}")
+            for step5_attempt in range(3):  # 3 attempts
+                screenshot = await save_debug_screenshot(page, f"step5_attempt_{step5_attempt}")
+                location = await vision.find_element(screenshot, "send_button")
 
-            logger.info(f"Found send button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
-            if not await vision_element_click(page, location.x, location.y):
-                raise Exception("Step 5 FAILED - Could not click send button element")
-            await asyncio.sleep(3)
+                if not location or not location.found:
+                    logger.warning(f"Step 5 attempt {step5_attempt + 1}: Send button not found")
+                    wait_time = step5_base_wait * (2 ** step5_attempt)
+                    await asyncio.sleep(wait_time)
+                    continue
 
-            screenshot = await save_debug_screenshot(page, "step5_post_send")
-            verification = await vision.verify_state(screenshot, "comment_posted", expected_text=comment[:50])
+                if location.confidence < 0.7:
+                    logger.warning(f"Step 5 attempt {step5_attempt + 1}: Low confidence {location.confidence:.0%}")
+                    wait_time = step5_base_wait * (2 ** step5_attempt)
+                    await asyncio.sleep(wait_time)
+                    continue
 
-            if verification.status == "pending":
-                logger.info("Comment appears pending, waiting...")
+                logger.info(f"Found send button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
+                if not await vision_element_click(page, location.x, location.y):
+                    logger.warning(f"Step 5 attempt {step5_attempt + 1}: Click failed")
+                    wait_time = step5_base_wait * (2 ** step5_attempt)
+                    await asyncio.sleep(wait_time)
+                    continue
+
                 await asyncio.sleep(3)
-                screenshot = await save_debug_screenshot(page, "step5_retry")
-                verification = await vision.verify_state(screenshot, "comment_posted", expected_text=comment[:50])
 
-            if not verification.success:
-                raise Exception(f"Step 5 FAILED - Comment not posted: {verification.message}")
+                # Verify comment was posted
+                verify_screenshot = await save_debug_screenshot(page, f"step5_verify_{step5_attempt}")
+                verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[:50])
+
+                if verification.success:
+                    step5_success = True
+                    logger.info(f"✓ Step 5: Comment posted and verified! (confidence: {verification.confidence:.0%})")
+                    break
+                elif verification.status == "pending":
+                    # Comment pending, wait more
+                    logger.info("Comment appears pending, waiting...")
+                    await asyncio.sleep(3)
+                    verify_screenshot = await save_debug_screenshot(page, f"step5_pending_{step5_attempt}")
+                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[:50])
+                    if verification.success:
+                        step5_success = True
+                        logger.info(f"✓ Step 5: Comment posted (after pending)! (confidence: {verification.confidence:.0%})")
+                        break
+                else:
+                    logger.warning(f"Step 5 attempt {step5_attempt + 1}: Comment not posted - {verification.message}")
+                    wait_time = step5_base_wait * (2 ** step5_attempt)
+                    await asyncio.sleep(wait_time)
+
+            if not step5_success:
+                raise Exception("Step 5 FAILED - Could not post comment after 3 attempts")
 
             result["steps_completed"].append("comment_posted")
             result["success"] = True
