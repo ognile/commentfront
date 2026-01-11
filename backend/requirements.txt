@@ -5,6 +5,7 @@ playwright
 playwright-stealth
 python-dotenv
 httpx
+aiohttp
 pyotp
 requests
 nest_asyncio
