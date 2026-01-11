@@ -17,6 +17,7 @@ nest_asyncio.apply()
 
 from comment_bot import post_comment, test_session, MOBILE_VIEWPORT, DEFAULT_USER_AGENT
 from fb_session import FacebookSession, list_saved_sessions
+from credentials import CredentialManager
 
 # Setup Logging
 logging.basicConfig(
@@ -44,6 +45,9 @@ app.add_middleware(
 # Get proxy from environment
 PROXY_URL = os.getenv("PROXY_URL", "")
 
+# Initialize credential manager
+credential_manager = CredentialManager()
+
 
 # Models
 class CommentRequest(BaseModel):
@@ -65,6 +69,27 @@ class SessionInfo(BaseModel):
     extracted_at: str
     valid: bool
     proxy: Optional[str] = None
+
+
+class CredentialAddRequest(BaseModel):
+    uid: str
+    password: str
+    secret: Optional[str] = None
+    profile_name: Optional[str] = None
+
+
+class CredentialInfo(BaseModel):
+    uid: str
+    profile_name: Optional[str]
+    has_secret: bool
+    created_at: Optional[str]
+
+
+class OTPResponse(BaseModel):
+    code: Optional[str]
+    remaining_seconds: int
+    valid: bool
+    error: Optional[str] = None
 
 
 # Endpoints
@@ -184,6 +209,46 @@ async def get_config() -> Dict:
         "viewport": MOBILE_VIEWPORT,
         "user_agent": DEFAULT_USER_AGENT
     }
+
+
+# Credential Endpoints
+@app.get("/credentials", response_model=List[CredentialInfo])
+async def get_credentials():
+    """Get all saved credentials (without passwords)."""
+    return credential_manager.get_all_credentials()
+
+
+@app.post("/credentials")
+async def add_credential(request: CredentialAddRequest) -> Dict:
+    """Add a new credential."""
+    credential_manager.add_credential(
+        uid=request.uid,
+        password=request.password,
+        secret=request.secret,
+        profile_name=request.profile_name
+    )
+    return {"success": True, "uid": request.uid}
+
+
+@app.delete("/credentials/{uid}")
+async def delete_credential(uid: str) -> Dict:
+    """Delete a credential."""
+    success = credential_manager.delete_credential(uid)
+    if success:
+        return {"success": True, "uid": uid}
+    raise HTTPException(status_code=404, detail=f"Credential not found: {uid}")
+
+
+@app.get("/otp/{uid}", response_model=OTPResponse)
+async def get_otp(uid: str) -> OTPResponse:
+    """Generate current OTP code for a UID."""
+    result = credential_manager.generate_otp(uid)
+    return OTPResponse(
+        code=result.get("code"),
+        remaining_seconds=result.get("remaining_seconds", 0),
+        valid=result.get("valid", False),
+        error=result.get("error")
+    )
 
 
 if __name__ == "__main__":
