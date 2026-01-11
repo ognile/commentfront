@@ -265,6 +265,19 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
         if 'loading' in aria:
             return 'loading'
 
+    # Check for blank/minimal page (loading/transition state)
+    # If we have very few elements (0-2) and none have meaningful text, it's likely loading
+    if len(elements) <= 2:
+        has_meaningful_content = False
+        for el in elements:
+            text = el.get('text', '').strip()
+            aria = el.get('ariaLabel', '').strip()
+            if text or aria:
+                has_meaningful_content = True
+                break
+        if not has_meaningful_content:
+            return 'loading'
+
     # Check for error states - wrong password, account locked, etc.
     # Must check BEFORE login_form to avoid retrying with same wrong password
     error_keywords = [
@@ -318,7 +331,9 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     if '/checkpoint/' in url:
         return 'checkpoint'
 
-    if '/login/' in url or url.endswith('/login'):
+    # Handle URLs like /login, /login/, /login#, /login?...
+    url_path = url.split('?')[0].split('#')[0]  # Remove query and hash
+    if '/login' in url_path:
         return 'login_form'
 
     # Check for login form indicators
@@ -928,7 +943,8 @@ async def login_facebook(
                         logger.warning(f"Unknown page state on iteration {iteration}")
                         await save_debug_screenshot(page, f"unknown_state_{iteration}")
 
-                        if iteration >= 3:
+                        # Give more attempts before giving up on unknown state
+                        if iteration >= 5:
                             result["error"] = f"Unknown page state after {iteration} iterations"
                             result["needs_attention"] = True
                             await broadcast("unknown", "needs_attention", {
