@@ -26,11 +26,34 @@ from credentials import CredentialManager
 from proxy_manager import ProxyManager
 from login_bot import create_session_from_credentials
 
-# Setup Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Setup Logging - JSON structured logs for production, readable logs for dev
+class JSONFormatter(logging.Formatter):
+    """JSON formatter for structured logging."""
+    def format(self, record):
+        log_data = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        # Add exception info if present
+        if record.exc_info:
+            log_data["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_data)
+
+# Use JSON logging in production (Railway), readable format locally
+USE_JSON_LOGS = os.getenv("RAILWAY_ENVIRONMENT") is not None
+
+if USE_JSON_LOGS:
+    handler = logging.StreamHandler()
+    handler.setFormatter(JSONFormatter())
+    logging.root.handlers = [handler]
+    logging.root.setLevel(logging.INFO)
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 logger = logging.getLogger("API")
 
 app = FastAPI()

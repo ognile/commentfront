@@ -25,6 +25,17 @@ LOGIN = {
     ],
 }
 
+# Signup/Welcome Page Selectors (when Facebook redirects away from login)
+SIGNUP_PROMPT = {
+    "already_have_account": [
+        'div[role="button"][aria-label="I already have an account"]',
+        'div[role="button"]:has-text("already have an account")',
+        'button:has-text("already have an account")',
+        'a:has-text("already have an account")',
+        'div:has-text("I already have an account"):visible',
+    ],
+}
+
 # 2FA Page Selectors
 TWO_FA = {
     # 2FA method selection (choosing authenticator app)
@@ -200,6 +211,7 @@ def get_selectors(category: str) -> dict:
     """Get selectors by category name"""
     categories = {
         "login": LOGIN,
+        "signup_prompt": SIGNUP_PROMPT,
         "two_fa": TWO_FA,
         "feed": FEED,
         "reels": REELS,

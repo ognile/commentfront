@@ -6,13 +6,16 @@ Uses the same audit trail pattern as comment_bot.py
 import asyncio
 import logging
 import os
+import time
+import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from playwright.async_api import async_playwright, Page, BrowserContext
 from playwright_stealth import Stealth
 
 from fb_session import FacebookSession
-from fb_selectors import LOGIN, TWO_FA, PAGE_STATE
+from fb_selectors import LOGIN, TWO_FA, PAGE_STATE, SIGNUP_PROMPT
 from credentials import CredentialManager
 
 # Setup logging
@@ -25,6 +28,58 @@ DEFAULT_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) App
 # Debug directory
 DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
 os.makedirs(DEBUG_DIR, exist_ok=True)
+
+
+# ============================================================================
+# COMPREHENSIVE LOGGING HELPERS
+# ============================================================================
+
+@asynccontextmanager
+async def log_timing(operation: str, trace_id: str = ""):
+    """Log how long an operation takes."""
+    prefix = f"[{trace_id}] " if trace_id else ""
+    start = time.time()
+    try:
+        yield
+    finally:
+        elapsed = time.time() - start
+        logger.info(f"{prefix}⏱️ {operation}: {elapsed:.2f}s")
+
+
+async def log_failure_context(page: Page, operation: str, error: str, trace_id: str = ""):
+    """Log comprehensive context when something fails."""
+    prefix = f"[{trace_id}] " if trace_id else ""
+    logger.error(f"{prefix}FAILURE: {operation}")
+    logger.error(f"{prefix}  Error: {error}")
+    logger.error(f"{prefix}  URL: {page.url}")
+
+    try:
+        title = await page.title()
+        logger.error(f"{prefix}  Page title: {title}")
+    except:
+        pass
+
+    # Dump visible elements for debugging
+    await dump_interactive_elements(page, f"FAILURE CONTEXT: {operation}")
+
+    # Save debug screenshot
+    await save_debug_screenshot(page, f"failure_{operation.replace(' ', '_')}")
+
+
+def setup_navigation_logging(page: Page, trace_id: str = ""):
+    """Set up event listeners to log all navigation events."""
+    prefix = f"[{trace_id}] " if trace_id else ""
+
+    def on_request(request):
+        if request.resource_type == "document":
+            logger.info(f"{prefix}📤 Request: {request.method} {request.url}")
+
+    def on_response(response):
+        if response.request.resource_type == "document":
+            logger.info(f"{prefix}📥 Response: {response.status} {response.url}")
+
+    page.on("request", on_request)
+    page.on("response", on_response)
 
 
 async def save_debug_screenshot(page: Page, name: str) -> Optional[str]:
@@ -195,6 +250,7 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     Returns one of:
     - 'loading' - Page is loading (button shows Loading...)
     - 'error' - Error message on page (wrong password, locked, etc.)
+    - 'signup_prompt' - Facebook signup page (need to click "I already have an account")
     - 'login_form' - Login page with email/password fields
     - '2fa_selection' - 2FA method selection screen
     - '2fa_code_input' - 2FA code entry screen
@@ -230,6 +286,31 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
         for keyword in error_keywords:
             if keyword in text:
                 return 'error'
+
+    # Check for signup/welcome prompt (Facebook sometimes shows this instead of login)
+    # Must check BEFORE URL check because URL may still be /login
+    signup_indicators = ['join facebook', 'get started', 'i already have an account', 'create new account']
+    signup_count = 0
+    has_email_input = False
+
+    for el in elements:
+        text = el.get('text', '').lower()
+        aria = el.get('ariaLabel', '').lower()
+        name = el.get('name', '')
+
+        # Check for email input
+        if name == 'email':
+            has_email_input = True
+
+        # Count signup indicators
+        for ind in signup_indicators:
+            if ind in text or ind in aria:
+                signup_count += 1
+                break  # Only count once per element
+
+    # If we see multiple signup indicators but NO email input, it's a signup prompt
+    if signup_count >= 2 and not has_email_input:
+        return 'signup_prompt'
 
     # Check page URL
     url = page.url.lower()
@@ -579,11 +660,15 @@ async def login_facebook(
     Returns:
         Dict with success, session data, or error info
     """
+    # Generate unique trace ID for this login attempt
+    trace_id = str(uuid.uuid4())[:8]
+
     result = {
         "success": False,
         "profile_name": profile_name or f"fb_{uid[-6:]}",
         "step": "init",
-        "error": None
+        "error": None,
+        "trace_id": trace_id  # Include in result for debugging
     }
 
     async def broadcast(step: str, status: str, details: dict = None):
@@ -594,13 +679,15 @@ async def login_facebook(
                     "uid": uid,
                     "step": step,
                     "status": status,
+                    "trace_id": trace_id,
                     "details": details or {}
                 })
             except:
                 pass
-        logger.info(f"LOGIN PROGRESS: {step} - {status}")
+        logger.info(f"[{trace_id}] LOGIN PROGRESS: {step} - {status}")
 
     await broadcast("init", "starting")
+    logger.info(f"[{trace_id}] Starting login for {uid[:6]}***")
 
     async with async_playwright() as p:
         # Build browser launch options
@@ -627,14 +714,27 @@ async def login_facebook(
 
         page = await context.new_page()
 
+        # Set up navigation event logging
+        setup_navigation_logging(page, trace_id)
+
         try:
             # === STEP 1: Navigate to login page ===
             result["step"] = "navigate"
             await broadcast("navigate", "in_progress")
 
-            logger.info("Navigating to m.facebook.com/login")
-            await page.goto("https://m.facebook.com/login", wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(2)
+            async with log_timing("Navigate to login", trace_id):
+                logger.info(f"[{trace_id}] Navigating to m.facebook.com/login")
+                await page.goto("https://m.facebook.com/login", wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2)
+
+            # Log actual URL and page title after navigation
+            actual_url = page.url
+            logger.info(f"[{trace_id}] Requested: m.facebook.com/login → Landed on: {actual_url}")
+            try:
+                page_title = await page.title()
+                logger.info(f"[{trace_id}] Page title: {page_title}")
+            except:
+                pass
 
             # Dump elements for audit trail
             elements = await dump_interactive_elements(page, "LOGIN PAGE LOADED")
@@ -650,14 +750,14 @@ async def login_facebook(
             while iteration < max_iterations:
                 iteration += 1
                 state = await detect_page_state(page, elements)
-                logger.info(f"=== ITERATION {iteration}: Detected state = {state} ===")
+                logger.info(f"[{trace_id}] === ITERATION {iteration}: state={state}, elements={len(elements)}, url={page.url} ===")
 
                 await broadcast(state, "in_progress")
 
                 if state == "login_form":
                     # If we already submitted, don't re-fill - just wait for state change
                     if login_submitted:
-                        logger.info("Already submitted login, waiting for page transition...")
+                        logger.info(f"[{trace_id}] Already submitted login, waiting for page transition...")
                         await asyncio.sleep(2)
                         elements = await dump_interactive_elements(page, "WAITING FOR TRANSITION")
                         continue  # Re-check state
@@ -795,6 +895,20 @@ async def login_facebook(
                     await save_debug_screenshot(page, "login_error")
                     await broadcast("error", "failed", {"error": result["error"]})
                     break  # Exit loop - don't retry with same wrong password
+
+                elif state == "signup_prompt":
+                    # Facebook showed signup page instead of login - click "I already have an account"
+                    logger.info("Detected signup prompt, clicking 'I already have an account'...")
+                    await broadcast("signup_prompt", "handling")
+
+                    if await smart_click(page, SIGNUP_PROMPT["already_have_account"], "I already have an account"):
+                        await asyncio.sleep(2)
+                        elements = await dump_interactive_elements(page, "AFTER SIGNUP PROMPT CLICK")
+                        # Continue loop - should now see login form
+                    else:
+                        result["error"] = "Failed to click 'I already have an account' button"
+                        await broadcast("signup_prompt", "failed", {"error": result["error"]})
+                        break
 
                 else:
                     # Unknown state - check if there's a trust device prompt
