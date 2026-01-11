@@ -745,6 +745,28 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
 
         if is_homepage:
             logger.info("Redirected to homepage instead of profile - clicking 'Go to profile'")
+
+            # First, dismiss any blocking dialogs (like "Get app" modal)
+            dismiss_selectors = [
+                '[aria-label="Not now"]',
+                '[aria-label="Close"]',
+                'div[role="button"]:has-text("Not now")',
+                'div[role="button"]:has-text("Close")',
+            ]
+            for selector in dismiss_selectors:
+                try:
+                    locator = page.locator(selector).first
+                    if await locator.count() > 0 and await locator.is_visible():
+                        await locator.click()
+                        logger.info(f"Dismissed dialog via: {selector}")
+                        await asyncio.sleep(1)
+                        break
+                except:
+                    continue
+
+            # Re-fetch elements after dismissing dialog
+            elements = await dump_interactive_elements(page, "AFTER DISMISSING DIALOG")
+
             # Find and click "Go to profile" button
             go_to_profile_clicked = False
             for el in elements:
@@ -845,10 +867,12 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
         if not profile_name:
             try:
                 # Profile picture often has aria-label like "John Smith's profile picture"
+                # or "Sangtraan Profile Picture, view story"
                 profile_pic_selectors = [
                     'img[aria-label*="profile picture"]',
                     'img[alt*="profile picture"]',
                     'div[aria-label*="profile picture"]',
+                    'div[aria-label*="Profile Picture"]',
                 ]
                 for selector in profile_pic_selectors:
                     try:
@@ -858,10 +882,22 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
                             if not aria_label:
                                 aria_label = await locator.get_attribute('alt')
                             if aria_label and 'profile picture' in aria_label.lower():
-                                # Extract name from "John Smith's profile picture"
-                                name = aria_label.replace("'s profile picture", "").replace("'s profile photo", "")
-                                name = name.replace("Profile picture of ", "").replace("profile picture", "")
-                                name = name.strip()
+                                # Extract name from various formats:
+                                # "John Smith's profile picture"
+                                # "Sangtraan Profile Picture, view story"
+                                # "Profile picture of John Smith"
+                                name = aria_label
+                                # Remove common suffixes
+                                name = name.replace("'s profile picture", "").replace("'s profile photo", "")
+                                name = name.replace("'s Profile Picture", "").replace("'s Profile Photo", "")
+                                name = name.replace("Profile picture of ", "").replace("Profile Picture of ", "")
+                                # Handle "Name Profile Picture, view story" format
+                                if " Profile Picture" in name:
+                                    name = name.split(" Profile Picture")[0]
+                                if " profile picture" in name:
+                                    name = name.split(" profile picture")[0]
+                                name = name.replace("profile picture", "").replace("Profile Picture", "")
+                                name = name.strip().strip(',')
                                 if name and len(name) > 1 and len(name) < 50:
                                     profile_name = name
                                     logger.info(f"Extracted profile name from profile picture: {profile_name}")
@@ -871,7 +907,22 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
             except Exception as e:
                 logger.warning(f"Error extracting from profile picture: {e}")
 
-        # Strategy 4: Use elements from dump
+        # Strategy 4: Look for "Tap to open profile page" element which contains just the name
+        if not profile_name:
+            for el in elements:
+                aria = el.get('ariaLabel', '').lower()
+                text = el.get('text', '').strip()
+                # "Tap to open profile page" button usually has just the name as text
+                if 'tap to open profile' in aria and text:
+                    # This element typically shows just the profile name
+                    if len(text) > 1 and len(text) < 50:
+                        excluded = ['profile', 'go to profile', 'edit profile', 'tap to open']
+                        if text.lower() not in excluded:
+                            profile_name = text
+                            logger.info(f"Extracted profile name from 'Tap to open profile' element: {profile_name}")
+                            break
+
+        # Strategy 5: Use elements from dump - look for headings
         if not profile_name:
             for el in elements:
                 text = el.get('text', '').strip()
@@ -889,7 +940,7 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
                         logger.info(f"Extracted profile name from heading element: {profile_name}")
                         break
 
-        # Strategy 5: Look for name in profile-related aria-labels
+        # Strategy 6: Look for name in profile-related aria-labels
         if not profile_name:
             for el in elements:
                 aria = el.get('ariaLabel', '')
@@ -897,8 +948,18 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
 
                 # Check if aria-label contains profile picture reference
                 if 'profile picture' in aria.lower() or 'profile photo' in aria.lower():
-                    name = aria.replace("'s profile picture", "").replace("'s profile photo", "")
-                    name = name.replace("Profile picture of ", "").strip()
+                    name = aria
+                    # Remove common suffixes
+                    name = name.replace("'s profile picture", "").replace("'s profile photo", "")
+                    name = name.replace("'s Profile Picture", "").replace("'s Profile Photo", "")
+                    name = name.replace("Profile picture of ", "").replace("Profile Picture of ", "")
+                    # Handle "Name Profile Picture, view story" format
+                    if " Profile Picture" in name:
+                        name = name.split(" Profile Picture")[0]
+                    if " profile picture" in name:
+                        name = name.split(" profile picture")[0]
+                    name = name.replace("profile picture", "").replace("Profile Picture", "")
+                    name = name.strip().strip(',')
                     if name and len(name) > 1 and len(name) < 50 and name.lower() != 'profile picture':
                         profile_name = name
                         logger.info(f"Extracted profile name from aria-label: {profile_name}")
