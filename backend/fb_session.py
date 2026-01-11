@@ -7,14 +7,15 @@ Sessions are saved as JSON files containing cookies, user agent, viewport, and p
 
 import json
 import logging
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger("FBSession")
 
-SESSIONS_DIR = Path(__file__).parent / "sessions"
-SESSIONS_DIR.mkdir(exist_ok=True)
+SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", str(Path(__file__).parent / "sessions")))
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class FacebookSession:
@@ -239,15 +240,17 @@ def list_saved_sessions() -> List[Dict[str, Any]]:
         List of dicts with session info
     """
     sessions = []
-    for session_file in SESSIONS_DIR.glob("*.json"):
+    for session_file in sorted(SESSIONS_DIR.glob("*.json")):
         try:
             data = json.loads(session_file.read_text())
+            cookie_names = [c.get("name") for c in data.get("cookies", [])]
             sessions.append({
                 "file": session_file.name,
                 "profile_name": data.get("profile_name"),
                 "user_id": None,  # Will extract below
                 "extracted_at": data.get("extracted_at"),
-                "has_valid_cookies": "c_user" in [c.get("name") for c in data.get("cookies", [])]
+                "proxy": data.get("proxy"),
+                "has_valid_cookies": ("c_user" in cookie_names and "xs" in cookie_names),
             })
             # Extract user ID
             for cookie in data.get("cookies", []):

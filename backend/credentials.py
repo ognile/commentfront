@@ -5,8 +5,8 @@ import pyotp
 from datetime import datetime
 
 class CredentialManager:
-    def __init__(self, file_path="credentials.json"):
-        self.file_path = file_path
+    def __init__(self, file_path=None):
+        self.file_path = file_path or os.getenv("CREDENTIALS_PATH", "credentials.json")
         self.credentials = {}
         self.logger = logging.getLogger("CredentialManager")
         self.load_credentials()
