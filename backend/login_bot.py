@@ -258,6 +258,9 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     - 'checkpoint' - Security checkpoint
     - 'unknown' - Unknown state
     """
+    # Get current URL for state detection
+    url = page.url
+
     # FIRST: Check for logged in state via URL (before any element checks)
     # This handles the homepage redirect case where elements=0 while page loads
     # Must be at the very top because blank page check would return 'loading' otherwise
