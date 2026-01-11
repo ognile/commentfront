@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse, unquote
 
 from fb_session import FacebookSession, apply_session_to_context
+import fb_selectors
 
 # Vision integration (optional - will work without it)
 try:
@@ -205,6 +206,123 @@ async def smart_focus(page: Page, selectors: List[str], description: str) -> boo
     logger.warning(f"Failed to focus: {description}")
     await save_debug_screenshot(page, f"failed_focus_{description.replace(' ', '_')}")
     return False
+
+
+async def audit_selectors(page: Page, selectors_dict: dict) -> dict:
+    """
+    Run all selectors and report matches with details.
+    Used for diagnostics when clicks fail.
+    """
+    audit = {}
+    for action, selectors in selectors_dict.items():
+        audit[action] = []
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                count = await locator.count()
+                if count > 0:
+                    text = await locator.first.text_content() or ""
+                    visible = await locator.first.is_visible()
+                    audit[action].append({
+                        "selector": selector,
+                        "count": count,
+                        "visible": visible,
+                        "text": text[:50] if text else ""
+                    })
+            except Exception:
+                pass
+    return audit
+
+
+async def click_with_healing(
+    page: Page,
+    vision,
+    selectors: List[str],
+    description: str,
+    max_attempts: int = 5
+) -> dict:
+    """
+    Self-healing click loop - uses CSS selectors first, asks Gemini for guidance on failure.
+
+    Returns:
+        dict with success, method, selector_used, attempts, and any diagnostic info
+    """
+    import json
+
+    result = {
+        "success": False,
+        "method": None,
+        "selector_used": None,
+        "attempts": 0,
+        "decisions": []
+    }
+
+    for attempt in range(max_attempts):
+        result["attempts"] = attempt + 1
+        logger.info(f"click_with_healing attempt {attempt + 1}/{max_attempts} for '{description}'")
+
+        # 1. Try CSS selectors first (fast, deterministic)
+        click_success = await smart_click(page, selectors, description)
+        if click_success:
+            result["success"] = True
+            result["method"] = "css_selector"
+            logger.info(f"✓ Clicked '{description}' via CSS selector")
+            return result
+
+        # 2. CSS failed - get diagnostics
+        screenshot = await save_debug_screenshot(page, f"healing_{description.replace(' ', '_')}_{attempt}")
+        audit = await audit_selectors(page, fb_selectors.COMMENT)
+        logger.info(f"Selector audit: {json.dumps(audit, indent=2)}")
+
+        # 3. Ask Gemini what to do (if vision available)
+        if vision:
+            decision = await vision.decide_next_action(screenshot, description, audit)
+            result["decisions"].append(decision)
+            logger.info(f"Gemini decision: {decision}")
+
+            # 4. Execute Gemini's decision
+            action = decision.get("action", "RETRY")
+
+            if action == "ABORT":
+                reason = decision.get("reason", "unknown")
+                logger.error(f"ABORT: {reason}")
+                result["error"] = f"Aborted: {reason}"
+                return result
+
+            elif action == "WAIT":
+                seconds = decision.get("seconds", 2)
+                logger.info(f"Waiting {seconds}s as suggested by Gemini...")
+                await asyncio.sleep(seconds)
+
+            elif action == "CLOSE_POPUP":
+                popup_selector = decision.get("selector", 'button[aria-label="Close"]')
+                logger.info(f"Attempting to close popup: {popup_selector}")
+                await smart_click(page, [popup_selector], "Close popup")
+                await asyncio.sleep(0.5)
+
+            elif action == "TRY_SELECTOR":
+                new_selector = decision.get("selector")
+                if new_selector:
+                    logger.info(f"Trying Gemini-suggested selector: {new_selector}")
+                    # Prepend to try first on next iteration
+                    selectors = [new_selector] + selectors
+
+            elif action == "SCROLL":
+                direction = decision.get("direction", "down")
+                pixels = 300 if direction == "down" else -300
+                logger.info(f"Scrolling {direction}")
+                await page.evaluate(f"window.scrollBy(0, {pixels})")
+                await asyncio.sleep(0.5)
+
+            # RETRY just continues the loop
+        else:
+            # No vision - just wait and retry
+            logger.warning("No vision client - waiting 2s and retrying")
+            await asyncio.sleep(2)
+
+    logger.error(f"Max attempts ({max_attempts}) reached for '{description}'")
+    result["error"] = f"Max attempts reached"
+    return result
 
 
 async def vision_element_click(page: Page, x: int, y: int) -> bool:
@@ -634,88 +752,73 @@ async def post_comment_verified(
             result["steps_completed"].append("post_visible")
             logger.info("✓ Step 1: Post visible")
 
-            # ========== STEP 2: Find and click comment button, verify comments opened ==========
-            logger.info("Step 2: Finding and clicking comment button")
-            step2_success = False
-            step2_base_wait = 0.5
+            # ========== STEP 2: Click comment button using self-healing loop ==========
+            logger.info("Step 2: Clicking comment button (CSS selectors + Gemini healing)")
 
-            for step2_attempt in range(3):  # 3 attempts
-                screenshot = await save_debug_screenshot(page, f"step2_attempt_{step2_attempt}")
-                location = await vision.find_element(screenshot, "comment_button")
+            step2_result = await click_with_healing(
+                page=page,
+                vision=vision,
+                selectors=fb_selectors.COMMENT["comment_button"],
+                description="Comment button",
+                max_attempts=5
+            )
 
-                if not location or not location.found:
-                    logger.warning(f"Step 2 attempt {step2_attempt + 1}: Comment button not found")
-                    wait_time = step2_base_wait * (2 ** step2_attempt)
-                    await asyncio.sleep(wait_time)
-                    continue
+            if not step2_result["success"]:
+                error_msg = step2_result.get("error", "Unknown error")
+                raise Exception(f"Step 2 FAILED - {error_msg}")
 
-                if location.confidence < 0.7:
-                    logger.warning(f"Step 2 attempt {step2_attempt + 1}: Low confidence {location.confidence:.0%}")
-                    wait_time = step2_base_wait * (2 ** step2_attempt)
-                    await asyncio.sleep(wait_time)
-                    continue
+            # Verify comments section opened
+            await asyncio.sleep(1.0)
+            verify_screenshot = await save_debug_screenshot(page, "step2_verify")
+            verification = await vision.verify_state(verify_screenshot, "comments_opened")
 
-                logger.info(f"Found comment button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
-                if not await vision_element_click(page, location.x, location.y):
-                    logger.warning(f"Step 2 attempt {step2_attempt + 1}: Click failed")
-                    wait_time = step2_base_wait * (2 ** step2_attempt)
-                    await asyncio.sleep(wait_time)
-                    continue
-
-                await asyncio.sleep(1.5)
-
-                # Verify it worked
-                verify_screenshot = await save_debug_screenshot(page, f"step2_verify_{step2_attempt}")
+            if not verification.success:
+                # Try one more click - sometimes first click doesn't register
+                logger.warning("Comments not opened, trying one more click...")
+                await click_with_healing(page, vision, fb_selectors.COMMENT["comment_button"], "Comment button", max_attempts=2)
+                await asyncio.sleep(1.0)
+                verify_screenshot = await save_debug_screenshot(page, "step2_verify_retry")
                 verification = await vision.verify_state(verify_screenshot, "comments_opened")
+                if not verification.success:
+                    raise Exception(f"Step 2 FAILED - Comments not opened: {verification.message}")
 
-                if verification.success:
-                    step2_success = True
-                    logger.info(f"✓ Step 2: Comments section opened (confidence: {verification.confidence:.0%})")
-                    break
-                else:
-                    logger.warning(f"Step 2 attempt {step2_attempt + 1}: Comments not opened - {verification.message}")
-                    wait_time = step2_base_wait * (2 ** step2_attempt)
-                    await asyncio.sleep(wait_time)
-
-            if not step2_success:
-                raise Exception("Step 2 FAILED - Could not open comments after 3 attempts")
             result["steps_completed"].append("comments_opened")
+            logger.info(f"✓ Step 2: Comments section opened (confidence: {verification.confidence:.0%})")
 
-            # ========== STEP 3: Find input, focus, verify active ==========
-            logger.info("Step 3: Finding and focusing comment input")
-            screenshot = await save_debug_screenshot(page, "step3_pre_focus")
-            location = await vision.find_element(screenshot, "comment_input")
+            # ========== STEP 3: Focus comment input using CSS selectors ==========
+            logger.info("Step 3: Focusing comment input (CSS selectors)")
 
-            if not location or not location.found:
-                raise Exception("Step 3 FAILED - Comment input not found by vision")
+            # Use smart_focus with CSS selectors
+            focus_success = await smart_focus(page, fb_selectors.COMMENT["comment_input"], "Comment input")
 
-            logger.info(f"Found comment input at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
-
-            # Try focus first (works better for text fields)
-            try:
-                input_locator = page.locator('[contenteditable="true"]').first
-                if await input_locator.count() > 0:
-                    await input_locator.focus()
-                else:
-                    # Fallback to click at coordinates using dispatch_event
-                    await vision_element_click(page, location.x, location.y)
-            except Exception as e:
-                logger.warning(f"Focus failed, using vision click: {e}")
-                await vision_element_click(page, location.x, location.y)
+            if not focus_success:
+                # Fallback: try clicking with healing
+                logger.warning("smart_focus failed, trying click_with_healing...")
+                click_result = await click_with_healing(
+                    page=page,
+                    vision=vision,
+                    selectors=fb_selectors.COMMENT["comment_input"],
+                    description="Comment input",
+                    max_attempts=3
+                )
+                if not click_result["success"]:
+                    raise Exception(f"Step 3 FAILED - Could not focus input: {click_result.get('error', 'Unknown')}")
 
             await asyncio.sleep(0.8)
 
+            # Verify input is active
             screenshot = await save_debug_screenshot(page, "step3_post_focus")
             verification = await vision.verify_state(screenshot, "input_active")
+
             if not verification.success:
-                # Retry with direct click using dispatch_event
-                logger.warning("Input not active, retrying with vision_element_click...")
-                await vision_element_click(page, location.x, location.y)
+                # One more retry
+                logger.warning("Input not active, retrying focus...")
+                await smart_focus(page, fb_selectors.COMMENT["comment_input"], "Comment input retry")
                 await asyncio.sleep(0.8)
                 screenshot = await save_debug_screenshot(page, "step3_retry")
                 verification = await vision.verify_state(screenshot, "input_active")
                 if not verification.success:
-                    raise Exception(f"Step 3 FAILED - Input field not active: {verification.message}")
+                    raise Exception(f"Step 3 FAILED - Input not active: {verification.message}")
 
             result["steps_completed"].append("input_active")
             logger.info(f"✓ Step 3: Input field active (confidence: {verification.confidence:.0%})")
@@ -733,61 +836,38 @@ async def post_comment_verified(
             result["steps_completed"].append("text_typed")
             logger.info(f"✓ Step 4: Typed text visible (confidence: {verification.confidence:.0%})")
 
-            # ========== STEP 5: Find send button, click, verify comment posted ==========
-            logger.info("Step 5: Finding and clicking send button")
-            step5_success = False
-            step5_base_wait = 1.0
+            # ========== STEP 5: Click send button using self-healing loop ==========
+            logger.info("Step 5: Clicking send button (CSS selectors + Gemini healing)")
 
-            for step5_attempt in range(3):  # 3 attempts
-                screenshot = await save_debug_screenshot(page, f"step5_attempt_{step5_attempt}")
-                location = await vision.find_element(screenshot, "send_button")
+            step5_result = await click_with_healing(
+                page=page,
+                vision=vision,
+                selectors=fb_selectors.COMMENT["comment_submit"],
+                description="Send button",
+                max_attempts=5
+            )
 
-                if not location or not location.found:
-                    logger.warning(f"Step 5 attempt {step5_attempt + 1}: Send button not found")
-                    wait_time = step5_base_wait * (2 ** step5_attempt)
-                    await asyncio.sleep(wait_time)
-                    continue
+            if not step5_result["success"]:
+                error_msg = step5_result.get("error", "Unknown error")
+                raise Exception(f"Step 5 FAILED - {error_msg}")
 
-                if location.confidence < 0.7:
-                    logger.warning(f"Step 5 attempt {step5_attempt + 1}: Low confidence {location.confidence:.0%}")
-                    wait_time = step5_base_wait * (2 ** step5_attempt)
-                    await asyncio.sleep(wait_time)
-                    continue
+            # Wait for comment to post
+            await asyncio.sleep(3)
 
-                logger.info(f"Found send button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
-                if not await vision_element_click(page, location.x, location.y):
-                    logger.warning(f"Step 5 attempt {step5_attempt + 1}: Click failed")
-                    wait_time = step5_base_wait * (2 ** step5_attempt)
-                    await asyncio.sleep(wait_time)
-                    continue
+            # Verify comment was posted
+            verify_screenshot = await save_debug_screenshot(page, "step5_verify")
+            verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[:50])
 
-                await asyncio.sleep(3)
-
-                # Verify comment was posted
-                verify_screenshot = await save_debug_screenshot(page, f"step5_verify_{step5_attempt}")
-                verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[:50])
-
-                if verification.success:
-                    step5_success = True
-                    logger.info(f"✓ Step 5: Comment posted and verified! (confidence: {verification.confidence:.0%})")
-                    break
-                elif verification.status == "pending":
+            if not verification.success:
+                if verification.status == "pending":
                     # Comment pending, wait more
                     logger.info("Comment appears pending, waiting...")
                     await asyncio.sleep(3)
-                    verify_screenshot = await save_debug_screenshot(page, f"step5_pending_{step5_attempt}")
+                    verify_screenshot = await save_debug_screenshot(page, "step5_pending")
                     verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[:50])
-                    if verification.success:
-                        step5_success = True
-                        logger.info(f"✓ Step 5: Comment posted (after pending)! (confidence: {verification.confidence:.0%})")
-                        break
-                else:
-                    logger.warning(f"Step 5 attempt {step5_attempt + 1}: Comment not posted - {verification.message}")
-                    wait_time = step5_base_wait * (2 ** step5_attempt)
-                    await asyncio.sleep(wait_time)
 
-            if not step5_success:
-                raise Exception("Step 5 FAILED - Could not post comment after 3 attempts")
+                if not verification.success:
+                    raise Exception(f"Step 5 FAILED - Comment not posted: {verification.message}")
 
             result["steps_completed"].append("comment_posted")
             result["success"] = True

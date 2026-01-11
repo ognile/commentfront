@@ -376,6 +376,103 @@ class GeminiVisionClient:
                 status="unknown"
             )
 
+    async def decide_next_action(
+        self,
+        screenshot_path: str,
+        action_attempted: str,
+        selector_audit: dict
+    ) -> dict:
+        """
+        Ask Gemini to decide what to do next when an action fails.
+        Returns structured decision for autonomous self-healing.
+
+        Decisions:
+        - ABORT: Stop trying (wrong page, logged out, etc.)
+        - WAIT: Page loading, retry after delay
+        - CLOSE_POPUP: Modal blocking, close it first
+        - TRY_SELECTOR: Suggest alternative CSS selector
+        - SCROLL: Element off-screen
+        - RETRY: Just try again
+        """
+        import json
+
+        try:
+            with open(screenshot_path, "rb") as f:
+                image_data = f.read()
+
+            prompt = f"""Analyze this Facebook mobile screenshot. I tried to click "{action_attempted}" but the CSS selectors failed.
+
+SELECTOR AUDIT (what matched in the DOM):
+{json.dumps(selector_audit, indent=2)}
+
+Based on the screenshot AND selector audit, decide what I should do next.
+
+You MUST respond with EXACTLY ONE of these actions:
+- ABORT reason=<why> (wrong page type, logged out, content removed, Reels page)
+- WAIT seconds=<1-5> (page still loading, spinner visible)
+- CLOSE_POPUP selector=<css> (modal/dialog blocking the view)
+- TRY_SELECTOR selector=<css> (suggest a CSS selector you can see might work)
+- SCROLL direction=<up|down> (element might be off-screen)
+- RETRY (transient issue, just try again)
+
+Format: ACTION param=value
+Examples:
+ABORT reason=This is a Reels page not a regular post
+WAIT seconds=2
+TRY_SELECTOR selector=div[role="button"]:has-text("Comment")
+SCROLL direction=down"""
+
+            image_part = types.Part.from_bytes(
+                data=image_data,
+                mime_type="image/png"
+            )
+
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=self.model,
+                contents=[prompt, image_part]
+            )
+
+            result_text = response.text.strip()
+            logger.info(f"Gemini decision: {result_text}")
+
+            return self._parse_decision(result_text)
+
+        except Exception as e:
+            logger.error(f"Gemini decide_next_action error: {e}")
+            return {"action": "RETRY", "error": str(e)}
+
+    def _parse_decision(self, response: str) -> dict:
+        """Parse Gemini's decision into actionable dict."""
+        import re
+
+        # Get first line only (ignore extra explanation)
+        first_line = response.strip().split('\n')[0].strip()
+
+        if first_line.upper().startswith("ABORT"):
+            reason = first_line.split("=", 1)[1].strip() if "=" in first_line else "unknown"
+            return {"action": "ABORT", "reason": reason}
+
+        elif first_line.upper().startswith("WAIT"):
+            match = re.search(r'(\d+)', first_line)
+            seconds = int(match.group(1)) if match else 2
+            return {"action": "WAIT", "seconds": min(seconds, 5)}
+
+        elif first_line.upper().startswith("CLOSE_POPUP"):
+            selector = first_line.split("=", 1)[1].strip() if "=" in first_line else 'button[aria-label="Close"]'
+            return {"action": "CLOSE_POPUP", "selector": selector}
+
+        elif first_line.upper().startswith("TRY_SELECTOR"):
+            selector = first_line.split("=", 1)[1].strip() if "=" in first_line else None
+            return {"action": "TRY_SELECTOR", "selector": selector}
+
+        elif first_line.upper().startswith("SCROLL"):
+            direction = "down" if "down" in first_line.lower() else "up"
+            return {"action": "SCROLL", "direction": direction}
+
+        else:
+            return {"action": "RETRY"}
+
     def _parse_element_response(self, response: str) -> ElementLocation:
         """Parse Gemini response for element location."""
         response_upper = response.upper()
