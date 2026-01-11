@@ -25,6 +25,7 @@ from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
 from login_bot import create_session_from_credentials, refresh_session_profile_name
+from browser_manager import get_browser_manager, UPLOAD_DIR
 
 # Setup Logging - JSON structured logs for production, readable logs for dev
 class JSONFormatter(logging.Formatter):
@@ -705,6 +706,304 @@ async def refresh_all_profile_names() -> Dict:
             })
 
     return results
+
+
+# ============================================================================
+# Interactive Remote Control Endpoints
+# ============================================================================
+
+# Models for remote control
+class RemoteActionRequest(BaseModel):
+    """Generic action request for remote control."""
+    action_type: str  # "click", "key", "scroll", "navigate", "type"
+    x: Optional[int] = None
+    y: Optional[int] = None
+    key: Optional[str] = None
+    modifiers: Optional[List[str]] = None
+    text: Optional[str] = None
+    delta_y: Optional[int] = None
+    url: Optional[str] = None
+
+
+class ImageUploadResponse(BaseModel):
+    success: bool
+    image_id: Optional[str] = None
+    filename: Optional[str] = None
+    size: Optional[int] = None
+    expires_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+# In-memory storage for pending uploads (per-session)
+pending_uploads: Dict[str, Dict] = {}
+
+
+@app.websocket("/ws/session/{session_id}/control")
+async def websocket_session_control(websocket: WebSocket, session_id: str):
+    """
+    WebSocket endpoint for interactive browser control.
+
+    Handles:
+    - Frame streaming (server -> client, JSON with base64 image)
+    - Input events (client -> server, JSON)
+    - State updates (bidirectional, JSON)
+    """
+    await websocket.accept()
+    manager = get_browser_manager()
+
+    try:
+        # Start session if not already active for this session_id
+        if manager.session_id != session_id:
+            result = await manager.start_session(session_id)
+            if not result["success"]:
+                await websocket.send_json({"type": "error", "data": {"message": result.get("error", "Failed to start session")}})
+                await websocket.close()
+                return
+
+        # Subscribe to frame updates
+        manager.subscribe(websocket)
+
+        # Send initial state
+        state = await manager.get_current_state()
+        await websocket.send_json({"type": "state", "data": state})
+        await websocket.send_json({"type": "browser_ready", "data": {"session_id": session_id}})
+
+        # Handle incoming messages
+        while True:
+            try:
+                message = await websocket.receive_text()
+                data = json.loads(message)
+
+                action_type = data.get("type")
+                action_data = data.get("data", {})
+                action_id = data.get("action_id", "")
+
+                result = {"success": False, "error": "Unknown action"}
+
+                if action_type == "click":
+                    result = await manager.handle_click(
+                        x=action_data.get("x", 0),
+                        y=action_data.get("y", 0)
+                    )
+                elif action_type == "key":
+                    result = await manager.handle_keyboard(
+                        key=action_data.get("key", ""),
+                        modifiers=action_data.get("modifiers", [])
+                    )
+                elif action_type == "type":
+                    result = await manager.handle_type(
+                        text=action_data.get("text", "")
+                    )
+                elif action_type == "scroll":
+                    result = await manager.handle_scroll(
+                        x=action_data.get("x", 0),
+                        y=action_data.get("y", 0),
+                        delta_y=action_data.get("deltaY", 0)
+                    )
+                elif action_type == "navigate":
+                    result = await manager.navigate(
+                        url=action_data.get("url", "")
+                    )
+                elif action_type == "ping":
+                    result = {"success": True, "action": "pong"}
+
+                # Send action result
+                await websocket.send_json({
+                    "type": "action_result",
+                    "data": {
+                        "action_id": action_id,
+                        **result
+                    }
+                })
+
+            except WebSocketDisconnect:
+                break
+            except json.JSONDecodeError as e:
+                await websocket.send_json({"type": "error", "data": {"message": f"Invalid JSON: {e}"}})
+            except Exception as e:
+                logger.error(f"Error handling WS message: {e}")
+                await websocket.send_json({"type": "error", "data": {"message": str(e)}})
+
+    except WebSocketDisconnect:
+        logger.info(f"Remote control WS disconnected for session {session_id}")
+    except Exception as e:
+        logger.error(f"Remote control WS error: {e}")
+    finally:
+        manager.unsubscribe(websocket)
+        # Note: Browser stays open for reconnection
+
+
+@app.post("/sessions/{session_id}/remote/start")
+async def start_remote_session(session_id: str) -> Dict:
+    """Start a remote control session for the given session."""
+    manager = get_browser_manager()
+    return await manager.start_session(session_id)
+
+
+@app.post("/sessions/{session_id}/remote/stop")
+async def stop_remote_session(session_id: str) -> Dict:
+    """Stop the current remote control session."""
+    manager = get_browser_manager()
+    if manager.session_id != session_id:
+        return {"success": False, "error": "Session not active"}
+    return await manager.close_session()
+
+
+@app.get("/sessions/remote/status")
+async def get_remote_status() -> Dict:
+    """Get current remote session status."""
+    manager = get_browser_manager()
+    return await manager.get_current_state()
+
+
+@app.get("/sessions/{session_id}/remote/logs")
+async def get_session_action_logs(session_id: str, limit: int = 100) -> List[Dict]:
+    """Get action logs for the current session."""
+    manager = get_browser_manager()
+    if manager.session_id == session_id:
+        return manager.get_action_log(limit)
+    return []
+
+
+# Image upload for file chooser interception
+@app.post("/sessions/{session_id}/upload-image", response_model=ImageUploadResponse)
+async def upload_image_for_session(session_id: str, file: UploadFile = File(...)) -> ImageUploadResponse:
+    """
+    Upload an image for use in an interactive session.
+    Stores temporarily and associates with the session for file chooser interception.
+    """
+    from datetime import timedelta
+    from pathlib import Path
+    import uuid
+
+    # Validation
+    allowed_types = ['image/jpeg', 'image/png', 'image/webp']
+    max_size = 10 * 1024 * 1024  # 10MB
+
+    if file.content_type not in allowed_types:
+        return ImageUploadResponse(
+            success=False,
+            error=f"Invalid file type. Allowed: {', '.join(allowed_types)}"
+        )
+
+    content = await file.read()
+    if len(content) > max_size:
+        return ImageUploadResponse(
+            success=False,
+            error=f"File too large. Max size: {max_size // (1024*1024)}MB"
+        )
+
+    # Generate unique ID and save to temp location
+    image_id = str(uuid.uuid4())[:8]
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Preserve original extension
+    ext = Path(file.filename).suffix or '.jpg'
+    temp_path = UPLOAD_DIR / f"{image_id}{ext}"
+    temp_path.write_bytes(content)
+
+    # Store in pending uploads with expiration
+    expires_at = datetime.now() + timedelta(minutes=30)
+    pending_uploads[session_id] = {
+        "image_id": image_id,
+        "path": str(temp_path),
+        "filename": file.filename,
+        "size": len(content),
+        "uploaded_at": datetime.now().isoformat(),
+        "expires_at": expires_at.isoformat()
+    }
+
+    logger.info(f"Image uploaded for session {session_id}: {image_id}")
+
+    return ImageUploadResponse(
+        success=True,
+        image_id=image_id,
+        filename=file.filename,
+        size=len(content),
+        expires_at=expires_at.isoformat()
+    )
+
+
+@app.delete("/sessions/{session_id}/upload-image")
+async def clear_pending_upload(session_id: str) -> Dict:
+    """Clear pending upload for a session."""
+    from pathlib import Path
+
+    if session_id in pending_uploads:
+        upload = pending_uploads.pop(session_id)
+        # Delete temp file
+        try:
+            Path(upload["path"]).unlink(missing_ok=True)
+        except:
+            pass
+        return {"success": True}
+    return {"success": False, "error": "No pending upload"}
+
+
+@app.get("/sessions/{session_id}/pending-upload")
+async def get_pending_upload(session_id: str) -> Dict:
+    """Check if session has a pending upload."""
+    if session_id in pending_uploads:
+        return {"has_pending": True, **pending_uploads[session_id]}
+    return {"has_pending": False}
+
+
+@app.post("/sessions/{session_id}/prepare-file-upload")
+async def prepare_file_upload(session_id: str) -> Dict:
+    """
+    Prepare the interactive session to use the pending upload.
+    Call this before the user clicks a file input on the page.
+    """
+    manager = get_browser_manager()
+
+    if manager.session_id != session_id:
+        raise HTTPException(404, "Interactive session not found or not active")
+
+    if session_id not in pending_uploads:
+        raise HTTPException(400, "No pending upload for this session")
+
+    upload = pending_uploads[session_id]
+
+    # Set the file on the browser manager for interception
+    manager.set_pending_file(upload["path"])
+
+    return {
+        "success": True,
+        "message": "File ready. Click the upload button on the page to use it.",
+        "filename": upload["filename"]
+    }
+
+
+# Cleanup task for expired uploads
+async def cleanup_expired_uploads():
+    """Background task to clean up expired uploads."""
+    from pathlib import Path
+
+    while True:
+        await asyncio.sleep(300)  # Run every 5 minutes
+
+        now = datetime.now()
+        expired = []
+
+        for session_id, upload in pending_uploads.items():
+            expires_at = datetime.fromisoformat(upload["expires_at"])
+            if now > expires_at:
+                expired.append(session_id)
+
+        for session_id in expired:
+            upload = pending_uploads.pop(session_id, None)
+            if upload:
+                try:
+                    Path(upload["path"]).unlink(missing_ok=True)
+                    logger.info(f"Cleaned up expired upload: {upload['image_id']}")
+                except:
+                    pass
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on app startup."""
+    asyncio.create_task(cleanup_expired_uploads())
 
 
 if __name__ == "__main__":

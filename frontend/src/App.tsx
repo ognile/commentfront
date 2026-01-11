@@ -6,7 +6,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle } from "lucide-react"
+import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse } from "lucide-react"
+import { Toaster, toast } from 'sonner'
 
 const API_BASE = import.meta.env.VITE_API_BASE || "https://commentbot-production.up.railway.app";
 const WS_BASE = API_BASE.replace('https://', 'wss://').replace('http://', 'ws://');
@@ -75,6 +76,25 @@ interface SessionCreateStatus {
   error?: string;
 }
 
+// Remote control interfaces
+interface ActionLogEntry {
+  id: string;
+  timestamp: string;
+  type: 'click' | 'scroll' | 'key' | 'navigate' | 'type';
+  details: string;
+  status: 'sent' | 'success' | 'failed';
+}
+
+interface PendingUpload {
+  filename: string;
+  size: number;
+  imageId: string;
+}
+
+// Mobile viewport dimensions
+const VIEWPORT_WIDTH = 393;
+const VIEWPORT_HEIGHT = 873;
+
 function App() {
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
@@ -117,6 +137,22 @@ function App() {
   const [screenshotKey, setScreenshotKey] = useState(0);
   const [activeTab, setActiveTab] = useState('campaign');
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Remote control state
+  const [remoteModalOpen, setRemoteModalOpen] = useState(false);
+  const [remoteSession, setRemoteSession] = useState<Session | null>(null);
+  const [remoteFrame, setRemoteFrame] = useState<string | null>(null);
+  const [remoteConnected, setRemoteConnected] = useState(false);
+  const [remoteConnecting, setRemoteConnecting] = useState(false);
+  const [_remoteUrl, setRemoteUrl] = useState('');
+  const [remoteUrlInput, setRemoteUrlInput] = useState('');
+  const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
+  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
+  const [uploadReady, setUploadReady] = useState(false);
+  const remoteWsRef = useRef<WebSocket | null>(null);
+  const screenshotContainerRef = useRef<HTMLDivElement>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
 
   // WebSocket connection
   useEffect(() => {
@@ -612,6 +648,294 @@ function App() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
+  // ============================================================================
+  // Remote Control Functions
+  // ============================================================================
+
+  const connectRemoteWebSocket = useCallback((sessionId: string) => {
+    if (remoteWsRef.current) {
+      remoteWsRef.current.close();
+    }
+
+    setRemoteConnecting(true);
+
+    try {
+      const ws = new WebSocket(`${WS_BASE}/ws/session/${encodeURIComponent(sessionId)}/control`);
+
+      ws.onopen = () => {
+        console.log('Remote WS connected');
+        setRemoteConnected(true);
+        setRemoteConnecting(false);
+        reconnectAttemptRef.current = 0;
+        toast.success('Browser connected');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+
+          switch (message.type) {
+            case 'frame':
+              setRemoteFrame(message.data.image);
+              break;
+            case 'state':
+              setRemoteUrl(message.data.url || '');
+              setRemoteUrlInput(message.data.url || '');
+              break;
+            case 'browser_ready':
+              toast.success('Browser ready');
+              break;
+            case 'action_result':
+              setActionLog(prev => prev.map(entry =>
+                entry.id === message.data.action_id
+                  ? { ...entry, status: message.data.success ? 'success' : 'failed' }
+                  : entry
+              ));
+              break;
+            case 'error':
+              toast.error(message.data.message);
+              break;
+          }
+        } catch (e) {
+          console.error('Failed to parse remote WS message:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        setRemoteConnected(false);
+        setRemoteConnecting(false);
+
+        // Auto-reconnect with exponential backoff
+        if (remoteModalOpen && reconnectAttemptRef.current < 5) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 10000);
+          toast.loading('Reconnecting...', { id: 'reconnect' });
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectAttemptRef.current++;
+            if (remoteSession) {
+              connectRemoteWebSocket(remoteSession.profile_name);
+            }
+          }, delay);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('Remote WS error:', error);
+      };
+
+      remoteWsRef.current = ws;
+    } catch (error) {
+      console.error('Failed to create remote WebSocket:', error);
+      setRemoteConnecting(false);
+    }
+  }, [remoteModalOpen, remoteSession]);
+
+  const disconnectRemoteWebSocket = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    if (remoteWsRef.current) {
+      remoteWsRef.current.close();
+      remoteWsRef.current = null;
+    }
+    setRemoteConnected(false);
+    setRemoteConnecting(false);
+  }, []);
+
+  const sendRemoteAction = useCallback((action: { type: string; data: Record<string, unknown> }) => {
+    if (remoteWsRef.current?.readyState === WebSocket.OPEN) {
+      const actionId = crypto.randomUUID();
+      remoteWsRef.current.send(JSON.stringify({ ...action, action_id: actionId }));
+      return actionId;
+    }
+    return null;
+  }, []);
+
+  const addActionLogEntry = useCallback((type: ActionLogEntry['type'], details: string, actionId: string) => {
+    const entry: ActionLogEntry = {
+      id: actionId,
+      timestamp: new Date().toISOString(),
+      type,
+      details,
+      status: 'sent'
+    };
+    setActionLog(prev => [entry, ...prev].slice(0, 100));
+  }, []);
+
+  const openRemoteModal = (session: Session) => {
+    setRemoteSession(session);
+    setRemoteModalOpen(true);
+    setRemoteFrame(null);
+    setActionLog([]);
+    setPendingUpload(null);
+    setUploadReady(false);
+    connectRemoteWebSocket(session.profile_name);
+  };
+
+  const closeRemoteModal = () => {
+    disconnectRemoteWebSocket();
+    setRemoteModalOpen(false);
+    setRemoteSession(null);
+    setRemoteFrame(null);
+    setActionLog([]);
+    setPendingUpload(null);
+    setUploadReady(false);
+  };
+
+  // Handle click on screenshot
+  const handleRemoteClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!remoteConnected || !screenshotContainerRef.current) return;
+
+    const img = screenshotContainerRef.current.querySelector('img');
+    if (!img) return;
+
+    const imgRect = img.getBoundingClientRect();
+
+    // Calculate scale
+    const scale = imgRect.width / VIEWPORT_WIDTH;
+
+    // Get click position relative to image
+    const relativeX = e.clientX - imgRect.left;
+    const relativeY = e.clientY - imgRect.top;
+
+    // Check bounds
+    if (relativeX < 0 || relativeX > imgRect.width || relativeY < 0 || relativeY > imgRect.height) {
+      return;
+    }
+
+    // Translate to viewport coordinates
+    const x = Math.round(relativeX / scale);
+    const y = Math.round(relativeY / scale);
+
+    const actionId = sendRemoteAction({ type: 'click', data: { x, y } });
+    if (actionId) {
+      addActionLogEntry('click', `Click at (${x}, ${y})`, actionId);
+    }
+  };
+
+  // Handle scroll on screenshot
+  const handleRemoteScroll = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!remoteConnected) return;
+    e.preventDefault();
+
+    const actionId = sendRemoteAction({
+      type: 'scroll',
+      data: { x: VIEWPORT_WIDTH / 2, y: VIEWPORT_HEIGHT / 2, deltaY: e.deltaY }
+    });
+    if (actionId) {
+      const direction = e.deltaY > 0 ? 'down' : 'up';
+      addActionLogEntry('scroll', `Scroll ${direction}`, actionId);
+    }
+  };
+
+  // Handle keyboard input
+  useEffect(() => {
+    if (!remoteModalOpen || !remoteConnected) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Only capture if the modal is focused (not typing in URL bar)
+      const activeElement = document.activeElement;
+      if (activeElement?.tagName === 'INPUT' || activeElement?.tagName === 'TEXTAREA') {
+        return;
+      }
+
+      e.preventDefault();
+
+      const modifiers: string[] = [];
+      if (e.ctrlKey) modifiers.push('Control');
+      if (e.altKey) modifiers.push('Alt');
+      if (e.shiftKey) modifiers.push('Shift');
+      if (e.metaKey) modifiers.push('Meta');
+
+      const actionId = sendRemoteAction({
+        type: 'key',
+        data: { key: e.key, modifiers }
+      });
+
+      if (actionId) {
+        const keyDisplay = modifiers.length > 0 ? `${modifiers.join('+')}+${e.key}` : e.key;
+        addActionLogEntry('key', `Key: ${keyDisplay}`, actionId);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [remoteModalOpen, remoteConnected, sendRemoteAction, addActionLogEntry]);
+
+  // Handle URL navigation
+  const handleRemoteNavigate = () => {
+    if (!remoteConnected || !remoteUrlInput.trim()) return;
+
+    let url = remoteUrlInput.trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'https://' + url;
+    }
+
+    const actionId = sendRemoteAction({ type: 'navigate', data: { url } });
+    if (actionId) {
+      addActionLogEntry('navigate', `Navigate to ${url}`, actionId);
+    }
+  };
+
+  // Handle image upload for profile picture
+  const handleImageUpload = async (file: File) => {
+    if (!remoteSession) return;
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      toast.error('Please upload a JPG, PNG, or WebP image');
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('Image must be under 10MB');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(remoteSession.profile_name)}/upload-image`, {
+        method: 'POST',
+        body: formData
+      });
+
+      const result = await res.json();
+      if (result.success) {
+        setPendingUpload({
+          filename: result.filename,
+          size: result.size,
+          imageId: result.image_id
+        });
+        setUploadReady(false);
+        toast.success(`Image uploaded: ${result.filename}`);
+      } else {
+        toast.error(`Upload failed: ${result.error}`);
+      }
+    } catch (error) {
+      toast.error(`Upload error: ${error}`);
+    }
+  };
+
+  const prepareFileUpload = async () => {
+    if (!remoteSession) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(remoteSession.profile_name)}/prepare-file-upload`, {
+        method: 'POST'
+      });
+      const result = await res.json();
+      if (result.success) {
+        setUploadReady(true);
+        toast.success('File ready! Click the upload button on Facebook.');
+      } else {
+        toast.error(result.error || 'Failed to prepare upload');
+      }
+    } catch (error) {
+      toast.error(`Error: ${error}`);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 p-8 font-sans">
       <div className="max-w-[1200px] mx-auto space-y-8">
@@ -832,6 +1156,15 @@ function App() {
                           <Badge variant={session.valid ? 'default' : 'destructive'}>
                             {session.valid ? 'Valid' : 'Invalid'}
                           </Badge>
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => openRemoteModal(session)}
+                            disabled={!session.valid}
+                          >
+                            <Mouse className="w-3 h-3 mr-1" />
+                            Control
+                          </Button>
                           <Button
                             size="sm"
                             variant="outline"
@@ -1169,6 +1502,185 @@ function App() {
         </Tabs>
 
       </div>
+
+      {/* Remote Control Modal */}
+      {remoteModalOpen && remoteSession && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b bg-slate-50">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <div className={`h-3 w-3 rounded-full ${
+                    remoteConnected ? 'bg-green-500' :
+                    remoteConnecting ? 'bg-yellow-500 animate-pulse' :
+                    'bg-red-500'
+                  }`} />
+                  <span className="text-sm font-medium">
+                    {remoteConnected ? 'Connected' : remoteConnecting ? 'Connecting...' : 'Disconnected'}
+                  </span>
+                </div>
+                <div className="text-sm text-slate-500">
+                  Session: <span className="font-medium text-slate-900">{remoteSession.profile_name}</span>
+                </div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={closeRemoteModal}>
+                <X className="w-5 h-5" />
+              </Button>
+            </div>
+
+            {/* URL Bar */}
+            <div className="flex items-center gap-2 px-6 py-3 border-b bg-white">
+              <Globe className="w-4 h-4 text-slate-400" />
+              <Input
+                value={remoteUrlInput}
+                onChange={(e) => setRemoteUrlInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleRemoteNavigate()}
+                placeholder="Enter URL..."
+                className="flex-1 bg-slate-50"
+              />
+              <Button onClick={handleRemoteNavigate} disabled={!remoteConnected}>
+                Go
+              </Button>
+            </div>
+
+            {/* Main Content */}
+            <div className="flex-1 flex overflow-hidden">
+              {/* Screenshot Area */}
+              <div className="flex-1 p-4 flex items-center justify-center bg-slate-900">
+                <div
+                  ref={screenshotContainerRef}
+                  className="relative cursor-crosshair outline-none"
+                  style={{ maxHeight: '100%' }}
+                  onClick={handleRemoteClick}
+                  onWheel={handleRemoteScroll}
+                  tabIndex={0}
+                >
+                  {remoteFrame ? (
+                    <img
+                      src={`data:image/jpeg;base64,${remoteFrame}`}
+                      alt="Browser View"
+                      className="max-h-full rounded-lg shadow-lg"
+                      style={{
+                        aspectRatio: `${VIEWPORT_WIDTH}/${VIEWPORT_HEIGHT}`,
+                        maxWidth: '100%',
+                        height: 'auto'
+                      }}
+                      draggable={false}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center text-slate-400" style={{ width: 300, height: 650 }}>
+                      <div className="text-center">
+                        <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
+                        <p>Waiting for browser...</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {!remoteConnected && remoteFrame && (
+                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center rounded-lg">
+                      <div className="text-white text-center">
+                        <WifiOff className="w-12 h-12 mx-auto mb-2" />
+                        <p>Disconnected</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Sidebar */}
+              <div className="w-80 border-l bg-slate-50 flex flex-col">
+                {/* Image Upload Section */}
+                <div className="p-4 border-b">
+                  <div className="text-sm font-medium mb-2">Profile Picture Upload</div>
+                  <Input
+                    type="file"
+                    accept=".jpg,.jpeg,.png,.webp"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleImageUpload(file);
+                      e.target.value = '';
+                    }}
+                    className="text-xs"
+                  />
+                  {pendingUpload && (
+                    <div className="mt-2 p-2 bg-blue-50 rounded text-xs">
+                      <p className="text-blue-700">
+                        Ready: {pendingUpload.filename} ({Math.round(pendingUpload.size / 1024)}KB)
+                      </p>
+                      {!uploadReady ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={prepareFileUpload}
+                          className="mt-2 w-full text-xs"
+                        >
+                          Prepare for Upload
+                        </Button>
+                      ) : (
+                        <p className="mt-2 text-green-700 font-medium">
+                          Click the upload button on Facebook!
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Log */}
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  <div className="px-4 py-3 border-b font-medium text-sm flex items-center gap-2">
+                    <Mouse className="w-4 h-4" />
+                    Action Log
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                    {actionLog.map(entry => (
+                      <div
+                        key={entry.id}
+                        className={`text-xs p-2 rounded ${
+                          entry.status === 'success' ? 'bg-green-50 text-green-700' :
+                          entry.status === 'failed' ? 'bg-red-50 text-red-700' :
+                          'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono">
+                            {new Date(entry.timestamp).toLocaleTimeString()}
+                          </span>
+                          <Badge variant="outline" className="text-xs">
+                            {entry.type}
+                          </Badge>
+                        </div>
+                        <div className="mt-1 truncate">{entry.details}</div>
+                      </div>
+                    ))}
+                    {actionLog.length === 0 && (
+                      <div className="text-center text-slate-400 py-8 text-sm">
+                        No actions yet. Click on the browser to interact.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between px-6 py-2 border-t bg-slate-50 text-xs text-slate-500">
+              <div className="flex items-center gap-4">
+                <span>Viewport: 393x873 (iPhone 12 Pro)</span>
+                <span>|</span>
+                <span className={remoteConnected ? 'text-green-600' : 'text-slate-400'}>
+                  {remoteConnected ? 'Keyboard capture: ON (click browser area first)' : 'Keyboard capture: OFF'}
+                </span>
+              </div>
+              <div>
+                Actions: {actionLog.length}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Toaster position="bottom-right" richColors />
     </div>
   )
 }
