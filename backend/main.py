@@ -217,6 +217,7 @@ async def get_config() -> Dict:
 @app.get("/credentials", response_model=List[CredentialInfo])
 async def get_credentials():
     """Get all saved credentials (without passwords)."""
+    credential_manager.load_credentials()
     credentials = credential_manager.get_all_credentials()
     sessions = list_saved_sessions()
 
@@ -277,6 +278,7 @@ async def delete_credential(uid: str) -> Dict:
 @app.get("/otp/{uid}", response_model=OTPResponse)
 async def get_otp(uid: str) -> OTPResponse:
     """Generate current OTP code for a UID."""
+    credential_manager.load_credentials()
     result = credential_manager.generate_otp(uid)
     return OTPResponse(
         code=result.get("code"),
