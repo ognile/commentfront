@@ -92,15 +92,25 @@ COMMENT = {
         'a[href*="comment"]',
     ],
     "comment_input": [
+        # Facebook mobile comment input - various possible selectors
+        'div[aria-label="Write a comment..."]',  # Exact match (Gemini suggested)
+        'div[aria-label*="Write a comment"]',    # Partial match
         'div[contenteditable="true"]',
-        'textarea[name="comment_text"]',
-        'div[aria-label*="Write a comment"]',
         'div[role="textbox"]',
+        'textarea[name="comment_text"]',
+        'input[placeholder*="Write a comment"]',
+        'div[data-placeholder*="comment"]',
+        '[contenteditable][aria-label*="comment"]',
     ],
     "comment_submit": [
+        # Facebook mobile send/post button
         'div[aria-label="Post"]',
+        'div[aria-label="Send"]',
+        'div[aria-label="Submit"]',
         'button:has-text("Post")',
         'div[role="button"]:has-text("Post")',
+        '[data-sigil*="submit-comment"]',
+        'button[type="submit"]',
     ],
 }
 
