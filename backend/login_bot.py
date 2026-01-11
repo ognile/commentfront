@@ -258,7 +258,13 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     - 'checkpoint' - Security checkpoint
     - 'unknown' - Unknown state
     """
-    # Check for loading state FIRST - before any other checks
+    # FIRST: Check for logged in state via URL (before any element checks)
+    # This handles the homepage redirect case where elements=0 while page loads
+    # Must be at the very top because blank page check would return 'loading' otherwise
+    if 'm.facebook.com' in url and '/login' not in url and '/checkpoint' not in url:
+        return 'logged_in'
+
+    # Check for loading state - before any other checks
     # This prevents re-filling credentials while page is loading
     for el in elements:
         aria = el.get('ariaLabel', '').lower()
@@ -442,14 +448,8 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
         if any(ind in aria or ind in text for ind in logged_in_indicators):
             return 'logged_in'
 
-    # Check for logged in state via URL
-    # If we're on Facebook homepage (not login/checkpoint pages), we're likely logged in
-    url_path = url.split('?')[0].split('#')[0]  # Remove query and hash
-    if url_path in ['https://m.facebook.com/', 'https://m.facebook.com', 'https://www.facebook.com/', 'https://www.facebook.com']:
-        return 'logged_in'
-    # Also detect redirect URLs with deoia parameter (device confirmation)
-    if 'm.facebook.com' in url and '/login' not in url and '/checkpoint' not in url:
-        return 'logged_in'
+    # NOTE: URL-based logged_in check is at the TOP of this function
+    # to handle homepage redirect before blank page returns 'loading'
 
     # Check for checkpoint indicators
     checkpoint_keywords = ['secure your account', 'confirm your identity', 'security check']
