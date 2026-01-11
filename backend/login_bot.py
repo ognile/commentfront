@@ -835,12 +835,12 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
             )
 
             context = await browser.new_context(
-                viewport=MOBILE_VIEWPORT,
-                user_agent=session.user_agent or DEFAULT_USER_AGENT
+                viewport=session.get_viewport() or MOBILE_VIEWPORT,
+                user_agent=session.get_user_agent() or DEFAULT_USER_AGENT
             )
 
             # Add cookies
-            cookies = session.get_cookies_for_playwright()
+            cookies = session.get_cookies()
             if cookies:
                 await context.add_cookies(cookies)
 
@@ -863,10 +863,15 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
             if extracted_name != profile_name:
                 # Create new session with extracted name
                 new_session = FacebookSession(extracted_name)
-                new_session.cookies = session.cookies
-                new_session.user_agent = session.user_agent
-                new_session.viewport = session.viewport
-                new_session.proxy = session.proxy
+                # Copy the data from old session
+                new_session.data = {
+                    "profile_name": extracted_name,
+                    "extracted_at": datetime.now().isoformat(),
+                    "cookies": session.get_cookies(),
+                    "user_agent": session.get_user_agent(),
+                    "viewport": session.get_viewport(),
+                    "proxy": session.get_proxy(),
+                }
                 new_session.save()
 
                 # Delete old session file
