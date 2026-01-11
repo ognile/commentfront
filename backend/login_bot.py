@@ -434,13 +434,22 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
         if 'save your login info' in text or 'save your login info' in aria:
             return 'save_device'
 
-    # Check for logged in state
+    # Check for logged in state via elements
     logged_in_indicators = ['create a post', 'notifications', 'what\'s on your mind']
     for el in elements:
         aria = el.get('ariaLabel', '').lower()
         text = el.get('text', '').lower()
         if any(ind in aria or ind in text for ind in logged_in_indicators):
             return 'logged_in'
+
+    # Check for logged in state via URL
+    # If we're on Facebook homepage (not login/checkpoint pages), we're likely logged in
+    url_path = url.split('?')[0].split('#')[0]  # Remove query and hash
+    if url_path in ['https://m.facebook.com/', 'https://m.facebook.com', 'https://www.facebook.com/', 'https://www.facebook.com']:
+        return 'logged_in'
+    # Also detect redirect URLs with deoia parameter (device confirmation)
+    if 'm.facebook.com' in url and '/login' not in url and '/checkpoint' not in url:
+        return 'logged_in'
 
     # Check for checkpoint indicators
     checkpoint_keywords = ['secure your account', 'confirm your identity', 'security check']
