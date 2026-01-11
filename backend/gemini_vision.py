@@ -41,8 +41,12 @@ class VerificationResult:
 
 
 # Prompts for finding elements - SPECIFIC with exclusions
+# IMPORTANT: Image is 393x873 pixels (mobile viewport)
 ELEMENT_PROMPTS = {
-    "comment_button": """Find the Comment button on this Facebook post.
+    "comment_button": """Find the Comment button on this Facebook mobile screenshot.
+
+IMAGE SIZE: 393 pixels wide, 873 pixels tall.
+Coordinates must be: x between 0-393, y between 0-873.
 
 The Comment button is:
 - A speech bubble icon OR the text "Comment"
@@ -56,18 +60,22 @@ DO NOT click on:
 - The "..." more options button
 - Share or Like buttons
 
-Return ONLY if you're confident this is the Comment button.
+Return the CENTER coordinates of the Comment button.
 Format: FOUND x=XXX y=YYY confidence=0.XX
-Or: NOT_FOUND confidence=0.XX reason=description""",
+Or: NOT_FOUND confidence=0.XX reason=description
 
-    "comment_input": """Find the comment input text field.
+IMPORTANT: x must be 0-393, y must be 0-873.""",
+
+    "comment_input": """Find the comment input text field on this Facebook mobile screenshot.
+
+IMAGE SIZE: 393 pixels wide, 873 pixels tall.
+Coordinates must be: x between 0-393, y between 0-873.
 
 The input field is:
 - A text box saying "Write a comment..." or similar placeholder
-- Located at the bottom of the comments section
+- Located at the bottom of the screen
 - May have a small profile picture to the LEFT of it
 - Has a white/light background with gray placeholder text
-- Is a rectangular input area, NOT a button
 
 DO NOT return:
 - The search bar at the top of the page
@@ -75,11 +83,16 @@ DO NOT return:
 - Any buttons or icons
 - The post content area
 
-Return ONLY the exact center of the text input field.
+Return the CENTER coordinates of the text input field.
 Format: FOUND x=XXX y=YYY confidence=0.XX
-Or: NOT_FOUND confidence=0.XX reason=description""",
+Or: NOT_FOUND confidence=0.XX reason=description
 
-    "send_button": """Find the Send/Post button for comments.
+IMPORTANT: x must be 0-393, y must be 0-873.""",
+
+    "send_button": """Find the Send/Post button for comments on this Facebook mobile screenshot.
+
+IMAGE SIZE: 393 pixels wide, 873 pixels tall.
+Coordinates must be: x between 0-393, y between 0-873.
 
 The send button is:
 - A blue arrow icon (paper plane style) OR blue "Post" text
@@ -93,9 +106,11 @@ DO NOT return:
 - Any grayed out or inactive elements
 - Navigation arrows
 
-Return ONLY if you can see the send button clearly.
+Return the CENTER coordinates of the send button.
 Format: FOUND x=XXX y=YYY confidence=0.XX
-Or: NOT_FOUND confidence=0.XX reason=description"""
+Or: NOT_FOUND confidence=0.XX reason=description
+
+IMPORTANT: x must be 0-393, y must be 0-873."""
 }
 
 # Prompts for STATE VERIFICATION after actions
