@@ -107,57 +107,60 @@ Check if you can see a Facebook POST (not just any page):
 2. Can you see reaction buttons below (Like, Comment, Share icons)?
 3. Is the Comment button specifically visible (speech bubble icon)?
 
-Return: VERIFIED confidence=0.XX if this is a Facebook post with visible Comment button
-Return: NOT_VERIFIED reason=description if something is missing or this is a different page""",
+IMPORTANT: You MUST respond with ONLY one of these exact formats:
+VERIFIED confidence=0.XX
+NOT_VERIFIED reason=your reason here
+
+Do NOT write anything else. Just one line in the format above.""",
 
     "comments_opened": """Analyze this Facebook mobile screenshot.
 
 Check if the COMMENTS SECTION is now open:
-1. Can you see a "Write a comment..." input field at the bottom?
+1. Can you see a "Write a comment..." input field?
 2. Is there a text input area ready for typing?
-3. Are existing comments visible above the input (if any exist)?
-4. Is there a small profile picture next to the input field?
 
-Return: VERIFIED confidence=0.XX if comments section is open and input field is visible
-Return: NOT_VERIFIED reason=description if the input field is not visible""",
+IMPORTANT: You MUST respond with ONLY one of these exact formats:
+VERIFIED confidence=0.XX
+NOT_VERIFIED reason=your reason here
+
+Do NOT write anything else. Just one line in the format above.""",
 
     "input_active": """Analyze this Facebook mobile screenshot.
 
 Check if the comment input field appears ACTIVE/FOCUSED:
 1. Does the input field look selected or highlighted?
-2. Is there a cursor blinking or visible in the field?
-3. Has the placeholder text ("Write a comment...") disappeared or changed?
-4. Does the field appear ready to receive text?
+2. Is there a cursor or text area ready for typing?
 
-Return: VERIFIED confidence=0.XX if input appears active/focused
-Return: NOT_VERIFIED reason=description if input looks inactive""",
+IMPORTANT: You MUST respond with ONLY one of these exact formats:
+VERIFIED confidence=0.XX
+NOT_VERIFIED reason=your reason here
+
+Do NOT write anything else. Just one line in the format above.""",
 
     "text_typed": """Analyze this Facebook mobile screenshot.
 
 Expected text: "{expected_text}"
 
-Check if this EXACT text (or very similar) is visible in the comment input field:
-1. Can you read text in the comment input area?
-2. Does the visible text match or closely match the expected text?
-3. Is the text in the input field, NOT in the comments list above?
+Check if this text is visible in the comment input field.
 
-Return: VERIFIED confidence=0.XX if the expected text is visible in the input
-Return: NOT_VERIFIED reason=description if text is not visible or doesn't match""",
+IMPORTANT: You MUST respond with ONLY one of these exact formats:
+VERIFIED confidence=0.XX
+NOT_VERIFIED reason=your reason here
+
+Do NOT write anything else. Just one line in the format above.""",
 
     "comment_posted": """Analyze this Facebook mobile screenshot.
 
 Expected comment: "{expected_text}"
 
-Check if the comment was SUCCESSFULLY POSTED:
-1. Is the comment visible in the comments SECTION (not the input field)?
-2. Does the comment text match what was expected?
-3. Is the input field now EMPTY (ready for new comment)?
-4. Is there any error message visible?
-5. Is there a "posting..." or loading indicator?
+Check if the comment was SUCCESSFULLY POSTED (visible in comments section, not input field).
 
-Return: VERIFIED confidence=0.XX if comment appears in the comments section
-Return: PENDING confidence=0.XX if still loading/processing
-Return: NOT_VERIFIED reason=description if comment not visible or error occurred"""
+IMPORTANT: You MUST respond with ONLY one of these exact formats:
+VERIFIED confidence=0.XX
+PENDING confidence=0.XX
+NOT_VERIFIED reason=your reason here
+
+Do NOT write anything else. Just one line in the format above."""
 }
 
 VERIFICATION_PROMPT = """Analyze this Facebook mobile screenshot. Check if a comment was successfully posted.
@@ -291,7 +294,7 @@ class GeminiVisionClient:
             )
 
             result_text = response.text.strip()
-            logger.debug(f"Gemini verify_state ({verification_type}): {result_text}")
+            logger.info(f"Gemini verify_state ({verification_type}): {result_text}")
 
             return self._parse_state_verification_response(result_text)
 
@@ -337,7 +340,7 @@ class GeminiVisionClient:
             )
 
             result_text = response.text.strip()
-            logger.debug(f"Gemini verification response: {result_text}")
+            logger.info(f"Gemini verification response: {result_text}")
 
             return self._parse_verification_response(result_text)
 

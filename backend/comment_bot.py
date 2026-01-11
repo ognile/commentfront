@@ -219,7 +219,9 @@ async def vision_element_click(page: Page, x: int, y: int) -> bool:
                 element.dispatchEvent(new MouseEvent('click', {
                     bubbles: true,
                     cancelable: true,
-                    view: window
+                    view: window,
+                    clientX: coords.x,
+                    clientY: coords.y
                 }));
                 return {success: true, tagName: element.tagName, className: element.className.substring(0, 50)};
             }
@@ -573,7 +575,8 @@ async def post_comment_verified(
                 else:
                     # Fallback to click at coordinates using dispatch_event
                     await vision_element_click(page, location.x, location.y)
-            except:
+            except Exception as e:
+                logger.warning(f"Focus failed, using vision click: {e}")
                 await vision_element_click(page, location.x, location.y)
 
             await asyncio.sleep(0.8)
