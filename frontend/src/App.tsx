@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload } from "lucide-react"
+import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle } from "lucide-react"
 
 const API_BASE = import.meta.env.VITE_API_BASE || "https://commentbot-production.up.railway.app";
 const WS_BASE = API_BASE.replace('https://', 'wss://').replace('http://', 'ws://');
@@ -51,6 +51,30 @@ interface OTPData {
   error: string | null;
 }
 
+interface Proxy {
+  id: string;
+  name: string;
+  url_masked: string;
+  host: string | null;
+  port: number | null;
+  type: string;
+  country: string;
+  health_status: string;
+  last_tested: string | null;
+  success_rate: number | null;
+  avg_response_ms: number | null;
+  test_count: number;
+  assigned_sessions: string[];
+  created_at: string;
+}
+
+interface SessionCreateStatus {
+  uid: string;
+  step: string;
+  status: 'pending' | 'in_progress' | 'success' | 'failed' | 'needs_attention';
+  error?: string;
+}
+
 function App() {
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
@@ -66,6 +90,18 @@ function App() {
   const [newProfileName, setNewProfileName] = useState('');
   const [otpData, setOtpData] = useState<Record<string, OTPData>>({});
   const [isImporting, setIsImporting] = useState(false);
+
+  // Proxy state
+  const [proxies, setProxies] = useState<Proxy[]>([]);
+  const [newProxyName, setNewProxyName] = useState('');
+  const [newProxyUrl, setNewProxyUrl] = useState('');
+  const [newProxyType, setNewProxyType] = useState('mobile');
+  const [newProxyCountry, setNewProxyCountry] = useState('US');
+  const [testingProxy, setTestingProxy] = useState<string | null>(null);
+
+  // Session creation state
+  const [creatingSession, setCreatingSession] = useState<string | null>(null);
+  const [sessionCreateStatus, setSessionCreateStatus] = useState<Record<string, SessionCreateStatus>>({});
 
   // WebSocket and live status
   const [liveStatus, setLiveStatus] = useState<LiveStatus>({
@@ -130,6 +166,43 @@ function App() {
                   currentStep: `Done: ${update.data.success}/${update.data.total} successful`
                 }));
                 break;
+              case 'session_create_start':
+                setSessionCreateStatus(prev => ({
+                  ...prev,
+                  [update.data.credential_uid]: {
+                    uid: update.data.credential_uid,
+                    step: 'Starting login...',
+                    status: 'in_progress'
+                  }
+                }));
+                break;
+              case 'login_progress':
+                setSessionCreateStatus(prev => ({
+                  ...prev,
+                  [update.data.uid]: {
+                    uid: update.data.uid,
+                    step: `${update.data.step}: ${update.data.status}`,
+                    status: update.data.status === 'needs_attention' ? 'needs_attention' : 'in_progress',
+                    error: update.data.details?.error
+                  }
+                }));
+                setScreenshotKey(k => k + 1);
+                break;
+              case 'session_create_complete':
+                setSessionCreateStatus(prev => ({
+                  ...prev,
+                  [update.data.credential_uid]: {
+                    uid: update.data.credential_uid,
+                    step: update.data.success ? 'Session created!' : update.data.error || 'Failed',
+                    status: update.data.needs_attention ? 'needs_attention' : (update.data.success ? 'success' : 'failed'),
+                    error: update.data.error
+                  }
+                }));
+                setCreatingSession(null);
+                if (update.data.success) {
+                  fetchSessions();
+                }
+                break;
             }
           } catch (e) {
             console.error('Error parsing WS message:', e);
@@ -185,9 +258,20 @@ function App() {
     }
   };
 
+  const fetchProxies = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/proxies`);
+      const data = await res.json();
+      setProxies(data);
+    } catch (error) {
+      console.error("Failed to fetch proxies:", error);
+    }
+  };
+
   useEffect(() => {
     fetchSessions();
     fetchCredentials();
+    fetchProxies();
   }, []);
 
   const generateJobs = () => {
@@ -343,6 +427,110 @@ function App() {
     }
   };
 
+  // Proxy management functions
+  const addProxy = async () => {
+    if (!newProxyName || !newProxyUrl) {
+      alert("Name and URL are required!");
+      return;
+    }
+
+    try {
+      await fetch(`${API_BASE}/proxies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newProxyName,
+          url: newProxyUrl,
+          proxy_type: newProxyType,
+          country: newProxyCountry
+        })
+      });
+
+      setNewProxyName('');
+      setNewProxyUrl('');
+      setNewProxyType('mobile');
+      setNewProxyCountry('US');
+      fetchProxies();
+      alert("Proxy added!");
+    } catch (error) {
+      alert(`Error: ${error}`);
+    }
+  };
+
+  const deleteProxy = async (proxyId: string) => {
+    if (!confirm("Delete this proxy?")) return;
+
+    try {
+      await fetch(`${API_BASE}/proxies/${encodeURIComponent(proxyId)}`, {
+        method: 'DELETE'
+      });
+      fetchProxies();
+    } catch (error) {
+      alert(`Error: ${error}`);
+    }
+  };
+
+  const testProxy = async (proxyId: string) => {
+    setTestingProxy(proxyId);
+    try {
+      const res = await fetch(`${API_BASE}/proxies/${encodeURIComponent(proxyId)}/test`, {
+        method: 'POST'
+      });
+      const result = await res.json();
+
+      if (result.success) {
+        alert(`Proxy working! IP: ${result.ip}, Response time: ${result.response_time_ms}ms`);
+      } else {
+        alert(`Proxy failed: ${result.error}`);
+      }
+      fetchProxies();
+    } catch (error) {
+      alert(`Error: ${error}`);
+    } finally {
+      setTestingProxy(null);
+    }
+  };
+
+  // Session creation function
+  const createSession = async (uid: string, proxyId?: string) => {
+    setCreatingSession(uid);
+    setSessionCreateStatus(prev => ({
+      ...prev,
+      [uid]: { uid, step: 'Starting...', status: 'pending' }
+    }));
+
+    try {
+      const res = await fetch(`${API_BASE}/sessions/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential_uid: uid,
+          proxy_id: proxyId
+        })
+      });
+
+      const result = await res.json();
+
+      if (result.success) {
+        alert(`Session created for ${result.profile_name}!`);
+        fetchSessions();
+        fetchCredentials();
+      } else if (result.needs_attention) {
+        alert(`Login requires attention: ${result.error}`);
+      } else {
+        alert(`Failed: ${result.error}`);
+      }
+    } catch (error) {
+      alert(`Error: ${error}`);
+      setSessionCreateStatus(prev => ({
+        ...prev,
+        [uid]: { uid, step: 'Error', status: 'failed', error: String(error) }
+      }));
+    } finally {
+      setCreatingSession(null);
+    }
+  };
+
   useEffect(() => {
     const interval = setInterval(() => {
       credentials.forEach(cred => {
@@ -383,11 +571,12 @@ function App() {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-4 lg:w-[600px]">
+          <TabsList className="grid w-full grid-cols-5 lg:w-[750px]">
             <TabsTrigger value="campaign">Campaign</TabsTrigger>
             <TabsTrigger value="live">Live View</TabsTrigger>
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
             <TabsTrigger value="credentials">Credentials</TabsTrigger>
+            <TabsTrigger value="proxies">Proxies</TabsTrigger>
           </TabsList>
 
           <TabsContent value="campaign" className="space-y-6 mt-6">
@@ -699,6 +888,39 @@ function App() {
                           {cred.profile_name && (
                             <div className="text-xs text-slate-500 mb-2">Profile: {cred.profile_name}</div>
                           )}
+                          {/* Session creation status or button */}
+                          <div className="mb-2">
+                            {sessionCreateStatus[cred.uid] ? (
+                              <div className={`text-xs p-2 rounded flex items-center gap-2 ${
+                                sessionCreateStatus[cred.uid].status === 'success' ? 'bg-green-100 text-green-700' :
+                                sessionCreateStatus[cred.uid].status === 'failed' ? 'bg-red-100 text-red-700' :
+                                sessionCreateStatus[cred.uid].status === 'needs_attention' ? 'bg-orange-100 text-orange-700' :
+                                'bg-blue-100 text-blue-700'
+                              }`}>
+                                {sessionCreateStatus[cred.uid].status === 'in_progress' && (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                )}
+                                {sessionCreateStatus[cred.uid].status === 'needs_attention' && (
+                                  <AlertCircle className="w-3 h-3" />
+                                )}
+                                {sessionCreateStatus[cred.uid].step}
+                              </div>
+                            ) : !cred.session_connected ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => createSession(cred.uid)}
+                                disabled={creatingSession !== null || !cred.has_secret}
+                              >
+                                {creatingSession === cred.uid ? (
+                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                ) : (
+                                  <Play className="w-3 h-3 mr-1" />
+                                )}
+                                Create Session
+                              </Button>
+                            ) : null}
+                          </div>
                           {cred.has_secret && (
                             <div className="flex items-center gap-2">
                               {otpData[cred.uid]?.valid ? (
@@ -720,6 +942,136 @@ function App() {
                               )}
                             </div>
                           )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="proxies" className="mt-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <Card className="shadow-md border-slate-200">
+                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Globe className="w-4 h-4" />
+                    Add Proxy
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-6">
+                  <div className="space-y-2">
+                    <Label>Name</Label>
+                    <Input
+                      value={newProxyName}
+                      onChange={(e) => setNewProxyName(e.target.value)}
+                      placeholder="US Mobile 1"
+                      className="bg-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>URL</Label>
+                    <Input
+                      value={newProxyUrl}
+                      onChange={(e) => setNewProxyUrl(e.target.value)}
+                      placeholder="http://user:pass@host:port"
+                      className="bg-white"
+                    />
+                    <p className="text-xs text-slate-500">Format: http://username:password@host:port</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Type</Label>
+                      <select
+                        value={newProxyType}
+                        onChange={(e) => setNewProxyType(e.target.value)}
+                        className="w-full h-10 px-3 border border-slate-200 rounded-md bg-white text-sm"
+                      >
+                        <option value="mobile">Mobile</option>
+                        <option value="residential">Residential</option>
+                        <option value="datacenter">Datacenter</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Country</Label>
+                      <Input
+                        value={newProxyCountry}
+                        onChange={(e) => setNewProxyCountry(e.target.value)}
+                        placeholder="US"
+                        className="bg-white"
+                      />
+                    </div>
+                  </div>
+                  <Button onClick={addProxy} className="w-full">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Proxy
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card className="shadow-md border-slate-200">
+                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4 flex flex-row justify-between items-center">
+                  <CardTitle className="text-lg">Saved Proxies ({proxies.length})</CardTitle>
+                  <Button size="sm" variant="outline" onClick={fetchProxies}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Refresh
+                  </Button>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {proxies.length === 0 ? (
+                    <div className="p-8 text-center text-slate-500">
+                      No proxies configured yet.
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
+                      {proxies.map((proxy) => (
+                        <div key={proxy.id} className="p-4 hover:bg-slate-50">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="font-medium text-slate-900">{proxy.name}</div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant={
+                                proxy.health_status === 'healthy' ? 'default' :
+                                proxy.health_status === 'degraded' ? 'secondary' :
+                                proxy.health_status === 'unhealthy' ? 'destructive' :
+                                'outline'
+                              }>
+                                {proxy.health_status || 'untested'}
+                              </Badge>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => testProxy(proxy.id)}
+                                disabled={testingProxy === proxy.id}
+                              >
+                                {testingProxy === proxy.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Play className="w-3 h-3" />
+                                )}
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => deleteProxy(proxy.id)}>
+                                <Trash2 className="w-3 h-3 text-red-500" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="text-xs text-slate-500 space-y-1">
+                            <div>URL: {proxy.url_masked}</div>
+                            <div className="flex items-center gap-4">
+                              <span>Type: {proxy.type}</span>
+                              <span>Country: {proxy.country}</span>
+                            </div>
+                            {proxy.success_rate !== null && (
+                              <div className="flex items-center gap-4">
+                                <span>Success: {(proxy.success_rate * 100).toFixed(0)}%</span>
+                                {proxy.avg_response_ms && <span>Avg: {proxy.avg_response_ms}ms</span>}
+                                <span>Tests: {proxy.test_count}</span>
+                              </div>
+                            )}
+                            {proxy.assigned_sessions.length > 0 && (
+                              <div>Sessions: {proxy.assigned_sessions.join(', ')}</div>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>

@@ -27,22 +27,50 @@ LOGIN = {
 
 # 2FA Page Selectors
 TWO_FA = {
+    # 2FA method selection (choosing authenticator app)
+    "auth_app_option": [
+        'div[role="button"]:has-text("Authenticator")',
+        'div[role="button"]:has-text("authentication app")',
+        'div[role="button"]:has-text("Code Generator")',
+        'div:has-text("Authenticator"):visible',
+        'div:has-text("Code Generator"):visible',
+        'span:has-text("Authenticator")',
+        'span:has-text("Code Generator")',
+        '[data-sigil*="auth"]',
+    ],
+    # Code input field
     "code_input": [
         'input[name="approvals_code"]',
         'input[id="approvals_code"]',
+        'input[placeholder*="Enter code"]',
+        'input[placeholder*="enter the 6"]',
         'input[type="text"]',
         'input[type="tel"]',
         'input[type="number"]',
     ],
+    # Submit/Continue button after entering code
     "submit_button": [
         'button[type="submit"]',
         'button:has-text("Continue")',
         'button:has-text("Submit")',
         'div[role="button"]:has-text("Continue")',
+        'div[role="button"]:has-text("Submit")',
+        '[data-sigil*="submit"]',
     ],
+    # Trust device checkbox
     "trust_device_checkbox": [
         'input[type="checkbox"]',
         'input[name="name_action_selected"]',
+        'label:has-text("Trust")',
+        'label:has-text("Remember")',
+    ],
+    # Trust device button
+    "trust_device_button": [
+        'div[role="button"]:has-text("Trust")',
+        'button:has-text("Trust")',
+        'div[role="button"]:has-text("Remember")',
+        'button:has-text("Remember")',
+        'div[role="button"]:has-text("Save")',
     ],
 }
 

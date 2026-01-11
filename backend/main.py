@@ -23,6 +23,8 @@ nest_asyncio.apply()
 from comment_bot import post_comment, post_comment_verified, test_session, MOBILE_VIEWPORT, DEFAULT_USER_AGENT
 from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
+from proxy_manager import ProxyManager
+from login_bot import create_session_from_credentials
 
 # Setup Logging
 logging.basicConfig(
@@ -70,6 +72,9 @@ PROXY_URL = os.getenv("PROXY_URL", "")
 # Initialize credential manager
 credential_manager = CredentialManager()
 
+# Initialize proxy manager
+proxy_manager = ProxyManager()
+
 
 # Models
 class CommentRequest(BaseModel):
@@ -114,6 +119,49 @@ class OTPResponse(BaseModel):
     remaining_seconds: int
     valid: bool
     error: Optional[str] = None
+
+
+class ProxyAddRequest(BaseModel):
+    name: str
+    url: str
+    proxy_type: str = "mobile"
+    country: str = "US"
+
+
+class ProxyUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+    proxy_type: Optional[str] = None
+    country: Optional[str] = None
+
+
+class ProxyInfo(BaseModel):
+    id: str
+    name: str
+    url_masked: str
+    host: Optional[str]
+    port: Optional[int]
+    type: str
+    country: str
+    health_status: str
+    last_tested: Optional[str]
+    success_rate: Optional[float]
+    avg_response_ms: Optional[int]
+    test_count: int
+    assigned_sessions: List[str]
+    created_at: str
+
+
+class ProxyTestResult(BaseModel):
+    success: bool
+    response_time_ms: Optional[int] = None
+    ip: Optional[str] = None
+    error: Optional[str] = None
+
+
+class SessionCreateRequest(BaseModel):
+    credential_uid: str
+    proxy_id: Optional[str] = None
 
 
 # Endpoints
@@ -402,6 +450,175 @@ async def get_otp(uid: str) -> OTPResponse:
         valid=result.get("valid", False),
         error=result.get("error")
     )
+
+
+# Proxy Endpoints
+@app.get("/proxies", response_model=List[ProxyInfo])
+async def get_proxies():
+    """Get all saved proxies."""
+    proxy_manager.load_proxies()
+    proxies = proxy_manager.list_proxies()
+    return [
+        ProxyInfo(
+            id=p["id"],
+            name=p["name"],
+            url_masked=p["url_masked"],
+            host=p.get("host"),
+            port=p.get("port"),
+            type=p.get("type", "mobile"),
+            country=p.get("country", "US"),
+            health_status=p.get("health_status", "untested"),
+            last_tested=p.get("last_tested"),
+            success_rate=p.get("success_rate"),
+            avg_response_ms=p.get("avg_response_ms"),
+            test_count=p.get("test_count", 0),
+            assigned_sessions=p.get("assigned_sessions", []),
+            created_at=p.get("created_at", "")
+        )
+        for p in proxies
+    ]
+
+
+@app.post("/proxies")
+async def add_proxy(request: ProxyAddRequest) -> Dict:
+    """Add a new proxy."""
+    proxy = proxy_manager.add_proxy(
+        name=request.name,
+        url=request.url,
+        proxy_type=request.proxy_type,
+        country=request.country
+    )
+    return {"success": True, "proxy_id": proxy["id"], "proxy": proxy}
+
+
+@app.get("/proxies/{proxy_id}")
+async def get_proxy(proxy_id: str) -> Dict:
+    """Get a proxy by ID."""
+    proxy = proxy_manager.get_proxy(proxy_id)
+    if not proxy:
+        raise HTTPException(status_code=404, detail=f"Proxy not found: {proxy_id}")
+    return proxy
+
+
+@app.put("/proxies/{proxy_id}")
+async def update_proxy(proxy_id: str, request: ProxyUpdateRequest) -> Dict:
+    """Update a proxy."""
+    updates = {}
+    if request.name is not None:
+        updates["name"] = request.name
+    if request.url is not None:
+        updates["url"] = request.url
+    if request.proxy_type is not None:
+        updates["type"] = request.proxy_type
+    if request.country is not None:
+        updates["country"] = request.country
+
+    proxy = proxy_manager.update_proxy(proxy_id, updates)
+    if not proxy:
+        raise HTTPException(status_code=404, detail=f"Proxy not found: {proxy_id}")
+    return {"success": True, "proxy": proxy}
+
+
+@app.delete("/proxies/{proxy_id}")
+async def delete_proxy(proxy_id: str) -> Dict:
+    """Delete a proxy."""
+    success = proxy_manager.delete_proxy(proxy_id)
+    if success:
+        return {"success": True, "proxy_id": proxy_id}
+    raise HTTPException(status_code=404, detail=f"Proxy not found: {proxy_id}")
+
+
+@app.post("/proxies/{proxy_id}/test", response_model=ProxyTestResult)
+async def test_proxy(proxy_id: str) -> ProxyTestResult:
+    """Test a proxy's connectivity."""
+    result = await proxy_manager.test_proxy(proxy_id)
+    return ProxyTestResult(
+        success=result.get("success", False),
+        response_time_ms=result.get("response_time_ms"),
+        ip=result.get("ip"),
+        error=result.get("error")
+    )
+
+
+@app.post("/sessions/{profile_name}/assign-proxy")
+async def assign_proxy_to_session(profile_name: str, proxy_id: str) -> Dict:
+    """Assign a proxy to a session."""
+    # Verify session exists
+    session = FacebookSession(profile_name)
+    if not session.load():
+        raise HTTPException(status_code=404, detail=f"Session not found: {profile_name}")
+
+    # Verify proxy exists
+    proxy = proxy_manager.get_proxy(proxy_id)
+    if not proxy:
+        raise HTTPException(status_code=404, detail=f"Proxy not found: {proxy_id}")
+
+    # Assign proxy
+    success = proxy_manager.assign_to_session(proxy_id, profile_name)
+    if success:
+        # Also update the session's proxy field
+        session.data["proxy"] = proxy.get("url")
+        session.save()
+        return {"success": True, "profile_name": profile_name, "proxy_id": proxy_id}
+
+    raise HTTPException(status_code=500, detail="Failed to assign proxy")
+
+
+# Session Creation Endpoint
+@app.post("/sessions/create")
+async def create_session(request: SessionCreateRequest) -> Dict:
+    """
+    Create a new session by logging in with stored credentials.
+
+    This triggers automated login using the login_bot module.
+    Progress is broadcast via WebSocket.
+    """
+    credential_uid = request.credential_uid
+
+    # Get proxy URL if specified
+    proxy_url = None
+    if request.proxy_id:
+        proxy = proxy_manager.get_proxy(request.proxy_id)
+        if proxy:
+            proxy_url = proxy.get("url")
+        else:
+            raise HTTPException(status_code=404, detail=f"Proxy not found: {request.proxy_id}")
+    elif PROXY_URL:
+        # Use global proxy if no specific proxy specified
+        proxy_url = PROXY_URL
+
+    # Broadcast that session creation is starting
+    await broadcast_update("session_create_start", {
+        "credential_uid": credential_uid,
+        "proxy_id": request.proxy_id
+    })
+
+    # Create a broadcast callback that uses our WebSocket broadcast
+    async def broadcast_callback(update_type: str, data: dict):
+        await broadcast_update(update_type, data)
+
+    # Run login automation
+    result = await create_session_from_credentials(
+        credential_uid=credential_uid,
+        proxy_url=proxy_url,
+        broadcast_callback=broadcast_callback
+    )
+
+    # Broadcast completion
+    await broadcast_update("session_create_complete", {
+        "credential_uid": credential_uid,
+        "success": result.get("success", False),
+        "profile_name": result.get("profile_name"),
+        "error": result.get("error"),
+        "needs_attention": result.get("needs_attention", False)
+    })
+
+    if not result.get("success"):
+        # Return error details but don't throw exception
+        # so frontend can handle the "needs_attention" state
+        return result
+
+    return result
 
 
 if __name__ == "__main__":
