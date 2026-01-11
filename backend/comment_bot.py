@@ -209,32 +209,70 @@ async def smart_focus(page: Page, selectors: List[str], description: str) -> boo
 
 async def vision_element_click(page: Page, x: int, y: int) -> bool:
     """
-    Click an element at vision coordinates using dispatch_event.
-    This combines vision's coordinate accuracy with dispatch_event that works on Facebook.
+    Click an element at vision coordinates using multiple strategies.
 
-    page.mouse.click() doesn't work on Facebook - we need to:
-    1. Find the DOM element at those coordinates using elementFromPoint
-    2. Dispatch a click event on that element
+    Facebook uses nested DIVs - elementFromPoint often returns a wrapper.
+    We try multiple approaches to ensure the click reaches React handlers:
+    1. Find deepest clickable element (role=button, actual buttons, links)
+    2. Try native .click() method first
+    3. Fall back to dispatchEvent with proper coordinates
     """
     try:
         result = await page.evaluate('''(coords) => {
-            const element = document.elementFromPoint(coords.x, coords.y);
-            if (element) {
-                // Use dispatchEvent - the only click method that works on FB mobile
-                element.dispatchEvent(new MouseEvent('click', {
+            let element = document.elementFromPoint(coords.x, coords.y);
+            if (!element) {
+                return {success: false, reason: "No element at coordinates"};
+            }
+
+            // Try to find a more specific clickable element in the hierarchy
+            let clickable = element;
+            let current = element;
+
+            // Walk up the tree looking for actual interactive elements
+            while (current && current !== document.body) {
+                const role = current.getAttribute('role');
+                const tag = current.tagName.toLowerCase();
+
+                // Prefer these clickable element types
+                if (role === 'button' || tag === 'button' || tag === 'a' ||
+                    current.hasAttribute('tabindex') || current.onclick) {
+                    clickable = current;
+                    break;
+                }
+                current = current.parentElement;
+            }
+
+            // First try native .click() which works better with React
+            try {
+                clickable.click();
+                return {
+                    success: true,
+                    method: 'native_click',
+                    tagName: clickable.tagName,
+                    role: clickable.getAttribute('role') || 'none',
+                    className: (clickable.className || '').substring(0, 50)
+                };
+            } catch (e) {
+                // Fall back to dispatchEvent
+                clickable.dispatchEvent(new MouseEvent('click', {
                     bubbles: true,
                     cancelable: true,
                     view: window,
                     clientX: coords.x,
                     clientY: coords.y
                 }));
-                return {success: true, tagName: element.tagName, className: element.className.substring(0, 50)};
+                return {
+                    success: true,
+                    method: 'dispatch_event',
+                    tagName: clickable.tagName,
+                    role: clickable.getAttribute('role') || 'none',
+                    className: (clickable.className || '').substring(0, 50)
+                };
             }
-            return {success: false, reason: "No element at coordinates"};
         }''', {"x": x, "y": y})
 
         if result.get("success"):
-            logger.info(f"Clicked element <{result.get('tagName')}> at ({x}, {y})")
+            logger.info(f"Clicked <{result.get('tagName')} role={result.get('role')}> at ({x}, {y}) via {result.get('method')}")
             return True
         else:
             logger.warning(f"No element at ({x}, {y}): {result.get('reason')}")
