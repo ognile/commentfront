@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye } from "lucide-react"
+import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload } from "lucide-react"
 
 const API_BASE = import.meta.env.VITE_API_BASE || "https://commentbot-production.up.railway.app";
 const WS_BASE = API_BASE.replace('https://', 'wss://').replace('http://', 'ws://');
@@ -65,6 +65,7 @@ function App() {
   const [newSecret, setNewSecret] = useState('');
   const [newProfileName, setNewProfileName] = useState('');
   const [otpData, setOtpData] = useState<Record<string, OTPData>>({});
+  const [isImporting, setIsImporting] = useState(false);
 
   // WebSocket and live status
   const [liveStatus, setLiveStatus] = useState<LiveStatus>({
@@ -74,6 +75,7 @@ function App() {
     totalJobs: 0
   });
   const [screenshotKey, setScreenshotKey] = useState(0);
+  const [activeTab, setActiveTab] = useState('campaign');
   const wsRef = useRef<WebSocket | null>(null);
 
   // WebSocket connection
@@ -287,7 +289,7 @@ function App() {
 
   const deleteCredential = async (uid: string) => {
     if (!confirm(`Delete credential for ${uid}?`)) return;
-    
+
     try {
       await fetch(`${API_BASE}/credentials/${encodeURIComponent(uid)}`, {
         method: 'DELETE'
@@ -295,6 +297,33 @@ function App() {
       fetchCredentials();
     } catch (error) {
       alert(`Error: ${error}`);
+    }
+  };
+
+  const bulkImportCredentials = async (file: File) => {
+    setIsImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch(`${API_BASE}/credentials/bulk-import`, {
+        method: 'POST',
+        body: formData
+      });
+
+      const result = await res.json();
+
+      if (result.errors && result.errors.length > 0) {
+        alert(`Imported ${result.imported} credentials.\n\nErrors:\n${result.errors.join('\n')}`);
+      } else {
+        alert(`Successfully imported ${result.imported} credentials!`);
+      }
+
+      fetchCredentials();
+    } catch (error) {
+      alert(`Import failed: ${error}`);
+    } finally {
+      setIsImporting(false);
     }
   };
 
@@ -325,6 +354,17 @@ function App() {
     return () => clearInterval(interval);
   }, [credentials, otpData, getOTP]);
 
+  // Live View polling - independent interval that doesn't depend on image onLoad
+  useEffect(() => {
+    if (activeTab !== 'live') return;
+
+    const interval = setInterval(() => {
+      setScreenshotKey(k => k + 1);
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [activeTab]);
+
   return (
     <div className="min-h-screen bg-slate-50 p-8 font-sans">
       <div className="max-w-[1200px] mx-auto space-y-8">
@@ -342,7 +382,7 @@ function App() {
           </div>
         </div>
 
-        <Tabs defaultValue="campaign" className="w-full">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="grid w-full grid-cols-4 lg:w-[600px]">
             <TabsTrigger value="campaign">Campaign</TabsTrigger>
             <TabsTrigger value="live">Live View</TabsTrigger>
@@ -455,17 +495,14 @@ function App() {
                 <div className="relative aspect-video flex items-center justify-center overflow-hidden">
                   <img
                     key={screenshotKey}
-                    src={`${API_BASE}/debug/latest.png?t=${Date.now()}`}
+                    src={`${API_BASE}/debug/latest.png?t=${screenshotKey}`}
                     alt="Live Bot View"
                     className="max-h-full max-w-full object-contain"
                     onError={(e) => {
                       (e.target as HTMLImageElement).style.display = 'none';
                     }}
                     onLoad={(e) => {
-                      setTimeout(() => {
-                        const img = e.target as HTMLImageElement;
-                        if (img) img.src = `${API_BASE}/debug/latest.png?t=${Date.now()}`;
-                      }, 1000);
+                      (e.target as HTMLImageElement).style.display = 'block';
                     }}
                   />
                   {/* Status overlay */}
@@ -545,6 +582,35 @@ function App() {
           </TabsContent>
 
           <TabsContent value="credentials" className="mt-6">
+            {/* Bulk Import Section */}
+            <Card className="shadow-md border-slate-200 mb-6">
+              <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Upload className="w-4 h-4" />
+                  Bulk Import
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-4">
+                  <Input
+                    type="file"
+                    accept=".txt"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) bulkImportCredentials(file);
+                      e.target.value = '';
+                    }}
+                    className="bg-white"
+                    disabled={isImporting}
+                  />
+                  {isImporting && <Loader2 className="w-5 h-5 animate-spin" />}
+                </div>
+                <p className="text-xs text-slate-500 mt-2">
+                  Format: uid:password:2fa_secret (one per line)
+                </p>
+              </CardContent>
+            </Card>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <Card className="shadow-md border-slate-200">
                 <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">

@@ -2,11 +2,14 @@
 CommentBot API - Streamlined Facebook Comment Automation
 """
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Set
+
+# Maximum concurrent browser sessions for campaigns
+MAX_CONCURRENT = 5
 import logging
 import os
 import asyncio
@@ -196,55 +199,78 @@ async def post_comment_endpoint(request: CommentRequest) -> Dict:
 
 @app.post("/campaign")
 async def run_campaign(request: CampaignRequest) -> Dict:
-    """Run a campaign with multiple comments."""
-    results = []
+    """Run a campaign with concurrent execution (max 5 parallel sessions)."""
     total_jobs = min(len(request.profile_names), len(request.comments))
 
     await broadcast_update("campaign_start", {"url": request.url, "total_jobs": total_jobs})
 
-    for i, profile_name in enumerate(request.profile_names):
-        if i >= len(request.comments):
-            break
+    # Semaphore to limit concurrent browser sessions
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+    results_dict: Dict[int, Dict] = {}
 
-        comment = request.comments[i]
-        session = FacebookSession(profile_name)
+    async def process_one(job_index: int, profile_name: str, comment: str) -> Dict:
+        """Process a single comment job with concurrency limit."""
+        async with semaphore:
+            await broadcast_update("job_start", {"job_index": job_index, "profile_name": profile_name, "comment": comment[:50]})
 
-        await broadcast_update("job_start", {"job_index": i, "profile_name": profile_name, "comment": comment[:50]})
+            session = FacebookSession(profile_name)
 
-        if not session.load():
-            await broadcast_update("job_error", {"job_index": i, "error": "Session not found"})
-            results.append({"profile_name": profile_name, "success": False, "error": "Session not found"})
-            continue
+            if not session.load():
+                await broadcast_update("job_error", {"job_index": job_index, "error": "Session not found"})
+                return {"profile_name": profile_name, "success": False, "error": "Session not found", "job_index": job_index}
 
-        # Use the verified version with step-by-step verification
-        result = await post_comment_verified(
-            session=session,
-            url=request.url,
-            comment=comment,
-            proxy=PROXY_URL if PROXY_URL else None
-        )
+            try:
+                result = await post_comment_verified(
+                    session=session,
+                    url=request.url,
+                    comment=comment,
+                    proxy=PROXY_URL if PROXY_URL else None
+                )
 
-        await broadcast_update("job_complete", {
-            "job_index": i,
-            "profile_name": profile_name,
-            "success": result["success"],
-            "verified": result.get("verified", False),
-            "method": result.get("method", "unknown"),
-            "error": result.get("error")
-        })
+                await broadcast_update("job_complete", {
+                    "job_index": job_index,
+                    "profile_name": profile_name,
+                    "success": result["success"],
+                    "verified": result.get("verified", False),
+                    "method": result.get("method", "unknown"),
+                    "error": result.get("error")
+                })
 
-        results.append({
-            "profile_name": profile_name,
-            "comment": comment,
-            "success": result["success"],
-            "verified": result.get("verified", False),
-            "method": result.get("method", "unknown"),
-            "error": result.get("error")
-        })
+                return {
+                    "profile_name": profile_name,
+                    "comment": comment,
+                    "success": result["success"],
+                    "verified": result.get("verified", False),
+                    "method": result.get("method", "unknown"),
+                    "error": result.get("error"),
+                    "job_index": job_index
+                }
+            except Exception as e:
+                logger.error(f"Error processing job {job_index}: {e}")
+                await broadcast_update("job_error", {"job_index": job_index, "error": str(e)})
+                return {"profile_name": profile_name, "success": False, "error": str(e), "job_index": job_index}
 
-        await asyncio.sleep(2)
+    # Create tasks for all profile/comment pairs
+    tasks = [
+        process_one(i, profile_name, comment)
+        for i, (profile_name, comment) in enumerate(zip(request.profile_names[:total_jobs], request.comments[:total_jobs]))
+    ]
 
-    success_count = sum(1 for r in results if r["success"])
+    # Run concurrently (max 5 at a time via semaphore)
+    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Process results (handle any exceptions from gather)
+    results = []
+    for r in raw_results:
+        if isinstance(r, Exception):
+            results.append({"success": False, "error": str(r)})
+        else:
+            results.append(r)
+
+    # Sort results by job_index to maintain order
+    results.sort(key=lambda x: x.get("job_index", 0))
+
+    success_count = sum(1 for r in results if r.get("success"))
     await broadcast_update("campaign_complete", {"total": len(results), "success": success_count})
 
     return {"url": request.url, "total": len(results), "success": success_count, "results": results}
@@ -311,6 +337,49 @@ async def add_credential(request: CredentialAddRequest) -> Dict:
         profile_name=request.profile_name
     )
     return {"success": True, "uid": request.uid}
+
+
+@app.post("/credentials/bulk-import")
+async def bulk_import_credentials(file: UploadFile = File(...)) -> Dict:
+    """
+    Import credentials from text file.
+    Format per line: uid:password:2fa_secret
+    Example: 61571384288937:BHvSDSchultz:EBKJL7AVC3X6PPCG56HPDQTKV4X5R37K
+    """
+    content = await file.read()
+    lines = content.decode("utf-8").strip().split("\n")
+
+    imported = 0
+    errors = []
+
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = line.split(":")
+        if len(parts) != 3:
+            errors.append(f"Line {i+1}: Invalid format (expected uid:password:secret)")
+            continue
+
+        uid, password, secret = parts
+
+        # Auto-generate profile name from last 6 digits of UID
+        profile_name = f"fb_{uid[-6:]}"
+
+        try:
+            credential_manager.add_credential(
+                uid=uid,
+                password=password,
+                secret=secret,
+                profile_name=profile_name
+            )
+            imported += 1
+            logger.info(f"Imported credential for {uid} as {profile_name}")
+        except Exception as e:
+            errors.append(f"Line {i+1}: {str(e)}")
+
+    return {"imported": imported, "errors": errors, "total_lines": len(lines)}
 
 
 @app.delete("/credentials/{uid}")

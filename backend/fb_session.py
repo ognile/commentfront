@@ -8,11 +8,22 @@ Sessions are saved as JSON files containing cookies, user agent, viewport, and p
 import json
 import logging
 import os
+import random
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger("FBSession")
+
+# USA timezones only (mobile proxy is in USA)
+USA_TIMEZONES = [
+    "America/New_York",      # Eastern
+    "America/Chicago",       # Central
+    "America/Denver",        # Mountain
+    "America/Los_Angeles",   # Pacific
+    "America/Phoenix",       # Arizona (no DST)
+    "America/Anchorage",     # Alaska
+]
 
 SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", str(Path(__file__).parent / "sessions")))
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -145,6 +156,43 @@ class FacebookSession:
             if cookie.get("name") == "c_user":
                 return cookie.get("value")
         return None
+
+    def get_device_fingerprint(self) -> Dict[str, str]:
+        """
+        Get device fingerprint (timezone, locale) for this session.
+        If not set in session data, generates a random USA timezone.
+        """
+        if not self.data:
+            # Generate random fingerprint for new sessions
+            return {
+                "timezone": random.choice(USA_TIMEZONES),
+                "locale": "en-US"
+            }
+
+        device = self.data.get("device", {})
+
+        # If device fingerprint exists in session, use it
+        if device.get("timezone"):
+            return {
+                "timezone": device.get("timezone"),
+                "locale": device.get("locale", "en-US")
+            }
+
+        # Generate consistent fingerprint based on user ID (so same session = same timezone)
+        user_id = self.get_user_id()
+        if user_id:
+            # Use user ID hash to deterministically select timezone
+            timezone_index = hash(user_id) % len(USA_TIMEZONES)
+            return {
+                "timezone": USA_TIMEZONES[timezone_index],
+                "locale": "en-US"
+            }
+
+        # Fallback to random
+        return {
+            "timezone": random.choice(USA_TIMEZONES),
+            "locale": "en-US"
+        }
 
 
 async def apply_session_to_context(context, session: FacebookSession) -> bool:

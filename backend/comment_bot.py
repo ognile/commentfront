@@ -3,11 +3,8 @@ import logging
 import os
 import re
 from playwright.async_api import async_playwright, Page
-# try-except import to prevent crash if stealth is missing during dev
-try:
-    from playwright_stealth import Stealth
-except ImportError:
-    Stealth = None
+# Stealth mode is MANDATORY for anti-detection
+from playwright_stealth import Stealth
 
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse, unquote
@@ -688,11 +685,17 @@ async def post_comment(
         session_proxy = session.get_proxy()
         active_proxy = session_proxy if session_proxy else proxy
 
+        # Get device fingerprint for this session (timezone, locale)
+        device_fingerprint = session.get_device_fingerprint()
+        logger.info(f"Using device fingerprint: timezone={device_fingerprint['timezone']}, locale={device_fingerprint['locale']}")
+
         context_options = {
             "user_agent": user_agent,
             "viewport": viewport,
             "ignore_https_errors": True,
-            "device_scale_factor": 1  # Force 1:1 pixel mapping for vision coordinates
+            "device_scale_factor": 1,  # Force 1:1 pixel mapping for vision coordinates
+            "timezone_id": device_fingerprint["timezone"],
+            "locale": device_fingerprint["locale"],
         }
         if active_proxy:
             context_options["proxy"] = _build_playwright_proxy(active_proxy)
@@ -701,8 +704,8 @@ async def post_comment(
         browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
         context = await browser.new_context(**context_options)
 
-        if Stealth:
-            await Stealth().apply_stealth_async(context)
+        # MANDATORY: Apply stealth mode for anti-detection
+        await Stealth().apply_stealth_async(context)
 
         try:
             page = await context.new_page()
@@ -830,11 +833,17 @@ async def post_comment_verified(
         session_proxy = session.get_proxy()
         active_proxy = session_proxy if session_proxy else proxy
 
+        # Get device fingerprint for this session (timezone, locale)
+        device_fingerprint = session.get_device_fingerprint()
+        logger.info(f"Using device fingerprint: timezone={device_fingerprint['timezone']}, locale={device_fingerprint['locale']}")
+
         context_options = {
             "user_agent": user_agent,
             "viewport": viewport,
             "ignore_https_errors": True,
-            "device_scale_factor": 1  # Force 1:1 pixel mapping for vision coordinates
+            "device_scale_factor": 1,  # Force 1:1 pixel mapping for vision coordinates
+            "timezone_id": device_fingerprint["timezone"],
+            "locale": device_fingerprint["locale"],
         }
         if active_proxy:
             context_options["proxy"] = _build_playwright_proxy(active_proxy)
@@ -843,8 +852,8 @@ async def post_comment_verified(
         browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
         context = await browser.new_context(**context_options)
 
-        if Stealth:
-            await Stealth().apply_stealth_async(context)
+        # MANDATORY: Apply stealth mode for anti-detection
+        await Stealth().apply_stealth_async(context)
 
         try:
             page = await context.new_page()
@@ -1030,7 +1039,7 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
     if not session.load():
         result["error"] = "Session file not found"
         return result
-        
+
     async with async_playwright() as p:
         session_proxy = session.get_proxy()
         active_proxy = session_proxy if session_proxy else proxy
@@ -1038,17 +1047,25 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
 
+        # Get device fingerprint for this session (timezone, locale)
+        device_fingerprint = session.get_device_fingerprint()
+
         context_options: Dict[str, Any] = {
             "user_agent": user_agent,
             "viewport": viewport,
             "ignore_https_errors": True,
             "device_scale_factor": 1,  # Force 1:1 pixel mapping
+            "timezone_id": device_fingerprint["timezone"],
+            "locale": device_fingerprint["locale"],
         }
         if active_proxy:
             context_options["proxy"] = _build_playwright_proxy(active_proxy)
 
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
         context = await browser.new_context(**context_options)
+
+        # MANDATORY: Apply stealth mode for anti-detection
+        await Stealth().apply_stealth_async(context)
 
         try:
             if not await apply_session_to_context(context, session):
