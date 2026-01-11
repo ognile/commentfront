@@ -75,6 +75,15 @@ class CredentialManager:
             return True
         return False
 
+    def update_profile_name(self, uid, profile_name):
+        """Update the profile name for a credential."""
+        if uid in self.credentials:
+            self.credentials[uid]["profile_name"] = profile_name
+            self.save_credentials()
+            self.logger.info(f"Updated profile name for {uid} to: {profile_name}")
+            return True
+        return False
+
     def get_all_credentials(self):
         """Get all credentials (without passwords)."""
         return [

@@ -714,11 +714,15 @@ async def handle_device_trust(page: Page) -> Dict[str, Any]:
     return result
 
 
-async def verify_logged_in(page: Page) -> bool:
+async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
     """
-    Verify that we're logged in by navigating to /me/.
+    Verify that we're logged in by navigating to /me/ and extract profile name.
+
+    Returns:
+        Tuple of (is_logged_in: bool, profile_name: Optional[str])
     """
     logger.info("Verifying login by navigating to /me/")
+    profile_name = None
 
     try:
         await page.goto("https://m.facebook.com/me/", wait_until="domcontentloaded", timeout=30000)
@@ -730,29 +734,163 @@ async def verify_logged_in(page: Page) -> bool:
         # If we're redirected to login, not logged in
         if '/login' in url:
             logger.warning("Redirected to login page - not logged in")
-            return False
+            return False, None
 
-        # Check for profile indicators
+        # Check for profile indicators and extract profile name
         elements = await dump_interactive_elements(page, "VERIFY LOGGED IN - /me/ page")
 
-        # Look for profile-related elements
+        # Try to extract profile name from page title first
+        page_title = await page.title()
+        logger.info(f"Page title: {page_title}")
+
+        # Facebook mobile titles often include the profile name
+        # Format is usually "Profile Name | Facebook" or just "Profile Name"
+        if page_title and 'facebook' in page_title.lower():
+            name_part = page_title.split('|')[0].strip()
+            if name_part and name_part.lower() not in ['facebook', 'log in', 'login']:
+                profile_name = name_part
+                logger.info(f"Extracted profile name from title: {profile_name}")
+
+        # Also try to find name from elements with aria-label "Go to profile" or similar
+        if not profile_name:
+            for el in elements:
+                text = el.get('text', '').strip()
+                aria = el.get('ariaLabel', '').strip()
+                role = el.get('role', '').lower()
+
+                # Look for profile header element which often contains the name
+                # On mobile FB, there's often a prominent text showing the profile name
+                if role == 'heading' and text and len(text) > 1 and len(text) < 50:
+                    # Avoid generic headings
+                    if text.lower() not in ['posts', 'about', 'friends', 'photos', 'videos', 'more']:
+                        profile_name = text
+                        logger.info(f"Extracted profile name from heading: {profile_name}")
+                        break
+
+        # Try finding profile name from "Tap to open profile page" or similar elements
+        if not profile_name:
+            for el in elements:
+                aria = el.get('ariaLabel', '').lower()
+                text = el.get('text', '').strip()
+                if 'profile' in aria and text and len(text) > 1 and len(text) < 50:
+                    # Clean up any icons or extra text
+                    clean_name = text.split('󳂊')[0].strip()  # Remove FB icon
+                    if clean_name and clean_name.lower() not in ['profile', 'go to profile']:
+                        profile_name = clean_name
+                        logger.info(f"Extracted profile name from profile element: {profile_name}")
+                        break
+
+        # Look for profile-related elements to verify login
         for el in elements:
             text = el.get('text', '').lower()
             aria = el.get('ariaLabel', '').lower()
             if any(x in text or x in aria for x in ['edit profile', 'about', 'friends', 'timeline']):
                 logger.info("Found profile indicators - logged in!")
-                return True
+                return True, profile_name
 
         # If not redirected to login, probably logged in
         if '/me/' in url or 'profile' in url:
             logger.info("URL looks like profile page - assuming logged in")
-            return True
+            return True, profile_name
 
-        return True  # If we got here without redirect, probably logged in
+        return True, profile_name  # If we got here without redirect, probably logged in
 
     except Exception as e:
         logger.error(f"Error verifying login: {e}")
-        return False
+        return False, None
+
+
+async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
+    """
+    Refresh the profile name for an existing session by navigating to /me/.
+
+    Args:
+        profile_name: Current profile name (session file identifier)
+
+    Returns:
+        Dict with success, new_profile_name, old_profile_name
+    """
+    result = {
+        "success": False,
+        "old_profile_name": profile_name,
+        "new_profile_name": None,
+        "error": None
+    }
+
+    try:
+        # Load existing session
+        session = FacebookSession(profile_name)
+        if not session.load():
+            result["error"] = f"Session not found: {profile_name}"
+            return result
+
+        user_id = session.get_user_id()
+        logger.info(f"Refreshing profile name for session {profile_name} (user_id: {user_id})")
+
+        # Launch browser with session
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"]
+            )
+
+            context = await browser.new_context(
+                viewport=MOBILE_VIEWPORT,
+                user_agent=session.user_agent or DEFAULT_USER_AGENT
+            )
+
+            # Add cookies
+            cookies = session.get_cookies_for_playwright()
+            if cookies:
+                await context.add_cookies(cookies)
+
+            page = await context.new_page()
+
+            # Navigate to /me/ and extract profile name
+            is_logged_in, extracted_name = await verify_logged_in(page)
+
+            await browser.close()
+
+            if not is_logged_in:
+                result["error"] = "Session is no longer valid - redirected to login"
+                return result
+
+            if not extracted_name:
+                result["error"] = "Could not extract profile name from Facebook"
+                return result
+
+            # Update session file with new name if different
+            if extracted_name != profile_name:
+                # Create new session with extracted name
+                new_session = FacebookSession(extracted_name)
+                new_session.cookies = session.cookies
+                new_session.user_agent = session.user_agent
+                new_session.viewport = session.viewport
+                new_session.proxy = session.proxy
+                new_session.save()
+
+                # Delete old session file
+                if os.path.exists(session.session_file):
+                    os.remove(session.session_file)
+                    logger.info(f"Removed old session file: {session.session_file}")
+
+                logger.info(f"Renamed session from {profile_name} to {extracted_name}")
+
+            result["success"] = True
+            result["new_profile_name"] = extracted_name
+            result["user_id"] = user_id
+
+            # Update credential profile_name as well
+            cred_manager = CredentialManager()
+            if user_id and cred_manager.update_profile_name(user_id, extracted_name):
+                logger.info(f"Updated credential profile_name for {user_id}")
+
+            return result
+
+    except Exception as e:
+        logger.error(f"Error refreshing profile name: {e}")
+        result["error"] = str(e)
+        return result
 
 
 async def login_facebook(
@@ -976,12 +1114,18 @@ async def login_facebook(
                     result["step"] = "verify"
                     await broadcast("verify", "in_progress")
 
-                    # Verify login
-                    if await verify_logged_in(page):
+                    # Verify login and extract profile name
+                    is_logged_in, extracted_profile_name = await verify_logged_in(page)
+                    if is_logged_in:
+                        # Update profile name if we extracted a real name
+                        if extracted_profile_name:
+                            result["profile_name"] = extracted_profile_name
+                            logger.info(f"Using extracted profile name: {extracted_profile_name}")
+
                         result["step"] = "extract"
                         await broadcast("extract", "in_progress")
 
-                        # Extract session
+                        # Extract session with the (potentially updated) profile name
                         session = FacebookSession(result["profile_name"])
                         await session.extract_from_page(page, proxy=proxy)
 

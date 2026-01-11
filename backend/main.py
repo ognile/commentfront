@@ -24,7 +24,7 @@ from comment_bot import post_comment, post_comment_verified, test_session, MOBIL
 from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
-from login_bot import create_session_from_credentials
+from login_bot import create_session_from_credentials, refresh_session_profile_name
 
 # Setup Logging - JSON structured logs for production, readable logs for dev
 class JSONFormatter(logging.Formatter):
@@ -642,6 +642,69 @@ async def create_session(request: SessionCreateRequest) -> Dict:
         return result
 
     return result
+
+
+@app.post("/sessions/{profile_name}/refresh-name")
+async def refresh_profile_name(profile_name: str) -> Dict:
+    """
+    Refresh the profile name for an existing session by fetching it from Facebook.
+
+    This navigates to /me/ using the session's cookies and extracts the real profile name.
+    The session file is renamed and the credential is updated.
+    """
+    result = await refresh_session_profile_name(profile_name)
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to refresh profile name"))
+
+    return result
+
+
+@app.post("/sessions/refresh-all-names")
+async def refresh_all_profile_names() -> Dict:
+    """
+    Refresh profile names for all existing sessions.
+
+    Returns a summary of which sessions were successfully updated.
+    """
+    sessions = list_saved_sessions()
+    results = {
+        "total": len(sessions),
+        "success": 0,
+        "failed": 0,
+        "updates": []
+    }
+
+    for session in sessions:
+        profile_name = session.get("profile_name")
+        if not profile_name:
+            continue
+
+        try:
+            result = await refresh_session_profile_name(profile_name)
+            if result.get("success"):
+                results["success"] += 1
+                results["updates"].append({
+                    "old_name": profile_name,
+                    "new_name": result.get("new_profile_name"),
+                    "success": True
+                })
+            else:
+                results["failed"] += 1
+                results["updates"].append({
+                    "old_name": profile_name,
+                    "error": result.get("error"),
+                    "success": False
+                })
+        except Exception as e:
+            results["failed"] += 1
+            results["updates"].append({
+                "old_name": profile_name,
+                "error": str(e),
+                "success": False
+            })
+
+    return results
 
 
 if __name__ == "__main__":
