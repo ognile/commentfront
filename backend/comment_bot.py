@@ -44,12 +44,17 @@ def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
 
 
 async def save_debug_screenshot(page: Page, name: str) -> str:
-    """Save a screenshot for debugging. Returns the path."""
+    """Save a screenshot for debugging. Returns the path.
+
+    Uses scale=1 to ensure screenshot pixel coordinates match viewport coordinates.
+    This is critical for vision_element_click() to work correctly.
+    """
     try:
         path = os.path.join(DEBUG_DIR, f"{name}.png")
-        await page.screenshot(path=path)
+        # scale=1 ensures screenshot pixels = viewport pixels (no DPI scaling)
+        await page.screenshot(path=path, scale="css")
         latest_path = os.path.join(DEBUG_DIR, "latest.png")
-        await page.screenshot(path=latest_path)
+        await page.screenshot(path=latest_path, scale="css")
         logger.info(f"Saved debug screenshot: {path}")
         return path
     except Exception as e:
