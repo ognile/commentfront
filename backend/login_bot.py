@@ -193,15 +193,45 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     Detect the current page state based on visible elements.
 
     Returns one of:
+    - 'loading' - Page is loading (button shows Loading...)
+    - 'error' - Error message on page (wrong password, locked, etc.)
     - 'login_form' - Login page with email/password fields
     - '2fa_selection' - 2FA method selection screen
     - '2fa_code_input' - 2FA code entry screen
     - 'logged_in' - Successfully logged in
     - 'checkpoint' - Security checkpoint
-    - 'error' - Error state
     - 'unknown' - Unknown state
     """
-    # Check page URL first
+    # Check for loading state FIRST - before any other checks
+    # This prevents re-filling credentials while page is loading
+    for el in elements:
+        aria = el.get('ariaLabel', '').lower()
+        if 'loading' in aria:
+            return 'loading'
+
+    # Check for error states - wrong password, account locked, etc.
+    # Must check BEFORE login_form to avoid retrying with same wrong password
+    error_keywords = [
+        'wrong password',
+        'incorrect password',
+        'password you entered is incorrect',
+        'password is incorrect',
+        'too many attempts',
+        'account has been locked',
+        'account is disabled',
+        'temporarily locked',
+        'try again later',
+        'unusual activity',
+        'security check required',
+        'please try again'
+    ]
+    for el in elements:
+        text = el.get('text', '').lower()
+        for keyword in error_keywords:
+            if keyword in text:
+                return 'error'
+
+    # Check page URL
     url = page.url.lower()
 
     if '/checkpoint/' in url:
@@ -615,6 +645,7 @@ async def login_facebook(
             # === STEP 2: Detect state and handle login form ===
             max_iterations = 10
             iteration = 0
+            login_submitted = False  # Track if we've already submitted credentials
 
             while iteration < max_iterations:
                 iteration += 1
@@ -624,6 +655,13 @@ async def login_facebook(
                 await broadcast(state, "in_progress")
 
                 if state == "login_form":
+                    # If we already submitted, don't re-fill - just wait for state change
+                    if login_submitted:
+                        logger.info("Already submitted login, waiting for page transition...")
+                        await asyncio.sleep(2)
+                        elements = await dump_interactive_elements(page, "WAITING FOR TRANSITION")
+                        continue  # Re-check state
+
                     result["step"] = "login_form"
                     form_result = await handle_login_form(page, uid, password)
 
@@ -632,6 +670,7 @@ async def login_facebook(
                         await broadcast("login_form", "failed", {"error": result["error"]})
                         break
 
+                    login_submitted = True  # Mark as submitted
                     await broadcast("login_form", "submitted")
                     await asyncio.sleep(3)
                     elements = await dump_interactive_elements(page, "AFTER LOGIN SUBMIT")
@@ -694,10 +733,18 @@ async def login_facebook(
                         # Extract session
                         session = FacebookSession(result["profile_name"])
                         await session.extract_from_page(page, proxy=proxy)
+
+                        # Validate essential cookies exist before saving
+                        if not session.has_valid_cookies():
+                            result["error"] = "Failed to extract essential cookies (c_user, xs)"
+                            await broadcast("extract", "failed", {"error": result["error"]})
+                            break
+
                         session.save()
+                        logger.info(f"Session saved with valid cookies for {result['profile_name']}")
 
                         result["success"] = True
-                        result["session_file"] = session.file_path
+                        result["session_file"] = str(session.session_file)
                         result["user_id"] = session.get_user_id()
 
                         await broadcast("complete", "success", {
@@ -722,6 +769,32 @@ async def login_facebook(
                         "elements": [e.get("text", "")[:30] for e in elements[:10]]
                     })
                     break
+
+                elif state == "loading":
+                    # Page is loading - wait before checking again
+                    logger.info("Page is loading, waiting...")
+                    await broadcast("loading", "waiting")
+                    await asyncio.sleep(3)
+                    elements = await dump_interactive_elements(page, "AFTER LOADING WAIT")
+                    # Continue loop - will re-check state
+
+                elif state == "error":
+                    # Found error message on page - extract and fail immediately
+                    result["step"] = "error"
+                    error_text = "Login failed"
+
+                    # Find the actual error message
+                    error_keywords = ['wrong', 'incorrect', 'locked', 'disabled', 'attempts', 'try again']
+                    for el in elements:
+                        text = el.get('text', '')
+                        if any(kw in text.lower() for kw in error_keywords):
+                            error_text = text[:150]  # First 150 chars
+                            break
+
+                    result["error"] = f"Facebook error: {error_text}"
+                    await save_debug_screenshot(page, "login_error")
+                    await broadcast("error", "failed", {"error": result["error"]})
+                    break  # Exit loop - don't retry with same wrong password
 
                 else:
                     # Unknown state - check if there's a trust device prompt
