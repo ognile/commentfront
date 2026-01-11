@@ -115,10 +115,10 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
             logger.info(f"  Selector '{selector}' → found {count} element(s)")
 
             if count > 0:
-                await save_debug_screenshot(page, f"pre_click_{description.replace(' ', '_')}")
-
                 if await locator.is_visible():
-                    await locator.dispatch_event('click')
+                    await save_debug_screenshot(page, f"pre_click_{description.replace(' ', '_')}")
+                    # Use real click(), not dispatch_event() which Facebook ignores
+                    await locator.click()
                     logger.info(f"  → CLICKED successfully via: {selector}")
                     await save_debug_screenshot(page, f"post_click_{description.replace(' ', '_')}")
                     return True
@@ -131,7 +131,7 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
     try:
         text_locator = page.get_by_text(description, exact=False).first
         if await text_locator.count() > 0 and await text_locator.is_visible():
-            await text_locator.dispatch_event('click')
+            await text_locator.click()
             logger.info(f"Clicked '{description}' using text match")
             return True
     except:
@@ -280,36 +280,60 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
 async def handle_login_form(page: Page, email: str, password: str) -> Dict[str, Any]:
     """
     Handle the login form - fill email and password, click login.
+    Uses fill() instead of keyboard.type() to REPLACE content (not append).
     """
     result = {"success": False, "step": "login_form"}
 
-    # Focus and fill email
-    if not await smart_focus(page, LOGIN["email_input"], "email input"):
-        result["error"] = "Failed to focus email input"
+    try:
+        # Use fill() which clears field first then types - prevents text appending
+        email_locator = page.locator('input[name="email"]')
+        await email_locator.fill(email)
+        logger.info(f"Filled email: {email[:3]}***")
+
+        # Verify email was entered correctly
+        actual_email = await email_locator.input_value()
+        logger.info(f"Email field value: {actual_email[:3]}***{actual_email[-3:]} ({len(actual_email)} chars)")
+        if actual_email != email:
+            logger.error(f"Email mismatch! Expected {len(email)} chars, got {len(actual_email)}")
+            result["error"] = "Email entry verification failed"
+            return result
+
+        await asyncio.sleep(0.3)
+
+        # Use fill() for password
+        pass_locator = page.locator('input[name="pass"]')
+        await pass_locator.fill(password)
+        logger.info("Filled password: ****")
+
+        # Verify password was entered correctly
+        actual_pass = await pass_locator.input_value()
+        logger.info(f"Password field contains: {len(actual_pass)} chars")
+        if actual_pass != password:
+            logger.error(f"Password mismatch! Expected {len(password)} chars, got {len(actual_pass)}")
+            result["error"] = "Password entry verification failed"
+            return result
+
+    except Exception as e:
+        logger.error(f"Failed to fill credentials: {e}")
+        result["error"] = f"Failed to fill credentials: {e}"
         return result
-
-    await page.keyboard.type(email, delay=50)
-    logger.info(f"Entered email: {email[:3]}***")
-
-    await asyncio.sleep(0.5)
-
-    # Focus and fill password
-    if not await smart_focus(page, LOGIN["password_input"], "password input"):
-        result["error"] = "Failed to focus password input"
-        return result
-
-    await page.keyboard.type(password, delay=50)
-    logger.info("Entered password: ****")
 
     await asyncio.sleep(0.5)
 
     # Dump elements before clicking login
     await dump_interactive_elements(page, "BEFORE LOGIN CLICK")
 
+    # Log URL before click
+    logger.info(f"URL before login click: {page.url}")
+
     # Click login button
     if not await smart_click(page, LOGIN["login_button"], "Log in"):
         result["error"] = "Failed to click login button"
         return result
+
+    # Wait and log URL after click to verify navigation
+    await asyncio.sleep(2)
+    logger.info(f"URL after login click: {page.url}")
 
     result["success"] = True
     return result
