@@ -49,22 +49,27 @@ IMAGE SIZE: 393 pixels wide, 873 pixels tall.
 Coordinates must be: x between 0-393, y between 0-873.
 
 The Comment button is:
-- A speech bubble icon OR the text "Comment"
-- Located in the reaction bar below the post (same row as Like, Share)
-- Usually gray/dark icon
+- A SPEECH BUBBLE icon (looks like a chat bubble)
+- Located in the MIDDLE/CENTER of the reaction bar (between Like and Share)
+- The reaction bar layout from left to right is: Like | Comment | Share
+- The Comment button is around x=150-220 (center of 393px width)
+- May show a number next to it (like "1 Comment")
+
+CRITICAL: The Share button (arrow icon) is on the RIGHT side (x > 280).
+DO NOT confuse the Share arrow with the Comment speech bubble!
 
 DO NOT click on:
-- Profile pictures (circular photos of people)
-- The post author's name or profile
-- Any other icons outside the reaction bar
+- The Share button (arrow icon on the RIGHT side)
+- The Like button (thumbs up on the LEFT side)
+- Profile pictures
 - The "..." more options button
-- Share or Like buttons
 
-Return the CENTER coordinates of the Comment button.
+Return the CENTER coordinates of the Comment button (speech bubble in the MIDDLE).
 Format: FOUND x=XXX y=YYY confidence=0.XX
 Or: NOT_FOUND confidence=0.XX reason=description
 
-IMPORTANT: x must be 0-393, y must be 0-873.""",
+IMPORTANT: x must be 0-393, y must be 0-873.
+The Comment button should have x around 150-220 (middle of screen).""",
 
     "comment_input": """Find the comment input text field on this Facebook mobile screenshot.
 
