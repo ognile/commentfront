@@ -1,1 +1,18 @@
 .vercel
+.env*.local
+*.log
+backend.log
+accounts info.txt
+backend/accounts info.txt
+backend/debug_*.html
+backend/debug_*.png
+backend/*.png
+backend/sessions/*.json
+!backend/sessions/.gitkeep
+.DS_Store
+venv/
+__pycache__/
+.pytest_cache/
+node_modules/
+dist/
+.env
