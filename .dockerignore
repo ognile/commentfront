@@ -1,0 +1,16 @@
+.git/
+**/.DS_Store
+
+backend/__pycache__/
+backend/venv/
+backend/.venv/
+backend/debug/
+backend/*.png
+backend/*.html
+backend/*.log
+backend/sessions/
+backend/credentials.json
+backend/.env
+
+frontend/node_modules/
+frontend/.vercel/
