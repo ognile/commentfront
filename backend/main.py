@@ -17,7 +17,7 @@ import nest_asyncio
 # Patch asyncio to allow nested event loops (crucial for Playwright in FastAPI)
 nest_asyncio.apply()
 
-from comment_bot import post_comment, test_session, MOBILE_VIEWPORT, DEFAULT_USER_AGENT
+from comment_bot import post_comment, post_comment_verified, test_session, MOBILE_VIEWPORT, DEFAULT_USER_AGENT
 from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 
@@ -177,8 +177,9 @@ async def post_comment_endpoint(request: CommentRequest) -> Dict:
         raise HTTPException(status_code=401, detail=f"Invalid session: {request.profile_name}")
     
     logger.info(f"Posting comment for {request.profile_name}: {request.url}")
-    
-    result = await post_comment(
+
+    # Use the verified version with step-by-step verification
+    result = await post_comment_verified(
         session=session,
         url=request.url,
         comment=request.comment,
@@ -215,13 +216,12 @@ async def run_campaign(request: CampaignRequest) -> Dict:
             results.append({"profile_name": profile_name, "success": False, "error": "Session not found"})
             continue
 
-        result = await post_comment(
+        # Use the verified version with step-by-step verification
+        result = await post_comment_verified(
             session=session,
             url=request.url,
             comment=comment,
-            proxy=PROXY_URL if PROXY_URL else None,
-            use_vision=True,
-            verify_post=True
+            proxy=PROXY_URL if PROXY_URL else None
         )
 
         await broadcast_update("job_complete", {

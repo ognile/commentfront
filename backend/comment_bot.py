@@ -439,6 +439,184 @@ async def post_comment(
 
     return result
 
+
+async def post_comment_verified(
+    session: FacebookSession,
+    url: str,
+    comment: str,
+    proxy: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Post a comment with AI vision VERIFICATION at every step.
+    This is the robust version that verifies each action succeeded before proceeding.
+    """
+    result = {
+        "success": False,
+        "url": url,
+        "comment": comment,
+        "error": None,
+        "steps_completed": [],
+        "method": "vision_verified"
+    }
+
+    vision = get_vision_client() if VISION_AVAILABLE else None
+    if not vision:
+        result["error"] = "Vision client not available - required for verified mode"
+        return result
+
+    async with async_playwright() as p:
+        user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
+        viewport = session.get_viewport() or MOBILE_VIEWPORT
+        session_proxy = session.get_proxy()
+        active_proxy = session_proxy if session_proxy else proxy
+
+        context_options = {"user_agent": user_agent, "viewport": viewport, "ignore_https_errors": True}
+        if active_proxy:
+            context_options["proxy"] = _build_playwright_proxy(active_proxy)
+            logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
+
+        browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
+        context = await browser.new_context(**context_options)
+
+        if Stealth:
+            await Stealth().apply_stealth_async(context)
+
+        try:
+            page = await context.new_page()
+            if not await apply_session_to_context(context, session):
+                raise Exception("Failed to apply cookies")
+
+            # ========== STEP 1: Navigate and verify post is visible ==========
+            logger.info(f"Step 1: Navigating to {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(4)  # Wait for Facebook to fully load
+
+            screenshot = await save_debug_screenshot(page, "step1_navigated")
+            verification = await vision.verify_state(screenshot, "post_visible")
+            if not verification.success:
+                raise Exception(f"Step 1 FAILED - Post not visible: {verification.message}")
+            result["steps_completed"].append("post_visible")
+            logger.info(f"✓ Step 1: Post visible (confidence: {verification.confidence:.0%})")
+
+            # ========== STEP 2: Find and click comment button, verify comments opened ==========
+            logger.info("Step 2: Finding and clicking comment button")
+            screenshot = await save_debug_screenshot(page, "step2_pre_click")
+            location = await vision.find_element(screenshot, "comment_button")
+
+            if not location or not location.found:
+                raise Exception("Step 2 FAILED - Comment button not found by vision")
+            if location.confidence < 0.8:
+                raise Exception(f"Step 2 FAILED - Comment button confidence too low: {location.confidence:.0%}")
+
+            logger.info(f"Found comment button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
+            await page.mouse.click(location.x, location.y)
+            await asyncio.sleep(2)
+
+            screenshot = await save_debug_screenshot(page, "step2_post_click")
+            verification = await vision.verify_state(screenshot, "comments_opened")
+            if not verification.success:
+                raise Exception(f"Step 2 FAILED - Comments section did not open: {verification.message}")
+            result["steps_completed"].append("comments_opened")
+            logger.info(f"✓ Step 2: Comments section opened (confidence: {verification.confidence:.0%})")
+
+            # ========== STEP 3: Find input, focus, verify active ==========
+            logger.info("Step 3: Finding and focusing comment input")
+            screenshot = await save_debug_screenshot(page, "step3_pre_focus")
+            location = await vision.find_element(screenshot, "comment_input")
+
+            if not location or not location.found:
+                raise Exception("Step 3 FAILED - Comment input not found by vision")
+
+            logger.info(f"Found comment input at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
+
+            # Try focus first (works better for text fields)
+            try:
+                input_locator = page.locator('[contenteditable="true"]').first
+                if await input_locator.count() > 0:
+                    await input_locator.focus()
+                else:
+                    # Fallback to click at coordinates
+                    await page.mouse.click(location.x, location.y)
+            except:
+                await page.mouse.click(location.x, location.y)
+
+            await asyncio.sleep(0.8)
+
+            screenshot = await save_debug_screenshot(page, "step3_post_focus")
+            verification = await vision.verify_state(screenshot, "input_active")
+            if not verification.success:
+                # Retry with direct click
+                logger.warning("Input not active, retrying with click...")
+                await page.mouse.click(location.x, location.y)
+                await asyncio.sleep(0.8)
+                screenshot = await save_debug_screenshot(page, "step3_retry")
+                verification = await vision.verify_state(screenshot, "input_active")
+                if not verification.success:
+                    raise Exception(f"Step 3 FAILED - Input field not active: {verification.message}")
+
+            result["steps_completed"].append("input_active")
+            logger.info(f"✓ Step 3: Input field active (confidence: {verification.confidence:.0%})")
+
+            # ========== STEP 4: Type comment and verify text appears ==========
+            logger.info(f"Step 4: Typing comment: {comment[:30]}...")
+            await page.keyboard.type(comment, delay=50)
+            await asyncio.sleep(0.8)
+
+            screenshot = await save_debug_screenshot(page, "step4_typed")
+            verification = await vision.verify_state(screenshot, "text_typed", expected_text=comment[:50])
+            if not verification.success:
+                raise Exception(f"Step 4 FAILED - Typed text not visible: {verification.message}")
+
+            result["steps_completed"].append("text_typed")
+            logger.info(f"✓ Step 4: Typed text visible (confidence: {verification.confidence:.0%})")
+
+            # ========== STEP 5: Find send button, click, verify comment posted ==========
+            logger.info("Step 5: Finding and clicking send button")
+            screenshot = await save_debug_screenshot(page, "step5_pre_send")
+            location = await vision.find_element(screenshot, "send_button")
+
+            if not location or not location.found:
+                raise Exception("Step 5 FAILED - Send button not found by vision")
+            if location.confidence < 0.8:
+                raise Exception(f"Step 5 FAILED - Send button confidence too low: {location.confidence:.0%}")
+
+            logger.info(f"Found send button at ({location.x}, {location.y}) confidence: {location.confidence:.0%}")
+            await page.mouse.click(location.x, location.y)
+            await asyncio.sleep(3)
+
+            screenshot = await save_debug_screenshot(page, "step5_post_send")
+            verification = await vision.verify_state(screenshot, "comment_posted", expected_text=comment[:50])
+
+            if verification.status == "pending":
+                logger.info("Comment appears pending, waiting...")
+                await asyncio.sleep(3)
+                screenshot = await save_debug_screenshot(page, "step5_retry")
+                verification = await vision.verify_state(screenshot, "comment_posted", expected_text=comment[:50])
+
+            if not verification.success:
+                raise Exception(f"Step 5 FAILED - Comment not posted: {verification.message}")
+
+            result["steps_completed"].append("comment_posted")
+            result["success"] = True
+            result["verified"] = True
+            result["verification_confidence"] = verification.confidence
+            logger.info(f"✓ Step 5: Comment posted and verified! (confidence: {verification.confidence:.0%})")
+            logger.info("=" * 50)
+            logger.info("SUCCESS: All 5 steps completed with verification!")
+            logger.info("=" * 50)
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"FAILED: {e}")
+            logger.error(f"Steps completed before failure: {result['steps_completed']}")
+            if 'page' in locals():
+                await save_debug_screenshot(page, "error_state")
+        finally:
+            await browser.close()
+
+    return result
+
+
 # Re-export other functions needed by main.py
 async def test_session(session: FacebookSession, proxy: Optional[str] = None) -> Dict[str, Any]:
     result = {
