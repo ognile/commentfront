@@ -21,6 +21,9 @@ RUN playwright install-deps chromium
 # Copy backend code
 COPY . .
 
+# Copy frontend build (if exists)
+COPY ../frontend/dist ../frontend/dist 2>/dev/null || echo "Frontend build not found, will serve API only"
+
 # Expose port
 EXPOSE 8000
 
