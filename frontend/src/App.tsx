@@ -1506,9 +1506,9 @@ function App() {
       {/* Remote Control Modal */}
       {remoteModalOpen && remoteSession && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col overflow-hidden">
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b bg-slate-50">
+            <div className="flex items-center justify-between px-4 py-2 border-b bg-slate-50 shrink-0">
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2">
                   <div className={`h-3 w-3 rounded-full ${
@@ -1530,7 +1530,7 @@ function App() {
             </div>
 
             {/* URL Bar */}
-            <div className="flex items-center gap-2 px-6 py-3 border-b bg-white">
+            <div className="flex items-center gap-2 px-4 py-2 border-b bg-white shrink-0">
               <Globe className="w-4 h-4 text-slate-400" />
               <Input
                 value={remoteUrlInput}
@@ -1545,13 +1545,12 @@ function App() {
             </div>
 
             {/* Main Content */}
-            <div className="flex-1 flex overflow-hidden">
+            <div className="flex-1 flex overflow-hidden min-h-0">
               {/* Screenshot Area */}
-              <div className="flex-1 p-4 flex items-center justify-center bg-slate-900">
+              <div className="flex-1 p-2 flex items-center justify-center bg-slate-900 min-h-0">
                 <div
                   ref={screenshotContainerRef}
-                  className="relative cursor-crosshair outline-none"
-                  style={{ maxHeight: '100%' }}
+                  className="relative cursor-crosshair outline-none h-full flex items-center justify-center"
                   onClick={handleRemoteClick}
                   onWheel={handleRemoteScroll}
                   tabIndex={0}
@@ -1560,16 +1559,16 @@ function App() {
                     <img
                       src={`data:image/jpeg;base64,${remoteFrame}`}
                       alt="Browser View"
-                      className="max-h-full rounded-lg shadow-lg"
+                      className="rounded-lg shadow-lg object-contain"
                       style={{
-                        aspectRatio: `${VIEWPORT_WIDTH}/${VIEWPORT_HEIGHT}`,
+                        maxHeight: '100%',
                         maxWidth: '100%',
-                        height: 'auto'
+                        aspectRatio: `${VIEWPORT_WIDTH}/${VIEWPORT_HEIGHT}`,
                       }}
                       draggable={false}
                     />
                   ) : (
-                    <div className="flex items-center justify-center text-slate-400" style={{ width: 300, height: 650 }}>
+                    <div className="flex items-center justify-center text-slate-400" style={{ width: 250, height: 500 }}>
                       <div className="text-center">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
                         <p>Waiting for browser...</p>
@@ -1589,10 +1588,10 @@ function App() {
               </div>
 
               {/* Right Sidebar */}
-              <div className="w-80 border-l bg-slate-50 flex flex-col">
+              <div className="w-64 border-l bg-slate-50 flex flex-col shrink-0">
                 {/* Image Upload Section */}
-                <div className="p-4 border-b">
-                  <div className="text-sm font-medium mb-2">Profile Picture Upload</div>
+                <div className="p-3 border-b">
+                  <div className="text-xs font-medium mb-2">Profile Picture Upload</div>
                   <Input
                     type="file"
                     accept=".jpg,.jpeg,.png,.webp"
@@ -1664,7 +1663,7 @@ function App() {
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-between px-6 py-2 border-t bg-slate-50 text-xs text-slate-500">
+            <div className="flex items-center justify-between px-4 py-1 border-t bg-slate-50 text-xs text-slate-500 shrink-0">
               <div className="flex items-center gap-4">
                 <span>Viewport: 393x873 (iPhone 12 Pro)</span>
                 <span>|</span>
