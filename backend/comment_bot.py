@@ -971,8 +971,8 @@ async def post_comment_verified(
                 error_msg = step5_result.get("error", "Unknown error")
                 raise Exception(f"Step 5 FAILED - {error_msg}")
 
-            # Wait for comment to post
-            await asyncio.sleep(3)
+            # Wait for comment to post (5s for long comments to render)
+            await asyncio.sleep(5)
 
             # Verify comment was posted
             verify_screenshot = await save_debug_screenshot(page, "step5_verify")
@@ -984,7 +984,7 @@ async def post_comment_verified(
                     logger.info("Comment appears pending, waiting...")
                     await asyncio.sleep(3)
                     verify_screenshot = await save_debug_screenshot(page, "step5_pending")
-                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[:50])
+                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-50:])
 
                 if not verification.success:
                     raise Exception(f"Step 5 FAILED - Comment not posted: {verification.message}")

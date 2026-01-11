@@ -1,4 +1,4 @@
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to agent when working with code in this repository.
 IMPORTANT: ALWAYS THINK FROM HIGH LEVEL ARCHITECTURAL PERSPECTIVE.
 ## Project Overview
 
@@ -140,11 +140,11 @@ When a selector doesn't work:
 
 **Example:** Send button had `aria-label="Post a comment"` not "Post" or "Send"
 
-### 6. IMPORTANT AFTER EVERY PLAN COMPLETION:
+### 6. DEPLOYMENT WORKFLOW
 
-Local changes mean NOTHING until deployed and verified:
-1. Test locally with full logging
-2. `git add` + `git commit` + `git push`
-3. Verify Railway deployment succeeds (CHECK DEPLOYMENT LOGS AND BUILD LOGS)
-4. THEN test from frontend
-5. AFTER test succeeds, notify user.
+Local changes mean NOTHING until deployed:
+1. Make changes locally
+2. Test locally with full logging
+3. `git add` + `git commit` + `git push`
+4. Verify Railway deployment succeeds (check `mcp__railway__list-deployments`)
+5. THEN test from frontend

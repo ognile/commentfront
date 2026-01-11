@@ -183,10 +183,23 @@
       "bases:Create new base": false
     }
   },
-  "active": "0700746293ce4c1f",
+  "active": "c3f3696999f1be5c",
   "lastOpenFiles": [
-    "frontend/README.md",
+    "frontend/dist/assets/index-DZgwtya8.css",
+    "frontend/dist/assets/index-COFJXqWK.js",
+    "AGENTS.md",
     "CLAUDE.md",
+    "backend/debug/step5_verify.png",
+    "backend/debug/post_click_Send_button.png",
+    "backend/debug/pre_click_Send_button.png",
+    "backend/debug/healing_Send_button_4.png",
+    "backend/debug/healing_Send_button_3.png",
+    "backend/debug/healing_Send_button_2.png",
+    "backend/debug/healing_Send_button_1.png",
+    "backend/debug/healing_Send_button_0.png",
+    "backend/debug/failed_click_Send_button.png",
+    "backend/debug/step4_typed.png",
+    "frontend/README.md",
     "PHASE2_UPGRADE.md"
   ]
 }
