@@ -52,24 +52,27 @@ The Comment button is:
 - A SPEECH BUBBLE icon (looks like a chat bubble)
 - Located in the MIDDLE/CENTER of the reaction bar (between Like and Share)
 - The reaction bar layout from left to right is: Like | Comment | Share
-- The Comment button is around x=150-220 (center of 393px width)
+- The reaction bar is DIRECTLY BELOW the post image, BEFORE any "Reels" section
+- Expected coordinates: x=150-220 (center), y=420-500 (below post, above Reels)
 - May show a number next to it (like "1 Comment")
 
-CRITICAL: The Share button (arrow icon) is on the RIGHT side (x > 280).
-DO NOT confuse the Share arrow with the Comment speech bubble!
+CRITICAL LOCATION CONSTRAINTS:
+- X coordinate: 150-220 (center of screen, NOT left like=50-120, NOT right share=280-350)
+- Y coordinate: 420-500 (reaction bar row, NOT the Reels section below)
+- The "Reels" section starts around y=500+ with video thumbnails - DO NOT click there!
 
 DO NOT click on:
-- The Share button (arrow icon on the RIGHT side)
-- The Like button (thumbs up on the LEFT side)
+- The Share button (arrow icon on the RIGHT side, x > 280)
+- The Like button (thumbs up on the LEFT side, x < 120)
+- Reels video thumbnails (y > 500)
 - Profile pictures
 - The "..." more options button
 
-Return the CENTER coordinates of the Comment button (speech bubble in the MIDDLE).
+Return the CENTER coordinates of the Comment button (speech bubble in the MIDDLE of the reaction bar).
 Format: FOUND x=XXX y=YYY confidence=0.XX
 Or: NOT_FOUND confidence=0.XX reason=description
 
-IMPORTANT: x must be 0-393, y must be 0-873.
-The Comment button should have x around 150-220 (middle of screen).""",
+IMPORTANT: x must be 150-220, y must be 420-500 for the reaction bar.""",
 
     "comment_input": """Find the comment input text field on this Facebook mobile screenshot.
 
