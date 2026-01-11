@@ -10,7 +10,7 @@ except ImportError:
     Stealth = None
 
 from typing import Optional, Dict, Any, List
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 from fb_session import FacebookSession, apply_session_to_context
 
@@ -22,6 +22,17 @@ DEFAULT_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) App
 # Directory for debug screenshots
 DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
 os.makedirs(DEBUG_DIR, exist_ok=True)
+
+def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
+    parsed = urlparse(proxy_url)
+    if parsed.scheme and parsed.hostname and parsed.port:
+        proxy: Dict[str, str] = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+        if parsed.username:
+            proxy["username"] = unquote(parsed.username)
+        if parsed.password:
+            proxy["password"] = unquote(parsed.password)
+        return proxy
+    return {"server": proxy_url}
 
 
 async def save_debug_screenshot(page: Page, name: str):
@@ -194,8 +205,9 @@ async def post_comment(
         }
         
         if active_proxy:
-            context_options["proxy"] = {"server": active_proxy}
-            logger.info(f"Using proxy: {active_proxy}")
+            proxy_cfg = _build_playwright_proxy(active_proxy)
+            context_options["proxy"] = proxy_cfg
+            logger.info(f"Using proxy server: {proxy_cfg.get('server')}")
         
         # Launch options
         browser = await p.chromium.launch(
@@ -258,8 +270,6 @@ async def post_comment(
 
 # Re-export other functions needed by main.py
 async def test_session(session: FacebookSession, proxy: Optional[str] = None) -> Dict[str, Any]:
-    # Reuse the improved logic for testing?
-    # For now, keep the simple test but use the new proxy logic
     result = {
         "valid": False,
         "user_id": None,
@@ -271,28 +281,33 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
         return result
         
     async with async_playwright() as p:
-        # ... (simplified test logic) ...
-        # Ensure we use session proxy here too
         session_proxy = session.get_proxy()
         active_proxy = session_proxy if session_proxy else proxy
-        
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=session.get_user_agent())
-        
+
+        user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
+        viewport = session.get_viewport() or MOBILE_VIEWPORT
+
+        context_options: Dict[str, Any] = {
+            "user_agent": user_agent,
+            "viewport": viewport,
+            "ignore_https_errors": True,
+        }
         if active_proxy:
-             # Basic proxy object structure
-            context = await browser.new_context(
-                user_agent=session.get_user_agent(),
-                proxy={"server": active_proxy}
-            )
-            
+            context_options["proxy"] = _build_playwright_proxy(active_proxy)
+
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(**context_options)
+
         try:
-            await apply_session_to_context(context, session)
+            if not await apply_session_to_context(context, session):
+                raise Exception("Failed to apply cookies")
+
             page = await context.new_page()
-            await page.goto("https://m.facebook.com/", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
-            
-            if "login" not in page.url:
+            await page.goto("https://m.facebook.com/me/", wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(1)
+
+            current_url = page.url.lower()
+            if "/login" not in current_url and "checkpoint" not in current_url:
                 result["valid"] = True
                 result["user_id"] = session.get_user_id()
         except Exception as e:
