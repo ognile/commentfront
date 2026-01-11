@@ -383,6 +383,13 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
         return 'login_form'
 
     # Check for 2FA selection screen (multiple verification options)
+    # Look for clear heading indicator first
+    for el in elements:
+        text = el.get('text', '').lower()
+        aria = el.get('ariaLabel', '').lower()
+        if 'choose a way to confirm' in text or 'choose a way to confirm' in aria:
+            return '2fa_selection'
+
     verification_options = []
     for el in elements:
         text = el.get('text', '').lower()
@@ -395,6 +402,9 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
             verification_options.append('email')
         if any(keyword in combined for keyword in ['authenticator', 'code generator', 'authentication app']):
             verification_options.append('authenticator')
+        # Device notification is another verification method
+        if 'notification on another device' in combined or 'approve' in combined:
+            verification_options.append('notification')
 
     if len(verification_options) >= 2:
         return '2fa_selection'
@@ -492,14 +502,18 @@ async def handle_login_form(page: Page, email: str, password: str) -> Dict[str, 
 
 async def handle_2fa_selection(page: Page, elements: List[dict]) -> Dict[str, Any]:
     """
-    Handle 2FA method selection - find and click "Authenticator App" option.
+    Handle 2FA method selection - find and click "Authenticator App" option, then Continue.
     """
     result = {"success": False, "step": "2fa_selection"}
 
     logger.info("Looking for Authenticator App option...")
 
     # Build selectors for auth app option based on element dump
+    # Facebook uses role="radio" for selection options
     auth_selectors = [
+        'div[role="radio"][aria-label*="Authentication app"]',
+        'div[role="radio"][aria-label*="Authenticator"]',
+        'div[role="radio"]:has-text("Authentication app")',
         'div[role="button"]:has-text("Authenticator")',
         'div[role="button"]:has-text("authentication app")',
         'div[role="button"]:has-text("Code Generator")',
@@ -510,7 +524,7 @@ async def handle_2fa_selection(page: Page, elements: List[dict]) -> Dict[str, An
     ]
 
     # First try text-based search
-    for keyword in ["Authenticator", "Code Generator", "authentication app"]:
+    for keyword in ["Authentication app", "Authenticator", "Code Generator"]:
         try:
             locator = page.get_by_text(keyword, exact=False).first
             if await locator.count() > 0 and await locator.is_visible():
@@ -518,6 +532,24 @@ async def handle_2fa_selection(page: Page, elements: List[dict]) -> Dict[str, An
                 await locator.click()
                 logger.info(f"Clicked 2FA option with text: '{keyword}'")
                 await save_debug_screenshot(page, "post_auth_app_click")
+
+                # After selecting, need to click Continue button
+                await asyncio.sleep(0.5)
+                continue_selectors = [
+                    'div[role="button"][aria-label="Continue"]',
+                    'div[role="button"]:has-text("Continue")',
+                    'button:has-text("Continue")',
+                ]
+                for cont_selector in continue_selectors:
+                    try:
+                        cont_locator = page.locator(cont_selector).first
+                        if await cont_locator.count() > 0 and await cont_locator.is_visible():
+                            await cont_locator.click()
+                            logger.info("Clicked Continue button after 2FA selection")
+                            break
+                    except:
+                        continue
+
                 result["success"] = True
                 return result
         except Exception as e:
@@ -529,8 +561,27 @@ async def handle_2fa_selection(page: Page, elements: List[dict]) -> Dict[str, An
         try:
             locator = page.locator(selector).first
             if await locator.count() > 0 and await locator.is_visible():
+                await save_debug_screenshot(page, "pre_auth_app_click")
                 await locator.click()
                 logger.info(f"Clicked 2FA option with selector: {selector}")
+
+                # After selecting, need to click Continue button
+                await asyncio.sleep(0.5)
+                continue_selectors = [
+                    'div[role="button"][aria-label="Continue"]',
+                    'div[role="button"]:has-text("Continue")',
+                    'button:has-text("Continue")',
+                ]
+                for cont_selector in continue_selectors:
+                    try:
+                        cont_locator = page.locator(cont_selector).first
+                        if await cont_locator.count() > 0 and await cont_locator.is_visible():
+                            await cont_locator.click()
+                            logger.info("Clicked Continue button after 2FA selection")
+                            break
+                    except:
+                        continue
+
                 result["success"] = True
                 return result
         except:
