@@ -208,6 +208,41 @@ async def smart_focus(page: Page, selectors: List[str], description: str) -> boo
     return False
 
 
+async def find_comment_input(page: Page) -> bool:
+    """
+    Find and click the comment input using Playwright's semantic locators.
+    These are more reliable than CSS selectors for finding elements by visible text.
+    """
+    logger.info("find_comment_input: Trying Playwright semantic locators")
+
+    # Strategy 1: Playwright semantic locators (most reliable for text-based elements)
+    strategies = [
+        ("get_by_placeholder('Write a comment...')", page.get_by_placeholder("Write a comment...")),
+        ("get_by_placeholder('Write a comment', exact=False)", page.get_by_placeholder("Write a comment", exact=False)),
+        ("get_by_text('Write a comment...')", page.get_by_text("Write a comment...")),
+        ("get_by_text('Write a comment', exact=False)", page.get_by_text("Write a comment", exact=False)),
+        ("get_by_role('textbox')", page.get_by_role("textbox")),
+    ]
+
+    for name, locator in strategies:
+        try:
+            count = await locator.count()
+            logger.info(f"  {name} → found {count} element(s)")
+            if count > 0:
+                await locator.first.scroll_into_view_if_needed()
+                await asyncio.sleep(0.2)
+                if await locator.first.is_visible():
+                    await locator.first.click()
+                    logger.info(f"Clicked comment input using: {name}")
+                    await save_debug_screenshot(page, "clicked_comment_input")
+                    return True
+        except Exception as e:
+            logger.debug(f"  {name} failed: {e}")
+
+    logger.warning("find_comment_input: All strategies failed")
+    return False
+
+
 async def audit_selectors(page: Page, selectors_dict: dict) -> dict:
     """
     Run all selectors and report matches with details.
@@ -785,41 +820,20 @@ async def post_comment_verified(
             result["steps_completed"].append("comments_opened")
             logger.info(f"✓ Step 2: Comments section opened (confidence: {verification.confidence:.0%})")
 
-            # ========== STEP 3: Focus comment input using CSS selectors ==========
-            logger.info("Step 3: Focusing comment input (CSS selectors)")
+            # ========== STEP 3: Focus comment input ==========
+            logger.info("Step 3: Focusing comment input")
 
-            # First, scroll down to reveal comment input (often at bottom of comments section)
-            logger.info("Scrolling down to reveal comment input...")
-            await page.evaluate("window.scrollBy(0, 300)")
-            await asyncio.sleep(1.0)
-
-            # Try to find and click on "Write a comment" text element first
-            write_comment_selectors = [
-                'text="Write a comment..."',
-                'text="Write a comment"',
-                ':text("Write a comment")',
-                '[data-placeholder="Write a comment..."]',
-            ]
-
-            # First attempt: text-based selectors
-            text_clicked = await smart_click(page, write_comment_selectors, "Write a comment text")
-            if text_clicked:
-                logger.info("Clicked 'Write a comment' placeholder text")
-                await asyncio.sleep(0.5)
-
-            # Use smart_focus with CSS selectors
-            focus_success = await smart_focus(page, fb_selectors.COMMENT["comment_input"], "Comment input")
+            # Try Playwright semantic locators first (most reliable for text elements)
+            focus_success = await find_comment_input(page)
 
             if not focus_success:
-                # Try scrolling more and retrying
-                logger.warning("smart_focus failed, scrolling more...")
-                await page.evaluate("window.scrollBy(0, 200)")
-                await asyncio.sleep(0.5)
+                # Fall back to CSS selectors
+                logger.info("Playwright locators failed, trying CSS selectors...")
                 focus_success = await smart_focus(page, fb_selectors.COMMENT["comment_input"], "Comment input")
 
             if not focus_success:
-                # Fallback: try clicking with healing
-                logger.warning("smart_focus failed, trying click_with_healing...")
+                # Last resort: click_with_healing with Gemini guidance
+                logger.warning("CSS selectors failed, trying click_with_healing...")
                 click_result = await click_with_healing(
                     page=page,
                     vision=vision,
