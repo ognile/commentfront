@@ -30,6 +30,8 @@ interface Credential {
   profile_name: string | null;
   has_secret: boolean;
   created_at: string;
+  session_connected?: boolean;
+  session_valid?: boolean | null;
 }
 
 interface OTPData {
@@ -486,6 +488,9 @@ function App() {
                             <div className="flex items-center gap-2">
                               <Badge variant={cred.has_secret ? 'default' : 'secondary'}>
                                 {cred.has_secret ? '2FA' : 'No 2FA'}
+                              </Badge>
+                              <Badge variant={cred.session_connected ? (cred.session_valid ? 'default' : 'destructive') : 'secondary'}>
+                                {cred.session_connected ? (cred.session_valid ? 'Session Linked' : 'Session Invalid') : 'No Session'}
                               </Badge>
                               <Button size="sm" variant="ghost" onClick={() => deleteCredential(cred.uid)}>
                                 <Trash2 className="w-3 h-3 text-red-500" />

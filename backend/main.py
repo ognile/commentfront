@@ -83,6 +83,8 @@ class CredentialInfo(BaseModel):
     profile_name: Optional[str]
     has_secret: bool
     created_at: Optional[str]
+    session_connected: bool = False
+    session_valid: Optional[bool] = None
 
 
 class OTPResponse(BaseModel):
@@ -215,7 +217,40 @@ async def get_config() -> Dict:
 @app.get("/credentials", response_model=List[CredentialInfo])
 async def get_credentials():
     """Get all saved credentials (without passwords)."""
-    return credential_manager.get_all_credentials()
+    credentials = credential_manager.get_all_credentials()
+    sessions = list_saved_sessions()
+
+    sessions_by_profile = {
+        (s.get("profile_name") or "").strip().lower(): s
+        for s in sessions
+        if s.get("profile_name")
+    }
+    sessions_by_user_id = {
+        str(s.get("user_id")): s
+        for s in sessions
+        if s.get("user_id") is not None
+    }
+
+    enriched: List[Dict] = []
+    for cred in credentials:
+        session = None
+
+        profile_name = cred.get("profile_name")
+        if profile_name:
+            session = sessions_by_profile.get(profile_name.strip().lower())
+
+        if session is None:
+            session = sessions_by_user_id.get(str(cred.get("uid")))
+
+        enriched.append(
+            {
+                **cred,
+                "session_connected": session is not None,
+                "session_valid": (session.get("has_valid_cookies") if session else None),
+            }
+        )
+
+    return enriched
 
 
 @app.post("/credentials")
