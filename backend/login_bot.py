@@ -427,6 +427,13 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     # NOTE: 2FA code input check has been moved to the top of this function
     # to prevent false device_approval detection on the 2FA code entry screen
 
+    # Check for "Save your login info?" screen (appears after successful login)
+    for el in elements:
+        text = el.get('text', '').lower()
+        aria = el.get('ariaLabel', '').lower()
+        if 'save your login info' in text or 'save your login info' in aria:
+            return 'save_device'
+
     # Check for logged in state
     logged_in_indicators = ['create a post', 'notifications', 'what\'s on your mind']
     for el in elements:
@@ -918,6 +925,40 @@ async def login_facebook(
                     await broadcast("2fa_code", "submitted")
                     await asyncio.sleep(3)
                     elements = await dump_interactive_elements(page, "AFTER 2FA CODE")
+
+                elif state == "save_device":
+                    # "Save your login info?" screen - click Save to continue
+                    result["step"] = "save_device"
+                    logger.info("Save device screen detected, clicking 'Save'...")
+                    await broadcast("save_device", "in_progress")
+
+                    save_selectors = [
+                        'div[role="button"][aria-label="Save"]',
+                        'div[role="button"]:has-text("Save")',
+                        'button[aria-label="Save"]',
+                        'button:has-text("Save")',
+                    ]
+
+                    if await smart_click(page, save_selectors, "Save"):
+                        logger.info("Clicked 'Save' button")
+                        await asyncio.sleep(2)
+                        elements = await dump_interactive_elements(page, "AFTER SAVE DEVICE")
+                        # Continue loop - should now be logged in
+                    else:
+                        # Try "Not now" as fallback
+                        not_now_selectors = [
+                            'div[role="button"][aria-label="Not now"]',
+                            'div[role="button"]:has-text("Not now")',
+                        ]
+                        if await smart_click(page, not_now_selectors, "Not now"):
+                            logger.info("Clicked 'Not now' button")
+                            await asyncio.sleep(2)
+                            elements = await dump_interactive_elements(page, "AFTER NOT NOW")
+                        else:
+                            result["error"] = "Could not click Save or Not now"
+                            result["needs_attention"] = True
+                            await broadcast("save_device", "needs_attention", {"error": result["error"]})
+                            break
 
                 elif state == "logged_in":
                     result["step"] = "verify"
