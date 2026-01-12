@@ -91,7 +91,14 @@ async def broadcast_update(update_type: str, data: dict):
     for ws in active_connections:
         try:
             await ws.send_text(message)
-        except:
+        except WebSocketDisconnect:
+            disconnected.add(ws)
+        except RuntimeError as e:
+            # "Cannot call send once close message has been sent"
+            logger.debug(f"WebSocket already closed: {e}")
+            disconnected.add(ws)
+        except Exception as e:
+            logger.warning(f"Broadcast error: {e}")
             disconnected.add(ws)
     for ws in disconnected:
         active_connections.discard(ws)
@@ -1572,8 +1579,12 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
 
         # Send initial state
         state = await manager.get_current_state()
-        await websocket.send_json({"type": "state", "data": state})
-        await websocket.send_json({"type": "browser_ready", "data": {"session_id": session_id}})
+        try:
+            await websocket.send_json({"type": "state", "data": state})
+            await websocket.send_json({"type": "browser_ready", "data": {"session_id": session_id}})
+        except Exception as e:
+            logger.warning(f"Failed to send initial state: {e}")
+            return
 
         # Handle incoming messages
         while True:
@@ -1626,10 +1637,16 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
             except WebSocketDisconnect:
                 break
             except json.JSONDecodeError as e:
-                await websocket.send_json({"type": "error", "data": {"message": f"Invalid JSON: {e}"}})
+                try:
+                    await websocket.send_json({"type": "error", "data": {"message": f"Invalid JSON: {e}"}})
+                except:
+                    pass  # Connection already dead
             except Exception as e:
                 logger.error(f"Error handling WS message: {e}")
-                await websocket.send_json({"type": "error", "data": {"message": str(e)}})
+                try:
+                    await websocket.send_json({"type": "error", "data": {"message": str(e)}})
+                except:
+                    pass  # Connection already dead
 
     except WebSocketDisconnect:
         logger.info(f"Remote control WS disconnected for session {session_id}")

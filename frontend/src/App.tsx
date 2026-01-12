@@ -210,6 +210,7 @@ function App() {
   const screenshotContainerRef = useRef<HTMLDivElement>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
+  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // WebSocket connection
   useEffect(() => {
@@ -951,6 +952,16 @@ function App() {
         setRemoteConnecting(false);
         reconnectAttemptRef.current = 0;
         toast.success('Browser connected');
+
+        // Start heartbeat to detect dead connections
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+        }
+        heartbeatIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 30000); // Ping every 30 seconds
       };
 
       ws.onmessage = (event) => {
@@ -988,6 +999,12 @@ function App() {
         setRemoteConnected(false);
         setRemoteConnecting(false);
 
+        // Clear heartbeat interval
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+          heartbeatIntervalRef.current = null;
+        }
+
         // Auto-reconnect with exponential backoff
         if (remoteModalOpen && reconnectAttemptRef.current < 5) {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 10000);
@@ -1015,6 +1032,10 @@ function App() {
   const disconnectRemoteWebSocket = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
+    }
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
     }
     if (remoteWsRef.current) {
       remoteWsRef.current.close();
@@ -1478,7 +1499,6 @@ function App() {
               <CardContent className="p-0 bg-black">
                 <div className="relative aspect-video flex items-center justify-center overflow-hidden">
                   <img
-                    key={screenshotKey}
                     src={`${API_BASE}/debug/latest.png?t=${screenshotKey}`}
                     alt="Live Bot View"
                     className="max-h-full max-w-full object-contain"

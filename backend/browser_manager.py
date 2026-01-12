@@ -168,6 +168,10 @@ class PersistentBrowserManager:
                 # Set up file chooser interception
                 self._page.on("filechooser", self._handle_file_chooser)
 
+                # Set up page lifecycle listeners for crash/close detection
+                self._page.on("close", lambda: asyncio.create_task(self._on_page_close()))
+                self._page.on("crash", lambda: asyncio.create_task(self._on_page_crash()))
+
                 # Navigate to Facebook
                 await self._page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=30000)
 
@@ -256,6 +260,26 @@ class PersistentBrowserManager:
         self._pending_file = file_path
         logger.info(f"Pending file set: {file_path}")
 
+    async def _on_page_close(self):
+        """Handle unexpected page closure."""
+        logger.warning("Page closed unexpectedly")
+        # Notify subscribers of disconnect
+        for ws in self._subscribers:
+            try:
+                await ws.send_json({"type": "error", "data": {"message": "Browser page closed"}})
+            except:
+                pass
+
+    async def _on_page_crash(self):
+        """Handle page crash."""
+        logger.error("Page crashed!")
+        # Notify subscribers of crash
+        for ws in self._subscribers:
+            try:
+                await ws.send_json({"type": "error", "data": {"message": "Browser page crashed"}})
+            except:
+                pass
+
     async def _streaming_loop(self):
         """
         Background task that captures and broadcasts JPEG frames.
@@ -264,8 +288,11 @@ class PersistentBrowserManager:
         - Base rate: 10 FPS (100ms interval)
         - Burst rate: 30 FPS (33ms) for 500ms after any user action
         - Skip frame if identical to previous (delta detection via hash)
+        - Stop after 5 consecutive errors with exponential backoff
         """
         import time
+
+        consecutive_errors = 0
 
         while self._page and not self._page.is_closed():
             try:
@@ -276,12 +303,18 @@ class PersistentBrowserManager:
                 else:
                     interval = 0.100  # 10 FPS idle mode
 
-                # Capture screenshot as JPEG bytes
-                frame = await self._page.screenshot(
-                    type="jpeg",
-                    quality=70,
-                    scale="css"  # 1:1 pixel mapping for coordinate accuracy
+                # Capture screenshot as JPEG bytes with timeout
+                frame = await asyncio.wait_for(
+                    self._page.screenshot(
+                        type="jpeg",
+                        quality=70,
+                        scale="css"  # 1:1 pixel mapping for coordinate accuracy
+                    ),
+                    timeout=10.0  # 10 second max to prevent hangs
                 )
+
+                # Reset consecutive errors on success
+                consecutive_errors = 0
 
                 # Delta detection - skip if unchanged
                 frame_hash = hashlib.md5(frame).hexdigest()[:8]
@@ -294,9 +327,20 @@ class PersistentBrowserManager:
 
             except asyncio.CancelledError:
                 break
+            except asyncio.TimeoutError:
+                consecutive_errors += 1
+                logger.warning(f"Screenshot timeout ({consecutive_errors}/5)")
+                if consecutive_errors >= 5:
+                    logger.error("Too many consecutive screenshot timeouts, stopping stream")
+                    break
+                await asyncio.sleep(0.5 * consecutive_errors)  # Exponential backoff
             except Exception as e:
-                logger.error(f"Streaming error: {e}")
-                await asyncio.sleep(0.5)
+                consecutive_errors += 1
+                logger.error(f"Streaming error ({consecutive_errors}/5): {e}")
+                if consecutive_errors >= 5:
+                    logger.error("Too many consecutive streaming errors, stopping stream")
+                    break
+                await asyncio.sleep(0.5 * consecutive_errors)  # Exponential backoff
 
     async def _broadcast_frame(self, frame: bytes):
         """Send frame to all subscribed WebSocket connections."""
