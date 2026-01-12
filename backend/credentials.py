@@ -115,7 +115,9 @@ class CredentialManager:
             return {"code": None, "remaining_seconds": 0, "valid": False, "error": "No 2FA secret configured"}
         
         try:
-            totp = pyotp.TOTP(secret)
+            # Normalize secret (remove spaces/dashes, uppercase)
+            normalized_secret = secret.replace(" ", "").replace("-", "").upper()
+            totp = pyotp.TOTP(normalized_secret)
             code = totp.now()
             
             # Get time remaining in current 30-second window
@@ -150,7 +152,9 @@ class CredentialManager:
             return {"valid": False, "error": "No 2FA secret configured"}
         
         try:
-            totp = pyotp.TOTP(secret)
+            # Normalize secret (remove spaces/dashes, uppercase)
+            normalized_secret = secret.replace(" ", "").replace("-", "").upper()
+            totp = pyotp.TOTP(normalized_secret)
             valid = totp.verify(code, valid_window=1)  # Allow 1 step tolerance
             return {"valid": valid}
         except Exception as e:

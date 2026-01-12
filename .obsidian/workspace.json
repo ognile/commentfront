@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "CLAUDE.md",
+                "file": "Short and long post.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "CLAUDE"
+              "title": "Short and long post"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "CLAUDE.md",
+                "file": "Short and long post.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for CLAUDE"
+              "title": "Backlinks for Short and long post"
             }
           },
           {
@@ -113,12 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "CLAUDE.md",
+                "file": "Short and long post.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from CLAUDE"
+              "title": "Outgoing links from Short and long post"
             }
           },
           {
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "CLAUDE.md",
+                "file": "Short and long post.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of CLAUDE"
+              "title": "Outline of Short and long post"
             }
           }
         ]
@@ -185,16 +185,21 @@
   },
   "active": "0700746293ce4c1f",
   "lastOpenFiles": [
-    "Untitled.md",
+    "frontend/dist/assets/index-Dn2dk2c2.css",
+    "frontend/dist/assets/index-C1JuNhVE.js",
     "CLAUDE.md",
-    "backend/__pycache__/login_bot.cpython-312.pyc",
-    "backend/__pycache__/proxy_manager.cpython-312.pyc",
-    "frontend/dist/assets/index-CwiJivwm.css",
-    "frontend/dist/assets/index-ChETTs-n.js",
-    "backend/login_bot.py",
-    "backend/proxy_manager.py",
-    "frontend/dist/assets/index-DZgwtya8.css",
-    "frontend/dist/assets/index-COFJXqWK.js",
+    "Short and long post.md",
+    "frontend/dist/assets/index-B2Ih6OQ0.css",
+    "frontend/dist/assets/index-h8xJLPgE.js",
+    "frontend/dist/assets/index-BTqi9AXH.css",
+    "frontend/dist/assets/index-BFpWdJ9W.js",
+    "frontend/dist/assets/index-BCkeR0vo.css",
+    "frontend/dist/assets/index-4Q40Wo8W.js",
+    "backend/__pycache__/browser_manager.cpython-312.pyc",
+    "frontend/dist/assets/index-BiY2rO2t.css",
+    "frontend/dist/assets/index-CeDjwaVw.js",
+    "frontend/node_modules/sonner/README.md",
+    "frontend/node_modules/sonner/LICENSE.md",
     "AGENTS.md",
     "backend/debug/step5_verify.png",
     "backend/debug/post_click_Send_button.png",

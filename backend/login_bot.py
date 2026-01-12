@@ -1373,9 +1373,10 @@ async def login_facebook(
                         await broadcast("2fa_code", "needs_attention", {"error": result["error"]})
                         break
 
-                    # Generate TOTP code
+                    # Generate TOTP code - normalize secret (remove spaces, uppercase)
                     import pyotp
-                    totp = pyotp.TOTP(secret)
+                    normalized_secret = secret.replace(" ", "").replace("-", "").upper()
+                    totp = pyotp.TOTP(normalized_secret)
                     code = totp.now()
 
                     code_result = await handle_2fa_code(page, code)
