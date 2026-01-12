@@ -96,6 +96,19 @@ interface PendingUpload {
 const VIEWPORT_WIDTH = 393;
 const VIEWPORT_HEIGHT = 873;
 
+// Format duration in minutes to human-readable string
+const formatDuration = (minutes: number): string => {
+  if (minutes < 60) {
+    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (mins === 0) {
+    return `${hours} hour${hours !== 1 ? 's' : ''}`;
+  }
+  return `${hours}h ${mins}m`;
+};
+
 function App() {
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
@@ -104,6 +117,7 @@ function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [campaignDuration, setCampaignDuration] = useState(30); // Duration in minutes (10-1440)
 
   const [newUid, setNewUid] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -317,15 +331,21 @@ function App() {
 
   const generateJobs = () => {
     if (!url || !comments) return;
-    
+
     const commentList = comments.split('\n').filter(c => c.trim());
     const availableSessions = sessions.filter(s => s.valid);
-    
+
     if (availableSessions.length === 0) {
       alert("No valid sessions available!");
       return;
     }
-    
+
+    // Block if more comments than available sessions
+    if (commentList.length > availableSessions.length) {
+      alert(`You have ${commentList.length} comments but only ${availableSessions.length} active sessions. Please reduce comments to ${availableSessions.length} or fewer.`);
+      return;
+    }
+
     const newJobs: Job[] = [];
     availableSessions.forEach((session, i) => {
       if (i < commentList.length) {
@@ -336,13 +356,13 @@ function App() {
         });
       }
     });
-    
+
     setJobs(newJobs);
   };
 
   const runCampaign = async () => {
     if (jobs.length === 0) return;
-    
+
     setIsProcessing(true);
     try {
       const res = await fetch(`${API_BASE}/campaign`, {
@@ -351,17 +371,18 @@ function App() {
         body: JSON.stringify({
           url,
           comments: jobs.map(j => j.comment),
-          profile_names: jobs.map(j => j.profile_name)
+          profile_names: jobs.map(j => j.profile_name),
+          duration_minutes: campaignDuration
         })
       });
-      
+
       const result = await res.json();
-      
+
       setJobs(jobs.map((job, i) => ({
         ...job,
         status: result.results?.[i]?.success ? 'success' : 'failed'
       })));
-      
+
       alert(`Campaign complete: ${result.success}/${result.total} successful`);
     } catch (error) {
       alert(`Error: ${error}`);
@@ -981,12 +1002,35 @@ function App() {
                 
                 <div className="space-y-2">
                   <Label>Comments (one per line)</Label>
-                  <Textarea 
-                    value={comments} 
+                  <Textarea
+                    value={comments}
                     onChange={(e) => setComments(e.target.value)}
                     placeholder="Comment 1&#10;Comment 2&#10;Comment 3"
                     className="min-h-[150px] bg-white"
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Campaign Duration</Label>
+                  <div className="flex items-center gap-4">
+                    <Input
+                      type="number"
+                      min={10}
+                      max={1440}
+                      value={campaignDuration}
+                      onChange={(e) => {
+                        const val = Math.max(10, Math.min(1440, Number(e.target.value) || 10));
+                        setCampaignDuration(val);
+                      }}
+                      className="w-24 bg-white"
+                    />
+                    <span className="text-sm text-slate-600">
+                      minutes ({formatDuration(campaignDuration)})
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Comments will be spread across this time (10 min - 24 hours)
+                  </p>
                 </div>
 
                 <div className="flex gap-4">

@@ -14,7 +14,8 @@ import logging
 import os
 import asyncio
 import json
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 import nest_asyncio
 
 # Patch asyncio to allow nested event loops (crucial for Playwright in FastAPI)
@@ -111,6 +112,7 @@ class CampaignRequest(BaseModel):
     url: str
     comments: List[str]
     profile_names: List[str]
+    duration_minutes: int = 30  # Total campaign duration (10-1440 minutes)
 
 
 class SessionInfo(BaseModel):
@@ -273,76 +275,96 @@ async def post_comment_endpoint(request: CommentRequest) -> Dict:
 
 @app.post("/campaign")
 async def run_campaign(request: CampaignRequest) -> Dict:
-    """Run a campaign with concurrent execution (max 5 parallel sessions)."""
+    """Run a campaign with staggered timing - comments spread across specified duration."""
     total_jobs = min(len(request.profile_names), len(request.comments))
+    duration_seconds = request.duration_minutes * 60
 
-    await broadcast_update("campaign_start", {"url": request.url, "total_jobs": total_jobs})
+    # Calculate base delay between jobs (spread jobs across duration)
+    # For N jobs, we have N-1 gaps between them
+    base_delay = duration_seconds / total_jobs if total_jobs > 1 else 0
 
-    # Semaphore to limit concurrent browser sessions
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-    results_dict: Dict[int, Dict] = {}
+    estimated_completion = datetime.now() + timedelta(minutes=request.duration_minutes)
+
+    await broadcast_update("campaign_start", {
+        "url": request.url,
+        "total_jobs": total_jobs,
+        "duration_minutes": request.duration_minutes,
+        "estimated_completion": estimated_completion.isoformat()
+    })
 
     async def process_one(job_index: int, profile_name: str, comment: str) -> Dict:
-        """Process a single comment job with concurrency limit."""
-        async with semaphore:
-            await broadcast_update("job_start", {"job_index": job_index, "profile_name": profile_name, "comment": comment[:50]})
+        """Process a single comment job."""
+        await broadcast_update("job_start", {
+            "job_index": job_index,
+            "profile_name": profile_name,
+            "comment": comment[:50]
+        })
 
-            session = FacebookSession(profile_name)
+        session = FacebookSession(profile_name)
 
-            if not session.load():
-                await broadcast_update("job_error", {"job_index": job_index, "error": "Session not found"})
-                return {"profile_name": profile_name, "success": False, "error": "Session not found", "job_index": job_index}
+        if not session.load():
+            await broadcast_update("job_error", {"job_index": job_index, "error": "Session not found"})
+            return {"profile_name": profile_name, "success": False, "error": "Session not found", "job_index": job_index}
 
-            try:
-                result = await post_comment_verified(
-                    session=session,
-                    url=request.url,
-                    comment=comment,
-                    proxy=PROXY_URL if PROXY_URL else None
-                )
+        try:
+            result = await post_comment_verified(
+                session=session,
+                url=request.url,
+                comment=comment,
+                proxy=PROXY_URL if PROXY_URL else None
+            )
 
-                await broadcast_update("job_complete", {
-                    "job_index": job_index,
-                    "profile_name": profile_name,
-                    "success": result["success"],
-                    "verified": result.get("verified", False),
-                    "method": result.get("method", "unknown"),
-                    "error": result.get("error")
-                })
+            await broadcast_update("job_complete", {
+                "job_index": job_index,
+                "profile_name": profile_name,
+                "success": result["success"],
+                "verified": result.get("verified", False),
+                "method": result.get("method", "unknown"),
+                "error": result.get("error")
+            })
 
-                return {
-                    "profile_name": profile_name,
-                    "comment": comment,
-                    "success": result["success"],
-                    "verified": result.get("verified", False),
-                    "method": result.get("method", "unknown"),
-                    "error": result.get("error"),
-                    "job_index": job_index
-                }
-            except Exception as e:
-                logger.error(f"Error processing job {job_index}: {e}")
-                await broadcast_update("job_error", {"job_index": job_index, "error": str(e)})
-                return {"profile_name": profile_name, "success": False, "error": str(e), "job_index": job_index}
+            return {
+                "profile_name": profile_name,
+                "comment": comment,
+                "success": result["success"],
+                "verified": result.get("verified", False),
+                "method": result.get("method", "unknown"),
+                "error": result.get("error"),
+                "job_index": job_index
+            }
+        except Exception as e:
+            logger.error(f"Error processing job {job_index}: {e}")
+            await broadcast_update("job_error", {"job_index": job_index, "error": str(e)})
+            return {"profile_name": profile_name, "success": False, "error": str(e), "job_index": job_index}
 
-    # Create tasks for all profile/comment pairs
-    tasks = [
-        process_one(i, profile_name, comment)
-        for i, (profile_name, comment) in enumerate(zip(request.profile_names[:total_jobs], request.comments[:total_jobs]))
-    ]
-
-    # Run concurrently (max 5 at a time via semaphore)
-    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Process results (handle any exceptions from gather)
+    # Process jobs sequentially with staggered delays
     results = []
-    for r in raw_results:
-        if isinstance(r, Exception):
-            results.append({"success": False, "error": str(r)})
-        else:
-            results.append(r)
 
-    # Sort results by job_index to maintain order
-    results.sort(key=lambda x: x.get("job_index", 0))
+    for i, (profile_name, comment) in enumerate(
+        zip(request.profile_names[:total_jobs], request.comments[:total_jobs])
+    ):
+        # First job runs immediately, subsequent jobs wait with randomized delay
+        if i > 0:
+            # Add ±20% jitter to avoid predictable patterns
+            jitter = random.uniform(0.8, 1.2)
+            delay_seconds = base_delay * jitter
+
+            await broadcast_update("job_waiting", {
+                "job_index": i,
+                "delay_seconds": round(delay_seconds),
+                "profile_name": profile_name
+            })
+
+            logger.info(f"Waiting {delay_seconds:.0f}s before job {i} ({profile_name})")
+            await asyncio.sleep(delay_seconds)
+
+        # Process this job
+        try:
+            result = await process_one(i, profile_name, comment)
+            results.append(result)
+        except Exception as e:
+            logger.error(f"Error processing job {i}: {e}")
+            results.append({"profile_name": profile_name, "success": False, "error": str(e), "job_index": i})
 
     success_count = sum(1 for r in results if r.get("success"))
     await broadcast_update("campaign_complete", {"total": len(results), "success": success_count})
