@@ -46,6 +46,7 @@ interface Credential {
   created_at: string;
   session_connected?: boolean;
   session_valid?: boolean | null;
+  session_profile_name?: string | null;  // Profile name from the linked session
 }
 
 interface OTPData {
@@ -259,6 +260,7 @@ function App() {
                 setCreatingSession(null);
                 if (update.data.success) {
                   fetchSessions();
+                  fetchCredentials(); // Also refresh credentials to show linked session profile name
                 }
                 break;
             }
@@ -404,6 +406,26 @@ function App() {
       fetchSessions();
     } catch (error) {
       alert(`Error: ${error}`);
+    }
+  };
+
+  const deleteSession = async (profileName: string) => {
+    if (!confirm(`Delete session "${profileName}"? This cannot be undone.`)) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}`, {
+        method: 'DELETE'
+      });
+      const result = await res.json();
+      if (result.success) {
+        toast.success(`Session "${profileName}" deleted`);
+        fetchSessions();
+        fetchCredentials(); // Refresh credentials to update session_connected status
+      } else {
+        toast.error(`Failed to delete session: ${result.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      toast.error(`Error: ${error}`);
     }
   };
 
@@ -1248,6 +1270,9 @@ function App() {
                           <Button size="sm" variant="outline" onClick={() => testSession(session.profile_name)}>
                             Test
                           </Button>
+                          <Button size="sm" variant="ghost" onClick={() => deleteSession(session.profile_name)}>
+                            <Trash2 className="w-3 h-3 text-red-500" />
+                          </Button>
                         </div>
                       </div>
                     ))}
@@ -1372,9 +1397,15 @@ function App() {
                               </Button>
                             </div>
                           </div>
-                          {cred.profile_name && (
+                          {/* Show session's profile name if linked, otherwise show credential's profile name */}
+                          {(cred.session_connected && cred.session_profile_name) ? (
+                            <div className="text-xs text-green-600 mb-2 flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3" />
+                              Session: {cred.session_profile_name}
+                            </div>
+                          ) : cred.profile_name ? (
                             <div className="text-xs text-slate-500 mb-2">Profile: {cred.profile_name}</div>
-                          )}
+                          ) : null}
                           {/* Session creation status or button */}
                           <div className="mb-2">
                             {sessionCreateStatus[cred.uid] ? (

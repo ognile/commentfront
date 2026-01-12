@@ -141,6 +141,7 @@ class CredentialInfo(BaseModel):
     created_at: Optional[str]
     session_connected: bool = False
     session_valid: Optional[bool] = None
+    session_profile_name: Optional[str] = None  # Profile name from the linked session
 
 
 class OTPResponse(BaseModel):
@@ -324,6 +325,22 @@ async def test_session_endpoint(profile_name: str) -> Dict:
     return result
 
 
+@app.delete("/sessions/{profile_name}")
+async def delete_session(profile_name: str) -> Dict:
+    """Delete a session by profile name."""
+    session = FacebookSession(profile_name)
+    if not session.session_file.exists():
+        raise HTTPException(status_code=404, detail=f"Session not found: {profile_name}")
+
+    try:
+        session.session_file.unlink()
+        logger.info(f"Deleted session: {profile_name}")
+        return {"success": True, "profile_name": profile_name}
+    except Exception as e:
+        logger.error(f"Failed to delete session {profile_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {e}")
+
+
 @app.post("/comment")
 async def post_comment_endpoint(request: CommentRequest) -> Dict:
     """Post a comment using a saved session."""
@@ -497,6 +514,7 @@ async def get_credentials():
                 **cred,
                 "session_connected": session is not None,
                 "session_valid": (session.get("has_valid_cookies") if session else None),
+                "session_profile_name": (session.get("profile_name") if session else None),
             }
         )
 
