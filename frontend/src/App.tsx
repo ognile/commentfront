@@ -1857,7 +1857,7 @@ function App() {
                       {queueState.pending_count}/{queueState.max_pending}
                     </Badge>
                   </span>
-                  {queueState.processor_running && (
+                  {queueState.pending.some(c => c.status === 'processing') && (
                     <Badge className="bg-blue-500 animate-pulse">
                       <Loader2 className="w-3 h-3 mr-1 animate-spin" />
                       Processing
