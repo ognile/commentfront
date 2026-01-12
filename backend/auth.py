@@ -17,14 +17,21 @@ REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "60")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+def _truncate_password(password: str) -> str:
+    """Truncate password to 72 bytes (bcrypt limit)."""
+    # Encode to UTF-8 bytes, truncate to 72, decode back
+    encoded = password.encode('utf-8')[:72]
+    return encoded.decode('utf-8', errors='ignore')
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    return pwd_context.verify(_truncate_password(plain_password), hashed_password)
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password using bcrypt."""
-    return pwd_context.hash(password)
+    """Hash a password using bcrypt (truncated to 72 bytes)."""
+    return pwd_context.hash(_truncate_password(password))
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
