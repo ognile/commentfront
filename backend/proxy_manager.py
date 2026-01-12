@@ -16,8 +16,9 @@ import uuid
 
 class ProxyManager:
     def __init__(self, file_path: str = None):
-        self.file_path = file_path or os.path.join(
-            os.path.dirname(__file__), "proxies.json"
+        self.file_path = file_path or os.getenv(
+            "PROXIES_PATH",
+            os.path.join(os.path.dirname(__file__), "proxies.json")
         )
         self.proxies: Dict[str, dict] = {}
         self.logger = logging.getLogger("ProxyManager")

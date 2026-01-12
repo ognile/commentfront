@@ -236,6 +236,55 @@ async def get_sessions() -> List[SessionInfo]:
     ]
 
 
+@app.get("/sessions/audit-proxies")
+async def audit_session_proxies() -> List[Dict]:
+    """
+    Audit all sessions to show actual proxy values.
+    Used to verify if stored proxies match PROXY_URL environment variable.
+    """
+    sessions = list_saved_sessions()
+    results = []
+    for s in sessions:
+        session = FacebookSession(s["profile_name"])
+        if session.load():
+            stored_proxy = session.get_proxy() or ""
+            matches = stored_proxy == PROXY_URL if stored_proxy else False
+            results.append({
+                "profile_name": s["profile_name"],
+                "has_proxy": bool(stored_proxy),
+                "matches_env_proxy": matches,
+                "stored_proxy_masked": stored_proxy[:30] + "..." if stored_proxy else None,
+                "env_proxy_masked": PROXY_URL[:30] + "..." if PROXY_URL else None,
+            })
+    return results
+
+
+@app.post("/sessions/sync-all-to-env-proxy")
+async def sync_all_sessions_to_env_proxy() -> Dict:
+    """
+    Force ALL sessions to use the PROXY_URL environment variable.
+    This updates the proxy field in each session's JSON file.
+    """
+    if not PROXY_URL:
+        raise HTTPException(400, "PROXY_URL environment variable not set")
+
+    sessions = list_saved_sessions()
+    updated = 0
+    for s in sessions:
+        session = FacebookSession(s["profile_name"])
+        if session.load():
+            session.data["proxy"] = PROXY_URL
+            session.save()
+            updated += 1
+
+    return {
+        "success": True,
+        "updated": updated,
+        "total": len(sessions),
+        "proxy_masked": PROXY_URL[:30] + "..."
+    }
+
+
 @app.post("/sessions/{profile_name}/test")
 async def test_session_endpoint(profile_name: str) -> Dict:
     """Test if a session is valid."""
@@ -623,17 +672,21 @@ async def create_session(request: SessionCreateRequest) -> Dict:
     """
     credential_uid = request.credential_uid
 
-    # Get proxy URL if specified
-    proxy_url = None
+    # Get proxy URL - ALWAYS use PROXY_URL as default, allow override from proxy_id
+    proxy_url = PROXY_URL  # Start with environment variable
     if request.proxy_id:
         proxy = proxy_manager.get_proxy(request.proxy_id)
         if proxy:
             proxy_url = proxy.get("url")
         else:
             raise HTTPException(status_code=404, detail=f"Proxy not found: {request.proxy_id}")
-    elif PROXY_URL:
-        # Use global proxy if no specific proxy specified
-        proxy_url = PROXY_URL
+
+    # FAIL if no proxy available - sessions must always have a proxy
+    if not proxy_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot create session: No proxy configured. Set PROXY_URL environment variable or specify a proxy_id."
+        )
 
     # Broadcast that session creation is starting
     await broadcast_update("session_create_start", {
