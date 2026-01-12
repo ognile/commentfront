@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 
 # Configuration from environment variables
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "CHANGE_ME_IN_PRODUCTION_USE_OPENSSL_RAND_HEX_32")
@@ -13,25 +13,20 @@ ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "60"))
 
-# Password hashing context using bcrypt
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def _truncate_password(password: str) -> str:
-    """Truncate password to 72 bytes (bcrypt limit)."""
-    # Encode to UTF-8 bytes, truncate to 72, decode back
-    encoded = password.encode('utf-8')[:72]
-    return encoded.decode('utf-8', errors='ignore')
-
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
-    return pwd_context.verify(_truncate_password(plain_password), hashed_password)
+    password_bytes = plain_password.encode('utf-8')[:72]  # bcrypt has 72 byte limit
+    hash_bytes = hashed_password.encode('utf-8')
+    return bcrypt.checkpw(password_bytes, hash_bytes)
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password using bcrypt (truncated to 72 bytes)."""
-    return pwd_context.hash(_truncate_password(password))
+    """Hash a password using bcrypt."""
+    password_bytes = password.encode('utf-8')[:72]  # bcrypt has 72 byte limit
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password_bytes, salt)
+    return hashed.decode('utf-8')
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
