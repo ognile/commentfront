@@ -775,49 +775,6 @@ function App() {
     }
   };
 
-  const bulkRemoveTag = async (tag: string) => {
-    if (selectedSessions.size === 0) return;
-
-    let successCount = 0;
-    let failCount = 0;
-
-    for (const profileName of selectedSessions) {
-      const session = sessions.find(s => s.profile_name === profileName);
-      if (!session) continue;
-
-      const currentTags = session.tags || [];
-      if (!currentTags.includes(tag)) {
-        successCount++; // Doesn't have tag
-        continue;
-      }
-
-      try {
-        const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/tags`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ tags: currentTags.filter(t => t !== tag) })
-        });
-        const result = await res.json();
-        if (result.success) {
-          successCount++;
-        } else {
-          failCount++;
-        }
-      } catch {
-        failCount++;
-      }
-    }
-
-    fetchSessions();
-    fetchTags();
-
-    if (failCount === 0) {
-      toast.success(`Removed tag "${tag}" from ${successCount} sessions`);
-    } else {
-      toast.warning(`Removed tag from ${successCount} sessions, ${failCount} failed`);
-    }
-  };
-
   const addCredential = async () => {
     if (!newUid || !newPassword) {
       alert("UID and Password are required!");
