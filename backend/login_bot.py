@@ -6,6 +6,7 @@ Uses the same audit trail pattern as comment_bot.py
 import asyncio
 import logging
 import os
+import random
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from typing import Dict, List, Optional, Any
 from playwright.async_api import async_playwright, Page, BrowserContext
 from playwright_stealth import Stealth
 
-from fb_session import FacebookSession
+from fb_session import FacebookSession, apply_session_to_context
 from fb_selectors import LOGIN, TWO_FA, PAGE_STATE, SIGNUP_PROMPT
 from credentials import CredentialManager
 
@@ -24,6 +25,16 @@ logger = logging.getLogger("LoginBot")
 # Mobile viewport (same as comment_bot)
 MOBILE_VIEWPORT = {"width": 393, "height": 873}
 DEFAULT_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
+# USA timezones for device fingerprinting (matches fb_session.py)
+USA_TIMEZONES = [
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "America/Phoenix",
+    "America/Anchorage",
+]
 
 # Debug directory
 DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
@@ -1124,24 +1135,45 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
         user_id = session.get_user_id()
         logger.info(f"Refreshing profile name for session {profile_name} (user_id: {user_id})")
 
+        # Get session data (matching comment_bot.py gold standard)
+        user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
+        viewport = session.get_viewport() or MOBILE_VIEWPORT
+        proxy_url = session.get_proxy()
+        device_fingerprint = session.get_device_fingerprint()
+
+        logger.info(f"Refreshing profile with fingerprint: timezone={device_fingerprint['timezone']}, locale={device_fingerprint['locale']}")
+
+        # Build context options (MUST match comment_bot.py exactly)
+        context_options = {
+            "user_agent": user_agent,
+            "viewport": viewport,
+            "ignore_https_errors": True,
+            "device_scale_factor": 1,
+            "timezone_id": device_fingerprint["timezone"],
+            "locale": device_fingerprint["locale"],
+        }
+
+        if proxy_url:
+            context_options["proxy"] = _build_playwright_proxy(proxy_url)
+            logger.info(f"Using session proxy for refresh")
+
         # Launch browser with session
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox"]
+                args=["--disable-notifications", "--disable-geolocation"]
             )
 
-            context = await browser.new_context(
-                viewport=session.get_viewport() or MOBILE_VIEWPORT,
-                user_agent=session.get_user_agent() or DEFAULT_USER_AGENT
-            )
+            context = await browser.new_context(**context_options)
 
-            # Add cookies
-            cookies = session.get_cookies()
-            if cookies:
-                await context.add_cookies(cookies)
+            # MANDATORY: Apply stealth mode for anti-detection
+            await Stealth().apply_stealth_async(context)
 
             page = await context.new_page()
+
+            # Apply cookies via helper function for consistency
+            if not await apply_session_to_context(context, session):
+                raise Exception("Failed to apply session cookies")
 
             # Navigate to /me/ and extract profile name + profile picture
             is_logged_in, extracted_name, profile_picture = await verify_logged_in(page, extract_picture=True)
@@ -1171,6 +1203,7 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
                     "user_agent": session.get_user_agent(),
                     "viewport": session.get_viewport(),
                     "proxy": session.get_proxy(),
+                    "device": device_fingerprint,  # Preserve device fingerprint for consistency
                 }
 
                 # Add profile picture if we got one
@@ -1257,18 +1290,28 @@ async def login_facebook(
     await broadcast("init", "starting")
     logger.info(f"[{trace_id}] Starting login for {uid[:6]}***")
 
+    # Generate device fingerprint for this new session
+    # Use random USA timezone since we don't have user_id yet
+    login_device_fingerprint = {
+        "timezone": random.choice(USA_TIMEZONES),
+        "locale": "en-US"
+    }
+    logger.info(f"[{trace_id}] Login with fingerprint: timezone={login_device_fingerprint['timezone']}")
+
     async with async_playwright() as p:
         # Build browser launch options
         launch_args = ["--disable-notifications", "--disable-geolocation"]
 
         browser = await p.chromium.launch(headless=True, args=launch_args)
 
-        # Build context options
+        # Build context options (matching comment_bot.py gold standard)
         context_options = {
             "user_agent": DEFAULT_USER_AGENT,
             "viewport": MOBILE_VIEWPORT,
             "ignore_https_errors": True,
             "device_scale_factor": 1,
+            "timezone_id": login_device_fingerprint["timezone"],
+            "locale": login_device_fingerprint["locale"],
         }
 
         if proxy:
@@ -1447,6 +1490,11 @@ async def login_facebook(
                         if profile_picture and session.data:
                             session.data["profile_picture"] = profile_picture
                             logger.info("Added profile picture to session")
+
+                        # Add device fingerprint for session consistency
+                        if session.data:
+                            session.data["device"] = login_device_fingerprint
+                            logger.info(f"Saved device fingerprint to session: {login_device_fingerprint['timezone']}")
 
                         # Validate essential cookies exist before saving
                         if not session.has_valid_cookies():
