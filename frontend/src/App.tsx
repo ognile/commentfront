@@ -284,10 +284,36 @@ function App() {
                   currentStep: `Processing ${update.data.profile_name}`,
                   currentJob: update.data.job_index + 1
                 }));
+                // Update queue state with real-time progress
+                setQueueState(prev => ({
+                  ...prev,
+                  pending: prev.pending.map(c =>
+                    c.id === update.data.campaign_id
+                      ? {
+                          ...c,
+                          current_job: update.data.job_index + 1,
+                          total_jobs: update.data.total_jobs,
+                          current_profile: update.data.profile_name
+                        }
+                      : c
+                  )
+                }));
                 setScreenshotKey(k => k + 1);
                 break;
               case 'job_complete':
-                // Jobs are now tracked per-campaign in the queue
+                // Update queue state with job completion
+                setQueueState(prev => ({
+                  ...prev,
+                  pending: prev.pending.map(c =>
+                    c.id === update.data.campaign_id
+                      ? {
+                          ...c,
+                          current_job: update.data.job_index + 1,
+                          success_count: (c.success_count || 0) + (update.data.success ? 1 : 0)
+                        }
+                      : c
+                  )
+                }));
                 setScreenshotKey(k => k + 1);
                 break;
               case 'campaign_complete':
@@ -1601,7 +1627,6 @@ function App() {
                     onChange={(e) => setUrl(e.target.value)}
                     placeholder="https://www.facebook.com/..."
                     className="bg-white"
-                    disabled={queueState.processor_running}
                   />
                 </div>
 
@@ -1612,7 +1637,6 @@ function App() {
                     onChange={(e) => setComments(e.target.value)}
                     placeholder="Comment 1&#10;Comment 2&#10;Comment 3"
                     className="min-h-[150px] bg-white"
-                    disabled={queueState.processor_running}
                   />
                   <p className="text-xs text-[#999999]">
                     {sessions.filter(s => s.valid).length} profiles available. Same profile can comment on different posts.
@@ -1632,7 +1656,6 @@ function App() {
                         setCampaignDuration(val);
                       }}
                       className="w-24 bg-white"
-                      disabled={queueState.processor_running}
                     />
                     <span className="text-sm text-[#666666]">
                       minutes ({formatDuration(campaignDuration)})
@@ -1655,14 +1678,12 @@ function App() {
                       placeholder="Search tags..."
                       showSelectedAsBadges={true}
                       allowCreate={false}
-                      disabled={queueState.processor_running}
                     />
                     {campaignFilterTags.length > 0 && (
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => setCampaignFilterTags([])}
-                        disabled={queueState.processor_running}
                       >
                         Clear
                       </Button>
