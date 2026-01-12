@@ -2,11 +2,16 @@
 CommentBot API - Streamlined Facebook Comment Automation
 """
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Set
+
+# Authentication imports
+from auth import create_access_token, create_refresh_token, decode_token, verify_password
+from users import user_manager
 
 # Maximum concurrent browser sessions for campaigns
 MAX_CONCURRENT = 5
@@ -101,6 +106,38 @@ credential_manager = CredentialManager()
 proxy_manager = ProxyManager()
 
 
+# Helper functions for campaign queue
+import re
+from urllib.parse import urlparse
+
+def normalize_url(url: str) -> str:
+    """Extract canonical post identifier from Facebook URL."""
+    try:
+        patterns = [
+            r'/posts/(\d+)',
+            r'story_fbid=(\d+)',
+            r'/permalink/(\d+)',
+            r'/photos/[^/]+/(\d+)',
+            r'/(\d+)/?$'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        # Fallback: use path without query params
+        parsed = urlparse(url)
+        return f"{parsed.netloc}{parsed.path}".lower()
+    except:
+        return url.lower().strip()
+
+
+def assign_profiles_for_url(count: int, sessions: List[Dict]) -> List[str]:
+    """Get profile names for commenting on a URL."""
+    valid = [s["profile_name"] for s in sessions if s.get("has_valid_cookies", False)]
+    random.shuffle(valid)  # Randomize who comments first
+    return valid[:count]
+
+
 # Models
 class CommentRequest(BaseModel):
     url: str
@@ -113,6 +150,17 @@ class CampaignRequest(BaseModel):
     comments: List[str]
     profile_names: List[str]
     duration_minutes: int = 30  # Total campaign duration (10-1440 minutes)
+
+
+class QueuedCampaignItem(BaseModel):
+    id: str
+    url: str
+    comments: List[str]
+    duration_minutes: int = 30
+
+
+class CampaignQueueRequest(BaseModel):
+    campaigns: List[QueuedCampaignItem]
 
 
 class SessionInfo(BaseModel):
@@ -200,6 +248,275 @@ class BatchSessionCreateRequest(BaseModel):
     proxy_id: Optional[str] = None
 
 
+# ============================================================================
+# Authentication Models and Dependencies
+# ============================================================================
+
+# OAuth2 scheme - tells FastAPI where to find the token
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class UserResponse(BaseModel):
+    username: str
+    role: str
+    is_active: bool
+    created_at: Optional[str]
+    last_login: Optional[str]
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class AdminChangePasswordRequest(BaseModel):
+    new_password: str
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+    """
+    Dependency that validates JWT and returns current user.
+    Use this to protect endpoints that require authentication.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    payload = decode_token(token)
+    if payload is None:
+        raise credentials_exception
+
+    if payload.get("type") != "access":
+        raise credentials_exception
+
+    username = payload.get("sub")
+    if username is None:
+        raise credentials_exception
+
+    user = user_manager.get_user(username)
+    if user is None:
+        raise credentials_exception
+
+    if not user.get("is_active"):
+        raise HTTPException(status_code=403, detail="User account is disabled")
+
+    return user
+
+
+async def get_admin_user(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    Dependency that requires admin role.
+    Use this for admin-only endpoints.
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
+
+
+# ============================================================================
+# Authentication Endpoints
+# ============================================================================
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(request: LoginRequest):
+    """Authenticate user and return JWT tokens."""
+    user = user_manager.authenticate(request.username, request.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(data={"sub": user["username"]})
+    refresh_token = create_refresh_token(data={"sub": user["username"]})
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token
+    )
+
+
+@app.post("/auth/refresh", response_model=TokenResponse)
+async def refresh_tokens(request: RefreshRequest):
+    """Get new access token using refresh token."""
+    payload = decode_token(request.refresh_token)
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+    username = payload.get("sub")
+    user = user_manager.get_user(username)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    if not user.get("is_active"):
+        raise HTTPException(status_code=403, detail="User account is disabled")
+
+    new_access_token = create_access_token(data={"sub": username})
+    new_refresh_token = create_refresh_token(data={"sub": username})
+
+    return TokenResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token
+    )
+
+
+@app.get("/auth/me", response_model=UserResponse)
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Get current authenticated user info."""
+    return current_user
+
+
+@app.post("/auth/change-password")
+async def change_own_password(
+    request: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Change current user's password."""
+    # Verify current password
+    user_with_pwd = user_manager.get_user_with_password(current_user["username"])
+    if not verify_password(request.current_password, user_with_pwd["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+
+    user_manager.change_password(current_user["username"], request.new_password)
+    return {"success": True, "message": "Password changed successfully"}
+
+
+# ============================================================================
+# User Management Endpoints (Admin Only)
+# ============================================================================
+
+@app.get("/users", response_model=List[UserResponse])
+async def list_users(admin: dict = Depends(get_admin_user)):
+    """List all users (admin only)."""
+    return user_manager.list_users()
+
+
+@app.post("/users", response_model=UserResponse)
+async def create_user(request: CreateUserRequest, admin: dict = Depends(get_admin_user)):
+    """Create a new user (admin only)."""
+    if request.role not in ("admin", "user"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Role must be 'admin' or 'user'"
+        )
+
+    user = user_manager.create_user(request.username, request.password, request.role)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already exists"
+        )
+    return user
+
+
+@app.delete("/users/{username}")
+async def delete_user(username: str, admin: dict = Depends(get_admin_user)):
+    """Delete a user (admin only)."""
+    # Cannot delete yourself
+    if username == admin["username"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete yourself"
+        )
+
+    # Cannot delete last admin
+    if user_manager.is_last_admin(username):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete the last admin user"
+        )
+
+    success = user_manager.delete_user(username)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    return {"success": True, "username": username}
+
+
+@app.put("/users/{username}/password")
+async def admin_change_password(
+    username: str,
+    request: AdminChangePasswordRequest,
+    admin: dict = Depends(get_admin_user)
+):
+    """Change any user's password (admin only)."""
+    success = user_manager.change_password(username, request.new_password)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    return {"success": True, "message": f"Password changed for {username}"}
+
+
+@app.put("/users/{username}/role")
+async def change_user_role(
+    username: str,
+    role: str,
+    admin: dict = Depends(get_admin_user)
+):
+    """Change a user's role (admin only)."""
+    if role not in ("admin", "user"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Role must be 'admin' or 'user'"
+        )
+
+    # Cannot demote yourself if you're the last admin
+    if username == admin["username"] and role != "admin":
+        if user_manager.is_last_admin(username):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot demote the last admin"
+            )
+
+    success = user_manager.update_role(username, role)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    return {"success": True, "username": username, "role": role}
+
+
 # Endpoints
 @app.get("/")
 async def root():
@@ -212,11 +529,27 @@ async def health():
 
 
 @app.websocket("/ws/live")
-async def websocket_live(websocket: WebSocket):
-    """WebSocket endpoint for live updates."""
+async def websocket_live(websocket: WebSocket, token: str = Query(None)):
+    """WebSocket endpoint for live updates. Requires token query parameter."""
+    # Validate token before accepting connection
+    if not token:
+        await websocket.close(code=4001, reason="Token required")
+        return
+
+    payload = decode_token(token)
+    if not payload or payload.get("type") != "access":
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    username = payload.get("sub")
+    user = user_manager.get_user(username)
+    if not user or not user.get("is_active"):
+        await websocket.close(code=4001, reason="User not found or inactive")
+        return
+
     await websocket.accept()
     active_connections.add(websocket)
-    logger.info(f"WS connected. Total: {len(active_connections)}")
+    logger.info(f"WS connected for user {username}. Total: {len(active_connections)}")
     try:
         while True:
             await websocket.receive_text()
@@ -228,7 +561,7 @@ async def websocket_live(websocket: WebSocket):
 
 
 @app.get("/sessions")
-async def get_sessions() -> List[SessionInfo]:
+async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[SessionInfo]:
     """Get all saved sessions with proxy info."""
     from urllib.parse import urlparse
 
@@ -274,7 +607,7 @@ async def get_sessions() -> List[SessionInfo]:
 
 
 @app.get("/sessions/audit-proxies")
-async def audit_session_proxies() -> List[Dict]:
+async def audit_session_proxies(current_user: dict = Depends(get_current_user)) -> List[Dict]:
     """
     Audit all sessions to show actual proxy values.
     Used to verify if stored proxies match PROXY_URL environment variable.
@@ -297,7 +630,7 @@ async def audit_session_proxies() -> List[Dict]:
 
 
 @app.post("/sessions/sync-all-to-env-proxy")
-async def sync_all_sessions_to_env_proxy() -> Dict:
+async def sync_all_sessions_to_env_proxy(current_user: dict = Depends(get_current_user)) -> Dict:
     """
     Force ALL sessions to use the PROXY_URL environment variable.
     This updates the proxy field in each session's JSON file.
@@ -323,7 +656,7 @@ async def sync_all_sessions_to_env_proxy() -> Dict:
 
 
 @app.post("/sessions/{profile_name}/test")
-async def test_session_endpoint(profile_name: str) -> Dict:
+async def test_session_endpoint(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Test if a session is valid."""
     session = FacebookSession(profile_name)
     result = await test_session(session, PROXY_URL if PROXY_URL else None)
@@ -331,7 +664,7 @@ async def test_session_endpoint(profile_name: str) -> Dict:
 
 
 @app.delete("/sessions/{profile_name}")
-async def delete_session(profile_name: str) -> Dict:
+async def delete_session(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Delete a session by profile name."""
     session = FacebookSession(profile_name)
     if not session.session_file.exists():
@@ -347,7 +680,7 @@ async def delete_session(profile_name: str) -> Dict:
 
 
 @app.post("/comment")
-async def post_comment_endpoint(request: CommentRequest) -> Dict:
+async def post_comment_endpoint(request: CommentRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """Post a comment using a saved session."""
     session = FacebookSession(request.profile_name)
     
@@ -376,7 +709,7 @@ async def post_comment_endpoint(request: CommentRequest) -> Dict:
 
 
 @app.post("/campaign")
-async def run_campaign(request: CampaignRequest) -> Dict:
+async def run_campaign(request: CampaignRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """Run a campaign with staggered timing - comments spread across specified duration."""
     total_jobs = min(len(request.profile_names), len(request.comments))
     duration_seconds = request.duration_minutes * 60
@@ -474,8 +807,174 @@ async def run_campaign(request: CampaignRequest) -> Dict:
     return {"url": request.url, "total": len(results), "success": success_count, "results": results}
 
 
+@app.post("/campaign/queue")
+async def run_campaign_queue(request: CampaignQueueRequest, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Run multiple campaigns sequentially with per-URL profile assignment."""
+
+    # Get all valid sessions
+    sessions_list = list_saved_sessions()
+    valid_profiles = [s for s in sessions_list if s.get("has_valid_cookies", False)]
+    valid_count = len(valid_profiles)
+
+    if valid_count == 0:
+        raise HTTPException(status_code=400, detail="No valid sessions available")
+
+    # Validate per-URL limits
+    url_comment_counts: Dict[str, int] = {}
+    for campaign in request.campaigns:
+        normalized = normalize_url(campaign.url)
+        url_comment_counts[normalized] = url_comment_counts.get(normalized, 0) + len(campaign.comments)
+
+    for url, count in url_comment_counts.items():
+        if count > valid_count:
+            raise HTTPException(
+                status_code=400,
+                detail=f"URL has {count} total comments but only {valid_count} profiles available"
+            )
+
+    # Broadcast queue start
+    await broadcast_update("queue_start", {
+        "total_campaigns": len(request.campaigns),
+        "campaigns": [{"id": c.id, "url": c.url, "comment_count": len(c.comments)} for c in request.campaigns]
+    })
+
+    all_results = []
+
+    # Track which profiles have been used for each URL
+    url_used_profiles: Dict[str, Set[str]] = {}
+
+    for idx, campaign in enumerate(request.campaigns):
+        await broadcast_update("queue_campaign_start", {
+            "campaign_id": campaign.id,
+            "campaign_index": idx,
+            "url": campaign.url
+        })
+
+        normalized_url = normalize_url(campaign.url)
+
+        # Get available profiles for this URL (not yet used for this URL)
+        used_for_url = url_used_profiles.get(normalized_url, set())
+        available_for_url = [p["profile_name"] for p in valid_profiles if p["profile_name"] not in used_for_url]
+
+        # Shuffle and assign profiles
+        random.shuffle(available_for_url)
+        assigned_profiles = available_for_url[:len(campaign.comments)]
+
+        # Mark these profiles as used for this URL
+        if normalized_url not in url_used_profiles:
+            url_used_profiles[normalized_url] = set()
+        url_used_profiles[normalized_url].update(assigned_profiles)
+
+        # Calculate timing for this campaign
+        total_jobs = len(campaign.comments)
+        duration_seconds = campaign.duration_minutes * 60
+        base_delay = duration_seconds / total_jobs if total_jobs > 1 else 0
+
+        # Broadcast campaign start
+        await broadcast_update("campaign_start", {
+            "url": campaign.url,
+            "total_jobs": total_jobs,
+            "duration_minutes": campaign.duration_minutes
+        })
+
+        # Process jobs for this campaign
+        campaign_results = []
+
+        for job_idx, (profile_name, comment) in enumerate(zip(assigned_profiles, campaign.comments)):
+            # Staggered delay (except first job)
+            if job_idx > 0:
+                jitter = random.uniform(0.8, 1.2)
+                delay_seconds = base_delay * jitter
+
+                await broadcast_update("job_waiting", {
+                    "job_index": job_idx,
+                    "delay_seconds": round(delay_seconds),
+                    "profile_name": profile_name
+                })
+
+                logger.info(f"Queue campaign {idx+1}: Waiting {delay_seconds:.0f}s before job {job_idx} ({profile_name})")
+                await asyncio.sleep(delay_seconds)
+
+            await broadcast_update("job_start", {
+                "job_index": job_idx,
+                "profile_name": profile_name,
+                "comment": comment[:50]
+            })
+
+            session = FacebookSession(profile_name)
+
+            if not session.load():
+                await broadcast_update("job_error", {"job_index": job_idx, "error": "Session not found"})
+                campaign_results.append({
+                    "profile_name": profile_name,
+                    "success": False,
+                    "error": "Session not found",
+                    "job_index": job_idx
+                })
+                continue
+
+            try:
+                result = await post_comment_verified(
+                    session=session,
+                    url=campaign.url,
+                    comment=comment,
+                    proxy=PROXY_URL if PROXY_URL else None
+                )
+
+                await broadcast_update("job_complete", {
+                    "job_index": job_idx,
+                    "profile_name": profile_name,
+                    "success": result["success"],
+                    "verified": result.get("verified", False),
+                    "method": result.get("method", "unknown"),
+                    "error": result.get("error")
+                })
+
+                campaign_results.append({
+                    "profile_name": profile_name,
+                    "comment": comment,
+                    "success": result["success"],
+                    "verified": result.get("verified", False),
+                    "method": result.get("method", "unknown"),
+                    "error": result.get("error"),
+                    "job_index": job_idx
+                })
+            except Exception as e:
+                logger.error(f"Error processing job {job_idx} in campaign {campaign.id}: {e}")
+                await broadcast_update("job_error", {"job_index": job_idx, "error": str(e)})
+                campaign_results.append({
+                    "profile_name": profile_name,
+                    "success": False,
+                    "error": str(e),
+                    "job_index": job_idx
+                })
+
+        success_count = sum(1 for r in campaign_results if r.get("success"))
+        await broadcast_update("campaign_complete", {"total": len(campaign_results), "success": success_count})
+
+        campaign_result = {
+            "campaign_id": campaign.id,
+            "url": campaign.url,
+            "total": len(campaign_results),
+            "success": success_count,
+            "results": campaign_results
+        }
+
+        all_results.append(campaign_result)
+
+        await broadcast_update("queue_campaign_complete", {
+            "campaign_id": campaign.id,
+            "success": success_count,
+            "total": len(campaign_results)
+        })
+
+    await broadcast_update("queue_complete", {"results": all_results})
+
+    return {"campaigns": all_results}
+
+
 @app.get("/config")
-async def get_config() -> Dict:
+async def get_config(current_user: dict = Depends(get_current_user)) -> Dict:
     """Get current configuration."""
     return {
         "proxy_configured": bool(PROXY_URL),
@@ -486,7 +985,7 @@ async def get_config() -> Dict:
 
 # Credential Endpoints
 @app.get("/credentials", response_model=List[CredentialInfo])
-async def get_credentials():
+async def get_credentials(current_user: dict = Depends(get_current_user)):
     """Get all saved credentials (without passwords)."""
     credential_manager.load_credentials()
     credentials = credential_manager.get_all_credentials()
@@ -527,7 +1026,7 @@ async def get_credentials():
 
 
 @app.post("/credentials")
-async def add_credential(request: CredentialAddRequest) -> Dict:
+async def add_credential(request: CredentialAddRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """Add a new credential."""
     credential_manager.add_credential(
         uid=request.uid,
@@ -539,7 +1038,7 @@ async def add_credential(request: CredentialAddRequest) -> Dict:
 
 
 @app.post("/credentials/bulk-import")
-async def bulk_import_credentials(file: UploadFile = File(...)) -> Dict:
+async def bulk_import_credentials(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)) -> Dict:
     """
     Import credentials from text file.
     Format per line: uid:password:2fa_secret
@@ -582,7 +1081,7 @@ async def bulk_import_credentials(file: UploadFile = File(...)) -> Dict:
 
 
 @app.delete("/credentials/{uid}")
-async def delete_credential(uid: str) -> Dict:
+async def delete_credential(uid: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Delete a credential."""
     success = credential_manager.delete_credential(uid)
     if success:
@@ -591,7 +1090,7 @@ async def delete_credential(uid: str) -> Dict:
 
 
 @app.get("/otp/{uid}", response_model=OTPResponse)
-async def get_otp(uid: str) -> OTPResponse:
+async def get_otp(uid: str, current_user: dict = Depends(get_current_user)) -> OTPResponse:
     """Generate current OTP code for a UID."""
     credential_manager.load_credentials()
     result = credential_manager.generate_otp(uid)
@@ -605,7 +1104,7 @@ async def get_otp(uid: str) -> OTPResponse:
 
 # Proxy Endpoints
 @app.get("/proxies", response_model=List[ProxyInfo])
-async def get_proxies():
+async def get_proxies(current_user: dict = Depends(get_current_user)):
     """Get all saved proxies including system proxy from PROXY_URL."""
     from urllib.parse import urlparse
 
@@ -667,7 +1166,7 @@ async def get_proxies():
 
 
 @app.post("/proxies")
-async def add_proxy(request: ProxyAddRequest) -> Dict:
+async def add_proxy(request: ProxyAddRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """Add a new proxy."""
     proxy = proxy_manager.add_proxy(
         name=request.name,
@@ -679,7 +1178,7 @@ async def add_proxy(request: ProxyAddRequest) -> Dict:
 
 
 @app.get("/proxies/{proxy_id}")
-async def get_proxy(proxy_id: str) -> Dict:
+async def get_proxy(proxy_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Get a proxy by ID."""
     proxy = proxy_manager.get_proxy(proxy_id)
     if not proxy:
@@ -688,7 +1187,7 @@ async def get_proxy(proxy_id: str) -> Dict:
 
 
 @app.put("/proxies/{proxy_id}")
-async def update_proxy(proxy_id: str, request: ProxyUpdateRequest) -> Dict:
+async def update_proxy(proxy_id: str, request: ProxyUpdateRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """Update a proxy."""
     updates = {}
     if request.name is not None:
@@ -707,7 +1206,7 @@ async def update_proxy(proxy_id: str, request: ProxyUpdateRequest) -> Dict:
 
 
 @app.delete("/proxies/{proxy_id}")
-async def delete_proxy(proxy_id: str) -> Dict:
+async def delete_proxy(proxy_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Delete a proxy."""
     success = proxy_manager.delete_proxy(proxy_id)
     if success:
@@ -716,7 +1215,7 @@ async def delete_proxy(proxy_id: str) -> Dict:
 
 
 @app.post("/proxies/{proxy_id}/test", response_model=ProxyTestResult)
-async def test_proxy(proxy_id: str) -> ProxyTestResult:
+async def test_proxy(proxy_id: str, current_user: dict = Depends(get_current_user)) -> ProxyTestResult:
     """Test a proxy's connectivity."""
     result = await proxy_manager.test_proxy(proxy_id)
     return ProxyTestResult(
@@ -728,7 +1227,7 @@ async def test_proxy(proxy_id: str) -> ProxyTestResult:
 
 
 @app.post("/sessions/{profile_name}/assign-proxy")
-async def assign_proxy_to_session(profile_name: str, proxy_id: str) -> Dict:
+async def assign_proxy_to_session(profile_name: str, proxy_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Assign a proxy to a session."""
     # Verify session exists
     session = FacebookSession(profile_name)
@@ -753,7 +1252,7 @@ async def assign_proxy_to_session(profile_name: str, proxy_id: str) -> Dict:
 
 # Session Creation Endpoint
 @app.post("/sessions/create")
-async def create_session(request: SessionCreateRequest) -> Dict:
+async def create_session(request: SessionCreateRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """
     Create a new session by logging in with stored credentials.
 
@@ -813,7 +1312,7 @@ async def create_session(request: SessionCreateRequest) -> Dict:
 
 
 @app.post("/sessions/create-batch")
-async def create_sessions_batch(request: BatchSessionCreateRequest) -> Dict:
+async def create_sessions_batch(request: BatchSessionCreateRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """
     Create multiple sessions concurrently with rate limiting.
 
@@ -938,7 +1437,7 @@ async def create_sessions_batch(request: BatchSessionCreateRequest) -> Dict:
 
 
 @app.post("/sessions/{profile_name}/refresh-name")
-async def refresh_profile_name(profile_name: str) -> Dict:
+async def refresh_profile_name(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """
     Refresh the profile name for an existing session by fetching it from Facebook.
 
@@ -954,7 +1453,7 @@ async def refresh_profile_name(profile_name: str) -> Dict:
 
 
 @app.post("/sessions/refresh-all-names")
-async def refresh_all_profile_names() -> Dict:
+async def refresh_all_profile_names(current_user: dict = Depends(get_current_user)) -> Dict:
     """
     Refresh profile names for all existing sessions.
 
@@ -1031,15 +1530,31 @@ pending_uploads: Dict[str, Dict] = {}
 
 
 @app.websocket("/ws/session/{session_id}/control")
-async def websocket_session_control(websocket: WebSocket, session_id: str):
+async def websocket_session_control(websocket: WebSocket, session_id: str, token: str = Query(None)):
     """
-    WebSocket endpoint for interactive browser control.
+    WebSocket endpoint for interactive browser control. Requires token query parameter.
 
     Handles:
     - Frame streaming (server -> client, JSON with base64 image)
     - Input events (client -> server, JSON)
     - State updates (bidirectional, JSON)
     """
+    # Validate token before accepting connection
+    if not token:
+        await websocket.close(code=4001, reason="Token required")
+        return
+
+    payload = decode_token(token)
+    if not payload or payload.get("type") != "access":
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    username = payload.get("sub")
+    user = user_manager.get_user(username)
+    if not user or not user.get("is_active"):
+        await websocket.close(code=4001, reason="User not found or inactive")
+        return
+
     await websocket.accept()
     manager = get_browser_manager()
 
@@ -1126,14 +1641,14 @@ async def websocket_session_control(websocket: WebSocket, session_id: str):
 
 
 @app.post("/sessions/{session_id}/remote/start")
-async def start_remote_session(session_id: str) -> Dict:
+async def start_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Start a remote control session for the given session."""
     manager = get_browser_manager()
     return await manager.start_session(session_id)
 
 
 @app.post("/sessions/{session_id}/remote/stop")
-async def stop_remote_session(session_id: str) -> Dict:
+async def stop_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Stop the current remote control session."""
     manager = get_browser_manager()
     if manager.session_id != session_id:
@@ -1142,14 +1657,14 @@ async def stop_remote_session(session_id: str) -> Dict:
 
 
 @app.get("/sessions/remote/status")
-async def get_remote_status() -> Dict:
+async def get_remote_status(current_user: dict = Depends(get_current_user)) -> Dict:
     """Get current remote session status."""
     manager = get_browser_manager()
     return await manager.get_current_state()
 
 
 @app.get("/sessions/{session_id}/remote/logs")
-async def get_session_action_logs(session_id: str, limit: int = 100) -> List[Dict]:
+async def get_session_action_logs(session_id: str, limit: int = 100, current_user: dict = Depends(get_current_user)) -> List[Dict]:
     """Get action logs for the current session."""
     manager = get_browser_manager()
     if manager.session_id == session_id:
@@ -1159,7 +1674,7 @@ async def get_session_action_logs(session_id: str, limit: int = 100) -> List[Dic
 
 # Image upload for file chooser interception
 @app.post("/sessions/{session_id}/upload-image", response_model=ImageUploadResponse)
-async def upload_image_for_session(session_id: str, file: UploadFile = File(...)) -> ImageUploadResponse:
+async def upload_image_for_session(session_id: str, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)) -> ImageUploadResponse:
     """
     Upload an image for use in an interactive session.
     Stores temporarily and associates with the session for file chooser interception.
@@ -1217,7 +1732,7 @@ async def upload_image_for_session(session_id: str, file: UploadFile = File(...)
 
 
 @app.delete("/sessions/{session_id}/upload-image")
-async def clear_pending_upload(session_id: str) -> Dict:
+async def clear_pending_upload(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Clear pending upload for a session."""
     from pathlib import Path
 
@@ -1233,7 +1748,7 @@ async def clear_pending_upload(session_id: str) -> Dict:
 
 
 @app.get("/sessions/{session_id}/pending-upload")
-async def get_pending_upload(session_id: str) -> Dict:
+async def get_pending_upload(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Check if session has a pending upload."""
     if session_id in pending_uploads:
         return {"has_pending": True, **pending_uploads[session_id]}
@@ -1241,7 +1756,7 @@ async def get_pending_upload(session_id: str) -> Dict:
 
 
 @app.post("/sessions/{session_id}/prepare-file-upload")
-async def prepare_file_upload(session_id: str) -> Dict:
+async def prepare_file_upload(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """
     Prepare the interactive session to use the pending upload.
     Call this before the user clicks a file input on the page.

@@ -7,11 +7,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse } from "lucide-react"
+import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield } from "lucide-react"
 import { Toaster, toast } from 'sonner'
-
-const API_BASE = import.meta.env.VITE_API_BASE || "https://commentbot-production.up.railway.app";
-const WS_BASE = API_BASE.replace('https://', 'wss://').replace('http://', 'ws://');
+import { useAuth } from '@/contexts/AuthContext'
+import { LoginPage } from '@/components/auth/LoginPage'
+import { AdminTab } from '@/components/admin/AdminTab'
+import { API_BASE, WS_BASE } from '@/lib/api'
+import { getAccessToken } from '@/lib/auth'
 
 interface Session {
   file: string;
@@ -25,12 +27,14 @@ interface Session {
   profile_picture?: string | null;  // Base64 encoded PNG
 }
 
-interface Job {
-  profile_name: string;
-  comment: string;
-  status: 'pending' | 'success' | 'failed';
-  verified?: boolean;
-  method?: string;
+interface QueuedCampaign {
+  id: string;
+  url: string;
+  comments: string[];
+  durationMinutes: number;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  successCount?: number;
+  totalCount?: number;
 }
 
 interface LiveStatus {
@@ -114,15 +118,44 @@ const formatDuration = (minutes: number): string => {
   return `${hours}h ${mins}m`;
 };
 
+// Normalize Facebook URL to extract unique post identifier
+const normalizeUrl = (url: string): string => {
+  try {
+    // Try to extract post ID from various FB URL formats
+    const patterns = [
+      /posts\/(\d+)/,
+      /story_fbid=(\d+)/,
+      /permalink\/(\d+)/,
+      /photos\/[^/]+\/(\d+)/,
+      /\/(\d+)\/?$/
+    ];
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match) return match[1];
+    }
+    // Fallback: use the full URL lowercased
+    return url.toLowerCase().trim();
+  } catch {
+    return url.toLowerCase().trim();
+  }
+};
+
 function App() {
+  // Auth state - must be first hook
+  const { user, isAuthenticated, isLoading: authLoading, logout } = useAuth();
+
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
-  const [jobs, setJobs] = useState<Job[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [campaignDuration, setCampaignDuration] = useState(30); // Duration in minutes (10-1440)
+
+  // Campaign queue state
+  const [campaignQueue, setCampaignQueue] = useState<QueuedCampaign[]>([]);
+  const [queueRunning, setQueueRunning] = useState(false);
+  const [currentCampaignIndex, setCurrentCampaignIndex] = useState(-1);
 
   const [newUid, setNewUid] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -182,7 +215,12 @@ function App() {
   useEffect(() => {
     const connectWebSocket = () => {
       try {
-        const ws = new WebSocket(`${WS_BASE}/ws/live`);
+        const accessToken = getAccessToken();
+        if (!accessToken) {
+          console.log('No access token, skipping WebSocket connection');
+          return;
+        }
+        const ws = new WebSocket(`${WS_BASE}/ws/live?token=${accessToken}`);
 
         ws.onopen = () => {
           console.log('WebSocket connected');
@@ -212,22 +250,52 @@ function App() {
                 setScreenshotKey(k => k + 1);
                 break;
               case 'job_complete':
-                setJobs(prev => prev.map((job, i) =>
-                  i === update.data.job_index
-                    ? {
-                        ...job,
-                        status: update.data.success ? 'success' : 'failed',
-                        verified: update.data.verified,
-                        method: update.data.method
-                      }
-                    : job
-                ));
+                // Jobs are now tracked per-campaign in the queue
                 setScreenshotKey(k => k + 1);
                 break;
               case 'campaign_complete':
                 setLiveStatus(prev => ({
                   ...prev,
                   currentStep: `Done: ${update.data.success}/${update.data.total} successful`
+                }));
+                break;
+              // Queue events
+              case 'queue_start':
+                setQueueRunning(true);
+                setCurrentCampaignIndex(0);
+                setLiveStatus(prev => ({
+                  ...prev,
+                  currentStep: `Queue started: ${update.data.total_campaigns} campaigns`
+                }));
+                break;
+              case 'queue_campaign_start':
+                setCurrentCampaignIndex(update.data.campaign_index);
+                setCampaignQueue(prev => prev.map((c, i) =>
+                  i === update.data.campaign_index ? { ...c, status: 'running' } : c
+                ));
+                setLiveStatus(prev => ({
+                  ...prev,
+                  currentStep: `Campaign ${update.data.campaign_index + 1}: ${update.data.url}`
+                }));
+                break;
+              case 'queue_campaign_complete':
+                setCampaignQueue(prev => prev.map(c =>
+                  c.id === update.data.campaign_id
+                    ? {
+                        ...c,
+                        status: update.data.success > 0 ? 'completed' : 'failed',
+                        successCount: update.data.success,
+                        totalCount: update.data.total
+                      }
+                    : c
+                ));
+                break;
+              case 'queue_complete':
+                setQueueRunning(false);
+                setCurrentCampaignIndex(-1);
+                setLiveStatus(prev => ({
+                  ...prev,
+                  currentStep: 'Queue complete'
                 }));
                 break;
               case 'session_create_start':
@@ -311,9 +379,16 @@ function App() {
     };
   }, []);
 
+  // Helper to get auth headers
+  const getAuthHeaders = (): HeadersInit => {
+    const token = getAccessToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
   const fetchSessions = async () => {
     try {
-      const res = await fetch(`${API_BASE}/sessions`);
+      const res = await fetch(`${API_BASE}/sessions`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch sessions');
       const data = await res.json();
       setSessions(data);
     } catch (error) {
@@ -325,7 +400,8 @@ function App() {
 
   const fetchCredentials = async () => {
     try {
-      const res = await fetch(`${API_BASE}/credentials`);
+      const res = await fetch(`${API_BASE}/credentials`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch credentials');
       const data = await res.json();
       setCredentials(data);
     } catch (error) {
@@ -335,7 +411,8 @@ function App() {
 
   const fetchProxies = async () => {
     try {
-      const res = await fetch(`${API_BASE}/proxies`);
+      const res = await fetch(`${API_BASE}/proxies`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch proxies');
       const data = await res.json();
       setProxies(data);
     } catch (error) {
@@ -349,72 +426,140 @@ function App() {
     fetchProxies();
   }, []);
 
-  const generateJobs = () => {
-    if (!url || !comments) return;
+  // Add campaign to queue with per-URL validation
+  const addToQueue = () => {
+    if (!url || !comments) {
+      toast.error('Please enter a URL and comments');
+      return;
+    }
 
     const commentList = comments.split('\n').filter(c => c.trim());
-    const availableSessions = sessions.filter(s => s.valid);
-
-    if (availableSessions.length === 0) {
-      alert("No valid sessions available!");
+    if (commentList.length === 0) {
+      toast.error('Please enter at least one comment');
       return;
     }
 
-    // Block if more comments than available sessions
-    if (commentList.length > availableSessions.length) {
-      alert(`You have ${commentList.length} comments but only ${availableSessions.length} active sessions. Please reduce comments to ${availableSessions.length} or fewer.`);
+    const availableProfiles = sessions.filter(s => s.valid).length;
+    if (availableProfiles === 0) {
+      toast.error('No valid sessions available!');
       return;
     }
 
-    const newJobs: Job[] = [];
-    availableSessions.forEach((session, i) => {
-      if (i < commentList.length) {
-        newJobs.push({
-          profile_name: session.profile_name,
-          comment: commentList[i].trim(),
-          status: 'pending'
-        });
+    const normalizedUrl = normalizeUrl(url);
+
+    // Count existing comments for this URL in queue
+    const existingForUrl = campaignQueue
+      .filter(c => normalizeUrl(c.url) === normalizedUrl)
+      .reduce((sum, c) => sum + c.comments.length, 0);
+
+    const totalForUrl = existingForUrl + commentList.length;
+
+    // Per-URL validation: total comments for this URL must not exceed available profiles
+    if (totalForUrl > availableProfiles) {
+      if (existingForUrl > 0) {
+        toast.error(`This URL already has ${existingForUrl} comments queued. Adding ${commentList.length} more would total ${totalForUrl}, exceeding ${availableProfiles} available profiles.`);
+      } else {
+        toast.error(`You have ${commentList.length} comments but only ${availableProfiles} active sessions. Please reduce to ${availableProfiles} or fewer.`);
       }
-    });
+      return;
+    }
 
-    setJobs(newJobs);
+    // Add to queue
+    const newCampaign: QueuedCampaign = {
+      id: crypto.randomUUID(),
+      url,
+      comments: commentList,
+      durationMinutes: campaignDuration,
+      status: 'pending'
+    };
+
+    setCampaignQueue([...campaignQueue, newCampaign]);
+
+    // Clear form for next entry
+    setUrl('');
+    setComments('');
+
+    toast.success(`Added campaign with ${commentList.length} comments to queue`);
   };
 
-  const runCampaign = async () => {
-    if (jobs.length === 0) return;
+  // Remove campaign from queue
+  const removeFromQueue = (campaignId: string) => {
+    setCampaignQueue(campaignQueue.filter(c => c.id !== campaignId));
+  };
 
+  // Clear entire queue
+  const clearQueue = () => {
+    if (queueRunning) {
+      toast.error('Cannot clear queue while running');
+      return;
+    }
+    setCampaignQueue([]);
+  };
+
+  // Run all campaigns in queue sequentially
+  const runQueue = async () => {
+    if (campaignQueue.length === 0) {
+      toast.error('Queue is empty');
+      return;
+    }
+
+    setQueueRunning(true);
     setIsProcessing(true);
+
     try {
-      const res = await fetch(`${API_BASE}/campaign`, {
+      const res = await fetch(`${API_BASE}/campaign/queue`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
-          url,
-          comments: jobs.map(j => j.comment),
-          profile_names: jobs.map(j => j.profile_name),
-          duration_minutes: campaignDuration
+          campaigns: campaignQueue.map(c => ({
+            id: c.id,
+            url: c.url,
+            comments: c.comments,
+            duration_minutes: c.durationMinutes
+          }))
         })
       });
 
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || 'Failed to run queue');
+      }
+
       const result = await res.json();
 
-      setJobs(jobs.map((job, i) => ({
-        ...job,
-        status: result.results?.[i]?.success ? 'success' : 'failed'
-      })));
+      // Update campaign statuses from result
+      if (result.campaigns) {
+        setCampaignQueue(prev => prev.map(campaign => {
+          const campaignResult = result.campaigns.find((r: {campaign_id: string}) => r.campaign_id === campaign.id);
+          if (campaignResult) {
+            return {
+              ...campaign,
+              status: campaignResult.success > 0 ? 'completed' : 'failed',
+              successCount: campaignResult.success,
+              totalCount: campaignResult.total
+            };
+          }
+          return campaign;
+        }));
+      }
 
-      alert(`Campaign complete: ${result.success}/${result.total} successful`);
+      const totalSuccess = result.campaigns?.reduce((sum: number, c: {success: number}) => sum + c.success, 0) || 0;
+      const totalComments = result.campaigns?.reduce((sum: number, c: {total: number}) => sum + c.total, 0) || 0;
+      toast.success(`Queue complete: ${totalSuccess}/${totalComments} comments posted across ${campaignQueue.length} campaigns`);
     } catch (error) {
-      alert(`Error: ${error}`);
+      toast.error(`Error: ${error}`);
     } finally {
+      setQueueRunning(false);
       setIsProcessing(false);
+      setCurrentCampaignIndex(-1);
     }
   };
 
   const testSession = async (profileName: string) => {
     try {
       const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/test`, {
-        method: 'POST'
+        method: 'POST',
+        headers: getAuthHeaders()
       });
       const result = await res.json();
       alert(result.valid ? `Session valid for user ${result.user_id}` : `Session invalid: ${result.error}`);
@@ -429,7 +574,8 @@ function App() {
 
     try {
       const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
       const result = await res.json();
       if (result.success) {
@@ -449,11 +595,11 @@ function App() {
       alert("UID and Password are required!");
       return;
     }
-    
+
     try {
       await fetch(`${API_BASE}/credentials`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           uid: newUid,
           password: newPassword,
@@ -478,7 +624,8 @@ function App() {
 
     try {
       await fetch(`${API_BASE}/credentials/${encodeURIComponent(uid)}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
       fetchCredentials();
     } catch (error) {
@@ -494,6 +641,7 @@ function App() {
 
       const res = await fetch(`${API_BASE}/credentials/bulk-import`, {
         method: 'POST',
+        headers: getAuthHeaders(),
         body: formData
       });
 
@@ -515,7 +663,9 @@ function App() {
 
   const getOTP = useCallback(async (uid: string) => {
     try {
-      const res = await fetch(`${API_BASE}/otp/${encodeURIComponent(uid)}`);
+      const res = await fetch(`${API_BASE}/otp/${encodeURIComponent(uid)}`, {
+        headers: getAuthHeaders()
+      });
       const data = await res.json();
       setOtpData(prev => ({ ...prev, [uid]: data }));
     } catch (error) {
@@ -539,7 +689,7 @@ function App() {
     try {
       await fetch(`${API_BASE}/proxies`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           name: newProxyName,
           url: newProxyUrl,
@@ -564,7 +714,8 @@ function App() {
 
     try {
       await fetch(`${API_BASE}/proxies/${encodeURIComponent(proxyId)}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
       fetchProxies();
     } catch (error) {
@@ -576,7 +727,8 @@ function App() {
     setTestingProxy(proxyId);
     try {
       const res = await fetch(`${API_BASE}/proxies/${encodeURIComponent(proxyId)}/test`, {
-        method: 'POST'
+        method: 'POST',
+        headers: getAuthHeaders()
       });
       const result = await res.json();
 
@@ -604,7 +756,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/sessions/create`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           credential_uid: uid,
           proxy_id: proxyId
@@ -676,7 +828,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/sessions/create-batch`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           credential_uids: Array.from(selectedCredentials)
         })
@@ -699,7 +851,8 @@ function App() {
     setRefreshingSession(profileName);
     try {
       const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/refresh-name`, {
-        method: 'POST'
+        method: 'POST',
+        headers: getAuthHeaders()
       });
       const result = await res.json();
 
@@ -725,7 +878,8 @@ function App() {
     setRefreshingAll(true);
     try {
       const res = await fetch(`${API_BASE}/sessions/refresh-all-names`, {
-        method: 'POST'
+        method: 'POST',
+        headers: getAuthHeaders()
       });
       const result = await res.json();
 
@@ -783,7 +937,13 @@ function App() {
     setRemoteConnecting(true);
 
     try {
-      const ws = new WebSocket(`${WS_BASE}/ws/session/${encodeURIComponent(sessionId)}/control`);
+      const accessToken = getAccessToken();
+      if (!accessToken) {
+        toast.error('Not authenticated');
+        setRemoteConnecting(false);
+        return;
+      }
+      const ws = new WebSocket(`${WS_BASE}/ws/session/${encodeURIComponent(sessionId)}/control?token=${accessToken}`);
 
       ws.onopen = () => {
         console.log('Remote WS connected');
@@ -1020,6 +1180,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(remoteSession.profile_name)}/upload-image`, {
         method: 'POST',
+        headers: getAuthHeaders(),
         body: formData
       });
 
@@ -1045,7 +1206,8 @@ function App() {
 
     try {
       const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(remoteSession.profile_name)}/prepare-file-upload`, {
-        method: 'POST'
+        method: 'POST',
+        headers: getAuthHeaders()
       });
       const result = await res.json();
       if (result.success) {
@@ -1059,6 +1221,20 @@ function App() {
     }
   };
 
+  // Auth loading state
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      </div>
+    );
+  }
+
+  // Not authenticated - show login
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 p-8 font-sans">
       <div className="max-w-[1200px] mx-auto space-y-8">
@@ -1068,39 +1244,60 @@ function App() {
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">CommentBot</h1>
             <p className="text-slate-500 mt-2">Facebook Comment Automation</p>
           </div>
-          <div className="flex items-center gap-2">
-            <div className={`h-3 w-3 rounded-full ${loading ? 'bg-yellow-500 animate-pulse' : isProcessing ? 'bg-blue-500 animate-pulse' : 'bg-green-500'}`} />
-            <span className="text-sm font-medium text-slate-700">
-              {loading ? 'Loading...' : isProcessing ? 'Processing' : 'Ready'}
-            </span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className={`h-3 w-3 rounded-full ${loading ? 'bg-yellow-500 animate-pulse' : isProcessing ? 'bg-blue-500 animate-pulse' : 'bg-green-500'}`} />
+              <span className="text-sm font-medium text-slate-700">
+                {loading ? 'Loading...' : isProcessing ? 'Processing' : 'Ready'}
+              </span>
+            </div>
+            <div className="h-6 w-px bg-slate-200" />
+            <div className="flex items-center gap-3">
+              <div className="text-right">
+                <p className="text-sm font-medium text-slate-700">{user?.username}</p>
+                <p className="text-xs text-slate-500 capitalize">{user?.role}</p>
+              </div>
+              <Button variant="outline" size="sm" onClick={logout}>
+                <LogOut className="w-4 h-4 mr-1" />
+                Logout
+              </Button>
+            </div>
           </div>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-5 lg:w-[750px]">
+          <TabsList className={`grid w-full ${user?.role === 'admin' ? 'grid-cols-6' : 'grid-cols-5'} lg:w-[${user?.role === 'admin' ? '900' : '750'}px]`}>
             <TabsTrigger value="campaign">Campaign</TabsTrigger>
             <TabsTrigger value="live">Live View</TabsTrigger>
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
             <TabsTrigger value="credentials">Credentials</TabsTrigger>
             <TabsTrigger value="proxies">Proxies</TabsTrigger>
+            {user?.role === 'admin' && (
+              <TabsTrigger value="admin">
+                <Shield className="w-4 h-4 mr-1" />
+                Admin
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="campaign" className="space-y-6 mt-6">
+            {/* Add Campaign Form */}
             <Card className="shadow-md border-slate-200">
               <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
-                <CardTitle className="text-lg">New Campaign</CardTitle>
+                <CardTitle className="text-lg">Add Campaign to Queue</CardTitle>
               </CardHeader>
               <CardContent className="space-y-6 pt-6">
                 <div className="space-y-2">
                   <Label>Target URL</Label>
-                  <Input 
-                    value={url} 
+                  <Input
+                    value={url}
                     onChange={(e) => setUrl(e.target.value)}
                     placeholder="https://www.facebook.com/..."
                     className="bg-white"
+                    disabled={queueRunning}
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label>Comments (one per line)</Label>
                   <Textarea
@@ -1108,7 +1305,11 @@ function App() {
                     onChange={(e) => setComments(e.target.value)}
                     placeholder="Comment 1&#10;Comment 2&#10;Comment 3"
                     className="min-h-[150px] bg-white"
+                    disabled={queueRunning}
                   />
+                  <p className="text-xs text-slate-400">
+                    {sessions.filter(s => s.valid).length} profiles available. Same profile can comment on different posts.
+                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -1124,6 +1325,7 @@ function App() {
                         setCampaignDuration(val);
                       }}
                       className="w-24 bg-white"
+                      disabled={queueRunning}
                     />
                     <span className="text-sm text-slate-600">
                       minutes ({formatDuration(campaignDuration)})
@@ -1134,52 +1336,116 @@ function App() {
                   </p>
                 </div>
 
-                <div className="flex gap-4">
-                  <Button onClick={generateJobs} variant="outline">
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    Preview Jobs
-                  </Button>
-                  <Button onClick={runCampaign} disabled={jobs.length === 0 || isProcessing}>
-                    {isProcessing ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Processing...
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-4 h-4 mr-2" />
-                        Run Campaign ({jobs.length} jobs)
-                      </>
-                    )}
-                  </Button>
-                </div>
+                <Button onClick={addToQueue} disabled={!url || !comments || queueRunning}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add to Queue
+                </Button>
               </CardContent>
             </Card>
 
-            {jobs.length > 0 && (
-              <Card className="shadow-md border-slate-200">
-                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
-                  <CardTitle className="text-lg">Jobs ({jobs.length})</CardTitle>
-                </CardHeader>
-                <CardContent className="p-0">
+            {/* Campaign Queue */}
+            <Card className="shadow-md border-slate-200">
+              <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+                <CardTitle className="text-lg flex items-center justify-between">
+                  <span>
+                    Campaign Queue ({campaignQueue.length} campaigns, {campaignQueue.reduce((sum, c) => sum + c.comments.length, 0)} comments)
+                  </span>
+                  {campaignQueue.length > 0 && !queueRunning && (
+                    <Button variant="ghost" size="sm" onClick={clearQueue}>
+                      <Trash2 className="w-4 h-4 mr-1" />
+                      Clear
+                    </Button>
+                  )}
+                </CardTitle>
+                {campaignQueue.length > 0 && (
+                  <p className="text-sm text-slate-500">
+                    Estimated duration: {formatDuration(campaignQueue.reduce((sum, c) => sum + c.durationMinutes, 0))}
+                  </p>
+                )}
+              </CardHeader>
+              <CardContent className="p-0">
+                {campaignQueue.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400">
+                    <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                    <p>No campaigns in queue. Add a campaign above to get started.</p>
+                  </div>
+                ) : (
                   <div className="divide-y divide-slate-100">
-                    {jobs.map((job, i) => (
-                      <div key={i} className="p-4 flex items-center justify-between hover:bg-slate-50">
-                        <div className="flex-1">
-                          <div className="font-medium text-slate-900">{job.profile_name}</div>
-                          <div className="text-sm text-slate-500 truncate">{job.comment}</div>
+                    {campaignQueue.map((campaign, i) => (
+                      <div
+                        key={campaign.id}
+                        className={`p-4 flex items-center justify-between hover:bg-slate-50 ${
+                          currentCampaignIndex === i ? 'bg-blue-50 border-l-4 border-blue-500' : ''
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-slate-700">#{i + 1}</span>
+                            <span className="text-sm text-slate-900 truncate">{campaign.url}</span>
+                          </div>
+                          <div className="text-sm text-slate-500">
+                            {campaign.comments.length} comments | {formatDuration(campaign.durationMinutes)}
+                          </div>
+                          {campaign.status === 'completed' && campaign.successCount !== undefined && (
+                            <div className="text-xs text-green-600">
+                              {campaign.successCount}/{campaign.totalCount} successful
+                            </div>
+                          )}
                         </div>
-                        <Badge variant={job.status === 'success' ? 'default' : job.status === 'failed' ? 'destructive' : 'secondary'}>
-                          {job.status === 'success' ? <CheckCircle className="w-3 h-3 mr-1" /> : 
-                           job.status === 'failed' ? <XCircle className="w-3 h-3 mr-1" /> : 
-                           <Loader2 className="w-3 h-3 mr-1 animate-spin" />}
-                          {job.status}
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant={
+                              campaign.status === 'completed' ? 'default' :
+                              campaign.status === 'failed' ? 'destructive' :
+                              campaign.status === 'running' ? 'default' :
+                              'secondary'
+                            }
+                            className={campaign.status === 'running' ? 'bg-blue-500' : ''}
+                          >
+                            {campaign.status === 'completed' ? <CheckCircle className="w-3 h-3 mr-1" /> :
+                             campaign.status === 'failed' ? <XCircle className="w-3 h-3 mr-1" /> :
+                             campaign.status === 'running' ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> :
+                             null}
+                            {campaign.status}
+                          </Badge>
+                          {!queueRunning && campaign.status === 'pending' && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => removeFromQueue(campaign.id)}
+                            >
+                              <X className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
-                </CardContent>
-              </Card>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Run Queue Button */}
+            {campaignQueue.length > 0 && (
+              <div className="flex justify-end">
+                <Button
+                  onClick={runQueue}
+                  disabled={queueRunning || campaignQueue.every(c => c.status !== 'pending')}
+                  size="lg"
+                >
+                  {queueRunning ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Running Queue ({currentCampaignIndex + 1}/{campaignQueue.length})...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 mr-2" />
+                      Run Queue ({campaignQueue.filter(c => c.status === 'pending').length} campaigns)
+                    </>
+                  )}
+                </Button>
+              </div>
             )}
           </TabsContent>
 
@@ -1735,6 +2001,12 @@ function App() {
               </Card>
             </div>
           </TabsContent>
+
+          {user?.role === 'admin' && (
+            <TabsContent value="admin" className="mt-6">
+              <AdminTab />
+            </TabsContent>
+          )}
         </Tabs>
 
       </div>
