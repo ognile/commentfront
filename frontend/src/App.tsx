@@ -1417,8 +1417,11 @@ function App() {
                       >
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium text-[#333333]">#{i + 1}</span>
-                            <span className="text-sm text-[#111111] truncate">{campaign.url}</span>
+                            <span className="font-medium text-[#333333] shrink-0">#{i + 1}</span>
+                            <div className="relative overflow-hidden flex-1 min-w-0">
+                              <span className="text-sm text-[#111111] whitespace-nowrap block">{campaign.url}</span>
+                              <div className="absolute inset-y-0 right-0 w-16 bg-gradient-to-l from-white to-transparent pointer-events-none" />
+                            </div>
                           </div>
                           <div className="text-sm text-[#999999]">
                             {campaign.comments.length} comments | {formatDuration(campaign.durationMinutes)}
