@@ -195,6 +195,11 @@ class SessionCreateRequest(BaseModel):
     proxy_id: Optional[str] = None
 
 
+class BatchSessionCreateRequest(BaseModel):
+    credential_uids: List[str]
+    proxy_id: Optional[str] = None
+
+
 # Endpoints
 @app.get("/")
 async def root():
@@ -805,6 +810,131 @@ async def create_session(request: SessionCreateRequest) -> Dict:
         return result
 
     return result
+
+
+@app.post("/sessions/create-batch")
+async def create_sessions_batch(request: BatchSessionCreateRequest) -> Dict:
+    """
+    Create multiple sessions concurrently with rate limiting.
+
+    Uses asyncio.Semaphore to limit concurrent logins to MAX_CONCURRENT (5).
+    Broadcasts progress for each credential via WebSocket.
+    """
+    credential_uids = request.credential_uids
+
+    if not credential_uids:
+        raise HTTPException(status_code=400, detail="No credentials provided")
+
+    # Get proxy URL - ALWAYS use PROXY_URL as default, allow override from proxy_id
+    proxy_url = PROXY_URL
+    if request.proxy_id:
+        proxy = proxy_manager.get_proxy(request.proxy_id)
+        if proxy:
+            proxy_url = proxy.get("url")
+        else:
+            raise HTTPException(status_code=404, detail=f"Proxy not found: {request.proxy_id}")
+
+    if not proxy_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot create sessions: No proxy configured. Set PROXY_URL environment variable or specify a proxy_id."
+        )
+
+    logger.info(f"Starting batch session creation for {len(credential_uids)} credentials")
+
+    # Broadcast batch start
+    await broadcast_update("batch_session_start", {
+        "total": len(credential_uids),
+        "credential_uids": credential_uids
+    })
+
+    # Semaphore for concurrency control
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+    async def create_one(credential_uid: str) -> Dict:
+        async with semaphore:
+            logger.info(f"[Batch] Starting session creation for {credential_uid}")
+
+            # Broadcast individual start
+            await broadcast_update("session_create_start", {
+                "credential_uid": credential_uid,
+                "proxy_id": request.proxy_id
+            })
+
+            # Create broadcast callback
+            async def broadcast_callback(update_type: str, data: dict):
+                await broadcast_update(update_type, data)
+
+            try:
+                result = await create_session_from_credentials(
+                    credential_uid=credential_uid,
+                    proxy_url=proxy_url,
+                    broadcast_callback=broadcast_callback
+                )
+
+                # Broadcast individual completion
+                await broadcast_update("session_create_complete", {
+                    "credential_uid": credential_uid,
+                    "success": result.get("success", False),
+                    "profile_name": result.get("profile_name"),
+                    "error": result.get("error"),
+                    "needs_attention": result.get("needs_attention", False)
+                })
+
+                logger.info(f"[Batch] Completed session creation for {credential_uid}: success={result.get('success')}")
+
+                return {
+                    "credential_uid": credential_uid,
+                    **result
+                }
+            except Exception as e:
+                logger.error(f"[Batch] Error creating session for {credential_uid}: {e}")
+                # Broadcast failure
+                await broadcast_update("session_create_complete", {
+                    "credential_uid": credential_uid,
+                    "success": False,
+                    "error": str(e)
+                })
+                return {
+                    "credential_uid": credential_uid,
+                    "success": False,
+                    "error": str(e)
+                }
+
+    # Run all sessions concurrently (limited by semaphore)
+    results = await asyncio.gather(
+        *[create_one(uid) for uid in credential_uids],
+        return_exceptions=True
+    )
+
+    # Process results
+    successes = []
+    failures = []
+    for i, result in enumerate(results):
+        uid = credential_uids[i]
+        if isinstance(result, Exception):
+            failures.append({"credential_uid": uid, "error": str(result)})
+        elif result.get("success"):
+            successes.append(result)
+        else:
+            failures.append(result)
+
+    logger.info(f"Batch session creation complete: {len(successes)} successes, {len(failures)} failures")
+
+    # Broadcast batch completion
+    await broadcast_update("batch_session_complete", {
+        "total": len(credential_uids),
+        "success_count": len(successes),
+        "failure_count": len(failures)
+    })
+
+    return {
+        "total": len(credential_uids),
+        "success_count": len(successes),
+        "failure_count": len(failures),
+        "successes": successes,
+        "failures": failures
+    }
 
 
 @app.post("/sessions/{profile_name}/refresh-name")

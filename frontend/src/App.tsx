@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Loader2, Send, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse } from "lucide-react"
 import { Toaster, toast } from 'sonner'
 
@@ -146,6 +147,10 @@ function App() {
   const [refreshingSession, setRefreshingSession] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
 
+  // Batch session creation state
+  const [selectedCredentials, setSelectedCredentials] = useState<Set<string>>(new Set());
+  const [batchInProgress, setBatchInProgress] = useState(false);
+
   // WebSocket and live status
   const [liveStatus, setLiveStatus] = useState<LiveStatus>({
     connected: false,
@@ -262,6 +267,16 @@ function App() {
                   fetchSessions();
                   fetchCredentials(); // Also refresh credentials to show linked session profile name
                 }
+                break;
+              case 'batch_session_start':
+                toast.info(`Starting batch: ${update.data.total} sessions`);
+                break;
+              case 'batch_session_complete':
+                setBatchInProgress(false);
+                setSelectedCredentials(new Set());
+                toast.success(`Batch complete: ${update.data.success_count}/${update.data.total} sessions created`);
+                fetchSessions();
+                fetchCredentials();
                 break;
             }
           } catch (e) {
@@ -615,6 +630,67 @@ function App() {
       }));
     } finally {
       setCreatingSession(null);
+    }
+  };
+
+  // Batch session creation functions
+  const toggleCredentialSelection = (uid: string) => {
+    setSelectedCredentials(prev => {
+      const next = new Set(prev);
+      if (next.has(uid)) {
+        next.delete(uid);
+      } else {
+        next.add(uid);
+      }
+      return next;
+    });
+  };
+
+  // Get credentials eligible for batch session creation (have 2FA, no session)
+  const eligibleCredentials = credentials.filter(c => c.has_secret && !c.session_connected);
+
+  const toggleSelectAll = () => {
+    if (selectedCredentials.size === eligibleCredentials.length && eligibleCredentials.length > 0) {
+      // Deselect all
+      setSelectedCredentials(new Set());
+    } else {
+      // Select all eligible
+      setSelectedCredentials(new Set(eligibleCredentials.map(c => c.uid)));
+    }
+  };
+
+  const allSelected = eligibleCredentials.length > 0 && selectedCredentials.size === eligibleCredentials.length;
+
+  const createBatchSessions = async () => {
+    if (selectedCredentials.size === 0) return;
+
+    setBatchInProgress(true);
+
+    // Initialize status for all selected credentials
+    const initialStatus: Record<string, SessionCreateStatus> = {};
+    selectedCredentials.forEach(uid => {
+      initialStatus[uid] = { uid, step: 'Queued...', status: 'pending' };
+    });
+    setSessionCreateStatus(prev => ({ ...prev, ...initialStatus }));
+
+    try {
+      const res = await fetch(`${API_BASE}/sessions/create-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential_uids: Array.from(selectedCredentials)
+        })
+      });
+
+      const result = await res.json();
+
+      if (!res.ok) {
+        toast.error(`Batch error: ${result.detail || 'Unknown error'}`);
+      }
+      // Success/complete handling happens via WebSocket
+    } catch (error) {
+      toast.error(`Batch error: ${error}`);
+      setBatchInProgress(false);
     }
   };
 
@@ -1367,12 +1443,40 @@ function App() {
               </Card>
 
               <Card className="shadow-md border-slate-200">
-                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4 flex flex-row justify-between items-center">
-                  <CardTitle className="text-lg">Saved Credentials ({credentials.length})</CardTitle>
-                  <Button size="sm" variant="outline" onClick={fetchCredentials}>
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    Refresh
-                  </Button>
+                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      {eligibleCredentials.length > 0 && (
+                        <Checkbox
+                          checked={allSelected}
+                          onCheckedChange={toggleSelectAll}
+                          disabled={batchInProgress || creatingSession !== null}
+                          aria-label="Select all eligible credentials"
+                        />
+                      )}
+                      <CardTitle className="text-lg">Saved Credentials ({credentials.length})</CardTitle>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {selectedCredentials.size > 0 && (
+                        <Button
+                          size="sm"
+                          onClick={createBatchSessions}
+                          disabled={batchInProgress || creatingSession !== null}
+                        >
+                          {batchInProgress ? (
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          ) : (
+                            <Play className="w-4 h-4 mr-2" />
+                          )}
+                          Create {selectedCredentials.size} Session{selectedCredentials.size > 1 ? 's' : ''}
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" onClick={fetchCredentials}>
+                        <RefreshCw className="w-4 h-4 mr-2" />
+                        Refresh
+                      </Button>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="p-0">
                   {credentials.length === 0 ? (
@@ -1381,87 +1485,107 @@ function App() {
                     </div>
                   ) : (
                     <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
-                      {credentials.map((cred) => (
-                        <div key={cred.uid} className="p-4 hover:bg-slate-50">
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="font-medium text-slate-900">{cred.uid}</div>
-                            <div className="flex items-center gap-2">
-                              <Badge variant={cred.has_secret ? 'default' : 'secondary'}>
-                                {cred.has_secret ? '2FA' : 'No 2FA'}
-                              </Badge>
-                              <Badge variant={cred.session_connected ? (cred.session_valid ? 'default' : 'destructive') : 'secondary'}>
-                                {cred.session_connected ? (cred.session_valid ? 'Session Linked' : 'Session Invalid') : 'No Session'}
-                              </Badge>
-                              <Button size="sm" variant="ghost" onClick={() => deleteCredential(cred.uid)}>
-                                <Trash2 className="w-3 h-3 text-red-500" />
-                              </Button>
-                            </div>
-                          </div>
-                          {/* Show session's profile name if linked, otherwise show credential's profile name */}
-                          {(cred.session_connected && cred.session_profile_name) ? (
-                            <div className="text-xs text-green-600 mb-2 flex items-center gap-1">
-                              <CheckCircle className="w-3 h-3" />
-                              Session: {cred.session_profile_name}
-                            </div>
-                          ) : cred.profile_name ? (
-                            <div className="text-xs text-slate-500 mb-2">Profile: {cred.profile_name}</div>
-                          ) : null}
-                          {/* Session creation status or button */}
-                          <div className="mb-2">
-                            {sessionCreateStatus[cred.uid] ? (
-                              <div className={`text-xs p-2 rounded flex items-center gap-2 ${
-                                sessionCreateStatus[cred.uid].status === 'success' ? 'bg-green-100 text-green-700' :
-                                sessionCreateStatus[cred.uid].status === 'failed' ? 'bg-red-100 text-red-700' :
-                                sessionCreateStatus[cred.uid].status === 'needs_attention' ? 'bg-orange-100 text-orange-700' :
-                                'bg-blue-100 text-blue-700'
-                              }`}>
-                                {sessionCreateStatus[cred.uid].status === 'in_progress' && (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                )}
-                                {sessionCreateStatus[cred.uid].status === 'needs_attention' && (
-                                  <AlertCircle className="w-3 h-3" />
-                                )}
-                                {sessionCreateStatus[cred.uid].step}
-                              </div>
-                            ) : !cred.session_connected ? (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => createSession(cred.uid)}
-                                disabled={creatingSession !== null || !cred.has_secret}
-                              >
-                                {creatingSession === cred.uid ? (
-                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                                ) : (
-                                  <Play className="w-3 h-3 mr-1" />
-                                )}
-                                Create Session
-                              </Button>
-                            ) : null}
-                          </div>
-                          {cred.has_secret && (
-                            <div className="flex items-center gap-2">
-                              {otpData[cred.uid]?.valid ? (
-                                <>
-                                  <div className="bg-slate-900 text-white px-3 py-1 rounded font-mono text-lg">
-                                    {otpData[cred.uid].code}
-                                  </div>
-                                  <Button size="sm" variant="outline" onClick={() => copyOTP(otpData[cred.uid].code)}>
-                                    <Copy className="w-3 h-3" />
-                                  </Button>
-                                  <span className="text-xs text-slate-500">
-                                    {otpData[cred.uid].remaining_seconds}s
-                                  </span>
-                                </>
-                              ) : (
-                                <Button size="sm" variant="secondary" onClick={() => getOTP(cred.uid)}>
-                                  Get OTP
-                                </Button>
+                      {credentials.map((cred) => {
+                        const isEligible = cred.has_secret && !cred.session_connected;
+                        const isSelected = selectedCredentials.has(cred.uid);
+
+                        return (
+                          <div key={cred.uid} className="p-4 hover:bg-slate-50">
+                            <div className="flex items-start gap-3">
+                              {/* Checkbox - only show for eligible credentials */}
+                              {isEligible && (
+                                <Checkbox
+                                  checked={isSelected}
+                                  onCheckedChange={() => toggleCredentialSelection(cred.uid)}
+                                  disabled={batchInProgress || creatingSession !== null}
+                                  className="mt-1"
+                                />
                               )}
+
+                              {/* Credential content */}
+                              <div className="flex-1">
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="font-medium text-slate-900">{cred.uid}</div>
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant={cred.has_secret ? 'default' : 'secondary'}>
+                                      {cred.has_secret ? '2FA' : 'No 2FA'}
+                                    </Badge>
+                                    <Badge variant={cred.session_connected ? (cred.session_valid ? 'default' : 'destructive') : 'secondary'}>
+                                      {cred.session_connected ? (cred.session_valid ? 'Session Linked' : 'Session Invalid') : 'No Session'}
+                                    </Badge>
+                                    <Button size="sm" variant="ghost" onClick={() => deleteCredential(cred.uid)}>
+                                      <Trash2 className="w-3 h-3 text-red-500" />
+                                    </Button>
+                                  </div>
+                                </div>
+                                {/* Show session's profile name if linked, otherwise show credential's profile name */}
+                                {(cred.session_connected && cred.session_profile_name) ? (
+                                  <div className="text-xs text-green-600 mb-2 flex items-center gap-1">
+                                    <CheckCircle className="w-3 h-3" />
+                                    Session: {cred.session_profile_name}
+                                  </div>
+                                ) : cred.profile_name ? (
+                                  <div className="text-xs text-slate-500 mb-2">Profile: {cred.profile_name}</div>
+                                ) : null}
+                                {/* Session creation status or button */}
+                                <div className="mb-2">
+                                  {sessionCreateStatus[cred.uid] ? (
+                                    <div className={`text-xs p-2 rounded flex items-center gap-2 ${
+                                      sessionCreateStatus[cred.uid].status === 'success' ? 'bg-green-100 text-green-700' :
+                                      sessionCreateStatus[cred.uid].status === 'failed' ? 'bg-red-100 text-red-700' :
+                                      sessionCreateStatus[cred.uid].status === 'needs_attention' ? 'bg-orange-100 text-orange-700' :
+                                      'bg-blue-100 text-blue-700'
+                                    }`}>
+                                      {sessionCreateStatus[cred.uid].status === 'in_progress' && (
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                      )}
+                                      {sessionCreateStatus[cred.uid].status === 'needs_attention' && (
+                                        <AlertCircle className="w-3 h-3" />
+                                      )}
+                                      {sessionCreateStatus[cred.uid].step}
+                                    </div>
+                                  ) : !cred.session_connected ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => createSession(cred.uid)}
+                                      disabled={creatingSession !== null || batchInProgress || !cred.has_secret}
+                                    >
+                                      {creatingSession === cred.uid ? (
+                                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                      ) : (
+                                        <Play className="w-3 h-3 mr-1" />
+                                      )}
+                                      Create Session
+                                    </Button>
+                                  ) : null}
+                                </div>
+                                {cred.has_secret && (
+                                  <div className="flex items-center gap-2">
+                                    {otpData[cred.uid]?.valid ? (
+                                      <>
+                                        <div className="bg-slate-900 text-white px-3 py-1 rounded font-mono text-lg">
+                                          {otpData[cred.uid].code}
+                                        </div>
+                                        <Button size="sm" variant="outline" onClick={() => copyOTP(otpData[cred.uid].code)}>
+                                          <Copy className="w-3 h-3" />
+                                        </Button>
+                                        <span className="text-xs text-slate-500">
+                                          {otpData[cred.uid].remaining_seconds}s
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <Button size="sm" variant="secondary" onClick={() => getOTP(cred.uid)}>
+                                        Get OTP
+                                      </Button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             </div>
-                          )}
-                        </div>
-                      ))}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
