@@ -901,8 +901,9 @@ async def post_comment_verified(
                 raise Exception(f"Step 1 FAILED - Navigated to Reels instead of post: {page.url}")
 
             # SMART WAIT: Retry with exponential backoff until post is visible
-            if not await wait_for_post_visible(page, vision, max_attempts=4):
-                raise Exception("Step 1 FAILED - Post not visible after 4 attempts")
+            # 6 attempts = ~63 seconds max wait (1+2+4+8+16+32)
+            if not await wait_for_post_visible(page, vision, max_attempts=6):
+                raise Exception("Step 1 FAILED - Post not visible after 6 attempts")
 
             result["steps_completed"].append("post_visible")
             logger.info("✓ Step 1: Post visible")
