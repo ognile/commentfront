@@ -110,13 +110,17 @@ class PersistentBrowserManager:
         Returns:
             Dict with success status and details
         """
+        import time
         async with self._lock:
             # Close existing session if any
             if self.is_active:
                 await self._cleanup()
 
             try:
+                t_total = time.time()
+
                 # Load session data
+                t0 = time.time()
                 session = FacebookSession(session_id)
                 if not session.load():
                     return {"success": False, "error": f"Session '{session_id}' not found"}
@@ -132,6 +136,7 @@ class PersistentBrowserManager:
                 viewport = session.get_viewport() or MOBILE_VIEWPORT
                 proxy_url = session.get_proxy()
                 device_fingerprint = session.get_device_fingerprint()
+                logger.info(f"[TIMING] Session loaded in {time.time()-t0:.2f}s")
 
                 # Build context options (same as comment_bot.py)
                 context_options = {
@@ -146,24 +151,36 @@ class PersistentBrowserManager:
                 if proxy_url:
                     context_options["proxy"] = _build_playwright_proxy(proxy_url)
 
-                # Launch browser
+                # Launch playwright
+                t1 = time.time()
                 self._playwright = await async_playwright().start()
+                logger.info(f"[TIMING] Playwright started in {time.time()-t1:.2f}s")
+
+                # Launch browser
+                t2 = time.time()
                 self._browser = await self._playwright.chromium.launch(
                     headless=True,
                     args=["--disable-notifications", "--disable-geolocation"]
                 )
+                logger.info(f"[TIMING] Browser launched in {time.time()-t2:.2f}s")
 
                 # Create context
+                t3 = time.time()
                 self._context = await self._browser.new_context(**context_options)
+                logger.info(f"[TIMING] Context created in {time.time()-t3:.2f}s")
 
                 # Apply stealth mode (MANDATORY for anti-detection)
+                t4 = time.time()
                 await Stealth().apply_stealth_async(self._context)
+                logger.info(f"[TIMING] Stealth applied in {time.time()-t4:.2f}s")
 
                 # Create page
+                t5 = time.time()
                 self._page = await self._context.new_page()
 
                 # Apply session cookies
                 await apply_session_to_context(self._context, session)
+                logger.info(f"[TIMING] Page created + cookies in {time.time()-t5:.2f}s")
 
                 # Set up file chooser interception
                 self._page.on("filechooser", self._handle_file_chooser)
@@ -173,11 +190,14 @@ class PersistentBrowserManager:
                 self._page.on("crash", lambda: asyncio.create_task(self._on_page_crash()))
 
                 # Navigate to Facebook
+                t6 = time.time()
                 await self._page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=30000)
+                logger.info(f"[TIMING] Navigation completed in {time.time()-t6:.2f}s")
 
                 # Start frame streaming
                 self._streaming_task = asyncio.create_task(self._streaming_loop())
 
+                logger.info(f"[TIMING] Total session start: {time.time()-t_total:.2f}s")
                 self._log_action("session_start", {"session_id": session_id})
                 logger.info(f"Interactive session started for {session_id}")
 

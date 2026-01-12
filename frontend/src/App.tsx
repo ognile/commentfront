@@ -2893,7 +2893,10 @@ function App() {
                                   size="sm"
                                   variant="outline"
                                   className="h-7 text-xs"
-                                  onClick={() => setRetryingJobIndex(result.job_index)}
+                                  onClick={() => {
+                                    setRetryingJobIndex(result.job_index);
+                                    setRetryProfile(result.profile_name);
+                                  }}
                                 >
                                   <RotateCw className="w-3 h-3 mr-1" />
                                   Retry

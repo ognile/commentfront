@@ -1407,7 +1407,7 @@ async def retry_campaign_job(
     if not session.load():
         raise HTTPException(status_code=400, detail=f"Session '{request.profile_name}' not found")
 
-    if not session.is_valid():
+    if not session.has_valid_cookies():
         raise HTTPException(status_code=400, detail=f"Session '{request.profile_name}' is invalid or expired")
 
     # Broadcast that retry is starting
