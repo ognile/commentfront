@@ -120,6 +120,7 @@ class SessionInfo(BaseModel):
     extracted_at: str
     valid: bool
     proxy: Optional[str] = None
+    profile_picture: Optional[str] = None  # Base64 encoded PNG
 
 
 class CredentialAddRequest(BaseModel):
@@ -227,6 +228,7 @@ async def get_sessions() -> List[SessionInfo]:
             extracted_at=s["extracted_at"],
             valid=s["has_valid_cookies"],
             proxy=("session" if s.get("proxy") else ("service" if PROXY_URL else None)),
+            profile_picture=s.get("profile_picture"),
         )
         for s in sessions
     ]
