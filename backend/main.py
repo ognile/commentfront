@@ -121,7 +121,9 @@ class SessionInfo(BaseModel):
     user_id: Optional[str]
     extracted_at: str
     valid: bool
-    proxy: Optional[str] = None
+    proxy: Optional[str] = None  # "session", "service", or None
+    proxy_masked: Optional[str] = None  # Masked proxy URL for display
+    proxy_source: Optional[str] = None  # "session" or "env" to show source
     profile_picture: Optional[str] = None  # Base64 encoded PNG
 
 
@@ -176,7 +178,8 @@ class ProxyInfo(BaseModel):
     avg_response_ms: Optional[int]
     test_count: int
     assigned_sessions: List[str]
-    created_at: str
+    created_at: Optional[str]  # Optional for system proxy
+    is_system: bool = False  # True for PROXY_URL system proxy
 
 
 class ProxyTestResult(BaseModel):
@@ -220,20 +223,48 @@ async def websocket_live(websocket: WebSocket):
 
 @app.get("/sessions")
 async def get_sessions() -> List[SessionInfo]:
-    """Get all saved sessions."""
+    """Get all saved sessions with proxy info."""
+    from urllib.parse import urlparse
+
     sessions = list_saved_sessions()
-    return [
-        SessionInfo(
+    results = []
+
+    for s in sessions:
+        # Load session to get actual proxy URL
+        session = FacebookSession(s["profile_name"])
+        stored_proxy = None
+        if session.load():
+            stored_proxy = session.get_proxy()
+
+        # Determine proxy source and masked URL
+        if stored_proxy:
+            parsed = urlparse(stored_proxy)
+            proxy_masked = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+            proxy_source = "session"
+            proxy_label = "session"
+        elif PROXY_URL:
+            parsed = urlparse(PROXY_URL)
+            proxy_masked = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+            proxy_source = "env"
+            proxy_label = "service"
+        else:
+            proxy_masked = None
+            proxy_source = None
+            proxy_label = None
+
+        results.append(SessionInfo(
             file=s["file"],
             profile_name=s["profile_name"],
             user_id=s.get("user_id"),
             extracted_at=s["extracted_at"],
             valid=s["has_valid_cookies"],
-            proxy=("session" if s.get("proxy") else ("service" if PROXY_URL else None)),
+            proxy=proxy_label,
+            proxy_masked=proxy_masked,
+            proxy_source=proxy_source,
             profile_picture=s.get("profile_picture"),
-        )
-        for s in sessions
-    ]
+        ))
+
+    return results
 
 
 @app.get("/sessions/audit-proxies")
@@ -552,11 +583,46 @@ async def get_otp(uid: str) -> OTPResponse:
 # Proxy Endpoints
 @app.get("/proxies", response_model=List[ProxyInfo])
 async def get_proxies():
-    """Get all saved proxies."""
+    """Get all saved proxies including system proxy from PROXY_URL."""
+    from urllib.parse import urlparse
+
     proxy_manager.load_proxies()
     proxies = proxy_manager.list_proxies()
-    return [
-        ProxyInfo(
+
+    result = []
+
+    # Add system proxy (from PROXY_URL env var) if configured
+    if PROXY_URL:
+        parsed = urlparse(PROXY_URL)
+        # Get sessions that have this proxy stored
+        sessions = list_saved_sessions()
+        assigned = []
+        for s in sessions:
+            session = FacebookSession(s["profile_name"])
+            if session.load() and session.get_proxy() == PROXY_URL:
+                assigned.append(s["profile_name"])
+
+        result.append(ProxyInfo(
+            id="system",
+            name="Mobile Proxy (System)",
+            url_masked=f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
+            host=parsed.hostname,
+            port=parsed.port,
+            type="mobile",
+            country="US",
+            health_status="active",
+            last_tested=None,
+            success_rate=None,
+            avg_response_ms=None,
+            test_count=0,
+            assigned_sessions=assigned,
+            created_at=None,
+            is_system=True
+        ))
+
+    # Add user-configured proxies
+    for p in proxies:
+        result.append(ProxyInfo(
             id=p["id"],
             name=p["name"],
             url_masked=p["url_masked"],
@@ -570,10 +636,11 @@ async def get_proxies():
             avg_response_ms=p.get("avg_response_ms"),
             test_count=p.get("test_count", 0),
             assigned_sessions=p.get("assigned_sessions", []),
-            created_at=p.get("created_at", "")
-        )
-        for p in proxies
-    ]
+            created_at=p.get("created_at", ""),
+            is_system=False
+        ))
+
+    return result
 
 
 @app.post("/proxies")

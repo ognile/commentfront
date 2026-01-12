@@ -19,6 +19,8 @@ interface Session {
   extracted_at: string;
   valid: boolean;
   proxy?: string;
+  proxy_masked?: string;  // Masked proxy URL for display
+  proxy_source?: string;  // "session" or "env" to show source
   profile_picture?: string | null;  // Base64 encoded PNG
 }
 
@@ -67,7 +69,8 @@ interface Proxy {
   avg_response_ms: number | null;
   test_count: number;
   assigned_sessions: string[];
-  created_at: string;
+  created_at: string | null;
+  is_system?: boolean;  // True for PROXY_URL system proxy
 }
 
 interface SessionCreateStatus {
@@ -1201,10 +1204,13 @@ function App() {
                             <div className="text-sm text-slate-500">
                               User: {session.user_id || 'Unknown'} • {session.extracted_at.split('T')[0]}
                             </div>
-                            {session.proxy ? (
+                            {session.proxy_masked ? (
                                <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
                                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                                 Proxy: {session.proxy}
+                                 <span>Proxy: {session.proxy_masked}</span>
+                                 {session.proxy_source === "env" && (
+                                   <Badge variant="outline" className="ml-1 text-[10px] py-0 h-4">system</Badge>
+                                 )}
                                </div>
                             ) : (
                                <div className="text-xs text-red-400 mt-1 flex items-center gap-1">
@@ -1507,33 +1513,43 @@ function App() {
                   ) : (
                     <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
                       {proxies.map((proxy) => (
-                        <div key={proxy.id} className="p-4 hover:bg-slate-50">
+                        <div key={proxy.id} className={`p-4 hover:bg-slate-50 ${proxy.is_system ? 'bg-green-50/50' : ''}`}>
                           <div className="flex items-center justify-between mb-2">
-                            <div className="font-medium text-slate-900">{proxy.name}</div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-slate-900">{proxy.name}</span>
+                              {proxy.is_system && (
+                                <Badge variant="secondary" className="text-[10px]">System</Badge>
+                              )}
+                            </div>
                             <div className="flex items-center gap-2">
                               <Badge variant={
                                 proxy.health_status === 'healthy' ? 'default' :
+                                proxy.health_status === 'active' ? 'default' :
                                 proxy.health_status === 'degraded' ? 'secondary' :
                                 proxy.health_status === 'unhealthy' ? 'destructive' :
                                 'outline'
                               }>
                                 {proxy.health_status || 'untested'}
                               </Badge>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => testProxy(proxy.id)}
-                                disabled={testingProxy === proxy.id}
-                              >
-                                {testingProxy === proxy.id ? (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                ) : (
-                                  <Play className="w-3 h-3" />
-                                )}
-                              </Button>
-                              <Button size="sm" variant="ghost" onClick={() => deleteProxy(proxy.id)}>
-                                <Trash2 className="w-3 h-3 text-red-500" />
-                              </Button>
+                              {!proxy.is_system && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => testProxy(proxy.id)}
+                                    disabled={testingProxy === proxy.id}
+                                  >
+                                    {testingProxy === proxy.id ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <Play className="w-3 h-3" />
+                                    )}
+                                  </Button>
+                                  <Button size="sm" variant="ghost" onClick={() => deleteProxy(proxy.id)}>
+                                    <Trash2 className="w-3 h-3 text-red-500" />
+                                  </Button>
+                                </>
+                              )}
                             </div>
                           </div>
                           <div className="text-xs text-slate-500 space-y-1">
@@ -1550,7 +1566,10 @@ function App() {
                               </div>
                             )}
                             {proxy.assigned_sessions.length > 0 && (
-                              <div>Sessions: {proxy.assigned_sessions.join(', ')}</div>
+                              <div className="text-green-600 font-medium">
+                                <span className="w-2 h-2 rounded-full bg-green-500 inline-block mr-1"></span>
+                                {proxy.assigned_sessions.length} sessions connected
+                              </div>
                             )}
                           </div>
                         </div>
