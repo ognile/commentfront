@@ -155,6 +155,94 @@ async def dump_interactive_elements(page: Page, context: str = "") -> List[dict]
         return []
 
 
+async def extract_profile_picture(page: Page) -> Optional[str]:
+    """
+    Extract profile picture from the current page (should be on profile page).
+
+    Tries multiple strategies:
+    1. Screenshot the profile picture element directly
+    2. Find and download the profile picture URL
+
+    Returns:
+        Base64 encoded PNG image data, or None if extraction fails
+    """
+    import base64
+
+    logger.info("Attempting to extract profile picture...")
+
+    # Profile picture selectors (on mobile FB profile page)
+    profile_pic_selectors = [
+        # Main profile picture on profile page
+        'img[aria-label*="profile picture"]',
+        'img[alt*="profile picture"]',
+        'svg[aria-label*="profile picture"]',  # Sometimes it's an SVG placeholder
+        'div[aria-label*="profile picture"] img',
+        'div[aria-label*="Profile Picture"] img',
+        # Alternative: Profile header area
+        'img[data-sigil="profile-cover-photo-id"]',
+        # Profile avatar in header
+        'a[aria-label*="profile picture"] img',
+        # Generic profile avatar
+        '[role="img"][aria-label*="profile"]',
+    ]
+
+    for selector in profile_pic_selectors:
+        try:
+            locator = page.locator(selector).first
+            count = await locator.count()
+            logger.info(f"Profile pic selector '{selector}' → found {count}")
+
+            if count > 0 and await locator.is_visible():
+                # Get bounding box
+                box = await locator.bounding_box()
+                if box and box['width'] > 20 and box['height'] > 20:
+                    # Take screenshot of just this element
+                    screenshot_bytes = await locator.screenshot(type="png")
+                    if screenshot_bytes:
+                        base64_data = base64.b64encode(screenshot_bytes).decode('utf-8')
+                        logger.info(f"✅ Extracted profile picture via: {selector} ({len(screenshot_bytes)} bytes)")
+                        return base64_data
+        except Exception as e:
+            logger.warning(f"Failed to extract via '{selector}': {e}")
+            continue
+
+    # Strategy 2: Find any img in profile header area and screenshot it
+    try:
+        # Look for the profile section which usually has the picture
+        profile_header = page.locator('div[data-sigil*="profile"]').first
+        if await profile_header.count() > 0:
+            img = profile_header.locator('img').first
+            if await img.count() > 0 and await img.is_visible():
+                screenshot_bytes = await img.screenshot(type="png")
+                if screenshot_bytes:
+                    base64_data = base64.b64encode(screenshot_bytes).decode('utf-8')
+                    logger.info(f"✅ Extracted profile picture from profile header ({len(screenshot_bytes)} bytes)")
+                    return base64_data
+    except Exception as e:
+        logger.warning(f"Profile header strategy failed: {e}")
+
+    # Strategy 3: Take screenshot of area where profile pic usually is (top-left of profile page)
+    # On mobile FB profile, the picture is usually in a predictable location
+    try:
+        # Crop a specific region - the profile picture area (usually around 120x120 at top)
+        # This is a fallback when we can't find the exact element
+        full_screenshot = await page.screenshot(type="png", clip={
+            "x": 20,  # Left margin
+            "y": 200,  # Below the header
+            "width": 100,
+            "height": 100
+        })
+        if full_screenshot:
+            base64_data = base64.b64encode(full_screenshot).decode('utf-8')
+            logger.info(f"✅ Extracted profile picture from fixed region ({len(full_screenshot)} bytes)")
+            return base64_data
+    except Exception as e:
+        logger.warning(f"Fixed region strategy failed: {e}")
+
+    logger.warning("❌ Failed to extract profile picture with any strategy")
+    return None
+
+
 async def smart_click(page: Page, selectors: List[str], description: str) -> bool:
     """
     Try to click an element using multiple selectors.
@@ -714,12 +802,16 @@ async def handle_device_trust(page: Page) -> Dict[str, Any]:
     return result
 
 
-async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
+async def verify_logged_in(page: Page, extract_picture: bool = False) -> tuple[bool, Optional[str], Optional[str]]:
     """
     Verify that we're logged in by navigating to /me/ and extract profile name.
 
+    Args:
+        page: Playwright page object
+        extract_picture: If True, also extract profile picture (slower)
+
     Returns:
-        Tuple of (is_logged_in: bool, profile_name: Optional[str])
+        Tuple of (is_logged_in: bool, profile_name: Optional[str], profile_picture_base64: Optional[str])
     """
     logger.info("Verifying login by navigating to /me/")
     profile_name = None
@@ -734,7 +826,7 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
         # If we're redirected to login, not logged in
         if '/login' in url:
             logger.warning("Redirected to login page - not logged in")
-            return False, None
+            return False, None, None
 
         # Check for profile indicators and extract profile name
         elements = await dump_interactive_elements(page, "VERIFY LOGGED IN - /me/ page")
@@ -976,23 +1068,33 @@ async def verify_logged_in(page: Page) -> tuple[bool, Optional[str]]:
                         break
 
         # Look for profile-related elements to verify login
+        is_logged_in = False
         for el in elements:
             text = el.get('text', '').lower()
             aria = el.get('ariaLabel', '').lower()
             if any(x in text or x in aria for x in ['edit profile', 'about', 'friends', 'timeline']):
                 logger.info("Found profile indicators - logged in!")
-                return True, profile_name
+                is_logged_in = True
+                break
 
         # If not redirected to login, probably logged in
-        if '/me/' in url or 'profile' in url:
+        if not is_logged_in and ('/me/' in url or 'profile' in url):
             logger.info("URL looks like profile page - assuming logged in")
-            return True, profile_name
+            is_logged_in = True
 
-        return True, profile_name  # If we got here without redirect, probably logged in
+        if not is_logged_in:
+            is_logged_in = True  # If we got here without redirect, probably logged in
+
+        # Extract profile picture if requested
+        profile_picture = None
+        if is_logged_in and extract_picture:
+            profile_picture = await extract_profile_picture(page)
+
+        return is_logged_in, profile_name, profile_picture
 
     except Exception as e:
         logger.error(f"Error verifying login: {e}")
-        return False, None
+        return False, None, None
 
 
 async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
@@ -1041,8 +1143,8 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
 
             page = await context.new_page()
 
-            # Navigate to /me/ and extract profile name
-            is_logged_in, extracted_name = await verify_logged_in(page)
+            # Navigate to /me/ and extract profile name + profile picture
+            is_logged_in, extracted_name, profile_picture = await verify_logged_in(page, extract_picture=True)
 
             await browser.close()
 
@@ -1054,31 +1156,42 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
                 result["error"] = "Could not extract profile name from Facebook"
                 return result
 
-            # Update session file with new name if different
-            if extracted_name != profile_name:
-                # Create new session with extracted name
-                new_session = FacebookSession(extracted_name)
-                # Copy the data from old session
+            # Update session file with new name and/or picture
+            needs_update = extracted_name != profile_name or profile_picture
+            if needs_update:
+                # Use extracted name if different, otherwise keep current
+                final_name = extracted_name if extracted_name != profile_name else profile_name
+
+                # Create new/updated session
+                new_session = FacebookSession(final_name)
                 new_session.data = {
-                    "profile_name": extracted_name,
+                    "profile_name": final_name,
                     "extracted_at": datetime.now().isoformat(),
                     "cookies": session.get_cookies(),
                     "user_agent": session.get_user_agent(),
                     "viewport": session.get_viewport(),
                     "proxy": session.get_proxy(),
                 }
+
+                # Add profile picture if we got one
+                if profile_picture:
+                    new_session.data["profile_picture"] = profile_picture
+                    logger.info("Added profile picture to session")
+
                 new_session.save()
 
-                # Delete old session file
-                if os.path.exists(session.session_file):
+                # Delete old session file if name changed
+                if extracted_name != profile_name and os.path.exists(session.session_file):
                     os.remove(session.session_file)
                     logger.info(f"Removed old session file: {session.session_file}")
 
-                logger.info(f"Renamed session from {profile_name} to {extracted_name}")
+                if extracted_name != profile_name:
+                    logger.info(f"Renamed session from {profile_name} to {extracted_name}")
 
             result["success"] = True
             result["new_profile_name"] = extracted_name
             result["user_id"] = user_id
+            result["profile_picture"] = profile_picture is not None
 
             # Update credential profile_name as well
             cred_manager = CredentialManager()
@@ -1314,8 +1427,8 @@ async def login_facebook(
                     result["step"] = "verify"
                     await broadcast("verify", "in_progress")
 
-                    # Verify login and extract profile name
-                    is_logged_in, extracted_profile_name = await verify_logged_in(page)
+                    # Verify login and extract profile name + picture
+                    is_logged_in, extracted_profile_name, profile_picture = await verify_logged_in(page, extract_picture=True)
                     if is_logged_in:
                         # Update profile name if we extracted a real name
                         if extracted_profile_name:
@@ -1328,6 +1441,11 @@ async def login_facebook(
                         # Extract session with the (potentially updated) profile name
                         session = FacebookSession(result["profile_name"])
                         await session.extract_from_page(page, proxy=proxy)
+
+                        # Add profile picture if we got one
+                        if profile_picture and session.data:
+                            session.data["profile_picture"] = profile_picture
+                            logger.info("Added profile picture to session")
 
                         # Validate essential cookies exist before saving
                         if not session.has_valid_cookies():

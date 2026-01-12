@@ -299,6 +299,7 @@ def list_saved_sessions() -> List[Dict[str, Any]]:
                 "extracted_at": data.get("extracted_at"),
                 "proxy": data.get("proxy"),
                 "has_valid_cookies": ("c_user" in cookie_names and "xs" in cookie_names),
+                "profile_picture": data.get("profile_picture"),  # Base64 PNG or None
             })
             # Extract user ID
             for cookie in data.get("cookies", []):

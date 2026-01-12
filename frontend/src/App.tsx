@@ -19,6 +19,7 @@ interface Session {
   extracted_at: string;
   valid: boolean;
   proxy?: string;
+  profile_picture?: string | null;  // Base64 encoded PNG
 }
 
 interface Job {
@@ -1135,22 +1136,39 @@ function App() {
                   <div className="divide-y divide-slate-100">
                     {sessions.map((session) => (
                       <div key={session.file} className="p-4 flex items-center justify-between hover:bg-slate-50">
-                        <div>
-                          <div className="font-medium text-slate-900">{session.profile_name}</div>
-                          <div className="text-sm text-slate-500">
-                            User: {session.user_id || 'Unknown'} • {session.extracted_at.split('T')[0]}
+                        <div className="flex items-center gap-3">
+                          {/* Profile Picture */}
+                          <div className="w-12 h-12 rounded-full overflow-hidden bg-slate-200 flex-shrink-0">
+                            {session.profile_picture ? (
+                              <img
+                                src={`data:image/png;base64,${session.profile_picture}`}
+                                alt={session.profile_name}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-slate-400 text-lg font-medium">
+                                {session.profile_name?.[0]?.toUpperCase() || '?'}
+                              </div>
+                            )}
                           </div>
-                          {session.proxy ? (
-                             <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-                               <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                               Proxy: {session.proxy}
-                             </div>
-                          ) : (
-                             <div className="text-xs text-red-400 mt-1 flex items-center gap-1">
-                               <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                               No Proxy
-                             </div>
-                          )}
+                          {/* Profile Info */}
+                          <div>
+                            <div className="font-medium text-slate-900">{session.profile_name}</div>
+                            <div className="text-sm text-slate-500">
+                              User: {session.user_id || 'Unknown'} • {session.extracted_at.split('T')[0]}
+                            </div>
+                            {session.proxy ? (
+                               <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                                 <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                                 Proxy: {session.proxy}
+                               </div>
+                            ) : (
+                               <div className="text-xs text-red-400 mt-1 flex items-center gap-1">
+                                 <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                                 No Proxy
+                               </div>
+                            )}
+                          </div>
                         </div>
                         <div className="flex items-center gap-2">
                           <Badge variant={session.valid ? 'default' : 'destructive'}>
