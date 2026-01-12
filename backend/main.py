@@ -1296,6 +1296,14 @@ class AddToQueueRequest(BaseModel):
     filter_tags: Optional[List[str]] = None
 
 
+class RetryJobRequest(BaseModel):
+    """Request to retry a failed job in a completed campaign."""
+    job_index: int
+    profile_name: str
+    comment: str
+    original_profile: Optional[str] = None  # Track which profile originally failed
+
+
 @app.get("/queue")
 async def get_queue(current_user: dict = Depends(get_current_user)) -> Dict:
     """Get full queue state including pending campaigns and history."""
@@ -1372,6 +1380,121 @@ async def get_queue_history(
 ) -> List[Dict]:
     """Get completed campaign history."""
     return queue_manager.get_history(limit=min(limit, 100))
+
+
+@app.post("/queue/{campaign_id}/retry")
+async def retry_campaign_job(
+    campaign_id: str,
+    request: RetryJobRequest,
+    current_user: dict = Depends(get_current_user)
+) -> Dict:
+    """
+    Retry a failed job in a completed campaign.
+    Uses the specified profile to post the comment and updates the campaign results.
+    """
+    # Verify campaign exists in history
+    campaign = queue_manager.get_campaign_from_history(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found in history")
+
+    # Get the campaign URL
+    url = campaign.get("url")
+    if not url:
+        raise HTTPException(status_code=400, detail="Campaign has no URL")
+
+    # Verify the profile/session exists and is valid
+    session = FacebookSession(request.profile_name)
+    if not session.load():
+        raise HTTPException(status_code=400, detail=f"Session '{request.profile_name}' not found")
+
+    if not session.is_valid():
+        raise HTTPException(status_code=400, detail=f"Session '{request.profile_name}' is invalid or expired")
+
+    # Broadcast that retry is starting
+    await broadcast_update("queue_campaign_retry_start", {
+        "campaign_id": campaign_id,
+        "job_index": request.job_index,
+        "profile_name": request.profile_name,
+        "comment": request.comment[:50]
+    })
+
+    try:
+        # Run the comment posting
+        result = await post_comment_verified(
+            session=session,
+            url=url,
+            comment=request.comment,
+            proxy=PROXY_URL if PROXY_URL else None
+        )
+
+        # Create the retry result record
+        retry_result = {
+            "profile_name": request.profile_name,
+            "comment": request.comment,
+            "success": result.get("success", False),
+            "verified": result.get("verified", False),
+            "method": result.get("method", "unknown"),
+            "error": result.get("error"),
+            "job_index": request.job_index,
+            "is_retry": True,
+            "original_profile": request.original_profile,
+            "retried_at": datetime.utcnow().isoformat()
+        }
+
+        # Update the campaign in history
+        updated_campaign = queue_manager.add_retry_result(campaign_id, retry_result)
+
+        if not updated_campaign:
+            raise HTTPException(status_code=500, detail="Failed to update campaign")
+
+        # Broadcast the retry completion
+        await broadcast_update("queue_campaign_retry_complete", {
+            "campaign_id": campaign_id,
+            "result": retry_result,
+            "new_success_count": updated_campaign.get("success_count"),
+            "new_total_count": updated_campaign.get("total_count"),
+            "campaign": updated_campaign
+        })
+
+        return {
+            "success": True,
+            "result": retry_result,
+            "campaign": updated_campaign
+        }
+
+    except Exception as e:
+        logger.error(f"Retry failed for campaign {campaign_id}: {e}")
+
+        # Create failed retry result
+        retry_result = {
+            "profile_name": request.profile_name,
+            "comment": request.comment,
+            "success": False,
+            "verified": False,
+            "method": "unknown",
+            "error": str(e),
+            "job_index": request.job_index,
+            "is_retry": True,
+            "original_profile": request.original_profile,
+            "retried_at": datetime.utcnow().isoformat()
+        }
+
+        # Still save the failed retry to history
+        updated_campaign = queue_manager.add_retry_result(campaign_id, retry_result)
+
+        await broadcast_update("queue_campaign_retry_complete", {
+            "campaign_id": campaign_id,
+            "result": retry_result,
+            "new_success_count": updated_campaign.get("success_count") if updated_campaign else None,
+            "new_total_count": updated_campaign.get("total_count") if updated_campaign else None,
+            "campaign": updated_campaign
+        })
+
+        return {
+            "success": False,
+            "result": retry_result,
+            "campaign": updated_campaign
+        }
 
 
 @app.get("/config")

@@ -301,6 +301,56 @@ class CampaignQueueManager:
         """Get completed campaign history."""
         return self.history[:min(limit, self.MAX_HISTORY)]
 
+    def add_retry_result(self, campaign_id: str, result: dict) -> Optional[dict]:
+        """
+        Add a retry result to a campaign in history.
+
+        Args:
+            campaign_id: ID of the campaign to update
+            result: The new job result to add
+
+        Returns:
+            Updated campaign or None if not found
+        """
+        # Find campaign in history
+        for i, campaign in enumerate(self.history):
+            if campaign.get("id") == campaign_id:
+                # Initialize results array if missing
+                if "results" not in campaign:
+                    campaign["results"] = []
+
+                # Add the retry result
+                campaign["results"].append(result)
+
+                # Update success count if this retry succeeded
+                if result.get("success"):
+                    campaign["success_count"] = (campaign.get("success_count") or 0) + 1
+                    # Update status if we now have all successes
+                    if campaign["success_count"] >= campaign.get("total_count", 0):
+                        campaign["status"] = "completed"
+
+                # Update total count
+                campaign["total_count"] = (campaign.get("total_count") or 0) + 1
+
+                # Mark as having retries
+                campaign["has_retries"] = True
+                campaign["last_retry_at"] = datetime.utcnow().isoformat()
+
+                self.save()
+                self.logger.info(f"Added retry result to campaign {campaign_id}: success={result.get('success')}")
+
+                return campaign
+
+        self.logger.warning(f"Campaign {campaign_id} not found in history for retry")
+        return None
+
+    def get_campaign_from_history(self, campaign_id: str) -> Optional[dict]:
+        """Get a campaign from history by ID."""
+        for campaign in self.history:
+            if campaign.get("id") == campaign_id:
+                return campaign
+        return None
+
     # =========================================================================
     # State Management
     # =========================================================================

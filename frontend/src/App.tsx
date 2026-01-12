@@ -7,7 +7,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag } from "lucide-react"
+import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag, User, ChevronRight, RotateCw } from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Toaster, toast } from 'sonner'
 import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
@@ -30,6 +32,19 @@ interface Session {
   tags?: string[];  // Session tags for filtering
 }
 
+interface CampaignResult {
+  profile_name: string;
+  comment: string;
+  success: boolean;
+  verified: boolean;
+  method: string;
+  error: string | null;
+  job_index: number;
+  is_retry?: boolean;
+  original_profile?: string;
+  retried_at?: string;
+}
+
 interface QueuedCampaign {
   id: string;
   url: string;
@@ -47,6 +62,9 @@ interface QueuedCampaign {
   current_job?: number;
   total_jobs?: number;
   current_profile?: string;
+  results?: CampaignResult[];
+  has_retries?: boolean;
+  last_retry_at?: string;
 }
 
 interface QueueState {
@@ -187,6 +205,12 @@ function App() {
   });
   const [queueLoading, setQueueLoading] = useState(true);
   const [addingToQueue, setAddingToQueue] = useState(false);
+
+  // Campaign details modal state
+  const [selectedCampaign, setSelectedCampaign] = useState<QueuedCampaign | null>(null);
+  const [retryingJobIndex, setRetryingJobIndex] = useState<number | null>(null);
+  const [retryProfile, setRetryProfile] = useState<string>('');
+  const [isRetrying, setIsRetrying] = useState(false);
 
   const [newUid, setNewUid] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -450,6 +474,42 @@ function App() {
                     history: [updatedCampaign, ...prev.history].slice(0, 100)
                   };
                 });
+                break;
+
+              case 'queue_campaign_retry_complete':
+                // Retry completed - update campaign in history
+                setQueueState(prev => {
+                  const campaignId = update.data.campaign_id;
+                  const updatedHistory = prev.history.map(c => {
+                    if (c.id === campaignId) {
+                      return {
+                        ...c,
+                        results: [...(c.results || []), update.data.result],
+                        success_count: update.data.new_success_count,
+                        total_count: update.data.new_total_count,
+                        has_retries: true,
+                        last_retry_at: new Date().toISOString()
+                      };
+                    }
+                    return c;
+                  });
+
+                  return {
+                    ...prev,
+                    history: updatedHistory
+                  };
+                });
+                // Also update selected campaign if modal is open
+                if (selectedCampaign?.id === update.data.campaign_id) {
+                  setSelectedCampaign(prev => prev ? {
+                    ...prev,
+                    results: [...(prev.results || []), update.data.result],
+                    success_count: update.data.new_success_count,
+                    total_count: update.data.new_total_count,
+                    has_retries: true,
+                    last_retry_at: new Date().toISOString()
+                  } : null);
+                }
                 break;
 
               // Legacy queue events (for backward compatibility during transition)
@@ -757,6 +817,72 @@ function App() {
     } catch (error: unknown) {
       toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  };
+
+  // Retry a failed job in a campaign (API call)
+  const retryJob = async (campaignId: string, jobIndex: number, profileName: string, comment: string, originalProfile?: string) => {
+    setIsRetrying(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/queue/${campaignId}/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({
+          job_index: jobIndex,
+          profile_name: profileName,
+          comment: comment,
+          original_profile: originalProfile
+        })
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || 'Failed to retry job');
+      }
+
+      const result = await res.json();
+
+      if (result.success) {
+        toast.success(`Retry successful! Comment posted by ${profileName}`);
+        // Update selected campaign with new data from response
+        if (result.campaign) {
+          setSelectedCampaign(result.campaign);
+        }
+      } else {
+        toast.error(`Retry failed: ${result.result?.error || 'Unknown error'}`);
+      }
+
+      // Reset retry UI state
+      setRetryingJobIndex(null);
+      setRetryProfile('');
+
+    } catch (error: unknown) {
+      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
+  // Copy text to clipboard
+  const copyToClipboard = (text: string, label: string = 'Text') => {
+    navigator.clipboard.writeText(text);
+    toast.success(`${label} copied to clipboard`);
+  };
+
+  // Format relative time
+  const formatRelativeTime = (dateString: string): string => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
   };
 
   const deleteSession = async (profileName: string) => {
@@ -1842,7 +1968,8 @@ function App() {
                     {queueState.history.slice(0, 10).map((campaign) => (
                       <div
                         key={campaign.id}
-                        className="p-3 flex items-center justify-between hover:bg-white text-sm"
+                        className="p-3 flex items-center justify-between hover:bg-white text-sm cursor-pointer transition-colors"
+                        onClick={() => setSelectedCampaign(campaign)}
                       >
                         <div className="flex-1 min-w-0 flex items-center gap-3">
                           {campaign.status === 'completed' ? (
@@ -1860,12 +1987,16 @@ function App() {
                                 : campaign.error || campaign.status}
                               {campaign.completed_at && (
                                 <span className="ml-2">
-                                  {new Date(campaign.completed_at).toLocaleTimeString()}
+                                  {formatRelativeTime(campaign.completed_at)}
                                 </span>
+                              )}
+                              {campaign.has_retries && (
+                                <span className="ml-2 text-blue-500">(retried)</span>
                               )}
                             </div>
                           </div>
                         </div>
+                        <ChevronRight className="w-4 h-4 text-[#999999] shrink-0" />
                       </div>
                     ))}
                   </div>
@@ -2574,6 +2705,252 @@ function App() {
 
         </div>
       </div>
+
+      {/* Campaign Details Modal */}
+      <Dialog open={!!selectedCampaign} onOpenChange={(open) => !open && setSelectedCampaign(null)}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader className="shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              {selectedCampaign?.status === 'completed' ? (
+                <CheckCircle className="w-5 h-5 text-green-500" />
+              ) : selectedCampaign?.status === 'failed' ? (
+                <XCircle className="w-5 h-5 text-red-500" />
+              ) : (
+                <AlertCircle className="w-5 h-5 text-yellow-500" />
+              )}
+              Campaign Details
+            </DialogTitle>
+            <DialogDescription>
+              View campaign results and retry failed jobs
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedCampaign && (
+            <div className="flex-1 overflow-y-auto space-y-4">
+              {/* Campaign Info */}
+              <div className="bg-[rgba(51,51,51,0.04)] rounded-lg p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-[#999999] mb-1">Target URL</div>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={selectedCampaign.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-blue-600 hover:underline truncate flex-1"
+                      >
+                        {selectedCampaign.url}
+                      </a>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0 h-7 w-7 p-0"
+                        onClick={() => copyToClipboard(selectedCampaign.url, 'URL')}
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div>
+                    <div className="text-xs text-[#999999]">Status</div>
+                    <Badge
+                      variant={
+                        selectedCampaign.status === 'completed' ? 'default' :
+                        selectedCampaign.status === 'failed' ? 'destructive' : 'secondary'
+                      }
+                      className={selectedCampaign.status === 'completed' ? 'bg-green-500' : ''}
+                    >
+                      {selectedCampaign.status}
+                      {selectedCampaign.success_count !== undefined && selectedCampaign.total_count !== undefined && (
+                        <span className="ml-1">({selectedCampaign.success_count}/{selectedCampaign.total_count})</span>
+                      )}
+                    </Badge>
+                  </div>
+                  <div>
+                    <div className="text-xs text-[#999999]">Duration</div>
+                    <div className="font-medium">{formatDuration(selectedCampaign.duration_minutes)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-[#999999]">Created</div>
+                    <div className="font-medium">
+                      {selectedCampaign.created_at && formatRelativeTime(selectedCampaign.created_at)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-[#999999]">By</div>
+                    <div className="font-medium">{selectedCampaign.created_by || 'Unknown'}</div>
+                  </div>
+                </div>
+
+                {selectedCampaign.filter_tags && selectedCampaign.filter_tags.length > 0 && (
+                  <div>
+                    <div className="text-xs text-[#999999] mb-1">Filter Tags</div>
+                    <div className="flex flex-wrap gap-1">
+                      {selectedCampaign.filter_tags.map(tag => (
+                        <Badge key={tag} variant="outline" className="text-xs">
+                          <Tag className="w-3 h-3 mr-1" />
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {selectedCampaign.error && (
+                  <div className="bg-red-50 text-red-700 rounded p-2 text-sm">
+                    <strong>Error:</strong> {selectedCampaign.error}
+                  </div>
+                )}
+              </div>
+
+              {/* Results by Profile */}
+              {selectedCampaign.results && selectedCampaign.results.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    Results by Profile ({selectedCampaign.results.length})
+                  </h3>
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {selectedCampaign.results.map((result, idx) => (
+                      <div
+                        key={idx}
+                        className={`rounded-lg border p-3 ${
+                          result.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {result.success ? (
+                              <CheckCircle className="w-4 h-4 text-green-600 shrink-0" />
+                            ) : (
+                              <XCircle className="w-4 h-4 text-red-600 shrink-0" />
+                            )}
+                            <span className="font-medium text-sm truncate">
+                              {result.profile_name}
+                              {result.is_retry && (
+                                <Badge variant="secondary" className="ml-2 text-xs">
+                                  Retry
+                                </Badge>
+                              )}
+                            </span>
+                          </div>
+                          {!result.success && !result.is_retry && (
+                            <div className="shrink-0">
+                              {retryingJobIndex === result.job_index ? (
+                                <div className="flex items-center gap-2">
+                                  <Select
+                                    value={retryProfile}
+                                    onValueChange={setRetryProfile}
+                                  >
+                                    <SelectTrigger className="w-40 h-8 text-xs">
+                                      <SelectValue placeholder="Select profile" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {sessions.filter(s => s.valid).map(session => (
+                                        <SelectItem key={session.profile_name} value={session.profile_name}>
+                                          {session.profile_name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                  <Button
+                                    size="sm"
+                                    className="h-8 text-xs"
+                                    disabled={!retryProfile || isRetrying}
+                                    onClick={() => {
+                                      retryJob(
+                                        selectedCampaign.id,
+                                        result.job_index,
+                                        retryProfile,
+                                        result.comment,
+                                        result.profile_name
+                                      );
+                                    }}
+                                  >
+                                    {isRetrying ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      'Retry'
+                                    )}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-8 w-8 p-0"
+                                    onClick={() => {
+                                      setRetryingJobIndex(null);
+                                      setRetryProfile('');
+                                    }}
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </Button>
+                                </div>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 text-xs"
+                                  onClick={() => setRetryingJobIndex(result.job_index)}
+                                >
+                                  <RotateCw className="w-3 h-3 mr-1" />
+                                  Retry
+                                </Button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <div className="mt-2 text-sm text-[#666666] italic">
+                          "{result.comment}"
+                        </div>
+                        <div className="mt-1 flex items-center gap-2 text-xs text-[#999999]">
+                          {result.success && result.verified && (
+                            <span className="text-green-600">
+                              Verified via {result.method || 'vision'}
+                            </span>
+                          )}
+                          {!result.success && result.error && (
+                            <span className="text-red-600">{result.error}</span>
+                          )}
+                          {result.is_retry && result.original_profile && (
+                            <span>(retried from {result.original_profile})</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* All Comments Reference */}
+              <div>
+                <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                  Comments ({selectedCampaign.comments.length})
+                </h3>
+                <div className="bg-[rgba(51,51,51,0.04)] rounded-lg p-3 max-h-40 overflow-y-auto">
+                  <ol className="space-y-1 text-sm list-decimal list-inside">
+                    {selectedCampaign.comments.map((comment, idx) => {
+                      const result = selectedCampaign.results?.find(r => r.job_index === idx);
+                      return (
+                        <li key={idx} className={`${result?.success ? 'text-green-700' : result ? 'text-red-700' : 'text-[#666666]'}`}>
+                          <span className="ml-1">{comment}</span>
+                          {result && (
+                            <span className="ml-2">
+                              {result.success ? '✓' : '✗'}
+                            </span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Remote Control Modal */}
       {remoteModalOpen && remoteSession && (
