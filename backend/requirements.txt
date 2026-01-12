@@ -10,3 +10,5 @@ pyotp
 requests
 nest_asyncio
 google-genai>=1.0.0
+python-jose[cryptography]
+passlib[bcrypt]
