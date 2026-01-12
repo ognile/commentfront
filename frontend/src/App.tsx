@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield } from "lucide-react"
+import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag } from "lucide-react"
 import { Toaster, toast } from 'sonner'
 import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
@@ -26,6 +26,7 @@ interface Session {
   proxy_masked?: string;  // Masked proxy URL for display
   proxy_source?: string;  // "session" or "env" to show source
   profile_picture?: string | null;  // Base64 encoded PNG
+  tags?: string[];  // Session tags for filtering
 }
 
 interface QueuedCampaign {
@@ -36,6 +37,7 @@ interface QueuedCampaign {
   status: 'pending' | 'running' | 'completed' | 'failed';
   successCount?: number;
   totalCount?: number;
+  filterTags?: string[];  // Tags to filter sessions (AND logic)
 }
 
 interface LiveStatus {
@@ -148,6 +150,9 @@ function App() {
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [allTags, setAllTags] = useState<string[]>([]);
+  const [sessionFilterTags, setSessionFilterTags] = useState<string[]>([]);
+  const [campaignFilterTags, setCampaignFilterTags] = useState<string[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -179,7 +184,6 @@ function App() {
 
   // Session refresh state
   const [refreshingSession, setRefreshingSession] = useState<string | null>(null);
-  const [refreshingAll, setRefreshingAll] = useState(false);
 
   // Batch session creation state
   const [selectedCredentials, setSelectedCredentials] = useState<Set<string>>(new Set());
@@ -400,6 +404,33 @@ function App() {
     }
   };
 
+  const fetchTags = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/tags`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch tags');
+      const data = await res.json();
+      setAllTags(data);
+    } catch (error) {
+      console.error("Failed to fetch tags:", error);
+    }
+  };
+
+  const updateSessionTags = async (profileName: string, tags: string[]) => {
+    try {
+      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/tags`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ tags })
+      });
+      if (!res.ok) throw new Error('Failed to update tags');
+      fetchSessions();
+      fetchTags();
+      toast.success('Tags updated');
+    } catch (error) {
+      toast.error(`Error: ${error}`);
+    }
+  };
+
   const fetchCredentials = async () => {
     try {
       const res = await fetch(`${API_BASE}/credentials`, { headers: getAuthHeaders() });
@@ -426,7 +457,16 @@ function App() {
     fetchSessions();
     fetchCredentials();
     fetchProxies();
+    fetchTags();
   }, []);
+
+  // Filter sessions by selected tags (AND logic)
+  const filteredSessions = useMemo(() => {
+    if (sessionFilterTags.length === 0) return sessions;
+    return sessions.filter(s =>
+      sessionFilterTags.every(tag => (s.tags || []).includes(tag))
+    );
+  }, [sessions, sessionFilterTags]);
 
   // Add campaign to queue with per-URL validation
   const addToQueue = () => {
@@ -441,9 +481,17 @@ function App() {
       return;
     }
 
-    const availableProfiles = sessions.filter(s => s.valid).length;
+    // Calculate available profiles based on tag filter
+    const availableProfiles = sessions.filter(s => {
+      if (!s.valid) return false;
+      if (campaignFilterTags.length === 0) return true;
+      return campaignFilterTags.every(tag => (s.tags || []).includes(tag));
+    }).length;
+
     if (availableProfiles === 0) {
-      toast.error('No valid sessions available!');
+      toast.error(campaignFilterTags.length > 0
+        ? 'No valid sessions match the selected tags!'
+        : 'No valid sessions available!');
       return;
     }
 
@@ -466,13 +514,14 @@ function App() {
       return;
     }
 
-    // Add to queue
+    // Add to queue with optional tag filter
     const newCampaign: QueuedCampaign = {
       id: crypto.randomUUID(),
       url,
       comments: commentList,
       durationMinutes: campaignDuration,
-      status: 'pending'
+      status: 'pending',
+      filterTags: campaignFilterTags.length > 0 ? [...campaignFilterTags] : undefined
     };
 
     setCampaignQueue([...campaignQueue, newCampaign]);
@@ -481,7 +530,7 @@ function App() {
     setUrl('');
     setComments('');
 
-    toast.success(`Added campaign with ${commentList.length} comments to queue`);
+    toast.success(`Added campaign with ${commentList.length} comments to queue${campaignFilterTags.length > 0 ? ` (filtered by: ${campaignFilterTags.join(', ')})` : ''}`);
   };
 
   // Remove campaign from queue
@@ -509,6 +558,9 @@ function App() {
     setIsProcessing(true);
 
     try {
+      // Get filter_tags from the first campaign that has them
+      const filterTags = campaignQueue.find(c => c.filterTags && c.filterTags.length > 0)?.filterTags || null;
+
       const res = await fetch(`${API_BASE}/campaign/queue`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -518,7 +570,8 @@ function App() {
             url: c.url,
             comments: c.comments,
             duration_minutes: c.durationMinutes
-          }))
+          })),
+          filter_tags: filterTags
         })
       });
 
@@ -554,20 +607,6 @@ function App() {
       setQueueRunning(false);
       setIsProcessing(false);
       setCurrentCampaignIndex(-1);
-    }
-  };
-
-  const testSession = async (profileName: string) => {
-    try {
-      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/test`, {
-        method: 'POST',
-        headers: getAuthHeaders()
-      });
-      const result = await res.json();
-      alert(result.valid ? `Session valid for user ${result.user_id}` : `Session invalid: ${result.error}`);
-      fetchSessions();
-    } catch (error) {
-      alert(`Error: ${error}`);
     }
   };
 
@@ -873,35 +912,6 @@ function App() {
       alert(`Error: ${error}`);
     } finally {
       setRefreshingSession(null);
-    }
-  };
-
-  const refreshAllSessionNames = async () => {
-    setRefreshingAll(true);
-    try {
-      const res = await fetch(`${API_BASE}/sessions/refresh-all-names`, {
-        method: 'POST',
-        headers: getAuthHeaders()
-      });
-      const result = await res.json();
-
-      let message = `Refreshed ${result.success}/${result.total} sessions.\n\n`;
-      if (result.updates && result.updates.length > 0) {
-        const changes = result.updates.filter((u: { old_name: string; new_name: string }) => u.old_name !== u.new_name && u.new_name);
-        if (changes.length > 0) {
-          message += "Name changes:\n";
-          changes.forEach((u: { old_name: string; new_name: string }) => {
-            message += `• ${u.old_name} → ${u.new_name}\n`;
-          });
-        }
-      }
-      alert(message);
-      fetchSessions();
-      fetchCredentials();
-    } catch (error) {
-      alert(`Error: ${error}`);
-    } finally {
-      setRefreshingAll(false);
     }
   };
 
@@ -1373,6 +1383,48 @@ function App() {
                   </p>
                 </div>
 
+                {/* Tag Filter for Campaign */}
+                {allTags.length > 0 && (
+                  <div className="space-y-2">
+                    <Label>Filter Sessions by Tags (optional)</Label>
+                    <div className="flex items-center gap-2 flex-wrap min-h-[32px]">
+                      {allTags.map(tag => (
+                        <Badge
+                          key={tag}
+                          variant={campaignFilterTags.includes(tag) ? 'default' : 'outline'}
+                          className={`cursor-pointer text-xs ${queueRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          onClick={() => {
+                            if (!queueRunning) {
+                              setCampaignFilterTags(prev =>
+                                prev.includes(tag)
+                                  ? prev.filter(t => t !== tag)
+                                  : [...prev, tag]
+                              );
+                            }
+                          }}
+                        >
+                          {tag}
+                        </Badge>
+                      ))}
+                      {campaignFilterTags.length > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setCampaignFilterTags([])}
+                          disabled={queueRunning}
+                        >
+                          Clear
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-xs text-[#999999]">
+                      {campaignFilterTags.length > 0
+                        ? `Only sessions with ALL selected tags (${sessions.filter(s => s.valid && campaignFilterTags.every(tag => (s.tags || []).includes(tag))).length} matching)`
+                        : 'Leave empty to use all valid sessions'}
+                    </p>
+                  </div>
+                )}
+
                 <Button onClick={addToQueue} disabled={!url || !comments || queueRunning}>
                   <Plus className="w-4 h-4 mr-2" />
                   Add to Queue
@@ -1553,25 +1605,40 @@ function App() {
               <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4 flex flex-row justify-between items-center">
                 <CardTitle className="text-lg">Sessions ({sessions.length})</CardTitle>
                 <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={refreshAllSessionNames}
-                    disabled={refreshingAll || sessions.length === 0}
-                  >
-                    {refreshingAll ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4 mr-2" />
-                    )}
-                    Refresh All Names
-                  </Button>
                   <Button size="sm" variant="outline" onClick={fetchSessions}>
                     <RefreshCw className="w-4 h-4 mr-2" />
                     Reload
                   </Button>
                 </div>
               </CardHeader>
+              {/* Tag Filter Section */}
+              {allTags.length > 0 && (
+                <div className="px-4 py-3 bg-[rgba(51,51,51,0.02)] border-b border-[rgba(0,0,0,0.1)] flex items-center gap-2 flex-wrap">
+                  <Tag className="w-4 h-4 text-[#666666]" />
+                  <span className="text-sm text-[#666666]">Filter:</span>
+                  {allTags.map(tag => (
+                    <Badge
+                      key={tag}
+                      variant={sessionFilterTags.includes(tag) ? 'default' : 'outline'}
+                      className="cursor-pointer text-xs"
+                      onClick={() => {
+                        setSessionFilterTags(prev =>
+                          prev.includes(tag)
+                            ? prev.filter(t => t !== tag)
+                            : [...prev, tag]
+                        );
+                      }}
+                    >
+                      {tag}
+                    </Badge>
+                  ))}
+                  {sessionFilterTags.length > 0 && (
+                    <Button variant="ghost" size="sm" onClick={() => setSessionFilterTags([])}>
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              )}
               <CardContent className="p-0">
                 {loading ? (
                   <div className="p-8 text-center text-[#999999]">
@@ -1582,9 +1649,13 @@ function App() {
                   <div className="p-8 text-center text-[#999999]">
                     No sessions found. Extract sessions from AdsPower first.
                   </div>
+                ) : filteredSessions.length === 0 ? (
+                  <div className="p-8 text-center text-[#999999]">
+                    No sessions match the selected tags.
+                  </div>
                 ) : (
                   <div className="divide-y divide-[rgba(0,0,0,0.1)]">
-                    {sessions.map((session) => (
+                    {filteredSessions.map((session) => (
                       <div key={session.file} className="p-4 flex items-center justify-between hover:bg-white">
                         <div className="flex items-center gap-3">
                           {/* Profile Picture */}
@@ -1621,6 +1692,48 @@ function App() {
                                  No Proxy
                                </div>
                             )}
+                            {/* Tags Section */}
+                            <div className="flex items-center gap-1 mt-1 flex-wrap">
+                              {(session.tags || []).map(tag => (
+                                <Badge
+                                  key={tag}
+                                  variant="secondary"
+                                  className="text-[10px] py-0 h-4 cursor-pointer hover:bg-red-100 group"
+                                  onClick={() => {
+                                    const newTags = (session.tags || []).filter(t => t !== tag);
+                                    updateSessionTags(session.profile_name, newTags);
+                                  }}
+                                >
+                                  {tag}
+                                  <X className="w-2 h-2 ml-1 opacity-0 group-hover:opacity-100" />
+                                </Badge>
+                              ))}
+                              {/* Inline tag adder dropdown */}
+                              <select
+                                className="h-4 text-[10px] px-1 border rounded bg-white appearance-none cursor-pointer"
+                                value=""
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  if (value === '__new__') {
+                                    const newTag = prompt('Enter new tag name:');
+                                    if (newTag?.trim()) {
+                                      const normalizedTag = newTag.trim().toLowerCase();
+                                      const newTags = [...(session.tags || []), normalizedTag];
+                                      updateSessionTags(session.profile_name, newTags);
+                                    }
+                                  } else if (value) {
+                                    const newTags = [...(session.tags || []), value];
+                                    updateSessionTags(session.profile_name, newTags);
+                                  }
+                                }}
+                              >
+                                <option value="">+ tag</option>
+                                {allTags.filter(t => !(session.tags || []).includes(t)).map(tag => (
+                                  <option key={tag} value={tag}>{tag}</option>
+                                ))}
+                                <option value="__new__">Create new...</option>
+                              </select>
+                            </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -1640,16 +1753,13 @@ function App() {
                             size="sm"
                             variant="outline"
                             onClick={() => refreshSessionName(session.profile_name)}
-                            disabled={refreshingSession === session.profile_name || refreshingAll}
+                            disabled={refreshingSession === session.profile_name}
                           >
                             {refreshingSession === session.profile_name ? (
                               <Loader2 className="w-3 h-3 animate-spin" />
                             ) : (
                               <RefreshCw className="w-3 h-3" />
                             )}
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={() => testSession(session.profile_name)}>
-                            Test
                           </Button>
                           <Button size="sm" variant="ghost" onClick={() => deleteSession(session.profile_name)}>
                             <Trash2 className="w-3 h-3 text-red-500" />

@@ -168,6 +168,7 @@ class QueuedCampaignItem(BaseModel):
 
 class CampaignQueueRequest(BaseModel):
     campaigns: List[QueuedCampaignItem]
+    filter_tags: Optional[List[str]] = None  # Tags to filter sessions (AND logic)
 
 
 class SessionInfo(BaseModel):
@@ -180,6 +181,11 @@ class SessionInfo(BaseModel):
     proxy_masked: Optional[str] = None  # Masked proxy URL for display
     proxy_source: Optional[str] = None  # "session" or "env" to show source
     profile_picture: Optional[str] = None  # Base64 encoded PNG
+    tags: List[str] = []  # Session tags for filtering
+
+
+class TagUpdateRequest(BaseModel):
+    tags: List[str]
 
 
 class CredentialAddRequest(BaseModel):
@@ -608,6 +614,7 @@ async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[S
             proxy_masked=proxy_masked,
             proxy_source=proxy_source,
             profile_picture=s.get("profile_picture"),
+            tags=s.get("tags", []),
         ))
 
     return results
@@ -684,6 +691,27 @@ async def delete_session(profile_name: str, current_user: dict = Depends(get_cur
     except Exception as e:
         logger.error(f"Failed to delete session {profile_name}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete session: {e}")
+
+
+@app.get("/tags")
+async def get_all_tags_endpoint(current_user: dict = Depends(get_current_user)) -> List[str]:
+    """Get all unique tags across all sessions."""
+    from fb_session import get_all_tags
+    return get_all_tags()
+
+
+@app.put("/sessions/{profile_name}/tags")
+async def update_session_tags_endpoint(
+    profile_name: str,
+    request: TagUpdateRequest,
+    current_user: dict = Depends(get_current_user)
+) -> Dict:
+    """Update tags for a session."""
+    from fb_session import update_session_tags
+    success = update_session_tags(profile_name, request.tags)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Session not found: {profile_name}")
+    return {"success": True, "tags": request.tags}
 
 
 @app.post("/comment")
@@ -821,9 +849,20 @@ async def run_campaign_queue(request: CampaignQueueRequest, current_user: dict =
     # Get all valid sessions
     sessions_list = list_saved_sessions()
     valid_profiles = [s for s in sessions_list if s.get("has_valid_cookies", False)]
+
+    # Filter by tags if specified (AND logic - must match ALL tags)
+    if request.filter_tags:
+        valid_profiles = [
+            s for s in valid_profiles
+            if all(tag in s.get("tags", []) for tag in request.filter_tags)
+        ]
+        logger.info(f"Filtered to {len(valid_profiles)} profiles matching tags: {request.filter_tags}")
+
     valid_count = len(valid_profiles)
 
     if valid_count == 0:
+        if request.filter_tags:
+            raise HTTPException(status_code=400, detail=f"No valid sessions match tags: {request.filter_tags}")
         raise HTTPException(status_code=400, detail="No valid sessions available")
 
     # Validate per-URL limits

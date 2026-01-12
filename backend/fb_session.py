@@ -300,6 +300,7 @@ def list_saved_sessions() -> List[Dict[str, Any]]:
                 "proxy": data.get("proxy"),
                 "has_valid_cookies": ("c_user" in cookie_names and "xs" in cookie_names),
                 "profile_picture": data.get("profile_picture"),  # Base64 PNG or None
+                "tags": data.get("tags", []),  # Session tags for filtering
             })
             # Extract user ID
             for cookie in data.get("cookies", []):
@@ -309,3 +310,36 @@ def list_saved_sessions() -> List[Dict[str, Any]]:
         except Exception as e:
             logger.error(f"Failed to read {session_file}: {e}")
     return sessions
+
+
+def update_session_tags(profile_name: str, tags: List[str]) -> bool:
+    """
+    Update tags for a session.
+
+    Args:
+        profile_name: The profile name of the session
+        tags: List of tags to set
+
+    Returns:
+        True if successful, False otherwise
+    """
+    session = FacebookSession(profile_name)
+    if not session.load():
+        return False
+    # Normalize tags: strip whitespace, lowercase, remove empty
+    session.data["tags"] = [t.strip().lower() for t in tags if t.strip()]
+    return session.save()
+
+
+def get_all_tags() -> List[str]:
+    """
+    Get all unique tags across all sessions.
+
+    Returns:
+        Sorted list of unique tags
+    """
+    sessions = list_saved_sessions()
+    all_tags = set()
+    for s in sessions:
+        all_tags.update(s.get("tags", []))
+    return sorted(list(all_tags))
