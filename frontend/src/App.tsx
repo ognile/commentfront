@@ -15,6 +15,7 @@ import { AdminTab } from '@/components/admin/AdminTab'
 import { API_BASE, WS_BASE } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
 import { PearlBackground } from '@/components/PearlBackground'
+import { TagInput } from '@/components/TagInput'
 
 interface Session {
   file: string;
@@ -1384,46 +1385,36 @@ function App() {
                 </div>
 
                 {/* Tag Filter for Campaign */}
-                {allTags.length > 0 && (
-                  <div className="space-y-2">
-                    <Label>Filter Sessions by Tags (optional)</Label>
-                    <div className="flex items-center gap-2 flex-wrap min-h-[32px]">
-                      {allTags.map(tag => (
-                        <Badge
-                          key={tag}
-                          variant={campaignFilterTags.includes(tag) ? 'default' : 'outline'}
-                          className={`cursor-pointer text-xs ${queueRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
-                          onClick={() => {
-                            if (!queueRunning) {
-                              setCampaignFilterTags(prev =>
-                                prev.includes(tag)
-                                  ? prev.filter(t => t !== tag)
-                                  : [...prev, tag]
-                              );
-                            }
-                          }}
-                        >
-                          {tag}
-                        </Badge>
-                      ))}
-                      {campaignFilterTags.length > 0 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setCampaignFilterTags([])}
-                          disabled={queueRunning}
-                        >
-                          Clear
-                        </Button>
-                      )}
-                    </div>
-                    <p className="text-xs text-[#999999]">
-                      {campaignFilterTags.length > 0
-                        ? `Only sessions with ALL selected tags (${sessions.filter(s => s.valid && campaignFilterTags.every(tag => (s.tags || []).includes(tag))).length} matching)`
-                        : 'Leave empty to use all valid sessions'}
-                    </p>
+                <div className="space-y-2">
+                  <Label>Filter Sessions by Tags (optional)</Label>
+                  <div className="flex items-center gap-2 flex-wrap min-h-[32px]">
+                    <TagInput
+                      allTags={allTags}
+                      selectedTags={campaignFilterTags}
+                      onTagAdd={(tag) => setCampaignFilterTags(prev => [...prev, tag])}
+                      onTagRemove={(tag) => setCampaignFilterTags(prev => prev.filter(t => t !== tag))}
+                      placeholder="Search tags..."
+                      showSelectedAsBadges={true}
+                      allowCreate={false}
+                      disabled={queueRunning}
+                    />
+                    {campaignFilterTags.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setCampaignFilterTags([])}
+                        disabled={queueRunning}
+                      >
+                        Clear
+                      </Button>
+                    )}
                   </div>
-                )}
+                  <p className="text-xs text-[#999999]">
+                    {campaignFilterTags.length > 0
+                      ? `Only sessions with ALL selected tags (${sessions.filter(s => s.valid && campaignFilterTags.every(tag => (s.tags || []).includes(tag))).length} matching)`
+                      : 'Leave empty to use all valid sessions'}
+                  </p>
+                </div>
 
                 <Button onClick={addToQueue} disabled={!url || !comments || queueRunning}>
                   <Plus className="w-4 h-4 mr-2" />
@@ -1612,33 +1603,24 @@ function App() {
                 </div>
               </CardHeader>
               {/* Tag Filter Section */}
-              {allTags.length > 0 && (
-                <div className="px-4 py-3 bg-[rgba(51,51,51,0.02)] border-b border-[rgba(0,0,0,0.1)] flex items-center gap-2 flex-wrap">
-                  <Tag className="w-4 h-4 text-[#666666]" />
-                  <span className="text-sm text-[#666666]">Filter:</span>
-                  {allTags.map(tag => (
-                    <Badge
-                      key={tag}
-                      variant={sessionFilterTags.includes(tag) ? 'default' : 'outline'}
-                      className="cursor-pointer text-xs"
-                      onClick={() => {
-                        setSessionFilterTags(prev =>
-                          prev.includes(tag)
-                            ? prev.filter(t => t !== tag)
-                            : [...prev, tag]
-                        );
-                      }}
-                    >
-                      {tag}
-                    </Badge>
-                  ))}
-                  {sessionFilterTags.length > 0 && (
-                    <Button variant="ghost" size="sm" onClick={() => setSessionFilterTags([])}>
-                      Clear
-                    </Button>
-                  )}
-                </div>
-              )}
+              <div className="px-4 py-3 bg-[rgba(51,51,51,0.02)] border-b border-[rgba(0,0,0,0.1)] flex items-center gap-2 flex-wrap">
+                <Tag className="w-4 h-4 text-[#666666]" />
+                <span className="text-sm text-[#666666]">Filter:</span>
+                <TagInput
+                  allTags={allTags}
+                  selectedTags={sessionFilterTags}
+                  onTagAdd={(tag) => setSessionFilterTags(prev => [...prev, tag])}
+                  onTagRemove={(tag) => setSessionFilterTags(prev => prev.filter(t => t !== tag))}
+                  placeholder="Search tags..."
+                  showSelectedAsBadges={true}
+                  allowCreate={false}
+                />
+                {sessionFilterTags.length > 0 && (
+                  <Button variant="ghost" size="sm" onClick={() => setSessionFilterTags([])}>
+                    Clear
+                  </Button>
+                )}
+              </div>
               <CardContent className="p-0">
                 {loading ? (
                   <div className="p-8 text-center text-[#999999]">
@@ -1708,31 +1690,16 @@ function App() {
                                   <X className="w-2 h-2 ml-1 opacity-0 group-hover:opacity-100" />
                                 </Badge>
                               ))}
-                              {/* Inline tag adder dropdown */}
-                              <select
-                                className="h-4 text-[10px] px-1 border rounded bg-white appearance-none cursor-pointer"
-                                value=""
-                                onChange={(e) => {
-                                  const value = e.target.value;
-                                  if (value === '__new__') {
-                                    const newTag = prompt('Enter new tag name:');
-                                    if (newTag?.trim()) {
-                                      const normalizedTag = newTag.trim().toLowerCase();
-                                      const newTags = [...(session.tags || []), normalizedTag];
-                                      updateSessionTags(session.profile_name, newTags);
-                                    }
-                                  } else if (value) {
-                                    const newTags = [...(session.tags || []), value];
-                                    updateSessionTags(session.profile_name, newTags);
-                                  }
-                                }}
-                              >
-                                <option value="">+ tag</option>
-                                {allTags.filter(t => !(session.tags || []).includes(t)).map(tag => (
-                                  <option key={tag} value={tag}>{tag}</option>
-                                ))}
-                                <option value="__new__">Create new...</option>
-                              </select>
+                              {/* Inline tag adder */}
+                              <TagInput
+                                allTags={allTags}
+                                selectedTags={session.tags || []}
+                                onTagAdd={(tag) => updateSessionTags(session.profile_name, [...(session.tags || []), tag])}
+                                placeholder="+ tag"
+                                size="sm"
+                                allowCreate={true}
+                                showSelectedAsBadges={false}
+                              />
                             </div>
                           </div>
                         </div>
