@@ -186,6 +186,12 @@ function App() {
   // Session refresh state
   const [refreshingSession, setRefreshingSession] = useState<string | null>(null);
 
+  // Bulk session selection state
+  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
+  const [bulkRefreshing, setBulkRefreshing] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkTagModalOpen, setBulkTagModalOpen] = useState(false);
+
   // Batch session creation state
   const [selectedCredentials, setSelectedCredentials] = useState<Set<string>>(new Set());
   const [batchInProgress, setBatchInProgress] = useState(false);
@@ -629,6 +635,186 @@ function App() {
       }
     } catch (error) {
       toast.error(`Error: ${error}`);
+    }
+  };
+
+  // Bulk session operations
+  const toggleSessionSelection = (profileName: string) => {
+    setSelectedSessions(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(profileName)) {
+        newSet.delete(profileName);
+      } else {
+        newSet.add(profileName);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleAllSessions = () => {
+    if (selectedSessions.size === filteredSessions.length) {
+      setSelectedSessions(new Set());
+    } else {
+      setSelectedSessions(new Set(filteredSessions.map(s => s.profile_name)));
+    }
+  };
+
+  const bulkDeleteSessions = async () => {
+    if (selectedSessions.size === 0) return;
+    if (!confirm(`Delete ${selectedSessions.size} sessions? This cannot be undone.`)) return;
+
+    setBulkDeleting(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const profileName of selectedSessions) {
+      try {
+        const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders()
+        });
+        const result = await res.json();
+        if (result.success) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      }
+    }
+
+    setBulkDeleting(false);
+    setSelectedSessions(new Set());
+    fetchSessions();
+    fetchCredentials();
+
+    if (failCount === 0) {
+      toast.success(`Deleted ${successCount} sessions`);
+    } else {
+      toast.warning(`Deleted ${successCount} sessions, ${failCount} failed`);
+    }
+  };
+
+  const bulkRefreshNames = async () => {
+    if (selectedSessions.size === 0) return;
+
+    setBulkRefreshing(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const profileName of selectedSessions) {
+      try {
+        const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/refresh-name`, {
+          method: 'POST',
+          headers: getAuthHeaders()
+        });
+        const result = await res.json();
+        if (result.success) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      }
+    }
+
+    setBulkRefreshing(false);
+    setSelectedSessions(new Set());
+    fetchSessions();
+
+    if (failCount === 0) {
+      toast.success(`Refreshed ${successCount} profile names`);
+    } else {
+      toast.warning(`Refreshed ${successCount} profile names, ${failCount} failed`);
+    }
+  };
+
+  const bulkAddTag = async (tag: string) => {
+    if (selectedSessions.size === 0) return;
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const profileName of selectedSessions) {
+      const session = sessions.find(s => s.profile_name === profileName);
+      if (!session) continue;
+
+      const currentTags = session.tags || [];
+      if (currentTags.includes(tag)) {
+        successCount++; // Already has tag
+        continue;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/tags`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ tags: [...currentTags, tag] })
+        });
+        const result = await res.json();
+        if (result.success) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      }
+    }
+
+    fetchSessions();
+    fetchTags();
+    setBulkTagModalOpen(false);
+
+    if (failCount === 0) {
+      toast.success(`Added tag "${tag}" to ${successCount} sessions`);
+    } else {
+      toast.warning(`Added tag to ${successCount} sessions, ${failCount} failed`);
+    }
+  };
+
+  const bulkRemoveTag = async (tag: string) => {
+    if (selectedSessions.size === 0) return;
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const profileName of selectedSessions) {
+      const session = sessions.find(s => s.profile_name === profileName);
+      if (!session) continue;
+
+      const currentTags = session.tags || [];
+      if (!currentTags.includes(tag)) {
+        successCount++; // Doesn't have tag
+        continue;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/tags`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ tags: currentTags.filter(t => t !== tag) })
+        });
+        const result = await res.json();
+        if (result.success) {
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      }
+    }
+
+    fetchSessions();
+    fetchTags();
+
+    if (failCount === 0) {
+      toast.success(`Removed tag "${tag}" from ${successCount} sessions`);
+    } else {
+      toast.warning(`Removed tag from ${successCount} sessions, ${failCount} failed`);
     }
   };
 
@@ -1593,34 +1779,125 @@ function App() {
 
           <TabsContent value="sessions" className="mt-6">
             <Card className="">
-              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4 flex flex-row justify-between items-center">
-                <CardTitle className="text-lg">Sessions ({sessions.length})</CardTitle>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={fetchSessions}>
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    Reload
-                  </Button>
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Checkbox
+                      checked={filteredSessions.length > 0 && selectedSessions.size === filteredSessions.length}
+                      onCheckedChange={toggleAllSessions}
+                      className="data-[state=checked]:bg-[#333333]"
+                    />
+                    <CardTitle className="text-lg">Sessions ({filteredSessions.length})</CardTitle>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" onClick={fetchSessions}>
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                      Reload
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
-              {/* Tag Filter Section */}
-              <div className="px-4 py-3 bg-[rgba(51,51,51,0.02)] border-b border-[rgba(0,0,0,0.1)] flex items-center gap-2 flex-wrap">
-                <Tag className="w-4 h-4 text-[#666666]" />
-                <span className="text-sm text-[#666666]">Filter:</span>
-                <TagInput
-                  allTags={allTags}
-                  selectedTags={sessionFilterTags}
-                  onTagAdd={(tag) => setSessionFilterTags(prev => [...prev, tag])}
-                  onTagRemove={(tag) => setSessionFilterTags(prev => prev.filter(t => t !== tag))}
-                  placeholder="Search tags..."
-                  showSelectedAsBadges={true}
-                  allowCreate={false}
-                />
-                {sessionFilterTags.length > 0 && (
-                  <Button variant="ghost" size="sm" onClick={() => setSessionFilterTags([])}>
-                    Clear
+
+              {/* Bulk Actions Toolbar */}
+              {selectedSessions.size > 0 && (
+                <div className="px-4 py-3 bg-blue-50 border-b border-blue-200 flex items-center gap-3 flex-wrap">
+                  <span className="text-sm font-medium text-blue-700">
+                    {selectedSessions.size} selected
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setBulkTagModalOpen(true)}
+                      className="h-7 text-xs"
+                    >
+                      <Tag className="w-3 h-3 mr-1" />
+                      Add Tag
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={bulkRefreshNames}
+                      disabled={bulkRefreshing}
+                      className="h-7 text-xs"
+                    >
+                      {bulkRefreshing ? (
+                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3 h-3 mr-1" />
+                      )}
+                      Refresh Names
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={bulkDeleteSessions}
+                      disabled={bulkDeleting}
+                      className="h-7 text-xs text-red-600 hover:text-red-700 hover:bg-red-50"
+                    >
+                      {bulkDeleting ? (
+                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3 h-3 mr-1" />
+                      )}
+                      Delete
+                    </Button>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setSelectedSessions(new Set())}
+                    className="h-7 text-xs ml-auto"
+                  >
+                    Clear selection
                   </Button>
-                )}
-              </div>
+                </div>
+              )}
+
+              {/* Bulk Tag Modal */}
+              {bulkTagModalOpen && (
+                <div className="px-4 py-3 bg-[rgba(51,51,51,0.02)] border-b border-[rgba(0,0,0,0.1)] flex items-center gap-3">
+                  <span className="text-sm text-[#666666]">Add tag to {selectedSessions.size} sessions:</span>
+                  <TagInput
+                    allTags={allTags}
+                    selectedTags={[]}
+                    onTagAdd={bulkAddTag}
+                    placeholder="Search or create tag..."
+                    allowCreate={true}
+                    showSelectedAsBadges={false}
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setBulkTagModalOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              )}
+
+              {/* Tag Filter Section */}
+              {!bulkTagModalOpen && (
+                <div className="px-4 py-3 bg-[rgba(51,51,51,0.02)] border-b border-[rgba(0,0,0,0.1)] flex items-center gap-2 flex-wrap">
+                  <Tag className="w-4 h-4 text-[#666666]" />
+                  <span className="text-sm text-[#666666]">Filter:</span>
+                  <TagInput
+                    allTags={allTags}
+                    selectedTags={sessionFilterTags}
+                    onTagAdd={(tag) => setSessionFilterTags(prev => [...prev, tag])}
+                    onTagRemove={(tag) => setSessionFilterTags(prev => prev.filter(t => t !== tag))}
+                    placeholder="Search tags..."
+                    showSelectedAsBadges={true}
+                    allowCreate={false}
+                  />
+                  {sessionFilterTags.length > 0 && (
+                    <Button variant="ghost" size="sm" onClick={() => setSessionFilterTags([])}>
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              )}
+
               <CardContent className="p-0">
                 {loading ? (
                   <div className="p-8 text-center text-[#999999]">
@@ -1638,73 +1915,81 @@ function App() {
                 ) : (
                   <div className="divide-y divide-[rgba(0,0,0,0.1)]">
                     {filteredSessions.map((session) => (
-                      <div key={session.file} className="p-4 flex items-center justify-between hover:bg-white">
-                        <div className="flex items-center gap-3">
-                          {/* Profile Picture */}
-                          <div className="w-12 h-12 rounded-full overflow-hidden bg-[rgba(0,0,0,0.1)] flex-shrink-0">
-                            {session.profile_picture ? (
-                              <img
-                                src={`data:image/png;base64,${session.profile_picture}`}
-                                alt={session.profile_name}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-[#999999] text-lg font-medium">
-                                {session.profile_name?.[0]?.toUpperCase() || '?'}
-                              </div>
-                            )}
+                      <div
+                        key={session.file}
+                        className={`px-4 py-3 flex items-center gap-4 hover:bg-white transition-colors ${
+                          selectedSessions.has(session.profile_name) ? 'bg-blue-50' : ''
+                        }`}
+                      >
+                        {/* Checkbox */}
+                        <Checkbox
+                          checked={selectedSessions.has(session.profile_name)}
+                          onCheckedChange={() => toggleSessionSelection(session.profile_name)}
+                          className="data-[state=checked]:bg-[#333333] flex-shrink-0"
+                        />
+
+                        {/* Avatar - smaller */}
+                        <div className="w-10 h-10 rounded-full overflow-hidden bg-[rgba(0,0,0,0.1)] flex-shrink-0">
+                          {session.profile_picture ? (
+                            <img
+                              src={`data:image/png;base64,${session.profile_picture}`}
+                              alt={session.profile_name}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-[#999999] text-sm font-medium">
+                              {session.profile_name?.[0]?.toUpperCase() || '?'}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Name & Info - horizontal */}
+                        <div className="flex-1 min-w-0 flex items-center gap-4">
+                          <div className="min-w-[140px]">
+                            <div className="font-medium text-[#111111] text-sm truncate">{session.profile_name}</div>
+                            <div className="text-xs text-[#999999] flex items-center gap-2">
+                              <span className="truncate">{session.user_id?.slice(0, 10) || 'Unknown'}</span>
+                              <span>•</span>
+                              <span>{session.extracted_at.split('T')[0]}</span>
+                              <span>•</span>
+                              <span className={`flex items-center gap-1 ${session.proxy_masked ? 'text-[#999999]' : 'text-red-400'}`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${session.proxy_masked ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                                {session.proxy_masked ? 'Proxy' : 'No Proxy'}
+                              </span>
+                            </div>
                           </div>
-                          {/* Profile Info */}
-                          <div>
-                            <div className="font-medium text-[#111111]">{session.profile_name}</div>
-                            <div className="text-sm text-[#999999]">
-                              User: {session.user_id || 'Unknown'} • {session.extracted_at.split('T')[0]}
-                            </div>
-                            {session.proxy_masked ? (
-                               <div className="text-xs text-[#999999] mt-1 flex items-center gap-1">
-                                 <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                                 <span>Proxy: {session.proxy_masked}</span>
-                                 {session.proxy_source === "env" && (
-                                   <Badge variant="outline" className="ml-1 text-[10px] py-0 h-4">system</Badge>
-                                 )}
-                               </div>
-                            ) : (
-                               <div className="text-xs text-red-400 mt-1 flex items-center gap-1">
-                                 <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                                 No Proxy
-                               </div>
-                            )}
-                            {/* Tags Section */}
-                            <div className="flex items-center gap-1 mt-1 flex-wrap">
-                              {(session.tags || []).map(tag => (
-                                <Badge
-                                  key={tag}
-                                  variant="secondary"
-                                  className="text-[10px] py-0 h-4 cursor-pointer hover:bg-red-100 group"
-                                  onClick={() => {
-                                    const newTags = (session.tags || []).filter(t => t !== tag);
-                                    updateSessionTags(session.profile_name, newTags);
-                                  }}
-                                >
-                                  {tag}
-                                  <X className="w-2 h-2 ml-1 opacity-0 group-hover:opacity-100" />
-                                </Badge>
-                              ))}
-                              {/* Inline tag adder */}
-                              <TagInput
-                                allTags={allTags}
-                                selectedTags={session.tags || []}
-                                onTagAdd={(tag) => updateSessionTags(session.profile_name, [...(session.tags || []), tag])}
-                                placeholder="+ tag"
-                                size="sm"
-                                allowCreate={true}
-                                showSelectedAsBadges={false}
-                              />
-                            </div>
+
+                          {/* Tags - inline */}
+                          <div className="flex items-center gap-1 flex-wrap flex-1">
+                            {(session.tags || []).map(tag => (
+                              <Badge
+                                key={tag}
+                                variant="secondary"
+                                className="text-[10px] py-0 h-5 cursor-pointer hover:bg-red-100 group"
+                                onClick={() => {
+                                  const newTags = (session.tags || []).filter(t => t !== tag);
+                                  updateSessionTags(session.profile_name, newTags);
+                                }}
+                              >
+                                {tag}
+                                <X className="w-2 h-2 ml-1 opacity-0 group-hover:opacity-100" />
+                              </Badge>
+                            ))}
+                            <TagInput
+                              allTags={allTags}
+                              selectedTags={session.tags || []}
+                              onTagAdd={(tag) => updateSessionTags(session.profile_name, [...(session.tags || []), tag])}
+                              placeholder="+"
+                              size="sm"
+                              allowCreate={true}
+                              showSelectedAsBadges={false}
+                            />
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={session.valid ? 'default' : 'destructive'}>
+
+                        {/* Actions - compact */}
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <Badge variant={session.valid ? 'default' : 'destructive'} className="text-xs">
                             {session.valid ? 'Valid' : 'Invalid'}
                           </Badge>
                           <Button
@@ -1712,15 +1997,16 @@ function App() {
                             variant="default"
                             onClick={() => openRemoteModal(session)}
                             disabled={!session.valid}
+                            className="h-7 text-xs px-2"
                           >
-                            <Mouse className="w-3 h-3 mr-1" />
-                            Control
+                            <Mouse className="w-3 h-3" />
                           </Button>
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => refreshSessionName(session.profile_name)}
                             disabled={refreshingSession === session.profile_name}
+                            className="h-7 w-7 p-0"
                           >
                             {refreshingSession === session.profile_name ? (
                               <Loader2 className="w-3 h-3 animate-spin" />
@@ -1728,7 +2014,12 @@ function App() {
                               <RefreshCw className="w-3 h-3" />
                             )}
                           </Button>
-                          <Button size="sm" variant="ghost" onClick={() => deleteSession(session.profile_name)}>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => deleteSession(session.profile_name)}
+                            className="h-7 w-7 p-0"
+                          >
                             <Trash2 className="w-3 h-3 text-red-500" />
                           </Button>
                         </div>
