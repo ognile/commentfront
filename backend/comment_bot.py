@@ -190,42 +190,74 @@ async def verify_comment_visually(page: Page, comment_text: str) -> Dict[str, An
 async def smart_click(page: Page, selectors: List[str], description: str) -> bool:
     """
     Try to click an element using multiple selectors.
-    Scrolls into view and waits for visibility.
+    Uses Playwright's native .click() which handles actionability and overlapping elements.
+    Falls back to dispatch_event for elements that need synthetic clicks.
+
+    For send/post buttons, tries .last to handle stacked button layouts where
+    the send button appears on top of other buttons when text is entered.
     """
     logger.info(f"=== ATTEMPTING CLICK: {description} ===")
     logger.info(f"Trying {len(selectors)} selectors...")
+
+    # For send buttons, try last element first (topmost in stacked layout)
+    is_send_button = "send" in description.lower() or "post" in description.lower()
+
     for selector in selectors:
         try:
-            # Check count first to avoid waiting unnecessarily
-            locator = page.locator(selector).first
-            count = await locator.count()
+            all_matches = page.locator(selector)
+            count = await all_matches.count()
             logger.info(f"  Selector '{selector}' → found {count} element(s)")
-            if count > 0:
-                # No scroll - element should already be visible on permalink page
-                # scroll_into_view_if_needed() was causing navigation to wrong posts
 
-                # Snapshot before action for live view
-                await save_debug_screenshot(page, f"pre_click_{description.replace(' ', '_')}")
-                
-                if await locator.is_visible():
-                    await locator.dispatch_event('click')
-                    logger.info(f"  → CLICKED successfully via: {selector}")
-                    # Snapshot after action
-                    await save_debug_screenshot(page, f"post_click_{description.replace(' ', '_')}")
-                    return True
+            if count > 0:
+                # For send buttons with multiple matches, try last first (topmost element)
+                if is_send_button and count > 1:
+                    locators_to_try = [all_matches.last, all_matches.first]
+                    logger.info(f"  → Send button with {count} matches, trying last first")
                 else:
-                    logger.info(f"  → Found but not visible, skipping")
+                    locators_to_try = [all_matches.first]
+
+                for locator in locators_to_try:
+                    try:
+                        # Snapshot before action for live view
+                        await save_debug_screenshot(page, f"pre_click_{description.replace(' ', '_')}")
+
+                        if await locator.is_visible():
+                            # Try native click first - handles overlapping elements and React events better
+                            try:
+                                await locator.click(timeout=3000)
+                                logger.info(f"  → CLICKED (native) successfully via: {selector}")
+                                await save_debug_screenshot(page, f"post_click_{description.replace(' ', '_')}")
+                                return True
+                            except Exception as click_err:
+                                # Native click failed (maybe obscured), try dispatch_event as fallback
+                                logger.info(f"  → Native click failed ({click_err}), trying dispatch_event...")
+                                try:
+                                    await locator.dispatch_event('click')
+                                    logger.info(f"  → CLICKED (dispatch_event) successfully via: {selector}")
+                                    await save_debug_screenshot(page, f"post_click_{description.replace(' ', '_')}")
+                                    return True
+                                except Exception as dispatch_err:
+                                    logger.info(f"  → dispatch_event also failed: {dispatch_err}")
+                        else:
+                            logger.info(f"  → Found but not visible, skipping")
+                    except Exception as loc_err:
+                        logger.info(f"  → Locator attempt failed: {loc_err}")
+                        continue
         except Exception as e:
             continue
-            
+
     # Fallback: Text search
     try:
         text_locator = page.get_by_text(description, exact=False).first
         if await text_locator.count() > 0 and await text_locator.is_visible():
-            # No scroll - element should already be visible
-            await text_locator.dispatch_event('click')
-            logger.info(f"Clicked '{description}' using text match dispatch_event")
-            return True
+            try:
+                await text_locator.click(timeout=3000)
+                logger.info(f"Clicked '{description}' using text match (native click)")
+                return True
+            except:
+                await text_locator.dispatch_event('click')
+                logger.info(f"Clicked '{description}' using text match dispatch_event")
+                return True
     except:
         pass
 
@@ -974,6 +1006,9 @@ async def post_comment_verified(
             # Wait for comment to post (5s for long comments to render)
             await asyncio.sleep(5)
 
+            # Dump elements after send to see what's on the page
+            await dump_interactive_elements(page, "AFTER SEND CLICK - checking for comment")
+
             # Verify comment was posted
             verify_screenshot = await save_debug_screenshot(page, "step5_verify")
             verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-50:])
@@ -984,6 +1019,12 @@ async def post_comment_verified(
                     logger.info("Comment appears pending, waiting...")
                     await asyncio.sleep(3)
                     verify_screenshot = await save_debug_screenshot(page, "step5_pending")
+                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-50:])
+                else:
+                    # Not pending - try one more wait and check
+                    logger.info(f"Comment not visible, waiting 3 more seconds... ({verification.message})")
+                    await asyncio.sleep(3)
+                    verify_screenshot = await save_debug_screenshot(page, "step5_retry")
                     verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-50:])
 
                 if not verification.success:
