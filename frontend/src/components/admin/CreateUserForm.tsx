@@ -73,8 +73,8 @@ export function CreateUserForm({ onUserCreated }: CreateUserFormProps) {
   };
 
   return (
-    <Card className="shadow-md border-slate-200">
-      <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+    <Card>
+      <CardHeader className="border-b border-[rgba(0,0,0,0.1)] pb-4">
         <CardTitle className="text-lg flex items-center gap-2">
           <UserPlus className="w-5 h-5" />
           Add New User
@@ -83,13 +83,13 @@ export function CreateUserForm({ onUserCreated }: CreateUserFormProps) {
       <CardContent className="pt-6">
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-600 text-sm">
+            <div className="p-3 bg-[rgba(239,68,68,0.1)] border border-[rgba(239,68,68,0.3)] rounded-full text-[#ef4444] text-sm text-center">
               {error}
             </div>
           )}
 
           {success && (
-            <div className="p-3 bg-green-50 border border-green-200 rounded-md text-green-600 text-sm">
+            <div className="p-3 bg-[rgba(34,197,94,0.1)] border border-[rgba(34,197,94,0.3)] rounded-full text-[#22c55e] text-sm text-center">
               {success}
             </div>
           )}
@@ -104,7 +104,7 @@ export function CreateUserForm({ onUserCreated }: CreateUserFormProps) {
               placeholder="Enter username"
               className="bg-white"
             />
-            <p className="text-xs text-slate-500">Min 3 characters, no spaces</p>
+            <p className="text-xs text-[#999999]">Min 3 characters, no spaces</p>
           </div>
 
           <div className="space-y-2">
@@ -122,7 +122,7 @@ export function CreateUserForm({ onUserCreated }: CreateUserFormProps) {
                 Generate
               </Button>
             </div>
-            <p className="text-xs text-slate-500">Min 6 characters</p>
+            <p className="text-xs text-[#999999]">Min 6 characters</p>
           </div>
 
           <div className="space-y-2">
@@ -131,7 +131,7 @@ export function CreateUserForm({ onUserCreated }: CreateUserFormProps) {
               id="role"
               value={role}
               onChange={(e) => setRole(e.target.value as 'user' | 'admin')}
-              className="w-full h-10 px-3 border border-slate-200 rounded-md bg-white text-sm"
+              className="w-full h-10 px-4 border border-[rgba(0,0,0,0.1)] rounded-full bg-white text-sm text-[#111111] focus:outline-none focus:border-[#333333] transition-colors"
             >
               <option value="user">User</option>
               <option value="admin">Admin</option>

@@ -1,5 +1,5 @@
 /**
- * Login Page Component
+ * Login Page Component - Pearl Design
  */
 
 import { useState } from 'react';
@@ -7,8 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Loader2, MessageSquare } from 'lucide-react';
+import { Loader2, Play } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import { PearlBackground } from '@/components/PearlBackground';
 
 export function LoginPage() {
   const [username, setUsername] = useState('');
@@ -32,27 +33,29 @@ export function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="text-center">
+    <div className="min-h-screen relative flex items-center justify-center p-4">
+      <PearlBackground />
+
+      <Card className="w-full max-w-md relative z-10">
+        <CardHeader className="text-center pt-8">
           <div className="flex justify-center mb-4">
-            <div className="w-12 h-12 bg-blue-600 rounded-lg flex items-center justify-center">
-              <MessageSquare className="w-6 h-6 text-white" />
+            <div className="w-14 h-14 rounded-full bg-[rgba(51,51,51,0.08)] border border-[rgba(0,0,0,0.1)] flex items-center justify-center">
+              <Play className="w-7 h-7 text-[#333333]" />
             </div>
           </div>
-          <CardTitle className="text-2xl">CommentBot</CardTitle>
-          <CardDescription>Facebook Comment Automation</CardDescription>
+          <CardTitle className="text-xl text-[#111111]">CommentBot</CardTitle>
+          <CardDescription className="text-[#999999]">Automation platform</CardDescription>
         </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
+        <CardContent className="pb-8">
+          <form onSubmit={handleSubmit} className="space-y-5">
             {error && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-600 text-sm">
+              <div className="p-3 rounded-full bg-[rgba(239,68,68,0.1)] border border-[rgba(239,68,68,0.3)] text-[#ef4444] text-sm text-center">
                 {error}
               </div>
             )}
 
             <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
+              <Label htmlFor="username" className="text-[#666666] text-sm font-medium">Username</Label>
               <Input
                 id="username"
                 type="text"
@@ -66,7 +69,7 @@ export function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password" className="text-[#666666] text-sm font-medium">Password</Label>
               <Input
                 id="password"
                 type="password"

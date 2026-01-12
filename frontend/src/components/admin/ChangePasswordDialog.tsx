@@ -91,7 +91,7 @@ export function ChangePasswordDialog({ username, onClose, onSuccess }: ChangePas
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-600 text-sm">
+            <div className="p-3 bg-[rgba(239,68,68,0.1)] border border-[rgba(239,68,68,0.3)] rounded-full text-[#ef4444] text-sm text-center">
               {error}
             </div>
           )}

@@ -95,8 +95,8 @@ export function UserList({ refreshTrigger, onRefresh }: UserListProps) {
 
   return (
     <>
-      <Card className="shadow-md border-slate-200">
-        <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4 flex flex-row justify-between items-center">
+      <Card>
+        <CardHeader className="border-b border-[rgba(0,0,0,0.1)] pb-4 flex flex-row justify-between items-center">
           <CardTitle className="text-lg flex items-center gap-2">
             <Users className="w-5 h-5" />
             Team Members ({users.length})
@@ -108,41 +108,41 @@ export function UserList({ refreshTrigger, onRefresh }: UserListProps) {
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="p-8 text-center text-slate-500">
-              <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
+            <div className="p-8 text-center text-[#999999]">
+              <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-[#666666]" />
               Loading users...
             </div>
           ) : users.length === 0 ? (
-            <div className="p-8 text-center text-slate-500">
+            <div className="p-8 text-center text-[#999999]">
               No users found.
             </div>
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-[rgba(0,0,0,0.1)]">
               {users.map((user) => (
                 <div
                   key={user.username}
-                  className={`p-4 flex items-center justify-between hover:bg-slate-50 ${
-                    user.username === currentUser?.username ? 'bg-blue-50/50' : ''
+                  className={`p-4 flex items-center justify-between hover:bg-[rgba(51,51,51,0.04)] ${
+                    user.username === currentUser?.username ? 'bg-[rgba(51,51,51,0.06)]' : ''
                   }`}
                 >
                   <div className="flex items-center gap-3">
                     <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                      user.role === 'admin' ? 'bg-amber-100' : 'bg-slate-100'
+                      user.role === 'admin' ? 'bg-[rgba(245,158,11,0.15)]' : 'bg-[rgba(51,51,51,0.08)]'
                     }`}>
                       {user.role === 'admin' ? (
-                        <Shield className="w-5 h-5 text-amber-600" />
+                        <Shield className="w-5 h-5 text-[#f59e0b]" />
                       ) : (
-                        <UserIcon className="w-5 h-5 text-slate-600" />
+                        <UserIcon className="w-5 h-5 text-[#666666]" />
                       )}
                     </div>
                     <div>
-                      <div className="font-medium text-slate-900 flex items-center gap-2">
+                      <div className="font-medium text-[#111111] flex items-center gap-2">
                         {user.username}
                         {user.username === currentUser?.username && (
                           <Badge variant="outline" className="text-xs">You</Badge>
                         )}
                       </div>
-                      <div className="text-xs text-slate-500">
+                      <div className="text-xs text-[#999999]">
                         Created: {formatDate(user.created_at)} | Last login: {formatDate(user.last_login)}
                       </div>
                     </div>
@@ -165,7 +165,7 @@ export function UserList({ refreshTrigger, onRefresh }: UserListProps) {
                         variant="ghost"
                         onClick={() => setDeleteTarget(user.username)}
                       >
-                        <Trash2 className="w-3 h-3 text-red-500" />
+                        <Trash2 className="w-3 h-3 text-[#ef4444]" />
                       </Button>
                     )}
                   </div>
@@ -190,7 +190,7 @@ export function UserList({ refreshTrigger, onRefresh }: UserListProps) {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDelete}
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-[#ef4444] hover:opacity-85"
               disabled={isDeleting}
             >
               {isDeleting ? (

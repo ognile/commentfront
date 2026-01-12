@@ -14,6 +14,7 @@ import { LoginPage } from '@/components/auth/LoginPage'
 import { AdminTab } from '@/components/admin/AdminTab'
 import { API_BASE, WS_BASE } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
+import { PearlBackground } from '@/components/PearlBackground'
 
 interface Session {
   file: string;
@@ -1245,7 +1246,7 @@ function App() {
   // Auth loading state
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="min-h-screen flex items-center justify-center bg-white">
         <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
       </div>
     );
@@ -1257,37 +1258,52 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-8 font-sans">
-      <div className="max-w-[1200px] mx-auto space-y-8">
-        
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight text-slate-900">CommentBot</h1>
-            <p className="text-slate-500 mt-2">Facebook Comment Automation</p>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className={`h-3 w-3 rounded-full ${loading ? 'bg-yellow-500 animate-pulse' : isProcessing ? 'bg-blue-500 animate-pulse' : 'bg-green-500'}`} />
-              <span className="text-sm font-medium text-slate-700">
-                {loading ? 'Loading...' : isProcessing ? 'Processing' : 'Ready'}
-              </span>
-            </div>
-            <div className="h-6 w-px bg-slate-200" />
-            <div className="flex items-center gap-3">
-              <div className="text-right">
-                <p className="text-sm font-medium text-slate-700">{user?.username}</p>
-                <p className="text-xs text-slate-500 capitalize">{user?.role}</p>
-              </div>
-              <Button variant="outline" size="sm" onClick={logout}>
-                <LogOut className="w-4 h-4 mr-1" />
-                Logout
-              </Button>
-            </div>
-          </div>
-        </div>
+    <div className="min-h-screen relative font-sans">
+      {/* Pearl gradient background */}
+      <PearlBackground />
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className={`grid w-full ${user?.role === 'admin' ? 'grid-cols-6' : 'grid-cols-5'} lg:w-[${user?.role === 'admin' ? '900' : '750'}px]`}>
+      {/* Content layer */}
+      <div className="relative z-10 p-6 lg:p-8">
+        <div className="max-w-[1200px] mx-auto space-y-6">
+
+          {/* Header Card */}
+          <Card className="p-5">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                {/* Logo mark */}
+                <div className="w-10 h-10 rounded-full bg-[rgba(51,51,51,0.08)] border border-[rgba(0,0,0,0.1)] flex items-center justify-center">
+                  <Play className="w-5 h-5 text-[#333333]" />
+                </div>
+                <div>
+                  <h1 className="text-lg font-semibold tracking-tight text-[#111111]">CommentBot</h1>
+                  <p className="text-xs text-[#999999]">Automation platform</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                {/* Status indicator */}
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[rgba(0,0,0,0.1)]" style={{ background: loading ? 'rgba(245,158,11,0.1)' : isProcessing ? 'rgba(59,130,246,0.1)' : 'rgba(34,197,94,0.1)' }}>
+                  <div className={`status-dot`} style={{ background: loading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }} />
+                  <span className="text-xs font-medium" style={{ color: loading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }}>
+                    {loading ? 'Loading...' : isProcessing ? 'Processing' : 'Ready'}
+                  </span>
+                </div>
+                {/* User info */}
+                <div className="flex items-center gap-3">
+                  <div className="text-right">
+                    <p className="text-sm font-medium text-[#111111]">{user?.username}</p>
+                    <p className="text-xs text-[#999999] capitalize">{user?.role}</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={logout}>
+                    <LogOut className="w-4 h-4 mr-1" />
+                    Logout
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <TabsList>
             <TabsTrigger value="campaign">Campaign</TabsTrigger>
             <TabsTrigger value="live">Live View</TabsTrigger>
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
@@ -1303,8 +1319,8 @@ function App() {
 
           <TabsContent value="campaign" className="space-y-6 mt-6">
             {/* Add Campaign Form */}
-            <Card className="shadow-md border-slate-200">
-              <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+            <Card className="">
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
                 <CardTitle className="text-lg">Add Campaign to Queue</CardTitle>
               </CardHeader>
               <CardContent className="space-y-6 pt-6">
@@ -1328,7 +1344,7 @@ function App() {
                     className="min-h-[150px] bg-white"
                     disabled={queueRunning}
                   />
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-[#999999]">
                     {sessions.filter(s => s.valid).length} profiles available. Same profile can comment on different posts.
                   </p>
                 </div>
@@ -1348,11 +1364,11 @@ function App() {
                       className="w-24 bg-white"
                       disabled={queueRunning}
                     />
-                    <span className="text-sm text-slate-600">
+                    <span className="text-sm text-[#666666]">
                       minutes ({formatDuration(campaignDuration)})
                     </span>
                   </div>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-[#999999]">
                     Comments will be spread across this time (10 min - 24 hours)
                   </p>
                 </div>
@@ -1365,8 +1381,8 @@ function App() {
             </Card>
 
             {/* Campaign Queue */}
-            <Card className="shadow-md border-slate-200">
-              <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+            <Card className="">
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
                 <CardTitle className="text-lg flex items-center justify-between">
                   <span>
                     Campaign Queue ({campaignQueue.length} campaigns, {campaignQueue.reduce((sum, c) => sum + c.comments.length, 0)} comments)
@@ -1379,32 +1395,32 @@ function App() {
                   )}
                 </CardTitle>
                 {campaignQueue.length > 0 && (
-                  <p className="text-sm text-slate-500">
+                  <p className="text-sm text-[#999999]">
                     Estimated duration: {formatDuration(campaignQueue.reduce((sum, c) => sum + c.durationMinutes, 0))}
                   </p>
                 )}
               </CardHeader>
               <CardContent className="p-0">
                 {campaignQueue.length === 0 ? (
-                  <div className="p-8 text-center text-slate-400">
+                  <div className="p-8 text-center text-[#999999]">
                     <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
                     <p>No campaigns in queue. Add a campaign above to get started.</p>
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-100">
+                  <div className="divide-y divide-[rgba(0,0,0,0.1)]">
                     {campaignQueue.map((campaign, i) => (
                       <div
                         key={campaign.id}
-                        className={`p-4 flex items-center justify-between hover:bg-slate-50 ${
+                        className={`p-4 flex items-center justify-between hover:bg-white ${
                           currentCampaignIndex === i ? 'bg-blue-50 border-l-4 border-blue-500' : ''
                         }`}
                       >
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium text-slate-700">#{i + 1}</span>
-                            <span className="text-sm text-slate-900 truncate">{campaign.url}</span>
+                            <span className="font-medium text-[#333333]">#{i + 1}</span>
+                            <span className="text-sm text-[#111111] truncate">{campaign.url}</span>
                           </div>
-                          <div className="text-sm text-slate-500">
+                          <div className="text-sm text-[#999999]">
                             {campaign.comments.length} comments | {formatDuration(campaign.durationMinutes)}
                           </div>
                           {campaign.status === 'completed' && campaign.successCount !== undefined && (
@@ -1471,8 +1487,8 @@ function App() {
           </TabsContent>
 
           <TabsContent value="live" className="mt-6">
-            <Card className="shadow-md border-slate-200">
-              <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+            <Card className="">
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
                 <CardTitle className="text-lg flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="relative flex h-3 w-3">
@@ -1516,7 +1532,7 @@ function App() {
                       <span className="font-semibold">{liveStatus.currentStep}</span>
                     </div>
                     {liveStatus.totalJobs > 0 && (
-                      <div className="text-xs text-slate-300">
+                      <div className="text-xs text-[#999999]">
                         Job {liveStatus.currentJob} of {liveStatus.totalJobs}
                       </div>
                     )}
@@ -1530,8 +1546,8 @@ function App() {
           </TabsContent>
 
           <TabsContent value="sessions" className="mt-6">
-            <Card className="shadow-md border-slate-200">
-              <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4 flex flex-row justify-between items-center">
+            <Card className="">
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4 flex flex-row justify-between items-center">
                 <CardTitle className="text-lg">Sessions ({sessions.length})</CardTitle>
                 <div className="flex items-center gap-2">
                   <Button
@@ -1555,21 +1571,21 @@ function App() {
               </CardHeader>
               <CardContent className="p-0">
                 {loading ? (
-                  <div className="p-8 text-center text-slate-500">
+                  <div className="p-8 text-center text-[#999999]">
                     <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
                     Loading sessions...
                   </div>
                 ) : sessions.length === 0 ? (
-                  <div className="p-8 text-center text-slate-500">
+                  <div className="p-8 text-center text-[#999999]">
                     No sessions found. Extract sessions from AdsPower first.
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-100">
+                  <div className="divide-y divide-[rgba(0,0,0,0.1)]">
                     {sessions.map((session) => (
-                      <div key={session.file} className="p-4 flex items-center justify-between hover:bg-slate-50">
+                      <div key={session.file} className="p-4 flex items-center justify-between hover:bg-white">
                         <div className="flex items-center gap-3">
                           {/* Profile Picture */}
-                          <div className="w-12 h-12 rounded-full overflow-hidden bg-slate-200 flex-shrink-0">
+                          <div className="w-12 h-12 rounded-full overflow-hidden bg-[rgba(0,0,0,0.1)] flex-shrink-0">
                             {session.profile_picture ? (
                               <img
                                 src={`data:image/png;base64,${session.profile_picture}`}
@@ -1577,19 +1593,19 @@ function App() {
                                 className="w-full h-full object-cover"
                               />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center text-slate-400 text-lg font-medium">
+                              <div className="w-full h-full flex items-center justify-center text-[#999999] text-lg font-medium">
                                 {session.profile_name?.[0]?.toUpperCase() || '?'}
                               </div>
                             )}
                           </div>
                           {/* Profile Info */}
                           <div>
-                            <div className="font-medium text-slate-900">{session.profile_name}</div>
-                            <div className="text-sm text-slate-500">
+                            <div className="font-medium text-[#111111]">{session.profile_name}</div>
+                            <div className="text-sm text-[#999999]">
                               User: {session.user_id || 'Unknown'} • {session.extracted_at.split('T')[0]}
                             </div>
                             {session.proxy_masked ? (
-                               <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                               <div className="text-xs text-[#999999] mt-1 flex items-center gap-1">
                                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
                                  <span>Proxy: {session.proxy_masked}</span>
                                  {session.proxy_source === "env" && (
@@ -1646,8 +1662,8 @@ function App() {
 
           <TabsContent value="credentials" className="mt-6">
             {/* Bulk Import Section */}
-            <Card className="shadow-md border-slate-200 mb-6">
-              <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+            <Card className=" mb-6">
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Upload className="w-4 h-4" />
                   Bulk Import
@@ -1668,15 +1684,15 @@ function App() {
                   />
                   {isImporting && <Loader2 className="w-5 h-5 animate-spin" />}
                 </div>
-                <p className="text-xs text-slate-500 mt-2">
+                <p className="text-xs text-[#999999] mt-2">
                   Format: uid:password:2fa_secret (one per line)
                 </p>
               </CardContent>
             </Card>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <Card className="shadow-md border-slate-200">
-                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+              <Card className="">
+                <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
                   <CardTitle className="text-lg flex items-center gap-2">
                     <Key className="w-4 h-4" />
                     Add Credential
@@ -1710,7 +1726,7 @@ function App() {
                       placeholder="JBSWY3DPEHPK3PXP"
                       className="bg-white"
                     />
-                    <p className="text-xs text-slate-500">Base32 secret from Google Authenticator</p>
+                    <p className="text-xs text-[#999999]">Base32 secret from Google Authenticator</p>
                   </div>
                   <div className="space-y-2">
                     <Label>Profile Name (optional)</Label>
@@ -1728,8 +1744,8 @@ function App() {
                 </CardContent>
               </Card>
 
-              <Card className="shadow-md border-slate-200">
-                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+              <Card className="">
+                <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       {eligibleCredentials.length > 0 && (
@@ -1766,17 +1782,17 @@ function App() {
                 </CardHeader>
                 <CardContent className="p-0">
                   {credentials.length === 0 ? (
-                    <div className="p-8 text-center text-slate-500">
+                    <div className="p-8 text-center text-[#999999]">
                       No credentials saved yet.
                     </div>
                   ) : (
-                    <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
+                    <div className="divide-y divide-[rgba(0,0,0,0.1)] max-h-[500px] overflow-y-auto">
                       {credentials.map((cred) => {
                         const isEligible = cred.has_secret && !cred.session_connected;
                         const isSelected = selectedCredentials.has(cred.uid);
 
                         return (
-                          <div key={cred.uid} className="p-4 hover:bg-slate-50">
+                          <div key={cred.uid} className="p-4 hover:bg-white">
                             <div className="flex items-start gap-3">
                               {/* Checkbox - only show for eligible credentials */}
                               {isEligible && (
@@ -1791,7 +1807,7 @@ function App() {
                               {/* Credential content */}
                               <div className="flex-1">
                                 <div className="flex items-center justify-between mb-2">
-                                  <div className="font-medium text-slate-900">{cred.uid}</div>
+                                  <div className="font-medium text-[#111111]">{cred.uid}</div>
                                   <div className="flex items-center gap-2">
                                     <Badge variant={cred.has_secret ? 'default' : 'secondary'}>
                                       {cred.has_secret ? '2FA' : 'No 2FA'}
@@ -1811,7 +1827,7 @@ function App() {
                                     Session: {cred.session_profile_name}
                                   </div>
                                 ) : cred.profile_name ? (
-                                  <div className="text-xs text-slate-500 mb-2">Profile: {cred.profile_name}</div>
+                                  <div className="text-xs text-[#999999] mb-2">Profile: {cred.profile_name}</div>
                                 ) : null}
                                 {/* Session creation status or button */}
                                 <div className="mb-2">
@@ -1850,13 +1866,13 @@ function App() {
                                   <div className="flex items-center gap-2">
                                     {otpData[cred.uid]?.valid ? (
                                       <>
-                                        <div className="bg-slate-900 text-white px-3 py-1 rounded font-mono text-lg">
+                                        <div className="bg-[#333333] text-white px-3 py-1 rounded font-mono text-lg">
                                           {otpData[cred.uid].code}
                                         </div>
                                         <Button size="sm" variant="outline" onClick={() => copyOTP(otpData[cred.uid].code)}>
                                           <Copy className="w-3 h-3" />
                                         </Button>
-                                        <span className="text-xs text-slate-500">
+                                        <span className="text-xs text-[#999999]">
                                           {otpData[cred.uid].remaining_seconds}s
                                         </span>
                                       </>
@@ -1881,8 +1897,8 @@ function App() {
 
           <TabsContent value="proxies" className="mt-6">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <Card className="shadow-md border-slate-200">
-                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4">
+              <Card className="">
+                <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
                   <CardTitle className="text-lg flex items-center gap-2">
                     <Globe className="w-4 h-4" />
                     Add Proxy
@@ -1906,7 +1922,7 @@ function App() {
                       placeholder="http://user:pass@host:port"
                       className="bg-white"
                     />
-                    <p className="text-xs text-slate-500">Format: http://username:password@host:port</p>
+                    <p className="text-xs text-[#999999]">Format: http://username:password@host:port</p>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
@@ -1914,7 +1930,7 @@ function App() {
                       <select
                         value={newProxyType}
                         onChange={(e) => setNewProxyType(e.target.value)}
-                        className="w-full h-10 px-3 border border-slate-200 rounded-md bg-white text-sm"
+                        className="w-full h-10 px-3 border border-[rgba(0,0,0,0.1)] rounded-md bg-white text-sm"
                       >
                         <option value="mobile">Mobile</option>
                         <option value="residential">Residential</option>
@@ -1938,8 +1954,8 @@ function App() {
                 </CardContent>
               </Card>
 
-              <Card className="shadow-md border-slate-200">
-                <CardHeader className="bg-slate-100/50 border-b border-slate-100 pb-4 flex flex-row justify-between items-center">
+              <Card className="">
+                <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4 flex flex-row justify-between items-center">
                   <CardTitle className="text-lg">Saved Proxies ({proxies.length})</CardTitle>
                   <Button size="sm" variant="outline" onClick={fetchProxies}>
                     <RefreshCw className="w-4 h-4 mr-2" />
@@ -1948,16 +1964,16 @@ function App() {
                 </CardHeader>
                 <CardContent className="p-0">
                   {proxies.length === 0 ? (
-                    <div className="p-8 text-center text-slate-500">
+                    <div className="p-8 text-center text-[#999999]">
                       No proxies configured yet.
                     </div>
                   ) : (
-                    <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
+                    <div className="divide-y divide-[rgba(0,0,0,0.1)] max-h-[500px] overflow-y-auto">
                       {proxies.map((proxy) => (
-                        <div key={proxy.id} className={`p-4 hover:bg-slate-50 ${proxy.is_system ? 'bg-green-50/50' : ''}`}>
+                        <div key={proxy.id} className={`p-4 hover:bg-white ${proxy.is_system ? 'bg-green-50/50' : ''}`}>
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-center gap-2">
-                              <span className="font-medium text-slate-900">{proxy.name}</span>
+                              <span className="font-medium text-[#111111]">{proxy.name}</span>
                               {proxy.is_system && (
                                 <Badge variant="secondary" className="text-[10px]">System</Badge>
                               )}
@@ -1993,7 +2009,7 @@ function App() {
                               )}
                             </div>
                           </div>
-                          <div className="text-xs text-slate-500 space-y-1">
+                          <div className="text-xs text-[#999999] space-y-1">
                             <div>URL: {proxy.url_masked}</div>
                             <div className="flex items-center gap-4">
                               <span>Type: {proxy.type}</span>
@@ -2029,6 +2045,7 @@ function App() {
           )}
         </Tabs>
 
+        </div>
       </div>
 
       {/* Remote Control Modal */}
@@ -2036,7 +2053,7 @@ function App() {
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col overflow-hidden">
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-2 border-b bg-slate-50 shrink-0">
+            <div className="flex items-center justify-between px-4 py-2 border-b bg-white shrink-0">
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2">
                   <div className={`h-3 w-3 rounded-full ${
@@ -2048,8 +2065,8 @@ function App() {
                     {remoteConnected ? 'Connected' : remoteConnecting ? 'Connecting...' : 'Disconnected'}
                   </span>
                 </div>
-                <div className="text-sm text-slate-500">
-                  Session: <span className="font-medium text-slate-900">{remoteSession.profile_name}</span>
+                <div className="text-sm text-[#999999]">
+                  Session: <span className="font-medium text-[#111111]">{remoteSession.profile_name}</span>
                 </div>
               </div>
               <Button variant="ghost" size="sm" onClick={closeRemoteModal}>
@@ -2059,13 +2076,13 @@ function App() {
 
             {/* URL Bar */}
             <div className="flex items-center gap-2 px-4 py-2 border-b bg-white shrink-0">
-              <Globe className="w-4 h-4 text-slate-400" />
+              <Globe className="w-4 h-4 text-[#999999]" />
               <Input
                 value={remoteUrlInput}
                 onChange={(e) => setRemoteUrlInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleRemoteNavigate()}
                 placeholder="Enter URL..."
-                className="flex-1 bg-slate-50"
+                className="flex-1 bg-white"
               />
               <Button onClick={handleRemoteNavigate} disabled={!remoteConnected}>
                 Go
@@ -2075,7 +2092,7 @@ function App() {
             {/* Main Content */}
             <div className="flex-1 flex overflow-hidden min-h-0">
               {/* Screenshot Area */}
-              <div className="flex-1 p-2 flex items-center justify-center bg-slate-900 min-h-0">
+              <div className="flex-1 p-2 flex items-center justify-center bg-[#333333] min-h-0">
                 <div
                   ref={screenshotContainerRef}
                   className="relative cursor-crosshair outline-none h-full flex items-center justify-center"
@@ -2096,7 +2113,7 @@ function App() {
                       draggable={false}
                     />
                   ) : (
-                    <div className="flex items-center justify-center text-slate-400" style={{ width: 250, height: 500 }}>
+                    <div className="flex items-center justify-center text-[#999999]" style={{ width: 250, height: 500 }}>
                       <div className="text-center">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
                         <p>Waiting for browser...</p>
@@ -2116,7 +2133,7 @@ function App() {
               </div>
 
               {/* Right Sidebar */}
-              <div className="w-64 border-l bg-slate-50 flex flex-col shrink-0">
+              <div className="w-64 border-l bg-white flex flex-col shrink-0">
                 {/* Image Upload Section */}
                 <div className="p-3 border-b">
                   <div className="text-xs font-medium mb-2">Profile Picture Upload</div>
@@ -2166,7 +2183,7 @@ function App() {
                         className={`text-xs p-2 rounded ${
                           entry.status === 'success' ? 'bg-green-50 text-green-700' :
                           entry.status === 'failed' ? 'bg-red-50 text-red-700' :
-                          'bg-slate-100 text-slate-600'
+                          'bg-[rgba(51,51,51,0.08)] text-[#666666]'
                         }`}
                       >
                         <div className="flex items-center justify-between">
@@ -2181,7 +2198,7 @@ function App() {
                       </div>
                     ))}
                     {actionLog.length === 0 && (
-                      <div className="text-center text-slate-400 py-8 text-sm">
+                      <div className="text-center text-[#999999] py-8 text-sm">
                         No actions yet. Click on the browser to interact.
                       </div>
                     )}
@@ -2191,11 +2208,11 @@ function App() {
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-between px-4 py-1 border-t bg-slate-50 text-xs text-slate-500 shrink-0">
+            <div className="flex items-center justify-between px-4 py-1 border-t bg-white text-xs text-[#999999] shrink-0">
               <div className="flex items-center gap-4">
                 <span>Viewport: 393x873 (iPhone 12 Pro)</span>
                 <span>|</span>
-                <span className={remoteConnected ? 'text-green-600' : 'text-slate-400'}>
+                <span className={remoteConnected ? 'text-green-600' : 'text-[#999999]'}>
                   {remoteConnected ? 'Keyboard capture: ON (click browser area first)' : 'Keyboard capture: OFF'}
                 </span>
               </div>
