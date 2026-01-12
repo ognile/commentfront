@@ -293,6 +293,7 @@ class CampaignQueueManager:
 
     def _clear_processor_state(self):
         """Clear processor state after campaign completes."""
+        self.processor_state["is_running"] = False
         self.processor_state["current_campaign_id"] = None
         self.processor_state["last_processed_at"] = datetime.utcnow().isoformat()
         self.save()

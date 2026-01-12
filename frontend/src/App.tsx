@@ -285,6 +285,7 @@ function App() {
 
         ws.onopen = () => {
           console.log('WebSocket connected');
+          reconnectAttemptRef.current = 0; // Reset reconnect attempts on successful connection
           setLiveStatus(prev => ({ ...prev, connected: true }));
         };
 
@@ -574,8 +575,11 @@ function App() {
         ws.onclose = () => {
           console.log('WebSocket disconnected');
           setLiveStatus(prev => ({ ...prev, connected: false }));
-          // Reconnect after 3 seconds
-          setTimeout(connectWebSocket, 3000);
+          // Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
+          reconnectAttemptRef.current++;
+          console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptRef.current})`);
+          setTimeout(connectWebSocket, delay);
         };
 
         ws.onerror = (error) => {
@@ -585,7 +589,9 @@ function App() {
         wsRef.current = ws;
       } catch (error) {
         console.error('Failed to connect WebSocket:', error);
-        setTimeout(connectWebSocket, 3000);
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
+        reconnectAttemptRef.current++;
+        setTimeout(connectWebSocket, delay);
       }
     };
 
@@ -1702,13 +1708,18 @@ function App() {
                 </div>
               </div>
               <div className="flex items-center gap-4">
-                {/* Status indicator */}
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[rgba(0,0,0,0.1)]" style={{ background: loading ? 'rgba(245,158,11,0.1)' : queueState.processor_running ? 'rgba(59,130,246,0.1)' : 'rgba(34,197,94,0.1)' }}>
-                  <div className={`status-dot`} style={{ background: loading ? '#f59e0b' : queueState.processor_running ? '#3b82f6' : '#22c55e' }} />
-                  <span className="text-xs font-medium" style={{ color: loading ? '#f59e0b' : queueState.processor_running ? '#3b82f6' : '#22c55e' }}>
-                    {loading ? 'Loading...' : queueState.processor_running ? 'Processing' : 'Ready'}
-                  </span>
-                </div>
+                {/* Status indicator - derive from actual queue state, not just processor_running flag */}
+                {(() => {
+                  const isProcessing = queueState.pending.some(c => c.status === 'processing');
+                  return (
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[rgba(0,0,0,0.1)]" style={{ background: loading ? 'rgba(245,158,11,0.1)' : isProcessing ? 'rgba(59,130,246,0.1)' : 'rgba(34,197,94,0.1)' }}>
+                      <div className={`status-dot`} style={{ background: loading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }} />
+                      <span className="text-xs font-medium" style={{ color: loading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }}>
+                        {loading ? 'Loading...' : isProcessing ? 'Processing' : 'Ready'}
+                      </span>
+                    </div>
+                  );
+                })()}
                 {/* User info */}
                 <div className="flex items-center gap-3">
                   <div className="text-right">
