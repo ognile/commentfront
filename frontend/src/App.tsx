@@ -1936,7 +1936,7 @@ function App() {
                               allTags={allTags}
                               selectedTags={session.tags || []}
                               onTagAdd={(tag) => updateSessionTags(session.profile_name, [...(session.tags || []), tag])}
-                              placeholder="+"
+                              placeholder=""
                               size="sm"
                               allowCreate={true}
                               showSelectedAsBadges={false}
