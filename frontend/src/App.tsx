@@ -34,11 +34,28 @@ interface QueuedCampaign {
   id: string;
   url: string;
   comments: string[];
-  durationMinutes: number;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  successCount?: number;
-  totalCount?: number;
-  filterTags?: string[];  // Tags to filter sessions (AND logic)
+  duration_minutes: number;
+  filter_tags?: string[];
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  created_at: string;
+  created_by: string;
+  started_at?: string;
+  completed_at?: string;
+  success_count?: number;
+  total_count?: number;
+  error?: string;
+  current_job?: number;
+  total_jobs?: number;
+  current_profile?: string;
+}
+
+interface QueueState {
+  processor_running: boolean;
+  current_campaign_id: string | null;
+  pending_count: number;
+  max_pending: number;
+  pending: QueuedCampaign[];
+  history: QueuedCampaign[];
 }
 
 interface LiveStatus {
@@ -155,14 +172,21 @@ function App() {
   const [sessionFilterTags, setSessionFilterTags] = useState<string[]>([]);
   const [campaignFilterTags, setCampaignFilterTags] = useState<string[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
+  // isProcessing removed - now using queueState.processor_running instead
   const [loading, setLoading] = useState(true);
   const [campaignDuration, setCampaignDuration] = useState(30); // Duration in minutes (10-1440)
 
-  // Campaign queue state
-  const [campaignQueue, setCampaignQueue] = useState<QueuedCampaign[]>([]);
-  const [queueRunning, setQueueRunning] = useState(false);
-  const [currentCampaignIndex, setCurrentCampaignIndex] = useState(-1);
+  // Campaign queue state - synced with backend
+  const [queueState, setQueueState] = useState<QueueState>({
+    processor_running: false,
+    current_campaign_id: null,
+    pending_count: 0,
+    max_pending: 50,
+    pending: [],
+    history: []
+  });
+  const [queueLoading, setQueueLoading] = useState(true);
+  const [addingToQueue, setAddingToQueue] = useState(false);
 
   const [newUid, setNewUid] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -272,44 +296,140 @@ function App() {
                   currentStep: `Done: ${update.data.success}/${update.data.total} successful`
                 }));
                 break;
-              // Queue events
-              case 'queue_start':
-                setQueueRunning(true);
-                setCurrentCampaignIndex(0);
-                setLiveStatus(prev => ({
+
+              // =============================================
+              // Persistent Queue Events (server-synced)
+              // =============================================
+
+              case 'queue_state_sync':
+                // Full state sync on connect or reconnect
+                setQueueState(update.data);
+                setQueueLoading(false);
+                break;
+
+              case 'queue_campaign_added':
+                // New campaign added by any user
+                setQueueState(prev => ({
                   ...prev,
-                  currentStep: `Queue started: ${update.data.total_campaigns} campaigns`
+                  pending_count: prev.pending_count + 1,
+                  pending: [...prev.pending, update.data]
                 }));
                 break;
+
+              case 'queue_campaign_removed':
+                // Campaign removed
+                setQueueState(prev => ({
+                  ...prev,
+                  pending_count: Math.max(0, prev.pending_count - 1),
+                  pending: prev.pending.filter(c => c.id !== update.data.campaign_id)
+                }));
+                break;
+
               case 'queue_campaign_start':
-                setCurrentCampaignIndex(update.data.campaign_index);
-                setCampaignQueue(prev => prev.map((c, i) =>
-                  i === update.data.campaign_index ? { ...c, status: 'running' } : c
-                ));
+                // Campaign started processing
+                setQueueState(prev => ({
+                  ...prev,
+                  processor_running: true,
+                  current_campaign_id: update.data.campaign_id,
+                  pending: prev.pending.map(c =>
+                    c.id === update.data.campaign_id
+                      ? { ...c, status: 'processing' as const, started_at: new Date().toISOString() }
+                      : c
+                  )
+                }));
                 setLiveStatus(prev => ({
                   ...prev,
-                  currentStep: `Campaign ${update.data.campaign_index + 1}: ${update.data.url}`
+                  currentStep: `Processing: ${update.data.url}`,
+                  totalJobs: update.data.total_comments || 0,
+                  currentJob: 0
                 }));
                 break;
+
               case 'queue_campaign_complete':
-                setCampaignQueue(prev => prev.map(c =>
-                  c.id === update.data.campaign_id
-                    ? {
-                        ...c,
-                        status: update.data.success > 0 ? 'completed' : 'failed',
-                        successCount: update.data.success,
-                        totalCount: update.data.total
-                      }
-                    : c
-                ));
-                break;
-              case 'queue_complete':
-                setQueueRunning(false);
-                setCurrentCampaignIndex(-1);
+                // Campaign completed - move to history
+                setQueueState(prev => {
+                  const completed = prev.pending.find(c => c.id === update.data.campaign_id);
+                  if (!completed) return prev;
+
+                  const updatedCampaign: QueuedCampaign = {
+                    ...completed,
+                    status: 'completed',
+                    success_count: update.data.success,
+                    total_count: update.data.total,
+                    completed_at: new Date().toISOString()
+                  };
+
+                  return {
+                    ...prev,
+                    processor_running: false,
+                    current_campaign_id: null,
+                    pending_count: Math.max(0, prev.pending_count - 1),
+                    pending: prev.pending.filter(c => c.id !== update.data.campaign_id),
+                    history: [updatedCampaign, ...prev.history].slice(0, 100)
+                  };
+                });
                 setLiveStatus(prev => ({
                   ...prev,
-                  currentStep: 'Queue complete'
+                  currentStep: `Completed: ${update.data.success}/${update.data.total} successful`
                 }));
+                break;
+
+              case 'queue_campaign_failed':
+                // Campaign failed
+                setQueueState(prev => {
+                  const failed = prev.pending.find(c => c.id === update.data.campaign_id);
+                  if (!failed) return prev;
+
+                  const updatedCampaign: QueuedCampaign = {
+                    ...failed,
+                    status: 'failed',
+                    error: update.data.error,
+                    completed_at: new Date().toISOString()
+                  };
+
+                  return {
+                    ...prev,
+                    processor_running: false,
+                    current_campaign_id: null,
+                    pending_count: Math.max(0, prev.pending_count - 1),
+                    pending: prev.pending.filter(c => c.id !== update.data.campaign_id),
+                    history: [updatedCampaign, ...prev.history].slice(0, 100)
+                  };
+                });
+                setLiveStatus(prev => ({
+                  ...prev,
+                  currentStep: `Failed: ${update.data.error}`
+                }));
+                toast.error(`Campaign failed: ${update.data.error}`);
+                break;
+
+              case 'queue_campaign_cancelled':
+                // Campaign cancelled
+                setQueueState(prev => {
+                  const cancelled = prev.pending.find(c => c.id === update.data.campaign_id);
+                  if (!cancelled) return prev;
+
+                  const updatedCampaign: QueuedCampaign = {
+                    ...cancelled,
+                    status: 'cancelled',
+                    completed_at: new Date().toISOString()
+                  };
+
+                  return {
+                    ...prev,
+                    processor_running: prev.current_campaign_id === update.data.campaign_id ? false : prev.processor_running,
+                    current_campaign_id: prev.current_campaign_id === update.data.campaign_id ? null : prev.current_campaign_id,
+                    pending_count: Math.max(0, prev.pending_count - 1),
+                    pending: prev.pending.filter(c => c.id !== update.data.campaign_id),
+                    history: [updatedCampaign, ...prev.history].slice(0, 100)
+                  };
+                });
+                break;
+
+              // Legacy queue events (for backward compatibility during transition)
+              case 'queue_start':
+              case 'queue_complete':
+                // Ignored - handled by new queue_campaign_* events
                 break;
               case 'session_create_start':
                 setSessionCreateStatus(prev => ({
@@ -460,11 +580,26 @@ function App() {
     }
   };
 
+  const fetchQueue = async () => {
+    try {
+      setQueueLoading(true);
+      const res = await fetch(`${API_BASE}/queue`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch queue');
+      const data = await res.json();
+      setQueueState(data);
+    } catch (error) {
+      console.error("Failed to fetch queue:", error);
+    } finally {
+      setQueueLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchSessions();
     fetchCredentials();
     fetchProxies();
     fetchTags();
+    fetchQueue();
   }, []);
 
   // Filter sessions by selected tags (AND logic)
@@ -475,8 +610,8 @@ function App() {
     );
   }, [sessions, sessionFilterTags]);
 
-  // Add campaign to queue with per-URL validation
-  const addToQueue = () => {
+  // Add campaign to queue (API call)
+  const addToQueue = async () => {
     if (!url || !comments) {
       toast.error('Please enter a URL and comments');
       return;
@@ -485,6 +620,12 @@ function App() {
     const commentList = comments.split('\n').filter(c => c.trim());
     if (commentList.length === 0) {
       toast.error('Please enter at least one comment');
+      return;
+    }
+
+    // Check queue limit
+    if (queueState.pending_count >= queueState.max_pending) {
+      toast.error(`Queue is full (${queueState.pending_count}/${queueState.max_pending}). Wait for campaigns to complete.`);
       return;
     }
 
@@ -504,8 +645,8 @@ function App() {
 
     const normalizedUrl = normalizeUrl(url);
 
-    // Count existing comments for this URL in queue
-    const existingForUrl = campaignQueue
+    // Count existing comments for this URL in pending queue
+    const existingForUrl = queueState.pending
       .filter(c => normalizeUrl(c.url) === normalizedUrl)
       .reduce((sum, c) => sum + c.comments.length, 0);
 
@@ -521,99 +662,74 @@ function App() {
       return;
     }
 
-    // Add to queue with optional tag filter
-    const newCampaign: QueuedCampaign = {
-      id: crypto.randomUUID(),
-      url,
-      comments: commentList,
-      durationMinutes: campaignDuration,
-      status: 'pending',
-      filterTags: campaignFilterTags.length > 0 ? [...campaignFilterTags] : undefined
-    };
-
-    setCampaignQueue([...campaignQueue, newCampaign]);
-
-    // Clear form for next entry
-    setUrl('');
-    setComments('');
-
-    toast.success(`Added campaign with ${commentList.length} comments to queue${campaignFilterTags.length > 0 ? ` (filtered by: ${campaignFilterTags.join(', ')})` : ''}`);
-  };
-
-  // Remove campaign from queue
-  const removeFromQueue = (campaignId: string) => {
-    setCampaignQueue(campaignQueue.filter(c => c.id !== campaignId));
-  };
-
-  // Clear entire queue
-  const clearQueue = () => {
-    if (queueRunning) {
-      toast.error('Cannot clear queue while running');
-      return;
-    }
-    setCampaignQueue([]);
-  };
-
-  // Run all campaigns in queue sequentially
-  const runQueue = async () => {
-    if (campaignQueue.length === 0) {
-      toast.error('Queue is empty');
-      return;
-    }
-
-    setQueueRunning(true);
-    setIsProcessing(true);
+    setAddingToQueue(true);
 
     try {
-      // Get filter_tags from the first campaign that has them
-      const filterTags = campaignQueue.find(c => c.filterTags && c.filterTags.length > 0)?.filterTags || null;
-
-      const res = await fetch(`${API_BASE}/campaign/queue`, {
+      const res = await fetch(`${API_BASE}/queue`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
-          campaigns: campaignQueue.map(c => ({
-            id: c.id,
-            url: c.url,
-            comments: c.comments,
-            duration_minutes: c.durationMinutes
-          })),
-          filter_tags: filterTags
+          url,
+          comments: commentList,
+          duration_minutes: campaignDuration,
+          filter_tags: campaignFilterTags.length > 0 ? campaignFilterTags : null
         })
       });
 
       if (!res.ok) {
         const error = await res.json();
-        throw new Error(error.detail || 'Failed to run queue');
+        throw new Error(error.detail || 'Failed to add to queue');
       }
 
-      const result = await res.json();
+      // Clear form - state update comes via WebSocket
+      setUrl('');
+      setComments('');
 
-      // Update campaign statuses from result
-      if (result.campaigns) {
-        setCampaignQueue(prev => prev.map(campaign => {
-          const campaignResult = result.campaigns.find((r: {campaign_id: string}) => r.campaign_id === campaign.id);
-          if (campaignResult) {
-            return {
-              ...campaign,
-              status: campaignResult.success > 0 ? 'completed' : 'failed',
-              successCount: campaignResult.success,
-              totalCount: campaignResult.total
-            };
-          }
-          return campaign;
-        }));
-      }
-
-      const totalSuccess = result.campaigns?.reduce((sum: number, c: {success: number}) => sum + c.success, 0) || 0;
-      const totalComments = result.campaigns?.reduce((sum: number, c: {total: number}) => sum + c.total, 0) || 0;
-      toast.success(`Queue complete: ${totalSuccess}/${totalComments} comments posted across ${campaignQueue.length} campaigns`);
-    } catch (error) {
-      toast.error(`Error: ${error}`);
+      toast.success(`Added campaign with ${commentList.length} comments to queue${campaignFilterTags.length > 0 ? ` (filtered by: ${campaignFilterTags.join(', ')})` : ''}`);
+    } catch (error: unknown) {
+      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
-      setQueueRunning(false);
-      setIsProcessing(false);
-      setCurrentCampaignIndex(-1);
+      setAddingToQueue(false);
+    }
+  };
+
+  // Remove campaign from queue (API call)
+  const removeFromQueue = async (campaignId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/queue/${campaignId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || 'Failed to remove from queue');
+      }
+
+      toast.success('Campaign removed from queue');
+    } catch (error: unknown) {
+      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  // Cancel campaign (API call)
+  const cancelCampaign = async (campaignId: string) => {
+    if (!confirm('Cancel this campaign?')) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/queue/${campaignId}/cancel`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || 'Failed to cancel campaign');
+      }
+
+      toast.success('Campaign cancelled');
+    } catch (error: unknown) {
+      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -1435,10 +1551,10 @@ function App() {
               </div>
               <div className="flex items-center gap-4">
                 {/* Status indicator */}
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[rgba(0,0,0,0.1)]" style={{ background: loading ? 'rgba(245,158,11,0.1)' : isProcessing ? 'rgba(59,130,246,0.1)' : 'rgba(34,197,94,0.1)' }}>
-                  <div className={`status-dot`} style={{ background: loading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }} />
-                  <span className="text-xs font-medium" style={{ color: loading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }}>
-                    {loading ? 'Loading...' : isProcessing ? 'Processing' : 'Ready'}
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[rgba(0,0,0,0.1)]" style={{ background: loading ? 'rgba(245,158,11,0.1)' : queueState.processor_running ? 'rgba(59,130,246,0.1)' : 'rgba(34,197,94,0.1)' }}>
+                  <div className={`status-dot`} style={{ background: loading ? '#f59e0b' : queueState.processor_running ? '#3b82f6' : '#22c55e' }} />
+                  <span className="text-xs font-medium" style={{ color: loading ? '#f59e0b' : queueState.processor_running ? '#3b82f6' : '#22c55e' }}>
+                    {loading ? 'Loading...' : queueState.processor_running ? 'Processing' : 'Ready'}
                   </span>
                 </div>
                 {/* User info */}
@@ -1485,7 +1601,7 @@ function App() {
                     onChange={(e) => setUrl(e.target.value)}
                     placeholder="https://www.facebook.com/..."
                     className="bg-white"
-                    disabled={queueRunning}
+                    disabled={queueState.processor_running}
                   />
                 </div>
 
@@ -1496,7 +1612,7 @@ function App() {
                     onChange={(e) => setComments(e.target.value)}
                     placeholder="Comment 1&#10;Comment 2&#10;Comment 3"
                     className="min-h-[150px] bg-white"
-                    disabled={queueRunning}
+                    disabled={queueState.processor_running}
                   />
                   <p className="text-xs text-[#999999]">
                     {sessions.filter(s => s.valid).length} profiles available. Same profile can comment on different posts.
@@ -1516,7 +1632,7 @@ function App() {
                         setCampaignDuration(val);
                       }}
                       className="w-24 bg-white"
-                      disabled={queueRunning}
+                      disabled={queueState.processor_running}
                     />
                     <span className="text-sm text-[#666666]">
                       minutes ({formatDuration(campaignDuration)})
@@ -1539,14 +1655,14 @@ function App() {
                       placeholder="Search tags..."
                       showSelectedAsBadges={true}
                       allowCreate={false}
-                      disabled={queueRunning}
+                      disabled={queueState.processor_running}
                     />
                     {campaignFilterTags.length > 0 && (
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => setCampaignFilterTags([])}
-                        disabled={queueRunning}
+                        disabled={queueState.processor_running}
                       >
                         Clear
                       </Button>
@@ -1559,46 +1675,63 @@ function App() {
                   </p>
                 </div>
 
-                <Button onClick={addToQueue} disabled={!url || !comments || queueRunning}>
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add to Queue
+                <Button
+                  onClick={addToQueue}
+                  disabled={!url || !comments || addingToQueue || queueState.pending_count >= queueState.max_pending}
+                >
+                  {addingToQueue ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Plus className="w-4 h-4 mr-2" />
+                  )}
+                  {addingToQueue ? 'Adding...' : 'Add to Queue'}
                 </Button>
               </CardContent>
             </Card>
 
-            {/* Campaign Queue */}
+            {/* Campaign Queue - Server Synced */}
             <Card className="">
               <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
                 <CardTitle className="text-lg flex items-center justify-between">
-                  <span>
-                    Campaign Queue ({campaignQueue.length} campaigns, {campaignQueue.reduce((sum, c) => sum + c.comments.length, 0)} comments)
+                  <span className="flex items-center gap-2">
+                    Campaign Queue
+                    <Badge variant="outline" className="ml-2 font-normal">
+                      {queueState.pending_count}/{queueState.max_pending}
+                    </Badge>
                   </span>
-                  {campaignQueue.length > 0 && !queueRunning && (
-                    <Button variant="ghost" size="sm" onClick={clearQueue}>
-                      <Trash2 className="w-4 h-4 mr-1" />
-                      Clear
-                    </Button>
+                  {queueState.processor_running && (
+                    <Badge className="bg-blue-500 animate-pulse">
+                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                      Processing
+                    </Badge>
                   )}
                 </CardTitle>
-                {campaignQueue.length > 0 && (
+                {queueState.pending.length > 0 && (
                   <p className="text-sm text-[#999999]">
-                    Estimated duration: {formatDuration(campaignQueue.reduce((sum, c) => sum + c.durationMinutes, 0))}
+                    {queueState.pending.reduce((sum, c) => sum + c.comments.length, 0)} comments queued |
+                    Est. {formatDuration(queueState.pending.reduce((sum, c) => sum + c.duration_minutes, 0))}
                   </p>
                 )}
               </CardHeader>
               <CardContent className="p-0">
-                {campaignQueue.length === 0 ? (
+                {queueLoading ? (
+                  <div className="p-8 text-center text-[#999999]">
+                    <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin opacity-50" />
+                    <p>Loading queue...</p>
+                  </div>
+                ) : queueState.pending.length === 0 ? (
                   <div className="p-8 text-center text-[#999999]">
                     <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
                     <p>No campaigns in queue. Add a campaign above to get started.</p>
+                    <p className="text-xs mt-2">Campaigns run automatically in the background</p>
                   </div>
                 ) : (
                   <div className="divide-y divide-[rgba(0,0,0,0.1)]">
-                    {campaignQueue.map((campaign, i) => (
+                    {queueState.pending.map((campaign, i) => (
                       <div
                         key={campaign.id}
-                        className={`p-4 flex items-center justify-between hover:bg-white ${
-                          currentCampaignIndex === i ? 'bg-blue-50 border-l-4 border-blue-500' : ''
+                        className={`p-4 flex items-center justify-between transition-all duration-200 hover:bg-white ${
+                          campaign.status === 'processing' ? 'bg-blue-50 border-l-4 border-blue-500' : ''
                         }`}
                       >
                         <div className="flex-1 min-w-0">
@@ -1610,35 +1743,59 @@ function App() {
                             </div>
                           </div>
                           <div className="text-sm text-[#999999]">
-                            {campaign.comments.length} comments | {formatDuration(campaign.durationMinutes)}
+                            {campaign.comments.length} comments | {formatDuration(campaign.duration_minutes)}
+                            {campaign.filter_tags && campaign.filter_tags.length > 0 && (
+                              <span className="ml-2">| Tags: {campaign.filter_tags.join(', ')}</span>
+                            )}
                           </div>
-                          {campaign.status === 'completed' && campaign.successCount !== undefined && (
-                            <div className="text-xs text-green-600">
-                              {campaign.successCount}/{campaign.totalCount} successful
+                          {campaign.status === 'processing' && campaign.current_job !== undefined && campaign.total_jobs !== undefined && (
+                            <div className="mt-2">
+                              <div className="flex items-center gap-2 text-xs text-blue-600">
+                                <span>Job {campaign.current_job}/{campaign.total_jobs}</span>
+                                {campaign.current_profile && <span>({campaign.current_profile})</span>}
+                              </div>
+                              <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1 overflow-hidden">
+                                <div
+                                  className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                                  style={{ width: `${(campaign.current_job / campaign.total_jobs) * 100}%` }}
+                                />
+                              </div>
                             </div>
                           )}
+                          <div className="text-xs text-[#bbbbbb] mt-1">
+                            Added by {campaign.created_by}
+                          </div>
                         </div>
                         <div className="flex items-center gap-2">
                           <Badge
                             variant={
-                              campaign.status === 'completed' ? 'default' :
-                              campaign.status === 'failed' ? 'destructive' :
-                              campaign.status === 'running' ? 'default' :
+                              campaign.status === 'processing' ? 'default' :
                               'secondary'
                             }
-                            className={campaign.status === 'running' ? 'bg-blue-500' : ''}
+                            className={campaign.status === 'processing' ? 'bg-blue-500' : ''}
                           >
-                            {campaign.status === 'completed' ? <CheckCircle className="w-3 h-3 mr-1" /> :
-                             campaign.status === 'failed' ? <XCircle className="w-3 h-3 mr-1" /> :
-                             campaign.status === 'running' ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> :
-                             null}
+                            {campaign.status === 'processing' ? (
+                              <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                            ) : null}
                             {campaign.status}
                           </Badge>
-                          {!queueRunning && campaign.status === 'pending' && (
+                          {campaign.status === 'pending' && (
                             <Button
                               variant="ghost"
                               size="sm"
                               onClick={() => removeFromQueue(campaign.id)}
+                              title="Remove from queue"
+                            >
+                              <X className="w-4 h-4" />
+                            </Button>
+                          )}
+                          {campaign.status === 'processing' && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => cancelCampaign(campaign.id)}
+                              title="Cancel campaign"
+                              className="text-red-500 hover:text-red-700"
                             >
                               <X className="w-4 h-4" />
                             </Button>
@@ -1651,27 +1808,48 @@ function App() {
               </CardContent>
             </Card>
 
-            {/* Run Queue Button */}
-            {campaignQueue.length > 0 && (
-              <div className="flex justify-end">
-                <Button
-                  onClick={runQueue}
-                  disabled={queueRunning || campaignQueue.every(c => c.status !== 'pending')}
-                  size="lg"
-                >
-                  {queueRunning ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Running Queue ({currentCampaignIndex + 1}/{campaignQueue.length})...
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-4 h-4 mr-2" />
-                      Run Queue ({campaignQueue.filter(c => c.status === 'pending').length} campaigns)
-                    </>
-                  )}
-                </Button>
-              </div>
+            {/* Campaign History */}
+            {queueState.history.length > 0 && (
+              <Card className="">
+                <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
+                  <CardTitle className="text-lg">
+                    Recent History ({queueState.history.length})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-0 max-h-64 overflow-y-auto">
+                  <div className="divide-y divide-[rgba(0,0,0,0.1)]">
+                    {queueState.history.slice(0, 10).map((campaign) => (
+                      <div
+                        key={campaign.id}
+                        className="p-3 flex items-center justify-between hover:bg-white text-sm"
+                      >
+                        <div className="flex-1 min-w-0 flex items-center gap-3">
+                          {campaign.status === 'completed' ? (
+                            <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />
+                          ) : campaign.status === 'failed' ? (
+                            <XCircle className="w-4 h-4 text-red-500 shrink-0" />
+                          ) : (
+                            <AlertCircle className="w-4 h-4 text-yellow-500 shrink-0" />
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="truncate text-[#333333]">{campaign.url}</div>
+                            <div className="text-xs text-[#999999]">
+                              {campaign.success_count !== undefined && campaign.total_count !== undefined
+                                ? `${campaign.success_count}/${campaign.total_count} successful`
+                                : campaign.error || campaign.status}
+                              {campaign.completed_at && (
+                                <span className="ml-2">
+                                  {new Date(campaign.completed_at).toLocaleTimeString()}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             )}
           </TabsContent>
 

@@ -30,6 +30,7 @@ from comment_bot import post_comment, post_comment_verified, test_session, MOBIL
 from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
+from queue_manager import CampaignQueueManager
 from login_bot import create_session_from_credentials, refresh_session_profile_name
 from browser_manager import get_browser_manager, UPLOAD_DIR
 
@@ -111,6 +112,259 @@ credential_manager = CredentialManager()
 
 # Initialize proxy manager
 proxy_manager = ProxyManager()
+
+# Initialize campaign queue manager
+queue_manager = CampaignQueueManager()
+
+
+# =========================================================================
+# Queue Processor - Background task for processing campaign queue
+# =========================================================================
+
+class QueueProcessor:
+    """
+    Singleton background processor that runs campaigns sequentially.
+    Only one campaign processes at a time across all users.
+    """
+
+    def __init__(self, qm: CampaignQueueManager):
+        self.queue_manager = qm
+        self.is_running = False
+        self._task: Optional[asyncio.Task] = None
+        self._stop_requested = False
+        self._current_campaign_cancelled = False
+        self.logger = logging.getLogger("QueueProcessor")
+
+    async def start(self):
+        """Start the background processor loop."""
+        if self.is_running:
+            self.logger.info("Queue processor already running")
+            return
+
+        self.is_running = True
+        self._stop_requested = False
+        self._task = asyncio.create_task(self._process_loop())
+        self.logger.info("Queue processor started")
+
+    async def stop(self):
+        """Gracefully stop the processor."""
+        self._stop_requested = True
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        self.is_running = False
+        self.queue_manager.set_processor_running(False)
+        self.logger.info("Queue processor stopped")
+
+    def cancel_current_campaign(self):
+        """Signal that the current campaign should be cancelled."""
+        self._current_campaign_cancelled = True
+
+    async def _process_loop(self):
+        """Main processing loop - runs continuously."""
+        while not self._stop_requested:
+            try:
+                campaign = self.queue_manager.get_next_pending()
+
+                if campaign:
+                    self._current_campaign_cancelled = False
+                    await self._process_campaign(campaign)
+                else:
+                    # No campaigns, wait before checking again
+                    await asyncio.sleep(2)
+
+            except asyncio.CancelledError:
+                self.logger.info("Processor loop cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Processor loop error: {e}")
+                await asyncio.sleep(5)  # Wait before retrying
+
+    async def _process_campaign(self, campaign: dict):
+        """Process a single campaign."""
+        campaign_id = campaign["id"]
+        url = campaign["url"]
+        comments = campaign["comments"]
+        duration_minutes = campaign["duration_minutes"]
+        filter_tags = campaign.get("filter_tags", [])
+
+        try:
+            # Mark as processing
+            self.queue_manager.set_processing(campaign_id)
+            await broadcast_update("queue_campaign_start", {
+                "campaign_id": campaign_id,
+                "url": url,
+                "total_comments": len(comments)
+            })
+
+            # Get all valid sessions
+            sessions_list = list_saved_sessions()
+            valid_profiles = [s for s in sessions_list if s.get("has_valid_cookies", False)]
+
+            # Filter by tags if specified (AND logic - must match ALL tags)
+            if filter_tags:
+                valid_profiles = [
+                    s for s in valid_profiles
+                    if all(tag in s.get("tags", []) for tag in filter_tags)
+                ]
+                self.logger.info(f"Filtered to {len(valid_profiles)} profiles matching tags: {filter_tags}")
+
+            if len(valid_profiles) == 0:
+                error_msg = f"No valid sessions match tags: {filter_tags}" if filter_tags else "No valid sessions available"
+                self.queue_manager.set_failed(campaign_id, error_msg)
+                await broadcast_update("queue_campaign_failed", {
+                    "campaign_id": campaign_id,
+                    "error": error_msg
+                })
+                return
+
+            # Assign profiles (randomize order)
+            profile_names = [p["profile_name"] for p in valid_profiles]
+            random.shuffle(profile_names)
+            assigned_profiles = profile_names[:len(comments)]
+
+            if len(assigned_profiles) < len(comments):
+                self.logger.warning(f"Only {len(assigned_profiles)} profiles available for {len(comments)} comments")
+
+            # Calculate timing
+            total_jobs = min(len(comments), len(assigned_profiles))
+            duration_seconds = duration_minutes * 60
+            base_delay = duration_seconds / total_jobs if total_jobs > 1 else 0
+
+            # Broadcast campaign start
+            await broadcast_update("campaign_start", {
+                "url": url,
+                "total_jobs": total_jobs,
+                "duration_minutes": duration_minutes
+            })
+
+            # Process jobs
+            results = []
+
+            for job_idx, (profile_name, comment) in enumerate(zip(assigned_profiles, comments[:total_jobs])):
+                # Check for cancellation before each job
+                if self._current_campaign_cancelled:
+                    self.logger.info(f"Campaign {campaign_id} was cancelled, stopping")
+                    self.queue_manager.set_cancelled(campaign_id)
+                    await broadcast_update("queue_campaign_cancelled", {"campaign_id": campaign_id})
+                    return
+
+                current_campaign = self.queue_manager.get_campaign(campaign_id)
+                if current_campaign and current_campaign.get("status") == "cancelled":
+                    self.logger.info(f"Campaign {campaign_id} marked as cancelled, stopping")
+                    await broadcast_update("queue_campaign_cancelled", {"campaign_id": campaign_id})
+                    return
+
+                # Staggered delay (except first job)
+                if job_idx > 0:
+                    jitter = random.uniform(0.8, 1.2)
+                    delay_seconds = base_delay * jitter
+
+                    await broadcast_update("job_waiting", {
+                        "campaign_id": campaign_id,
+                        "job_index": job_idx,
+                        "delay_seconds": round(delay_seconds),
+                        "profile_name": profile_name
+                    })
+
+                    self.logger.info(f"Campaign {campaign_id}: Waiting {delay_seconds:.0f}s before job {job_idx}")
+                    await asyncio.sleep(delay_seconds)
+
+                # Update progress
+                self.queue_manager.update_job_progress(campaign_id, job_idx + 1, total_jobs, profile_name)
+
+                await broadcast_update("job_start", {
+                    "campaign_id": campaign_id,
+                    "job_index": job_idx,
+                    "total_jobs": total_jobs,
+                    "profile_name": profile_name,
+                    "comment": comment[:50]
+                })
+
+                session = FacebookSession(profile_name)
+
+                if not session.load():
+                    await broadcast_update("job_error", {
+                        "campaign_id": campaign_id,
+                        "job_index": job_idx,
+                        "error": "Session not found"
+                    })
+                    results.append({
+                        "profile_name": profile_name,
+                        "success": False,
+                        "error": "Session not found",
+                        "job_index": job_idx
+                    })
+                    continue
+
+                try:
+                    result = await post_comment_verified(
+                        session=session,
+                        url=url,
+                        comment=comment,
+                        proxy=PROXY_URL if PROXY_URL else None
+                    )
+
+                    await broadcast_update("job_complete", {
+                        "campaign_id": campaign_id,
+                        "job_index": job_idx,
+                        "profile_name": profile_name,
+                        "success": result["success"],
+                        "verified": result.get("verified", False),
+                        "method": result.get("method", "unknown"),
+                        "error": result.get("error")
+                    })
+
+                    results.append({
+                        "profile_name": profile_name,
+                        "comment": comment,
+                        "success": result["success"],
+                        "verified": result.get("verified", False),
+                        "method": result.get("method", "unknown"),
+                        "error": result.get("error"),
+                        "job_index": job_idx
+                    })
+
+                except Exception as e:
+                    self.logger.error(f"Error processing job {job_idx} in campaign {campaign_id}: {e}")
+                    await broadcast_update("job_error", {
+                        "campaign_id": campaign_id,
+                        "job_index": job_idx,
+                        "error": str(e)
+                    })
+                    results.append({
+                        "profile_name": profile_name,
+                        "success": False,
+                        "error": str(e),
+                        "job_index": job_idx
+                    })
+
+            # Campaign completed
+            success_count = sum(1 for r in results if r.get("success"))
+            self.queue_manager.set_completed(campaign_id, success_count, len(results), results)
+
+            await broadcast_update("queue_campaign_complete", {
+                "campaign_id": campaign_id,
+                "success": success_count,
+                "total": len(results)
+            })
+
+            await broadcast_update("campaign_complete", {"total": len(results), "success": success_count})
+
+        except Exception as e:
+            self.logger.error(f"Campaign {campaign_id} failed: {e}")
+            self.queue_manager.set_failed(campaign_id, str(e))
+            await broadcast_update("queue_campaign_failed", {
+                "campaign_id": campaign_id,
+                "error": str(e)
+            })
+
+
+# Initialize queue processor
+queue_processor = QueueProcessor(queue_manager)
 
 
 # Helper functions for campaign queue
@@ -563,6 +817,18 @@ async def websocket_live(websocket: WebSocket, token: str = Query(None)):
     await websocket.accept()
     active_connections.add(websocket)
     logger.info(f"WS connected for user {username}. Total: {len(active_connections)}")
+
+    # Send current queue state on connect for immediate sync
+    try:
+        queue_state = queue_manager.get_full_state()
+        await websocket.send_text(json.dumps({
+            "type": "queue_state_sync",
+            "data": queue_state,
+            "timestamp": datetime.now().isoformat()
+        }))
+    except Exception as e:
+        logger.warning(f"Failed to send queue state on connect: {e}")
+
     try:
         while True:
             await websocket.receive_text()
@@ -1017,6 +1283,95 @@ async def run_campaign_queue(request: CampaignQueueRequest, current_user: dict =
     await broadcast_update("queue_complete", {"results": all_results})
 
     return {"campaigns": all_results}
+
+
+# =========================================================================
+# Persistent Queue API Endpoints
+# =========================================================================
+
+class AddToQueueRequest(BaseModel):
+    url: str
+    comments: List[str]
+    duration_minutes: int = 30
+    filter_tags: Optional[List[str]] = None
+
+
+@app.get("/queue")
+async def get_queue(current_user: dict = Depends(get_current_user)) -> Dict:
+    """Get full queue state including pending campaigns and history."""
+    return queue_manager.get_full_state()
+
+
+@app.post("/queue")
+async def add_to_queue(request: AddToQueueRequest, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Add a new campaign to the persistent queue."""
+    try:
+        campaign = queue_manager.add_campaign(
+            url=request.url,
+            comments=request.comments,
+            duration_minutes=request.duration_minutes,
+            username=current_user["username"],
+            filter_tags=request.filter_tags
+        )
+
+        # Broadcast to all connected clients
+        await broadcast_update("queue_campaign_added", campaign)
+
+        return campaign
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/queue/{campaign_id}")
+async def remove_from_queue(campaign_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Remove a pending campaign from queue. Cannot remove if processing."""
+    campaign = queue_manager.get_campaign(campaign_id)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.get("status") == "processing":
+        raise HTTPException(status_code=400, detail="Cannot remove campaign while processing. Use cancel instead.")
+
+    if campaign.get("status") in ("completed", "failed", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Campaign already {campaign['status']}")
+
+    if queue_manager.delete_campaign(campaign_id):
+        await broadcast_update("queue_campaign_removed", {"campaign_id": campaign_id})
+        return {"success": True, "campaign_id": campaign_id}
+
+    raise HTTPException(status_code=500, detail="Failed to remove campaign")
+
+
+@app.post("/queue/{campaign_id}/cancel")
+async def cancel_campaign(campaign_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Cancel a pending or processing campaign."""
+    campaign = queue_manager.get_campaign(campaign_id)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.get("status") in ("completed", "failed", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Campaign already {campaign['status']}")
+
+    # If processing, signal the processor to stop
+    if campaign.get("status") == "processing":
+        queue_processor.cancel_current_campaign()
+
+    queue_manager.set_cancelled(campaign_id)
+    await broadcast_update("queue_campaign_cancelled", {"campaign_id": campaign_id})
+
+    return {"success": True, "campaign_id": campaign_id}
+
+
+@app.get("/queue/history")
+async def get_queue_history(
+    limit: int = 20,
+    current_user: dict = Depends(get_current_user)
+) -> List[Dict]:
+    """Get completed campaign history."""
+    return queue_manager.get_history(limit=min(limit, 100))
 
 
 @app.get("/config")
@@ -1867,6 +2222,16 @@ async def cleanup_expired_uploads():
 async def startup_event():
     """Start background tasks on app startup."""
     asyncio.create_task(cleanup_expired_uploads())
+    # Start queue processor for background campaign processing
+    await queue_processor.start()
+    logger.info("Queue processor started on startup")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Gracefully stop background tasks on shutdown."""
+    await queue_processor.stop()
+    logger.info("Queue processor stopped on shutdown")
 
 
 if __name__ == "__main__":
