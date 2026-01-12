@@ -152,6 +152,7 @@ class PersistentBrowserManager:
                     context_options["proxy"] = _build_playwright_proxy(proxy_url)
 
                 # Launch playwright
+                await self.broadcast_progress("launching_browser")
                 t1 = time.time()
                 self._playwright = await async_playwright().start()
                 logger.info(f"[TIMING] Playwright started in {time.time()-t1:.2f}s")
@@ -170,6 +171,7 @@ class PersistentBrowserManager:
                 logger.info(f"[TIMING] Context created in {time.time()-t3:.2f}s")
 
                 # Apply stealth mode (MANDATORY for anti-detection)
+                await self.broadcast_progress("applying_stealth")
                 t4 = time.time()
                 await Stealth().apply_stealth_async(self._context)
                 logger.info(f"[TIMING] Stealth applied in {time.time()-t4:.2f}s")
@@ -189,9 +191,16 @@ class PersistentBrowserManager:
                 self._page.on("close", lambda: asyncio.create_task(self._on_page_close()))
                 self._page.on("crash", lambda: asyncio.create_task(self._on_page_crash()))
 
-                # Navigate to Facebook
+                # Navigate to Facebook with retry on timeout
+                await self.broadcast_progress("navigating")
                 t6 = time.time()
-                await self._page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=30000)
+                try:
+                    await self._page.goto("https://m.facebook.com/", wait_until="commit", timeout=30000)
+                except Exception as nav_error:
+                    logger.warning(f"[DEBUG] Navigation failed: {nav_error}, retrying...")
+                    await self.broadcast_progress("retrying")
+                    await asyncio.sleep(2)
+                    await self._page.reload(wait_until="commit", timeout=30000)
                 logger.info(f"[TIMING] Navigation completed in {time.time()-t6:.2f}s")
 
                 # Start frame streaming
@@ -376,6 +385,29 @@ class PersistentBrowserManager:
                 "image": base64.b64encode(frame).decode("utf-8"),
                 "width": MOBILE_VIEWPORT["width"],
                 "height": MOBILE_VIEWPORT["height"],
+                "timestamp": datetime.now().isoformat()
+            }
+        })
+
+        disconnected = set()
+        for ws in self._subscribers:
+            try:
+                await ws.send_text(message)
+            except:
+                disconnected.add(ws)
+
+        for ws in disconnected:
+            self._subscribers.discard(ws)
+
+    async def broadcast_progress(self, stage: str):
+        """Broadcast progress update to all subscribers during session startup."""
+        if not self._subscribers:
+            return
+
+        message = json.dumps({
+            "type": "progress",
+            "data": {
+                "stage": stage,
                 "timestamp": datetime.now().isoformat()
             }
         })

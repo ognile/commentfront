@@ -2083,16 +2083,17 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
     manager = get_browser_manager()
 
     try:
+        # Subscribe FIRST so we receive progress updates during start_session
+        manager.subscribe(websocket)
+
         # Start session if not already active for this session_id
         if manager.session_id != session_id:
             result = await manager.start_session(session_id)
             if not result["success"]:
+                manager.unsubscribe(websocket)
                 await websocket.send_json({"type": "error", "data": {"message": result.get("error", "Failed to start session")}})
                 await websocket.close()
                 return
-
-        # Subscribe to frame updates
-        manager.subscribe(websocket)
 
         # Send initial state
         state = await manager.get_current_state()

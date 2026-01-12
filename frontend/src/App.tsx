@@ -261,6 +261,7 @@ function App() {
   const [remoteFrame, setRemoteFrame] = useState<string | null>(null);
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [remoteConnecting, setRemoteConnecting] = useState(false);
+  const [remoteProgress, setRemoteProgress] = useState<string | null>(null);
   const [_remoteUrl, setRemoteUrl] = useState('');
   const [remoteUrlInput, setRemoteUrlInput] = useState('');
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
@@ -1365,6 +1366,7 @@ function App() {
     }
 
     setRemoteConnecting(true);
+    setRemoteProgress(null);
 
     try {
       const accessToken = getAccessToken();
@@ -1405,7 +1407,11 @@ function App() {
               setRemoteUrl(message.data.url || '');
               setRemoteUrlInput(message.data.url || '');
               break;
+            case 'progress':
+              setRemoteProgress(message.data.stage);
+              break;
             case 'browser_ready':
+              setRemoteProgress(null);
               toast.success('Browser ready');
               break;
             case 'action_result':
@@ -3034,7 +3040,13 @@ function App() {
                     <div className="flex items-center justify-center text-[#999999]" style={{ width: 250, height: 500 }}>
                       <div className="text-center">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
-                        <p>Waiting for browser...</p>
+                        <p>{
+                          remoteProgress === 'launching_browser' ? 'Launching browser...' :
+                          remoteProgress === 'applying_stealth' ? 'Applying security...' :
+                          remoteProgress === 'navigating' ? 'Loading Facebook...' :
+                          remoteProgress === 'retrying' ? 'Retrying connection...' :
+                          'Waiting for browser...'
+                        }</p>
                       </div>
                     </div>
                   )}
