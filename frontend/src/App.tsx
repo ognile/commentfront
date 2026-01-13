@@ -157,6 +157,23 @@ const formatDuration = (minutes: number): string => {
   return `${hours}h ${mins}m`;
 };
 
+// Consolidate campaign results by job_index - latest result wins
+// This ensures retries properly update the displayed status
+const getConsolidatedResults = (results: CampaignResult[]): CampaignResult[] => {
+  const byJobIndex: Record<number, CampaignResult> = {};
+
+  // Process results in order - latest result (retry) overwrites earlier ones
+  results.forEach(result => {
+    const jobIdx = result.job_index;
+    // Always overwrite with the latest result for this job_index
+    // Retries come after original attempts in the array
+    byJobIndex[jobIdx] = result;
+  });
+
+  // Return sorted by job_index for consistent display order
+  return Object.values(byJobIndex).sort((a, b) => a.job_index - b.job_index);
+};
+
 // Normalize Facebook URL to extract unique post identifier
 const normalizeUrl = (url: string): string => {
   try {
@@ -2778,18 +2795,28 @@ function App() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                   <div>
                     <div className="text-xs text-[#999999]">Status</div>
-                    <Badge
-                      variant={
-                        selectedCampaign.status === 'completed' ? 'default' :
-                        selectedCampaign.status === 'failed' ? 'destructive' : 'secondary'
-                      }
-                      className={selectedCampaign.status === 'completed' ? 'bg-green-500' : ''}
-                    >
-                      {selectedCampaign.status}
-                      {selectedCampaign.success_count !== undefined && selectedCampaign.total_count !== undefined && (
-                        <span className="ml-1">({selectedCampaign.success_count}/{selectedCampaign.total_count})</span>
-                      )}
-                    </Badge>
+                    {(() => {
+                      // Use consolidated results for accurate count display
+                      const consolidated = selectedCampaign.results ? getConsolidatedResults(selectedCampaign.results) : [];
+                      const successCount = consolidated.filter(r => r.success).length;
+                      const totalCount = consolidated.length;
+                      const isFullySuccessful = totalCount > 0 && successCount === totalCount;
+
+                      return (
+                        <Badge
+                          variant={
+                            isFullySuccessful || selectedCampaign.status === 'completed' ? 'default' :
+                            selectedCampaign.status === 'failed' ? 'destructive' : 'secondary'
+                          }
+                          className={isFullySuccessful || selectedCampaign.status === 'completed' ? 'bg-green-500' : ''}
+                        >
+                          {isFullySuccessful ? 'completed' : selectedCampaign.status}
+                          {totalCount > 0 && (
+                            <span className="ml-1">({successCount}/{totalCount})</span>
+                          )}
+                        </Badge>
+                      );
+                    })()}
                   </div>
                   <div>
                     <div className="text-xs text-[#999999]">Duration</div>
@@ -2828,124 +2855,131 @@ function App() {
                 )}
               </div>
 
-              {/* Results by Profile */}
+              {/* Results by Profile - Consolidated (latest result per job_index) */}
               {selectedCampaign.results && selectedCampaign.results.length > 0 && (
                 <div>
-                  <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <User className="w-4 h-4" />
-                    Results by Profile ({selectedCampaign.results.length})
-                  </h3>
-                  <div className="space-y-2 max-h-64 overflow-y-auto">
-                    {selectedCampaign.results.map((result, idx) => (
-                      <div
-                        key={idx}
-                        className={`rounded-lg border p-3 ${
-                          result.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            {result.success ? (
-                              <CheckCircle className="w-4 h-4 text-green-600 shrink-0" />
-                            ) : (
-                              <XCircle className="w-4 h-4 text-red-600 shrink-0" />
-                            )}
-                            <span className="font-medium text-sm truncate">
-                              {result.profile_name}
-                              {result.is_retry && (
-                                <Badge variant="secondary" className="ml-2 text-xs">
-                                  Retry
-                                </Badge>
-                              )}
-                            </span>
-                          </div>
-                          {!result.success && !result.is_retry && (
-                            <div className="shrink-0">
-                              {retryingJobIndex === result.job_index ? (
-                                <div className="flex items-center gap-2">
-                                  <Select
-                                    value={retryProfile}
-                                    onValueChange={setRetryProfile}
-                                  >
-                                    <SelectTrigger className="w-40 h-8 text-xs">
-                                      <SelectValue placeholder="Select profile" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {sessions.filter(s => s.valid).map(session => (
-                                        <SelectItem key={session.profile_name} value={session.profile_name}>
-                                          {session.profile_name}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                  <Button
-                                    size="sm"
-                                    className="h-8 text-xs"
-                                    disabled={!retryProfile || isRetrying}
-                                    onClick={() => {
-                                      retryJob(
-                                        selectedCampaign.id,
-                                        result.job_index,
-                                        retryProfile,
-                                        result.comment,
-                                        result.profile_name
-                                      );
-                                    }}
-                                  >
-                                    {isRetrying ? (
-                                      <Loader2 className="w-3 h-3 animate-spin" />
-                                    ) : (
-                                      'Retry'
+                  {(() => {
+                    const consolidatedResults = getConsolidatedResults(selectedCampaign.results);
+                    return (
+                      <>
+                        <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                          <User className="w-4 h-4" />
+                          Results by Profile ({consolidatedResults.length})
+                        </h3>
+                        <div className="space-y-2 max-h-64 overflow-y-auto">
+                          {consolidatedResults.map((result, idx) => (
+                            <div
+                              key={result.job_index}
+                              className={`rounded-lg border p-3 ${
+                                result.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {result.success ? (
+                                    <CheckCircle className="w-4 h-4 text-green-600 shrink-0" />
+                                  ) : (
+                                    <XCircle className="w-4 h-4 text-red-600 shrink-0" />
+                                  )}
+                                  <span className="font-medium text-sm truncate">
+                                    {result.profile_name}
+                                    {result.is_retry && (
+                                      <Badge variant="secondary" className="ml-2 text-xs">
+                                        Retry
+                                      </Badge>
                                     )}
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-8 w-8 p-0"
-                                    onClick={() => {
-                                      setRetryingJobIndex(null);
-                                      setRetryProfile('');
-                                    }}
-                                  >
-                                    <X className="w-3 h-3" />
-                                  </Button>
+                                  </span>
                                 </div>
-                              ) : (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 text-xs"
-                                  onClick={() => {
-                                    setRetryingJobIndex(result.job_index);
-                                    setRetryProfile(result.profile_name);
-                                  }}
-                                >
-                                  <RotateCw className="w-3 h-3 mr-1" />
-                                  Retry
-                                </Button>
-                              )}
+                                {!result.success && (
+                                  <div className="shrink-0">
+                                    {retryingJobIndex === result.job_index ? (
+                                      <div className="flex items-center gap-2">
+                                        <Select
+                                          value={retryProfile}
+                                          onValueChange={setRetryProfile}
+                                        >
+                                          <SelectTrigger className="w-40 h-8 text-xs">
+                                            <SelectValue placeholder="Select profile" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {sessions.filter(s => s.valid).map(session => (
+                                              <SelectItem key={session.profile_name} value={session.profile_name}>
+                                                {session.profile_name}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                        <Button
+                                          size="sm"
+                                          className="h-8 text-xs"
+                                          disabled={!retryProfile || isRetrying}
+                                          onClick={() => {
+                                            retryJob(
+                                              selectedCampaign.id,
+                                              result.job_index,
+                                              retryProfile,
+                                              result.comment,
+                                              result.profile_name
+                                            );
+                                          }}
+                                        >
+                                          {isRetrying ? (
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                          ) : (
+                                            'Retry'
+                                          )}
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="h-8 w-8 p-0"
+                                          onClick={() => {
+                                            setRetryingJobIndex(null);
+                                            setRetryProfile('');
+                                          }}
+                                        >
+                                          <X className="w-3 h-3" />
+                                        </Button>
+                                      </div>
+                                    ) : (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 text-xs"
+                                        onClick={() => {
+                                          setRetryingJobIndex(result.job_index);
+                                          setRetryProfile(result.profile_name);
+                                        }}
+                                      >
+                                        <RotateCw className="w-3 h-3 mr-1" />
+                                        Retry
+                                      </Button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="mt-2 text-sm text-[#666666] italic">
+                                "{result.comment}"
+                              </div>
+                              <div className="mt-1 flex items-center gap-2 text-xs text-[#999999]">
+                                {result.success && result.verified && (
+                                  <span className="text-green-600">
+                                    Verified via {result.method || 'vision'}
+                                  </span>
+                                )}
+                                {!result.success && result.error && (
+                                  <span className="text-red-600">{result.error}</span>
+                                )}
+                                {result.is_retry && result.original_profile && (
+                                  <span>(retried from {result.original_profile})</span>
+                                )}
+                              </div>
                             </div>
-                          )}
+                          ))}
                         </div>
-                        <div className="mt-2 text-sm text-[#666666] italic">
-                          "{result.comment}"
-                        </div>
-                        <div className="mt-1 flex items-center gap-2 text-xs text-[#999999]">
-                          {result.success && result.verified && (
-                            <span className="text-green-600">
-                              Verified via {result.method || 'vision'}
-                            </span>
-                          )}
-                          {!result.success && result.error && (
-                            <span className="text-red-600">{result.error}</span>
-                          )}
-                          {result.is_retry && result.original_profile && (
-                            <span>(retried from {result.original_profile})</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -2955,21 +2989,27 @@ function App() {
                   Comments ({selectedCampaign.comments.length})
                 </h3>
                 <div className="bg-[rgba(51,51,51,0.04)] rounded-lg p-3 max-h-40 overflow-y-auto">
-                  <ol className="space-y-1 text-sm list-decimal list-inside">
-                    {selectedCampaign.comments.map((comment, idx) => {
-                      const result = selectedCampaign.results?.find(r => r.job_index === idx);
-                      return (
-                        <li key={idx} className={`${result?.success ? 'text-green-700' : result ? 'text-red-700' : 'text-[#666666]'}`}>
-                          <span className="ml-1">{comment}</span>
-                          {result && (
-                            <span className="ml-2">
-                              {result.success ? '✓' : '✗'}
-                            </span>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ol>
+                  {(() => {
+                    // Use consolidated results for accurate status display
+                    const consolidated = selectedCampaign.results ? getConsolidatedResults(selectedCampaign.results) : [];
+                    return (
+                      <ol className="space-y-1 text-sm list-decimal list-inside">
+                        {selectedCampaign.comments.map((comment, idx) => {
+                          const result = consolidated.find(r => r.job_index === idx);
+                          return (
+                            <li key={idx} className={`${result?.success ? 'text-green-700' : result ? 'text-red-700' : 'text-[#666666]'}`}>
+                              <span className="ml-1">{comment}</span>
+                              {result && (
+                                <span className="ml-2">
+                                  {result.success ? '✓' : '✗'}
+                                </span>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    );
+                  })()}
                 </div>
               </div>
             </div>

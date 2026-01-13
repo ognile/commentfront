@@ -323,15 +323,26 @@ class CampaignQueueManager:
                 # Add the retry result
                 campaign["results"].append(result)
 
-                # Update success count if this retry succeeded
-                if result.get("success"):
-                    campaign["success_count"] = (campaign.get("success_count") or 0) + 1
-                    # Update status if we now have all successes
-                    if campaign["success_count"] >= campaign.get("total_count", 0):
-                        campaign["status"] = "completed"
+                # Recalculate success_count as unique job_indexes with at least one success
+                # This ensures retries don't double-count and properly update status
+                job_successes = {}
+                original_job_count = 0
+                for r in campaign["results"]:
+                    job_idx = r.get("job_index", 0)
+                    # Track the highest job_index to determine original job count
+                    if not r.get("is_retry"):
+                        original_job_count = max(original_job_count, job_idx + 1)
+                    if r.get("success"):
+                        job_successes[job_idx] = True
 
-                # Update total count
-                campaign["total_count"] = (campaign.get("total_count") or 0) + 1
+                campaign["success_count"] = len(job_successes)
+                # total_count should stay as original number of comments (don't increment for retries)
+                if original_job_count > 0:
+                    campaign["total_count"] = original_job_count
+
+                # Update status if all original jobs now have a success
+                if campaign["success_count"] >= campaign.get("total_count", 0):
+                    campaign["status"] = "completed"
 
                 # Mark as having retries
                 campaign["has_retries"] = True
