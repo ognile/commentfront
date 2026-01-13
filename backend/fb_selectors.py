@@ -125,13 +125,15 @@ REELS = {
 # Comment Selectors
 COMMENT = {
     "comment_button": [
-        # More specific selectors first - avoid generic text matches
+        # Icon-based selector - ONLY comment button starts with 󰍹 icon
+        # Verified pattern: 󰍹comment, 󰍹 1comments, 󰍹 2comments
+        'div[role="button"][aria-label^="󰍹"]',
+        # Backup: partial match with exclusion to avoid reactions counter
+        'div[role="button"][aria-label*="omment"]:not([aria-label*="reacted"])',
+        # Legacy selectors (kept for compatibility)
         'div[aria-label="Comment"]',
         'div[aria-label="Leave a comment"]',
         '[data-sigil*="comment"]',
-        'div[role="button"][aria-label*="omment"]',  # Comment or comment
-        # Last resort - but these are risky as they may match wrong elements
-        # 'span:has-text("Comment")' - REMOVED: too generic, navigates to wrong post
     ],
     "comment_input": [
         # Facebook mobile comment input - various possible selectors
