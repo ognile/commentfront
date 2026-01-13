@@ -2867,7 +2867,7 @@ function App() {
                           Results by Profile ({consolidatedResults.length})
                         </h3>
                         <div className="space-y-2 max-h-64 overflow-y-auto">
-                          {consolidatedResults.map((result, idx) => (
+                          {consolidatedResults.map((result) => (
                             <div
                               key={result.job_index}
                               className={`rounded-lg border p-3 ${
