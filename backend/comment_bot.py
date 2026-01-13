@@ -982,7 +982,7 @@ async def post_comment_verified(
             await asyncio.sleep(0.8)
 
             screenshot = await save_debug_screenshot(page, "step4_typed")
-            verification = await vision.verify_state(screenshot, "text_typed", expected_text=comment[-50:])
+            verification = await vision.verify_state(screenshot, "text_typed", expected_text=comment[-100:])
             if not verification.success:
                 raise Exception(f"Step 4 FAILED - Typed text not visible: {verification.message}")
 
@@ -1012,7 +1012,7 @@ async def post_comment_verified(
 
             # Verify comment was posted
             verify_screenshot = await save_debug_screenshot(page, "step5_verify")
-            verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-50:])
+            verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
 
             if not verification.success:
                 if verification.status == "pending":
@@ -1020,13 +1020,13 @@ async def post_comment_verified(
                     logger.info("Comment appears pending, waiting...")
                     await asyncio.sleep(3)
                     verify_screenshot = await save_debug_screenshot(page, "step5_pending")
-                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-50:])
+                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
                 else:
                     # Not pending - try one more wait and check
                     logger.info(f"Comment not visible, waiting 3 more seconds... ({verification.message})")
                     await asyncio.sleep(3)
                     verify_screenshot = await save_debug_screenshot(page, "step5_retry")
-                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-50:])
+                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
 
                 if not verification.success:
                     raise Exception(f"Step 5 FAILED - Comment not posted: {verification.message}")

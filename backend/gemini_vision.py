@@ -162,9 +162,11 @@ Do NOT write anything else. Just one line in the format above.""",
 
     "text_typed": """Analyze this Facebook mobile screenshot.
 
-Expected text: "{expected_text}"
+Expected text snippet: "{expected_text}"
 
-Check if this text is visible in the comment input field.
+Check if the comment input field CONTAINS text that INCLUDES this snippet.
+This is a partial match check - the snippet may appear anywhere in the typed text (beginning, middle, or end).
+If you can see text in the input field that contains these words/characters, verify it.
 
 IMPORTANT: You MUST respond with ONLY one of these exact formats:
 VERIFIED confidence=0.XX
@@ -174,9 +176,11 @@ Do NOT write anything else. Just one line in the format above.""",
 
     "comment_posted": """Analyze this Facebook mobile screenshot.
 
-Expected comment: "{expected_text}"
+Expected comment snippet: "{expected_text}"
 
-Check if the comment was SUCCESSFULLY POSTED (visible in comments section, not input field).
+Check if a comment was SUCCESSFULLY POSTED that CONTAINS this snippet.
+This is a partial match check - the snippet may appear anywhere in the posted comment.
+Look in the comments section (not the input field) for text that includes these words/characters.
 
 IMPORTANT: You MUST respond with ONLY one of these exact formats:
 VERIFIED confidence=0.XX
