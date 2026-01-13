@@ -813,18 +813,25 @@ async def handle_device_trust(page: Page) -> Dict[str, Any]:
     return result
 
 
-async def verify_logged_in(page: Page, extract_picture: bool = False) -> tuple[bool, Optional[str], Optional[str]]:
+async def verify_logged_in(page: Page, extract_picture: bool = False, user_id: Optional[str] = None) -> tuple[bool, Optional[str], Optional[str]]:
     """
-    Verify that we're logged in by navigating to /me/ and extract profile name.
+    Verify that we're logged in by navigating to profile page and extract profile name.
 
     Args:
         page: Playwright page object
         extract_picture: If True, also extract profile picture (slower)
+        user_id: If provided, navigate directly to profile URL (more reliable than /me/)
 
     Returns:
         Tuple of (is_logged_in: bool, profile_name: Optional[str], profile_picture_base64: Optional[str])
     """
-    logger.info("Verifying login by navigating to /me/")
+    # Use direct profile URL if user_id is provided (more reliable)
+    if user_id:
+        profile_url = f"https://m.facebook.com/profile.php?id={user_id}"
+        logger.info(f"Verifying login by navigating directly to profile: {profile_url}")
+    else:
+        profile_url = "https://m.facebook.com/me/"
+        logger.info("Verifying login by navigating to /me/")
     profile_name = None
 
     try:
@@ -833,7 +840,7 @@ async def verify_logged_in(page: Page, extract_picture: bool = False) -> tuple[b
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                await page.goto("https://m.facebook.com/me/", wait_until="domcontentloaded", timeout=30000)
+                await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
                 break  # Success
             except Exception as nav_error:
                 if attempt < max_retries - 1:
@@ -871,7 +878,7 @@ async def verify_logged_in(page: Page, extract_picture: bool = False) -> tuple[b
             await asyncio.sleep(1)
 
         url = page.url.lower()
-        logger.info(f"After /me/ navigation, URL is: {url}")
+        logger.info(f"After profile navigation, URL is: {url}")
 
         # If we're redirected to login, not logged in
         if '/login' in url:
@@ -1222,8 +1229,8 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
             if not await apply_session_to_context(context, session):
                 raise Exception("Failed to apply session cookies")
 
-            # Navigate to /me/ and extract profile name + profile picture
-            is_logged_in, extracted_name, profile_picture = await verify_logged_in(page, extract_picture=True)
+            # Navigate directly to profile page using user_id (more reliable than /me/)
+            is_logged_in, extracted_name, profile_picture = await verify_logged_in(page, extract_picture=True, user_id=user_id)
 
             await browser.close()
 
