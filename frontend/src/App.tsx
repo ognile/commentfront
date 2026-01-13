@@ -1306,32 +1306,37 @@ function App() {
     }
   };
 
-  // Session profile name refresh functions
-  const refreshSessionName = async (profileName: string) => {
+  // Session profile name refresh functions (non-blocking with toast notifications)
+  const refreshSessionName = (profileName: string) => {
+    // Show loading toast immediately
+    const toastId = toast.loading(`Refreshing ${profileName}...`);
     setRefreshingSession(profileName);
-    try {
-      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/refresh-name`, {
-        method: 'POST',
-        headers: getAuthHeaders()
-      });
-      const result = await res.json();
 
-      if (result.success) {
-        if (result.new_profile_name !== result.old_profile_name) {
-          alert(`Profile name updated: ${result.old_profile_name} → ${result.new_profile_name}`);
+    // Fire and forget - don't await, let it run in background
+    fetch(`${API_BASE}/sessions/${encodeURIComponent(profileName)}/refresh-name`, {
+      method: 'POST',
+      headers: getAuthHeaders()
+    })
+      .then(res => res.json())
+      .then(result => {
+        if (result.success) {
+          if (result.new_profile_name !== result.old_profile_name) {
+            toast.success(`Profile updated: ${result.old_profile_name} → ${result.new_profile_name}`, { id: toastId });
+          } else {
+            toast.success(`Profile confirmed: ${result.new_profile_name}`, { id: toastId });
+          }
+          fetchSessions();
+          fetchCredentials();
         } else {
-          alert(`Profile name confirmed: ${result.new_profile_name}`);
+          toast.error(`Failed to refresh ${profileName}: ${result.error}`, { id: toastId });
         }
-        fetchSessions();
-        fetchCredentials();
-      } else {
-        alert(`Failed to refresh: ${result.error}`);
-      }
-    } catch (error) {
-      alert(`Error: ${error}`);
-    } finally {
-      setRefreshingSession(null);
-    }
+      })
+      .catch(error => {
+        toast.error(`Error refreshing ${profileName}: ${error}`, { id: toastId });
+      })
+      .finally(() => {
+        setRefreshingSession(null);
+      });
   };
 
   useEffect(() => {

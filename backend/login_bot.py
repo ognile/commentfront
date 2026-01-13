@@ -211,6 +211,36 @@ async def extract_profile_picture(page: Page) -> Optional[str]:
                 # Get bounding box
                 box = await locator.bounding_box()
                 if box and box['width'] > 20 and box['height'] > 20:
+                    # Wait for the image to actually load before taking screenshot
+                    # Check if it's an img element and wait for it to load
+                    try:
+                        element_handle = await locator.element_handle()
+                        if element_handle:
+                            # Wait for image to load (naturalWidth > 0 means loaded)
+                            for attempt in range(10):  # Max 5 seconds (10 * 500ms)
+                                is_loaded = await page.evaluate("""
+                                    (el) => {
+                                        if (el.tagName === 'IMG') {
+                                            return el.complete && el.naturalWidth > 0;
+                                        }
+                                        // For non-img elements, check for img inside
+                                        const img = el.querySelector('img');
+                                        if (img) {
+                                            return img.complete && img.naturalWidth > 0;
+                                        }
+                                        return true;  // Not an image, consider loaded
+                                    }
+                                """, element_handle)
+                                if is_loaded:
+                                    logger.info(f"Image loaded after {attempt + 1} check(s)")
+                                    break
+                                logger.info(f"Waiting for image to load... (attempt {attempt + 1}/10)")
+                                await asyncio.sleep(0.5)
+                            else:
+                                logger.warning("Image didn't fully load after 5 seconds, taking screenshot anyway")
+                    except Exception as e:
+                        logger.warning(f"Could not check image load status: {e}")
+
                     # Take screenshot of just this element
                     screenshot_bytes = await locator.screenshot(type="png")
                     if screenshot_bytes:
