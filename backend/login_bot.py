@@ -828,8 +828,21 @@ async def verify_logged_in(page: Page, extract_picture: bool = False) -> tuple[b
     profile_name = None
 
     try:
-        await page.goto("https://m.facebook.com/me/", wait_until="networkidle", timeout=30000)
-        await asyncio.sleep(3)  # Extra wait for dynamic content
+        # Use domcontentloaded instead of networkidle (Facebook never stops network activity)
+        # Add retry logic for slow connections
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                await page.goto("https://m.facebook.com/me/", wait_until="domcontentloaded", timeout=30000)
+                break  # Success
+            except Exception as nav_error:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Navigation attempt {attempt + 1} failed, retrying: {nav_error}")
+                    await asyncio.sleep(2)
+                else:
+                    raise nav_error  # Re-raise on final attempt
+
+        await asyncio.sleep(2)  # Brief wait for dynamic content
 
         url = page.url.lower()
         logger.info(f"After /me/ navigation, URL is: {url}")
