@@ -1,0 +1,294 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ========================================
+   LIGHT PEARL DESIGN SYSTEM v4
+   Pearl background. White cards. Pills.
+   ======================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  overflow-x: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--bg);
+}
+
+/* ========================================
+   COLORS - Light Pearl Theme
+   ======================================== */
+
+:root {
+  --font-display: 'Inter', -apple-system, sans-serif;
+  --font-body: 'Inter', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+
+  /* Pearl background */
+  --bg: #faf9f8;
+  --bg-gradient: linear-gradient(
+    135deg,
+    #fdfcfb 0%,
+    #f8f7f6 25%,
+    #faf8f9 50%,
+    #f7f9fa 75%,
+    #fdfcfb 100%
+  );
+
+  /* Card/panel */
+  --card: #ffffff;
+
+  /* Text - dark on light */
+  --text-primary: #111111;
+  --text-secondary: #666666;
+  --text-tertiary: #999999;
+
+  /* Borders - subtle gray */
+  --border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.15);
+
+  /* Accent - dark gray */
+  --accent: #333333;
+  --accent-soft: rgba(51, 51, 51, 0.08);
+  --accent-text: #333333;
+
+  /* Status colors */
+  --success: #22c55e;
+  --success-soft: rgba(34, 197, 94, 0.1);
+  --error: #ef4444;
+  --error-soft: rgba(239, 68, 68, 0.1);
+}
+
+/* ========================================
+   CARD/PANEL - White with border
+   ======================================== */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  /* NO SHADOWS */
+}
+
+.card:hover {
+  border-color: var(--border-strong);
+}
+
+/* ========================================
+   TYPOGRAPHY
+   ======================================== */
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-body {
+  font-family: var(--font-body);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.text-primary {
+  color: var(--text-primary);
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+.text-tertiary {
+  color: var(--text-tertiary);
+}
+
+.text-accent {
+  color: var(--accent-text);
+}
+
+/* ========================================
+   FORM INPUTS - Pill shape
+   ======================================== */
+
+.pill-input {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 9999px;
+  transition: border-color 0.15s ease;
+  /* NO SHADOWS */
+}
+
+.pill-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pill-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Textarea - rounded but not pill (too tall) */
+.rounded-textarea {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 16px;
+  transition: border-color 0.15s ease;
+  /* NO SHADOWS */
+}
+
+.rounded-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.rounded-textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* ========================================
+   BUTTONS - All pills
+   ======================================== */
+
+/* Primary button - dark gray pill */
+.pill-button {
+  background: var(--accent);
+  color: #ffffff;
+  border: none;
+  cursor: pointer;
+  border-radius: 9999px;
+  font-weight: 500;
+  transition: opacity 0.15s ease;
+  /* NO SHADOWS */
+}
+
+.pill-button:hover {
+  opacity: 0.85;
+}
+
+/* Secondary button - white pill with border */
+.pill-button-secondary {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: 9999px;
+  transition: all 0.15s ease;
+  /* NO SHADOWS */
+}
+
+.pill-button-secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+/* Icon button - subtle pill */
+.pill-icon-button {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: 9999px;
+  transition: all 0.15s ease;
+  /* NO SHADOWS */
+}
+
+.pill-icon-button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ========================================
+   STATUS INDICATORS
+   ======================================== */
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  position: relative;
+}
+
+.status-dot::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: inherit;
+  opacity: 0.3;
+  animation: pulse-subtle 2s ease-out infinite;
+}
+
+@keyframes pulse-subtle {
+  0% {
+    transform: scale(1);
+    opacity: 0.3;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+/* ========================================
+   BADGES & TAGS - Pills
+   ======================================== */
+
+.pill-badge {
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 12px;
+  /* NO SHADOWS */
+}
+
+/* ========================================
+   SCROLLBAR
+   ======================================== */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* ========================================
+   UTILITY CLASSES
+   ======================================== */
+
+.border-subtle {
+  border: 1px solid var(--border);
+}
+
+.border-strong {
+  border: 1px solid var(--border-strong);
+}
+
+/* Consistent corner radius tokens */
+.rounded-card {
+  border-radius: 16px;
+}
+
+.rounded-pill {
+  border-radius: 9999px;
+}

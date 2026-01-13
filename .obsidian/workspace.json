@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Short and long post.md",
+                "file": "Claude Video Conversation.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Short and long post"
+              "title": "Claude Video Conversation"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "Short and long post.md",
+                "file": "Claude Video Conversation.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for Short and long post"
+              "title": "Backlinks for Claude Video Conversation"
             }
           },
           {
@@ -113,12 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "Short and long post.md",
+                "file": "Claude Video Conversation.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from Short and long post"
+              "title": "Outgoing links from Claude Video Conversation"
             }
           },
           {
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "Short and long post.md",
+                "file": "Claude Video Conversation.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of Short and long post"
+              "title": "Outline of Claude Video Conversation"
             }
           }
         ]
@@ -185,22 +185,42 @@
   },
   "active": "0700746293ce4c1f",
   "lastOpenFiles": [
-    "frontend/dist/assets/index-Dn2dk2c2.css",
-    "frontend/dist/assets/index-C1JuNhVE.js",
-    "CLAUDE.md",
     "Short and long post.md",
-    "frontend/dist/assets/index-B2Ih6OQ0.css",
-    "frontend/dist/assets/index-h8xJLPgE.js",
-    "frontend/dist/assets/index-BTqi9AXH.css",
-    "frontend/dist/assets/index-BFpWdJ9W.js",
-    "frontend/dist/assets/index-BCkeR0vo.css",
-    "frontend/dist/assets/index-4Q40Wo8W.js",
-    "backend/__pycache__/browser_manager.cpython-312.pyc",
-    "frontend/dist/assets/index-BiY2rO2t.css",
-    "frontend/dist/assets/index-CeDjwaVw.js",
-    "frontend/node_modules/sonner/README.md",
-    "frontend/node_modules/sonner/LICENSE.md",
-    "AGENTS.md",
+    "Claude Video Conversation.md",
+    "frontend/src/components/PearlBackground.tsx",
+    "frontend/design-showcase/src/components/PearlBackground.tsx",
+    "frontend/design-showcase/src/components/MeshBackground.tsx",
+    "frontend/design-showcase/src/components/GlassPanel.tsx",
+    "frontend/design-showcase/node_modules/@phosphor-icons/react/README.md",
+    "frontend/design-showcase/node_modules/@phosphor-icons/react/package.json",
+    "frontend/design-showcase/node_modules/@phosphor-icons/react/dist/ssr/index.es.js",
+    "frontend/design-showcase/node_modules/@phosphor-icons/react/dist/ssr/index.d.ts",
+    "frontend/design-showcase/node_modules/@phosphor-icons/react/dist/ssr/YoutubeLogo.es.js",
+    "frontend/design-showcase/node_modules/@phosphor-icons/react/dist/ssr/YoutubeLogo.d.ts",
+    "frontend/design-showcase/node_modules/@phosphor-icons/react/dist/ssr/YinYang.es.js",
+    "frontend/design-showcase/node_modules/fsevents/README.md",
+    "frontend/design-showcase/node_modules/lucide-react/README.md",
+    "frontend/design-showcase/node_modules/sucrase/README.md",
+    "frontend/design-showcase/node_modules/@esbuild/darwin-arm64/README.md",
+    "frontend/design-showcase/node_modules/react-dom/README.md",
+    "frontend/design-showcase/node_modules/autoprefixer/README.md",
+    "frontend/design-showcase/node_modules/rollup/README.md",
+    "frontend/design-showcase/node_modules/rollup/LICENSE.md",
+    "frontend/design-showcase/node_modules/vite/README.md",
+    "frontend/design-showcase/node_modules/vite/LICENSE.md",
+    "frontend/design-showcase/node_modules/postcss-selector-parser/README.md",
+    "frontend/design-showcase/node_modules/postcss-selector-parser/CHANGELOG.md",
+    "frontend/design-showcase/node_modules/postcss-selector-parser/API.md",
+    "frontend/design-showcase/node_modules/jiti/README.md",
+    "frontend/design-showcase/node_modules/fast-glob/README.md",
+    "frontend/design-showcase/node_modules/postcss/README.md",
+    "frontend/design-showcase/node_modules/@jridgewell/trace-mapping/README.md",
+    "frontend/design-showcase/node_modules/react/README.md",
+    "frontend/design-showcase/node_modules/@jridgewell/remapping/README.md",
+    "frontend/design-showcase/node_modules/@jridgewell/gen-mapping/README.md",
+    "frontend/design-showcase/node_modules/@jridgewell/sourcemap-codec/README.md",
+    "frontend/design-showcase/node_modules/@nodelib/fs.walk/README.md",
+    "frontend/design-showcase/node_modules/fraction.js/README.md",
     "backend/debug/step5_verify.png",
     "backend/debug/post_click_Send_button.png",
     "backend/debug/pre_click_Send_button.png",
@@ -210,8 +230,6 @@
     "backend/debug/healing_Send_button_1.png",
     "backend/debug/healing_Send_button_0.png",
     "backend/debug/failed_click_Send_button.png",
-    "backend/debug/step4_typed.png",
-    "frontend/README.md",
-    "PHASE2_UPGRADE.md"
+    "backend/debug/step4_typed.png"
   ]
 }

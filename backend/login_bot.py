@@ -842,7 +842,33 @@ async def verify_logged_in(page: Page, extract_picture: bool = False) -> tuple[b
                 else:
                     raise nav_error  # Re-raise on final attempt
 
-        await asyncio.sleep(2)  # Brief wait for dynamic content
+        # Wait for dynamic content to render (Facebook is JS-heavy)
+        # Try to wait for profile-specific elements before proceeding
+        content_loaded = False
+        content_selectors = [
+            'h1',  # Profile name heading
+            '[aria-label*="profile picture"]',  # Profile picture
+            '[aria-label="Edit profile"]',  # Edit profile button
+            '[aria-label="About"]',  # About section
+            '[role="heading"]',  # Any heading
+        ]
+
+        for selector in content_selectors:
+            try:
+                await page.wait_for_selector(selector, timeout=5000)
+                content_loaded = True
+                logger.info(f"Content loaded - found: {selector}")
+                break
+            except:
+                continue
+
+        if not content_loaded:
+            # Fallback: wait longer for slow JS rendering
+            logger.info("No profile content selectors found, waiting for JS render...")
+            await asyncio.sleep(4)
+        else:
+            # Brief additional wait for any remaining content
+            await asyncio.sleep(1)
 
         url = page.url.lower()
         logger.info(f"After /me/ navigation, URL is: {url}")
@@ -930,25 +956,33 @@ async def verify_logged_in(page: Page, extract_picture: bool = False) -> tuple[b
                 elements = await dump_interactive_elements(page, "AFTER GO TO PROFILE CLICK")
 
         # Try to extract profile name from page title first
-        page_title = await page.title()
-        logger.info(f"Page title: {page_title}")
+        # Sometimes the title takes a moment to update from "Facebook" to the profile name
+        page_title = None
+        excluded_titles = ['facebook', 'log in', 'login', 'home', 'news feed', 'feed']
 
-        # Facebook mobile titles often include the profile name
-        # Format is usually "Profile Name | Facebook" or just "Profile Name" (on profile page)
-        if page_title:
-            # If it has " | " separator, take the first part
-            if '|' in page_title:
-                name_part = page_title.split('|')[0].strip()
-            else:
-                name_part = page_title.strip()
+        for title_attempt in range(5):  # Try 5 times with short waits
+            page_title = await page.title()
+            logger.info(f"Page title (attempt {title_attempt + 1}): {page_title}")
 
-            # Validate it's actually a profile name, not a generic page title
-            excluded_titles = ['facebook', 'log in', 'login', 'home', 'news feed', 'feed']
-            if name_part and name_part.lower() not in excluded_titles and len(name_part) > 1:
-                profile_name = name_part
-                logger.info(f"Extracted profile name from title: {profile_name}")
-                # Once we have a good name from title, skip element-based extraction
-                # to avoid picking up "Edit profile" button text
+            if page_title:
+                # If it has " | " separator, take the first part
+                if '|' in page_title:
+                    name_part = page_title.split('|')[0].strip()
+                else:
+                    name_part = page_title.strip()
+
+                # Validate it's actually a profile name, not a generic page title
+                if name_part and name_part.lower() not in excluded_titles and len(name_part) > 1:
+                    profile_name = name_part
+                    logger.info(f"Extracted profile name from title: {profile_name}")
+                    break
+
+            # If still generic title, wait and retry
+            if title_attempt < 4:
+                await asyncio.sleep(1)
+
+        # Once we have a good name from title, skip element-based extraction
+        # to avoid picking up "Edit profile" button text
 
         # Strategy 2: Look for h1/h2 headings on the profile page
         if not profile_name:
