@@ -182,8 +182,12 @@ async def extract_profile_picture(page: Page) -> Optional[str]:
     logger.info("Attempting to extract profile picture...")
 
     # Profile picture selectors (on mobile FB profile page)
+    # Priority: main profile photo in header area first, then fallback to other areas
     profile_pic_selectors = [
-        # Main profile picture on profile page
+        # Main profile picture in header - "Edit profile photo" area contains the image
+        '[aria-label="Edit profile photo"] img',
+        '[aria-label*="Edit profile photo"] img',
+        # Profile picture elements
         'img[aria-label*="profile picture"]',
         'img[alt*="profile picture"]',
         'svg[aria-label*="profile picture"]',  # Sometimes it's an SVG placeholder
@@ -232,16 +236,15 @@ async def extract_profile_picture(page: Page) -> Optional[str]:
     except Exception as e:
         logger.warning(f"Profile header strategy failed: {e}")
 
-    # Strategy 3: Take screenshot of area where profile pic usually is (top-left of profile page)
-    # On mobile FB profile, the picture is usually in a predictable location
+    # Strategy 3: Take screenshot of area where profile pic usually is
+    # On mobile FB profile.php page, the "Edit profile photo" element is at (12,105) 149x149
     try:
-        # Crop a specific region - the profile picture area (usually around 120x120 at top)
-        # This is a fallback when we can't find the exact element
+        # Crop the profile picture area based on observed page layout
         full_screenshot = await page.screenshot(type="png", clip={
-            "x": 20,  # Left margin
-            "y": 200,  # Below the header
-            "width": 100,
-            "height": 100
+            "x": 12,   # Left position of profile photo
+            "y": 105,  # Top position (below header bar)
+            "width": 149,
+            "height": 149
         })
         if full_screenshot:
             base64_data = base64.b64encode(full_screenshot).decode('utf-8')
