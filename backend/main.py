@@ -2,10 +2,10 @@
 CommentBot API - Streamlined Facebook Comment Automation
 """
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, status, Query
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, status, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Set
 
@@ -17,6 +17,10 @@ from users import user_manager
 MAX_CONCURRENT = 5
 import logging
 import os
+
+# API Key for programmatic access (Claude testing, CI/CD, etc.)
+# Set via CLAUDE_API_KEY environment variable
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 import asyncio
 import json
 import random
@@ -578,7 +582,10 @@ class BatchSessionCreateRequest(BaseModel):
 # ============================================================================
 
 # OAuth2 scheme - tells FastAPI where to find the token
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
+
+# API Key header scheme
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 class LoginRequest(BaseModel):
@@ -619,16 +626,36 @@ class AdminChangePasswordRequest(BaseModel):
     new_password: str
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    api_key: str = Depends(api_key_header)
+) -> dict:
     """
-    Dependency that validates JWT and returns current user.
-    Use this to protect endpoints that require authentication.
+    Dependency that validates JWT or API key and returns current user.
+    Supports two authentication methods:
+    1. JWT Bearer token (for frontend/users)
+    2. X-API-Key header (for programmatic access like Claude testing)
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # Check API key first (for programmatic access)
+    if api_key and CLAUDE_API_KEY and api_key == CLAUDE_API_KEY:
+        # Return a virtual admin user for API key access
+        return {
+            "username": "claude_api",
+            "role": "admin",
+            "is_active": True,
+            "created_at": None,
+            "last_login": None
+        }
+
+    # Fall back to JWT token validation
+    if not token:
+        raise credentials_exception
 
     payload = decode_token(token)
     if payload is None:
