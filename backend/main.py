@@ -1464,6 +1464,193 @@ class RetryJobRequest(BaseModel):
     original_profile: Optional[str] = None  # Track which profile originally failed
 
 
+class TestCampaignRequest(BaseModel):
+    """Request for parallel test campaign - runs independently of main queue."""
+    url: str
+    comments: List[str]
+    filter_tags: Optional[List[str]] = None
+    enable_warmup: bool = True  # Default to True for testing
+    profile_name: Optional[str] = None  # Optional: use specific profile instead of LRU selection
+
+
+@app.post("/test-campaign")
+async def run_test_campaign(request: TestCampaignRequest, current_user: dict = Depends(get_current_user)) -> Dict:
+    """
+    Run a test campaign INDEPENDENTLY of the main queue.
+
+    This endpoint:
+    - Runs in parallel with scheduled campaigns (doesn't wait in queue)
+    - Uses full pipeline: warmup, vision, posting, analytics tracking
+    - Useful for testing while production campaigns are running
+    - Does NOT add to queue or affect queue state
+    """
+    from profile_manager import get_profile_manager
+    from gemini_vision import set_observation_context
+
+    profile_manager = get_profile_manager()
+
+    # Get valid sessions
+    sessions_list = list_saved_sessions()
+    valid_profiles = [s for s in sessions_list if s.get("has_valid_cookies", False)]
+
+    # Filter by tags if specified
+    if request.filter_tags:
+        valid_profiles = [
+            s for s in valid_profiles
+            if all(tag in s.get("tags", []) for tag in request.filter_tags)
+        ]
+
+    if not valid_profiles:
+        raise HTTPException(status_code=400, detail="No valid profiles match criteria")
+
+    # If specific profile requested, use it
+    if request.profile_name:
+        matching = [s for s in valid_profiles if s["profile_name"] == request.profile_name]
+        if not matching:
+            raise HTTPException(status_code=404, detail=f"Profile {request.profile_name} not found or invalid")
+        assigned_profiles = [request.profile_name] * len(request.comments)
+    else:
+        # Use LRU selection
+        sessions_for_priority = [
+            {"profile_name": s["profile_name"], "valid": True, "tags": s.get("tags", [])}
+            for s in valid_profiles
+        ]
+        assigned_profiles = profile_manager.get_profiles_by_priority(
+            filter_tags=None,
+            count=len(request.comments),
+            sessions=sessions_for_priority
+        )
+
+    if len(assigned_profiles) < len(request.comments):
+        logger.warning(f"[TEST] Only {len(assigned_profiles)} profiles for {len(request.comments)} comments")
+
+    total_jobs = min(len(request.comments), len(assigned_profiles))
+    test_id = f"test_{datetime.now().strftime('%H%M%S')}"
+
+    logger.info(f"[TEST-CAMPAIGN] Starting {test_id}: {total_jobs} comments, warmup={request.enable_warmup}")
+
+    await broadcast_update("test_campaign_start", {
+        "test_id": test_id,
+        "url": request.url,
+        "total_jobs": total_jobs,
+        "enable_warmup": request.enable_warmup
+    })
+
+    results = []
+
+    for job_idx, (profile_name, comment) in enumerate(zip(assigned_profiles, request.comments[:total_jobs])):
+        logger.info(f"[TEST-CAMPAIGN] Job {job_idx + 1}/{total_jobs}: {profile_name}")
+
+        await broadcast_update("test_job_start", {
+            "test_id": test_id,
+            "job_index": job_idx,
+            "profile_name": profile_name,
+            "comment": comment[:50]
+        })
+
+        session = FacebookSession(profile_name)
+
+        if not session.load():
+            results.append({
+                "profile_name": profile_name,
+                "success": False,
+                "error": "Session not found",
+                "job_index": job_idx
+            })
+            continue
+
+        try:
+            # Set Gemini context for debugging
+            set_observation_context(profile_name=profile_name, campaign_id=test_id)
+
+            # Broadcast warmup start if enabled
+            if request.enable_warmup:
+                await broadcast_update("test_warmup_start", {
+                    "test_id": test_id,
+                    "job_index": job_idx,
+                    "profile_name": profile_name
+                })
+
+            # Run full pipeline with warmup
+            result = await post_comment_verified(
+                session=session,
+                url=request.url,
+                comment=comment,
+                proxy=PROXY_URL if PROXY_URL else None,
+                enable_warmup=request.enable_warmup
+            )
+
+            await broadcast_update("test_job_complete", {
+                "test_id": test_id,
+                "job_index": job_idx,
+                "profile_name": profile_name,
+                "success": result["success"],
+                "verified": result.get("verified", False),
+                "warmup": result.get("warmup"),
+                "error": result.get("error")
+            })
+
+            results.append({
+                "profile_name": profile_name,
+                "comment": comment,
+                "success": result["success"],
+                "verified": result.get("verified", False),
+                "warmup": result.get("warmup"),
+                "error": result.get("error"),
+                "job_index": job_idx
+            })
+
+            # Track in analytics (same as production)
+            profile_manager.mark_profile_used(
+                profile_name=profile_name,
+                campaign_id=test_id,
+                comment=comment,
+                success=result["success"]
+            )
+
+            # Check for throttling
+            if result.get("throttled"):
+                logger.warning(f"[TEST] Profile {profile_name} throttled")
+                profile_manager.mark_profile_restricted(
+                    profile_name=profile_name,
+                    hours=24,
+                    reason=result.get("throttle_reason", "Test detected throttle")
+                )
+
+        except Exception as e:
+            logger.error(f"[TEST-CAMPAIGN] Job {job_idx} error: {e}")
+            results.append({
+                "profile_name": profile_name,
+                "success": False,
+                "error": str(e),
+                "job_index": job_idx
+            })
+
+        # Small delay between jobs in test (5-10 seconds)
+        if job_idx < total_jobs - 1:
+            delay = random.uniform(5, 10)
+            logger.info(f"[TEST-CAMPAIGN] Waiting {delay:.1f}s before next job")
+            await asyncio.sleep(delay)
+
+    success_count = sum(1 for r in results if r.get("success"))
+
+    await broadcast_update("test_campaign_complete", {
+        "test_id": test_id,
+        "success": success_count,
+        "total": len(results)
+    })
+
+    logger.info(f"[TEST-CAMPAIGN] Complete: {success_count}/{len(results)} successful")
+
+    return {
+        "test_id": test_id,
+        "url": request.url,
+        "total": len(results),
+        "success": success_count,
+        "results": results
+    }
+
+
 @app.get("/queue")
 async def get_queue(current_user: dict = Depends(get_current_user)) -> Dict:
     """Get full queue state including pending campaigns and history."""
