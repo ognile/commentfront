@@ -281,6 +281,23 @@ VERIFIED confidence=0.XX
 PENDING confidence=0.XX
 NOT_VERIFIED reason=your reason here
 
+Do NOT write anything else. Just one line in the format above.""",
+
+    "check_restriction": """Analyze this Facebook mobile screenshot.
+
+Check if there are ANY signs that this account is RESTRICTED from commenting:
+1. "You can't comment right now" or "You can't comment for X days/hours"
+2. "Action blocked" or "Action temporarily blocked"
+3. "Try again later" warning
+4. "We removed your comment" moderation notice
+5. "Something went wrong" with commenting
+6. "You're temporarily blocked" or "You've been restricted"
+7. Any popup/dialog indicating comment restrictions
+
+IMPORTANT: You MUST respond with ONLY one of these exact formats:
+RESTRICTED reason=exact message or description of restriction
+NOT_RESTRICTED confidence=0.XX
+
 Do NOT write anything else. Just one line in the format above."""
 }
 
@@ -469,6 +486,88 @@ class GeminiVisionClient:
                 message=str(e),
                 status="unknown"
             )
+
+    async def check_restriction(
+        self,
+        screenshot_path: str
+    ) -> dict:
+        """
+        Check if the current screenshot shows any restriction/throttling warnings.
+
+        Returns:
+            dict with keys:
+            - restricted: bool
+            - reason: str (the restriction message/reason if restricted)
+            - confidence: float
+        """
+        try:
+            with open(screenshot_path, "rb") as f:
+                image_data = f.read()
+
+            prompt = VERIFICATION_PROMPTS["check_restriction"]
+
+            image_part = types.Part.from_bytes(
+                data=image_data,
+                mime_type="image/png"
+            )
+
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=self.model,
+                contents=[prompt, image_part]
+            )
+
+            result_text = response.text.strip()
+            logger.info(f"Gemini check_restriction: {result_text}")
+
+            # Parse the response
+            result = {
+                "restricted": False,
+                "reason": None,
+                "confidence": 0.0
+            }
+
+            if result_text.startswith("RESTRICTED"):
+                result["restricted"] = True
+                # Extract reason from "RESTRICTED reason=..."
+                if "reason=" in result_text:
+                    result["reason"] = result_text.split("reason=", 1)[1].strip()
+                else:
+                    result["reason"] = "Unknown restriction"
+                result["confidence"] = 0.95  # High confidence if explicitly detected
+            elif result_text.startswith("NOT_RESTRICTED"):
+                result["restricted"] = False
+                # Extract confidence from "NOT_RESTRICTED confidence=0.XX"
+                if "confidence=" in result_text:
+                    try:
+                        conf_str = result_text.split("confidence=")[1].split()[0]
+                        result["confidence"] = float(conf_str)
+                    except:
+                        result["confidence"] = 0.8
+
+            # Log the observation
+            screenshot_name = os.path.basename(screenshot_path)
+            context = get_observation_context()
+            log_gemini_observation(
+                screenshot_name=screenshot_name,
+                operation_type="check_restriction",
+                prompt_type="check_restriction",
+                full_response=result_text,
+                parsed_result=result,
+                profile_name=context.get("profile_name"),
+                campaign_id=context.get("campaign_id")
+            )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Gemini check_restriction error: {e}")
+            return {
+                "restricted": False,
+                "reason": None,
+                "confidence": 0.0,
+                "error": str(e)
+            }
 
     async def verify_comment_posted(
         self,

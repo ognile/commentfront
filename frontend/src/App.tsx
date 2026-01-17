@@ -50,6 +50,8 @@ interface CampaignResult {
     duration?: number;
     error?: string;
   };
+  throttled?: boolean;
+  throttle_reason?: string;
 }
 
 interface QueuedCampaign {
@@ -411,6 +413,20 @@ function App() {
                   )
                 }));
                 setScreenshotKey(k => k + 1);
+                break;
+              case 'profile_throttled':
+                // Profile was detected as throttled/restricted
+                toast.warning(`Profile "${update.data.profile_name}" restricted: ${update.data.reason}`, {
+                  duration: 8000,
+                  icon: '🚫'
+                });
+                break;
+              case 'warmup_start':
+                // Warm-up phase started for a profile
+                setLiveStatus(prev => ({
+                  ...prev,
+                  currentStep: `Warming up: ${update.data.profile_name}`
+                }));
                 break;
               case 'campaign_complete':
                 setLiveStatus(prev => ({

@@ -366,6 +366,26 @@ class QueueProcessor:
                         success=result["success"]
                     )
 
+                    # Check for throttling/restriction detection
+                    if result.get("throttled"):
+                        throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
+                        self.logger.warning(f"Profile {profile_name} throttled: {throttle_reason}")
+
+                        # Mark profile as restricted for 24 hours
+                        profile_manager.mark_profile_restricted(
+                            profile_name=profile_name,
+                            hours=24,
+                            reason=throttle_reason
+                        )
+
+                        # Broadcast throttle event to frontend
+                        await broadcast_update("profile_throttled", {
+                            "profile_name": profile_name,
+                            "reason": throttle_reason,
+                            "campaign_id": campaign_id,
+                            "job_index": job_idx
+                        })
+
                 except Exception as e:
                     self.logger.error(f"Error processing job {job_idx} in campaign {campaign_id}: {e}")
                     await broadcast_update("job_error", {

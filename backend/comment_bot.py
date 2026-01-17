@@ -1070,7 +1070,20 @@ async def post_comment_verified(
             logger.error(f"FAILED: {e}")
             logger.error(f"Steps completed before failure: {result['steps_completed']}")
             if 'page' in locals():
-                await save_debug_screenshot(page, "error_state")
+                error_screenshot = await save_debug_screenshot(page, "error_state")
+
+                # Check for restriction/throttling when there's a failure
+                if vision and error_screenshot:
+                    try:
+                        restriction_check = await vision.check_restriction(error_screenshot)
+                        if restriction_check.get("restricted"):
+                            result["throttled"] = True
+                            result["throttle_reason"] = restriction_check.get("reason", "Unknown restriction")
+                            logger.warning(f"RESTRICTION DETECTED: {result['throttle_reason']}")
+                        else:
+                            result["throttled"] = False
+                    except Exception as check_err:
+                        logger.error(f"Failed to check for restriction: {check_err}")
         finally:
             await browser.close()
 
