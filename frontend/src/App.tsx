@@ -2248,7 +2248,7 @@ function App() {
               <CardContent className="p-0 bg-black">
                 <div className="relative aspect-video flex items-center justify-center overflow-hidden">
                   <img
-                    src={`${API_BASE}/debug/latest.png?t=${screenshotKey}`}
+                    src={`${API_BASE}/screenshots/latest.png?t=${screenshotKey}`}
                     alt="Live Bot View"
                     className="max-h-full max-w-full object-contain"
                     onError={(e) => {

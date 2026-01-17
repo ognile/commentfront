@@ -7,7 +7,6 @@ import asyncio
 import base64
 import logging
 import os
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -15,27 +14,15 @@ from typing import Optional, Dict, Any, List
 from google import genai
 from google.genai import types
 
+# Import the persistent observations store
+from gemini_observations_store import get_observations_store
+
 logger = logging.getLogger("GeminiVision")
 
 # =============================================================================
-# GEMINI OBSERVATION STORE
-# Stores the last N full Gemini responses for debugging/analytics
+# GEMINI OBSERVATION LOGGING
+# Uses the persistent GeminiObservationsStore for storage
 # =============================================================================
-
-@dataclass
-class GeminiObservation:
-    """A single Gemini observation with full response."""
-    timestamp: str
-    screenshot_name: str
-    operation_type: str  # "verify_state", "find_element", "decide_action", "verify_comment"
-    prompt_type: str  # e.g., "post_visible", "comment_button", etc.
-    full_response: str
-    parsed_result: Dict[str, Any]
-    profile_name: Optional[str] = None
-    campaign_id: Optional[str] = None
-
-# Global store for recent observations (thread-safe with deque)
-_gemini_observations: deque = deque(maxlen=50)  # Keep last 50 observations
 
 
 def log_gemini_observation(
@@ -50,9 +37,9 @@ def log_gemini_observation(
     """
     Log a full Gemini observation for later debugging.
     This is called BEFORE parsing so we preserve the full AI response.
+    Now uses persistent storage instead of in-memory deque.
     """
-    observation = GeminiObservation(
-        timestamp=datetime.utcnow().isoformat() + "Z",
+    get_observations_store().add_observation(
         screenshot_name=screenshot_name,
         operation_type=operation_type,
         prompt_type=prompt_type,
@@ -61,35 +48,16 @@ def log_gemini_observation(
         profile_name=profile_name,
         campaign_id=campaign_id
     )
-    _gemini_observations.append(observation)
-
-    # Also log at INFO level for Railway logs
-    logger.info(f"[GEMINI_FULL] {operation_type}/{prompt_type} | {screenshot_name}: {full_response[:500]}{'...' if len(full_response) > 500 else ''}")
 
 
 def get_recent_observations(limit: int = 20) -> List[Dict[str, Any]]:
     """Get recent Gemini observations for debugging/analytics."""
-    observations = list(_gemini_observations)[-limit:]
-    return [
-        {
-            "timestamp": obs.timestamp,
-            "screenshot_name": obs.screenshot_name,
-            "operation_type": obs.operation_type,
-            "prompt_type": obs.prompt_type,
-            "full_response": obs.full_response,
-            "parsed_result": obs.parsed_result,
-            "profile_name": obs.profile_name,
-            "campaign_id": obs.campaign_id
-        }
-        for obs in reversed(observations)  # Most recent first
-    ]
+    return get_observations_store().get_recent(limit=limit)
 
 
 def clear_observations() -> int:
     """Clear all stored observations. Returns count cleared."""
-    count = len(_gemini_observations)
-    _gemini_observations.clear()
-    return count
+    return get_observations_store().clear()
 
 
 # Context for current operation (set by caller, used in logging)

@@ -70,10 +70,10 @@ logger = logging.getLogger("API")
 
 app = FastAPI()
 
-# Mount debug directory for screenshots
-debug_path = os.path.join(os.path.dirname(__file__), "debug")
+# Mount debug directory for screenshots at /screenshots (not /debug to avoid shadowing API routes)
+debug_path = os.getenv("DEBUG_DIR", os.path.join(os.path.dirname(__file__), "debug"))
 os.makedirs(debug_path, exist_ok=True)
-app.mount("/debug", StaticFiles(directory=debug_path), name="debug")
+app.mount("/screenshots", StaticFiles(directory=debug_path), name="screenshots")
 
 # CORS
 app.add_middleware(

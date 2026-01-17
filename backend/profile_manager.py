@@ -14,10 +14,6 @@ from pathlib import Path
 
 logger = logging.getLogger("ProfileManager")
 
-# Path to state file
-STATE_FILE = os.path.join(os.path.dirname(__file__), "profile_state.json")
-SESSIONS_DIR = os.path.join(os.path.dirname(__file__), "sessions")
-
 
 @dataclass
 class ProfileState:
@@ -40,7 +36,16 @@ class ProfileState:
 class ProfileManager:
     """Manages profile rotation and usage tracking."""
 
-    def __init__(self):
+    def __init__(self, state_file: str = None, sessions_dir: str = None):
+        # Use env vars for Railway persistent volume, fallback to local paths
+        self.state_file = state_file or os.getenv(
+            "PROFILE_STATE_PATH",
+            os.path.join(os.path.dirname(__file__), "profile_state.json")
+        )
+        self.sessions_dir = sessions_dir or os.getenv(
+            "SESSIONS_DIR",
+            os.path.join(os.path.dirname(__file__), "sessions")
+        )
         self.state: Dict[str, Dict] = {"profiles": {}}
         self._load_state()
         self._sync_with_sessions()
@@ -48,10 +53,10 @@ class ProfileManager:
     def _load_state(self):
         """Load state from disk."""
         try:
-            if os.path.exists(STATE_FILE):
-                with open(STATE_FILE, "r") as f:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, "r") as f:
                     self.state = json.load(f)
-                logger.info(f"Loaded profile state with {len(self.state.get('profiles', {}))} profiles")
+                logger.info(f"Loaded profile state from {self.state_file} with {len(self.state.get('profiles', {}))} profiles")
         except Exception as e:
             logger.error(f"Failed to load profile state: {e}")
             self.state = {"profiles": {}}
@@ -60,27 +65,27 @@ class ProfileManager:
         """Save state to disk."""
         try:
             # Backup before write
-            if os.path.exists(STATE_FILE):
-                backup_path = STATE_FILE + ".backup"
-                with open(STATE_FILE, "r") as f:
+            if os.path.exists(self.state_file):
+                backup_path = self.state_file + ".backup"
+                with open(self.state_file, "r") as f:
                     backup_data = f.read()
                 with open(backup_path, "w") as f:
                     f.write(backup_data)
 
-            with open(STATE_FILE, "w") as f:
+            with open(self.state_file, "w") as f:
                 json.dump(self.state, f, indent=2)
-            logger.debug("Saved profile state")
+            logger.debug(f"Saved profile state to {self.state_file}")
         except Exception as e:
             logger.error(f"Failed to save profile state: {e}")
 
     def _sync_with_sessions(self):
         """Sync state with actual session files on disk."""
         try:
-            if not os.path.exists(SESSIONS_DIR):
+            if not os.path.exists(self.sessions_dir):
                 return
 
             # Get list of session files
-            session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith(".json")]
+            session_files = [f for f in os.listdir(self.sessions_dir) if f.endswith(".json")]
 
             # Add any new sessions to state
             for session_file in session_files:
@@ -100,7 +105,7 @@ class ProfileManager:
             # Remove profiles that no longer have session files
             profiles_to_remove = []
             for profile_name in self.state["profiles"]:
-                session_path = os.path.join(SESSIONS_DIR, f"{profile_name}.json")
+                session_path = os.path.join(self.sessions_dir, f"{profile_name}.json")
                 if not os.path.exists(session_path):
                     profiles_to_remove.append(profile_name)
 

@@ -25,9 +25,38 @@ logger = logging.getLogger("CommentBot")
 MOBILE_VIEWPORT = {"width": 393, "height": 873}
 DEFAULT_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
-# Directory for debug screenshots
-DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
+# Directory for debug screenshots (uses env var for Railway persistent volume)
+DEBUG_DIR = os.getenv("DEBUG_DIR", os.path.join(os.path.dirname(__file__), "debug"))
 os.makedirs(DEBUG_DIR, exist_ok=True)
+
+
+def cleanup_old_screenshots(max_keep: int = 100):
+    """Remove old screenshots, keeping only the most recent."""
+    try:
+        if not os.path.exists(DEBUG_DIR):
+            return
+
+        # Get all png files with timestamps
+        files = []
+        for f in os.listdir(DEBUG_DIR):
+            if f.endswith('.png') and f != 'latest.png':
+                path = os.path.join(DEBUG_DIR, f)
+                files.append((path, os.path.getmtime(path)))
+
+        # Sort by modification time (oldest first)
+        files.sort(key=lambda x: x[1])
+
+        # Remove oldest files if over limit
+        removed = 0
+        while len(files) > max_keep:
+            oldest = files.pop(0)
+            os.remove(oldest[0])
+            removed += 1
+
+        if removed > 0:
+            logger.debug(f"Cleaned up {removed} old screenshots, keeping {len(files)}")
+    except Exception as e:
+        logger.error(f"Failed to cleanup screenshots: {e}")
 
 def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
     parsed = urlparse(proxy_url)
@@ -1086,6 +1115,9 @@ async def post_comment_verified(
                         logger.error(f"Failed to check for restriction: {check_err}")
         finally:
             await browser.close()
+
+    # Cleanup old screenshots after each run (keep last 100)
+    cleanup_old_screenshots(max_keep=100)
 
     return result
 
