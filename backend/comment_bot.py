@@ -839,11 +839,19 @@ async def post_comment_verified(
     session: FacebookSession,
     url: str,
     comment: str,
-    proxy: Optional[str] = None
+    proxy: Optional[str] = None,
+    enable_warmup: bool = False
 ) -> Dict[str, Any]:
     """
     Post a comment with AI vision VERIFICATION at every step.
     This is the robust version that verifies each action succeeded before proceeding.
+
+    Args:
+        session: FacebookSession with cookies
+        url: Target post URL
+        comment: Comment text to post
+        proxy: Optional proxy URL
+        enable_warmup: If True, perform warm-up activity before commenting
     """
     result = {
         "success": False,
@@ -891,6 +899,23 @@ async def post_comment_verified(
             page = await context.new_page()
             if not await apply_session_to_context(context, session):
                 raise Exception("Failed to apply cookies")
+
+            # ========== WARM-UP PHASE (Optional) ==========
+            if enable_warmup:
+                from warmup_bot import perform_warmup
+                logger.info("=== WARM-UP PHASE: Browsing feed before commenting ===")
+                warmup_result = await perform_warmup(page)
+                if warmup_result.success:
+                    logger.info(f"✓ Warm-up complete: {warmup_result.scroll_count} scrolls, {warmup_result.likes_count} likes in {warmup_result.duration_seconds:.1f}s")
+                    result["warmup"] = {
+                        "success": True,
+                        "scrolls": warmup_result.scroll_count,
+                        "likes": warmup_result.likes_count,
+                        "duration": warmup_result.duration_seconds
+                    }
+                else:
+                    logger.warning(f"Warm-up failed: {warmup_result.error} - continuing anyway")
+                    result["warmup"] = {"success": False, "error": warmup_result.error}
 
             # ========== STEP 1: Navigate and verify post is visible ==========
             logger.info(f"Step 1: Navigating to {url}")

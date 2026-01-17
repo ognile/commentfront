@@ -102,7 +102,8 @@ class CampaignQueueManager:
         comments: List[str],
         duration_minutes: int,
         username: str,
-        filter_tags: Optional[List[str]] = None
+        filter_tags: Optional[List[str]] = None,
+        enable_warmup: bool = False
     ) -> dict:
         """
         Add a new campaign to the queue.
@@ -113,6 +114,7 @@ class CampaignQueueManager:
             duration_minutes: Duration to spread comments over
             username: User who created the campaign
             filter_tags: Optional tags to filter sessions (AND logic)
+            enable_warmup: If True, profiles will browse feed before commenting
 
         Returns:
             The created campaign object
@@ -133,6 +135,7 @@ class CampaignQueueManager:
             "comments": comments,
             "duration_minutes": duration_minutes,
             "filter_tags": filter_tags or [],
+            "enable_warmup": enable_warmup,
             "status": "pending",
             "created_at": datetime.utcnow().isoformat(),
             "created_by": username,

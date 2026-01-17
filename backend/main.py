@@ -190,6 +190,7 @@ class QueueProcessor:
         comments = campaign["comments"]
         duration_minutes = campaign["duration_minutes"]
         filter_tags = campaign.get("filter_tags", [])
+        enable_warmup = campaign.get("enable_warmup", False)
 
         try:
             # Mark as processing
@@ -319,11 +320,20 @@ class QueueProcessor:
                     from gemini_vision import set_observation_context
                     set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
 
+                    # Broadcast warmup start if enabled
+                    if enable_warmup:
+                        await broadcast_update("warmup_start", {
+                            "campaign_id": campaign_id,
+                            "job_index": job_idx,
+                            "profile_name": profile_name
+                        })
+
                     result = await post_comment_verified(
                         session=session,
                         url=url,
                         comment=comment,
-                        proxy=PROXY_URL if PROXY_URL else None
+                        proxy=PROXY_URL if PROXY_URL else None,
+                        enable_warmup=enable_warmup
                     )
 
                     await broadcast_update("job_complete", {
@@ -333,7 +343,8 @@ class QueueProcessor:
                         "success": result["success"],
                         "verified": result.get("verified", False),
                         "method": result.get("method", "unknown"),
-                        "error": result.get("error")
+                        "error": result.get("error"),
+                        "warmup": result.get("warmup")
                     })
 
                     results.append({
@@ -343,7 +354,8 @@ class QueueProcessor:
                         "verified": result.get("verified", False),
                         "method": result.get("method", "unknown"),
                         "error": result.get("error"),
-                        "job_index": job_idx
+                        "job_index": job_idx,
+                        "warmup": result.get("warmup")
                     })
 
                     # Track profile usage for rotation (LRU)
@@ -1421,6 +1433,7 @@ class AddToQueueRequest(BaseModel):
     comments: List[str]
     duration_minutes: int = 30
     filter_tags: Optional[List[str]] = None
+    enable_warmup: bool = False  # If True, profiles browse feed before commenting
 
 
 class RetryJobRequest(BaseModel):
@@ -1446,7 +1459,8 @@ async def add_to_queue(request: AddToQueueRequest, current_user: dict = Depends(
             comments=request.comments,
             duration_minutes=request.duration_minutes,
             username=current_user["username"],
-            filter_tags=request.filter_tags
+            filter_tags=request.filter_tags,
+            enable_warmup=request.enable_warmup
         )
 
         # Broadcast to all connected clients

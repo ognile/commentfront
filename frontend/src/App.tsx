@@ -43,6 +43,13 @@ interface CampaignResult {
   is_retry?: boolean;
   original_profile?: string;
   retried_at?: string;
+  warmup?: {
+    success: boolean;
+    scrolls?: number;
+    likes?: number;
+    duration?: number;
+    error?: string;
+  };
 }
 
 interface QueuedCampaign {
@@ -51,6 +58,7 @@ interface QueuedCampaign {
   comments: string[];
   duration_minutes: number;
   filter_tags?: string[];
+  enable_warmup?: boolean;
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
   created_at: string;
   created_by: string;
@@ -245,6 +253,7 @@ function App() {
   // isProcessing removed - now using queueState.processor_running instead
   const [loading, setLoading] = useState(true);
   const [campaignDuration, setCampaignDuration] = useState(30); // Duration in minutes (10-1440)
+  const [enableWarmup, setEnableWarmup] = useState(false); // Enable warm-up browsing before commenting
 
   // Campaign queue state - synced with backend
   const [queueState, setQueueState] = useState<QueueState>({
@@ -908,7 +917,8 @@ function App() {
           url,
           comments: commentList,
           duration_minutes: campaignDuration,
-          filter_tags: campaignFilterTags.length > 0 ? campaignFilterTags : null
+          filter_tags: campaignFilterTags.length > 0 ? campaignFilterTags : null,
+          enable_warmup: enableWarmup
         })
       });
 
@@ -1989,6 +1999,25 @@ function App() {
                       ? `Only sessions with ALL selected tags (${sessions.filter(s => s.valid && campaignFilterTags.every(tag => (s.tags || []).includes(tag))).length} matching)`
                       : 'Leave empty to use all valid sessions'}
                   </p>
+                </div>
+
+                {/* Warm-up Toggle */}
+                <div className="flex items-center gap-3 p-3 bg-[#f8f9fa] rounded-lg border border-[#e5e7eb]">
+                  <input
+                    type="checkbox"
+                    id="enable-warmup"
+                    checked={enableWarmup}
+                    onChange={(e) => setEnableWarmup(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <div className="flex-1">
+                    <Label htmlFor="enable-warmup" className="cursor-pointer font-medium">
+                      Enable Warm-up
+                    </Label>
+                    <p className="text-xs text-[#666666]">
+                      Browse feed & like posts before commenting (reduces throttling)
+                    </p>
+                  </div>
                 </div>
 
                 <Button
