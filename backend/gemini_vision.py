@@ -7,13 +7,107 @@ import asyncio
 import base64
 import logging
 import os
-from dataclasses import dataclass
-from typing import Optional
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional, Dict, Any, List
 
 from google import genai
 from google.genai import types
 
 logger = logging.getLogger("GeminiVision")
+
+# =============================================================================
+# GEMINI OBSERVATION STORE
+# Stores the last N full Gemini responses for debugging/analytics
+# =============================================================================
+
+@dataclass
+class GeminiObservation:
+    """A single Gemini observation with full response."""
+    timestamp: str
+    screenshot_name: str
+    operation_type: str  # "verify_state", "find_element", "decide_action", "verify_comment"
+    prompt_type: str  # e.g., "post_visible", "comment_button", etc.
+    full_response: str
+    parsed_result: Dict[str, Any]
+    profile_name: Optional[str] = None
+    campaign_id: Optional[str] = None
+
+# Global store for recent observations (thread-safe with deque)
+_gemini_observations: deque = deque(maxlen=50)  # Keep last 50 observations
+
+
+def log_gemini_observation(
+    screenshot_name: str,
+    operation_type: str,
+    prompt_type: str,
+    full_response: str,
+    parsed_result: Dict[str, Any],
+    profile_name: Optional[str] = None,
+    campaign_id: Optional[str] = None
+) -> None:
+    """
+    Log a full Gemini observation for later debugging.
+    This is called BEFORE parsing so we preserve the full AI response.
+    """
+    observation = GeminiObservation(
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        screenshot_name=screenshot_name,
+        operation_type=operation_type,
+        prompt_type=prompt_type,
+        full_response=full_response,
+        parsed_result=parsed_result,
+        profile_name=profile_name,
+        campaign_id=campaign_id
+    )
+    _gemini_observations.append(observation)
+
+    # Also log at INFO level for Railway logs
+    logger.info(f"[GEMINI_FULL] {operation_type}/{prompt_type} | {screenshot_name}: {full_response[:500]}{'...' if len(full_response) > 500 else ''}")
+
+
+def get_recent_observations(limit: int = 20) -> List[Dict[str, Any]]:
+    """Get recent Gemini observations for debugging/analytics."""
+    observations = list(_gemini_observations)[-limit:]
+    return [
+        {
+            "timestamp": obs.timestamp,
+            "screenshot_name": obs.screenshot_name,
+            "operation_type": obs.operation_type,
+            "prompt_type": obs.prompt_type,
+            "full_response": obs.full_response,
+            "parsed_result": obs.parsed_result,
+            "profile_name": obs.profile_name,
+            "campaign_id": obs.campaign_id
+        }
+        for obs in reversed(observations)  # Most recent first
+    ]
+
+
+def clear_observations() -> int:
+    """Clear all stored observations. Returns count cleared."""
+    count = len(_gemini_observations)
+    _gemini_observations.clear()
+    return count
+
+
+# Context for current operation (set by caller, used in logging)
+_current_context: Dict[str, str] = {}
+
+
+def set_observation_context(profile_name: Optional[str] = None, campaign_id: Optional[str] = None):
+    """Set context for subsequent Gemini observations."""
+    global _current_context
+    _current_context = {
+        "profile_name": profile_name,
+        "campaign_id": campaign_id
+    }
+
+
+def get_observation_context() -> Dict[str, str]:
+    """Get current observation context."""
+    return _current_context.copy()
 
 # Configuration from environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -268,7 +362,28 @@ class GeminiVisionClient:
             result_text = response.text.strip()
             logger.debug(f"Gemini response for {element_type}: {result_text}")
 
-            return self._parse_element_response(result_text)
+            # Parse the response
+            parsed = self._parse_element_response(result_text)
+
+            # Log the FULL observation before returning (for debugging)
+            screenshot_name = os.path.basename(screenshot_path)
+            context = get_observation_context()
+            log_gemini_observation(
+                screenshot_name=screenshot_name,
+                operation_type="find_element",
+                prompt_type=element_type,
+                full_response=result_text,
+                parsed_result={
+                    "found": parsed.found,
+                    "x": parsed.x,
+                    "y": parsed.y,
+                    "confidence": parsed.confidence
+                },
+                profile_name=context.get("profile_name"),
+                campaign_id=context.get("campaign_id")
+            )
+
+            return parsed
 
         except Exception as e:
             logger.error(f"Gemini vision error: {e}")
@@ -323,7 +438,28 @@ class GeminiVisionClient:
             result_text = response.text.strip()
             logger.info(f"Gemini verify_state ({verification_type}): {result_text}")
 
-            return self._parse_state_verification_response(result_text)
+            # Parse the response
+            parsed = self._parse_state_verification_response(result_text)
+
+            # Log the FULL observation before returning (for debugging)
+            screenshot_name = os.path.basename(screenshot_path)
+            context = get_observation_context()
+            log_gemini_observation(
+                screenshot_name=screenshot_name,
+                operation_type="verify_state",
+                prompt_type=verification_type,
+                full_response=result_text,
+                parsed_result={
+                    "success": parsed.success,
+                    "confidence": parsed.confidence,
+                    "status": parsed.status,
+                    "message": parsed.message[:200] if parsed.message else ""
+                },
+                profile_name=context.get("profile_name"),
+                campaign_id=context.get("campaign_id")
+            )
+
+            return parsed
 
         except Exception as e:
             logger.error(f"Gemini verify_state error: {e}")
@@ -369,7 +505,28 @@ class GeminiVisionClient:
             result_text = response.text.strip()
             logger.info(f"Gemini verification response: {result_text}")
 
-            return self._parse_verification_response(result_text)
+            # Parse the response
+            parsed = self._parse_verification_response(result_text)
+
+            # Log the FULL observation before returning (for debugging)
+            screenshot_name = os.path.basename(screenshot_path)
+            context = get_observation_context()
+            log_gemini_observation(
+                screenshot_name=screenshot_name,
+                operation_type="verify_comment",
+                prompt_type="comment_posted",
+                full_response=result_text,
+                parsed_result={
+                    "success": parsed.success,
+                    "confidence": parsed.confidence,
+                    "status": parsed.status,
+                    "message": parsed.message[:200] if parsed.message else ""
+                },
+                profile_name=context.get("profile_name"),
+                campaign_id=context.get("campaign_id")
+            )
+
+            return parsed
 
         except Exception as e:
             logger.error(f"Gemini verification error: {e}")
@@ -440,7 +597,23 @@ SCROLL direction=down"""
             result_text = response.text.strip()
             logger.info(f"Gemini decision: {result_text}")
 
-            return self._parse_decision(result_text)
+            # Parse the decision
+            parsed = self._parse_decision(result_text)
+
+            # Log the FULL observation before returning (for debugging)
+            screenshot_name = os.path.basename(screenshot_path)
+            context = get_observation_context()
+            log_gemini_observation(
+                screenshot_name=screenshot_name,
+                operation_type="decide_action",
+                prompt_type=action_attempted,
+                full_response=result_text,
+                parsed_result=parsed,
+                profile_name=context.get("profile_name"),
+                campaign_id=context.get("campaign_id")
+            )
+
+            return parsed
 
         except Exception as e:
             logger.error(f"Gemini decide_next_action error: {e}")

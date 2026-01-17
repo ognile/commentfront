@@ -221,10 +221,24 @@ class QueueProcessor:
                 })
                 return
 
-            # Assign profiles (randomize order)
-            profile_names = [p["profile_name"] for p in valid_profiles]
-            random.shuffle(profile_names)
-            assigned_profiles = profile_names[:len(comments)]
+            # Assign profiles using LRU priority queue (least recently used first)
+            from profile_manager import get_profile_manager
+            profile_manager = get_profile_manager()
+
+            # Convert session list to format expected by profile manager
+            sessions_for_priority = [
+                {"profile_name": s["profile_name"], "valid": True, "tags": s.get("tags", [])}
+                for s in valid_profiles
+            ]
+
+            # Get profiles in priority order (LRU - least recently used first)
+            assigned_profiles = profile_manager.get_profiles_by_priority(
+                filter_tags=None,  # Already filtered above
+                count=len(comments),
+                sessions=sessions_for_priority
+            )
+
+            self.logger.info(f"Profile priority order (LRU): {assigned_profiles}")
 
             if len(assigned_profiles) < len(comments):
                 self.logger.warning(f"Only {len(assigned_profiles)} profiles available for {len(comments)} comments")
@@ -301,6 +315,10 @@ class QueueProcessor:
                     continue
 
                 try:
+                    # Set Gemini observation context for debugging
+                    from gemini_vision import set_observation_context
+                    set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
+
                     result = await post_comment_verified(
                         session=session,
                         url=url,
@@ -327,6 +345,14 @@ class QueueProcessor:
                         "error": result.get("error"),
                         "job_index": job_idx
                     })
+
+                    # Track profile usage for rotation (LRU)
+                    profile_manager.mark_profile_used(
+                        profile_name=profile_name,
+                        campaign_id=campaign_id,
+                        comment=comment,
+                        success=result["success"]
+                    )
 
                 except Exception as e:
                     self.logger.error(f"Error processing job {job_idx} in campaign {campaign_id}: {e}")
@@ -793,6 +819,107 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+# =============================================================================
+# DEBUG / ANALYTICS ENDPOINTS
+# =============================================================================
+
+@app.get("/debug/gemini-logs")
+async def get_gemini_logs(
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get recent Gemini AI observations for debugging.
+    Returns full AI responses, not just parsed results.
+    """
+    from gemini_vision import get_recent_observations
+    observations = get_recent_observations(limit=limit)
+    return {
+        "count": len(observations),
+        "observations": observations
+    }
+
+
+@app.post("/debug/gemini-logs/clear")
+async def clear_gemini_logs(current_user: dict = Depends(get_current_user)):
+    """Clear stored Gemini observations."""
+    from gemini_vision import clear_observations
+    count = clear_observations()
+    return {"cleared": count}
+
+
+# =============================================================================
+# PROFILE ANALYTICS ENDPOINTS
+# =============================================================================
+
+@app.get("/analytics/summary")
+async def get_analytics_summary(current_user: dict = Depends(get_current_user)):
+    """Get summary analytics for all profiles."""
+    from profile_manager import get_profile_manager
+    pm = get_profile_manager()
+    return pm.get_analytics_summary()
+
+
+@app.get("/analytics/profiles")
+async def get_all_profile_analytics(current_user: dict = Depends(get_current_user)):
+    """Get analytics for all profiles."""
+    from profile_manager import get_profile_manager
+    pm = get_profile_manager()
+
+    profiles = []
+    for profile_name in pm.get_all_profiles():
+        analytics = pm.get_profile_analytics(profile_name)
+        if analytics:
+            profiles.append(analytics)
+
+    # Sort by last_used_at (most recent first)
+    profiles.sort(key=lambda p: p.get("last_used_at") or "", reverse=True)
+    return {"profiles": profiles}
+
+
+@app.get("/analytics/profiles/{profile_name}")
+async def get_profile_analytics(
+    profile_name: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get detailed analytics for a single profile."""
+    from profile_manager import get_profile_manager
+    pm = get_profile_manager()
+
+    analytics = pm.get_profile_analytics(profile_name)
+    if not analytics:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return analytics
+
+
+@app.post("/analytics/profiles/{profile_name}/unblock")
+async def unblock_profile(
+    profile_name: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Manually unblock a restricted profile."""
+    from profile_manager import get_profile_manager
+    pm = get_profile_manager()
+
+    pm.unblock_profile(profile_name)
+    return {"success": True, "profile_name": profile_name}
+
+
+@app.post("/analytics/profiles/{profile_name}/restrict")
+async def restrict_profile(
+    profile_name: str,
+    hours: int = Query(default=24, ge=1, le=168),
+    reason: str = Query(default="manual"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Manually restrict a profile for a duration."""
+    from profile_manager import get_profile_manager
+    pm = get_profile_manager()
+
+    pm.mark_profile_restricted(profile_name, hours=hours, reason=reason)
+    return {"success": True, "profile_name": profile_name, "hours": hours}
 
 
 @app.websocket("/ws/live")

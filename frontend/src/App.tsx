@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag, User, ChevronRight, RotateCw } from "lucide-react"
+import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag, User, ChevronRight, RotateCw, BarChart3 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Toaster, toast } from 'sonner'
@@ -140,6 +140,41 @@ interface PendingUpload {
   imageId: string;
 }
 
+interface GeminiObservation {
+  timestamp: string;
+  screenshot_name: string;
+  operation_type: string;
+  prompt_type: string;
+  full_response: string;
+  parsed_result: Record<string, unknown>;
+  profile_name: string | null;
+  campaign_id: string | null;
+}
+
+interface ProfileAnalytics {
+  profile_name: string;
+  status: string;
+  last_used_at: string | null;
+  usage_count: number;
+  restriction_expires_at: string | null;
+  restriction_reason: string | null;
+  total_comments: number;
+  success_rate: number;
+  daily_stats: Record<string, { comments: number; success: number; failed: number }>;
+  usage_history: Array<{
+    timestamp: string;
+    campaign_id: string | null;
+    comment: string | null;
+    success: boolean;
+  }>;
+}
+
+interface AnalyticsSummary {
+  today: { comments: number; success: number; success_rate: number };
+  week: { comments: number; success: number; success_rate: number };
+  profiles: { active: number; restricted: number; total: number };
+}
+
 // Mobile viewport dimensions
 const VIEWPORT_WIDTH = 393;
 const VIEWPORT_HEIGHT = 873;
@@ -260,6 +295,15 @@ function App() {
   // Batch session creation state
   const [selectedCredentials, setSelectedCredentials] = useState<Set<string>>(new Set());
   const [batchInProgress, setBatchInProgress] = useState(false);
+
+  // Analytics / Debug state
+  const [geminiObservations, setGeminiObservations] = useState<GeminiObservation[]>([]);
+  const [loadingObservations, setLoadingObservations] = useState(false);
+  const [expandedObservation, setExpandedObservation] = useState<number | null>(null);
+  const [profileAnalytics, setProfileAnalytics] = useState<ProfileAnalytics[]>([]);
+  const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
 
   // WebSocket and live status
   const [liveStatus, setLiveStatus] = useState<LiveStatus>({
@@ -701,6 +745,88 @@ function App() {
       console.error("Failed to fetch queue:", error);
     } finally {
       setQueueLoading(false);
+    }
+  };
+
+  const fetchGeminiObservations = async () => {
+    try {
+      setLoadingObservations(true);
+      const res = await fetch(`${API_BASE}/debug/gemini-logs?limit=50`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error('Failed to fetch Gemini logs');
+      const data = await res.json();
+      setGeminiObservations(data.observations || []);
+    } catch (error) {
+      console.error("Failed to fetch Gemini observations:", error);
+      toast.error('Failed to load Gemini observations');
+    } finally {
+      setLoadingObservations(false);
+    }
+  };
+
+  const clearGeminiObservations = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/debug/gemini-logs/clear`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) throw new Error('Failed to clear Gemini logs');
+      const data = await res.json();
+      toast.success(`Cleared ${data.cleared} observations`);
+      setGeminiObservations([]);
+    } catch (error) {
+      toast.error('Failed to clear observations');
+    }
+  };
+
+  const fetchProfileAnalytics = async () => {
+    try {
+      setLoadingAnalytics(true);
+      const [summaryRes, profilesRes] = await Promise.all([
+        fetch(`${API_BASE}/analytics/summary`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/analytics/profiles`, { headers: getAuthHeaders() })
+      ]);
+
+      if (summaryRes.ok) {
+        const summaryData = await summaryRes.json();
+        setAnalyticsSummary(summaryData);
+      }
+
+      if (profilesRes.ok) {
+        const profilesData = await profilesRes.json();
+        setProfileAnalytics(profilesData.profiles || []);
+      }
+    } catch (error) {
+      console.error("Failed to fetch profile analytics:", error);
+    } finally {
+      setLoadingAnalytics(false);
+    }
+  };
+
+  const unblockProfile = async (profileName: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/analytics/profiles/${encodeURIComponent(profileName)}/unblock`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) throw new Error('Failed to unblock profile');
+      toast.success(`Unblocked ${profileName}`);
+      fetchProfileAnalytics();
+    } catch (error) {
+      toast.error('Failed to unblock profile');
+    }
+  };
+
+  const restrictProfile = async (profileName: string, hours: number = 24) => {
+    try {
+      const res = await fetch(`${API_BASE}/analytics/profiles/${encodeURIComponent(profileName)}/restrict?hours=${hours}&reason=manual`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) throw new Error('Failed to restrict profile');
+      toast.success(`Restricted ${profileName} for ${hours}h`);
+      fetchProfileAnalytics();
+    } catch (error) {
+      toast.error('Failed to restrict profile');
     }
   };
 
@@ -1770,6 +1896,10 @@ function App() {
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
             <TabsTrigger value="credentials">Credentials</TabsTrigger>
             <TabsTrigger value="proxies">Proxies</TabsTrigger>
+            <TabsTrigger value="analytics" onClick={() => { fetchGeminiObservations(); fetchProfileAnalytics(); }}>
+              <BarChart3 className="w-4 h-4 mr-1" />
+              Analytics
+            </TabsTrigger>
             {user?.role === 'admin' && (
               <TabsTrigger value="admin">
                 <Shield className="w-4 h-4 mr-1" />
@@ -2733,6 +2863,323 @@ function App() {
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
+
+          {/* Analytics Tab - Gemini Observations */}
+          <TabsContent value="analytics" className="mt-6 space-y-6">
+            {/* Summary Stats */}
+            {analyticsSummary && (
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <Card className="p-4">
+                  <div className="text-2xl font-bold">{analyticsSummary.today.comments}</div>
+                  <div className="text-sm text-[#666666]">Today's Comments</div>
+                  <div className="text-xs text-green-600 mt-1">
+                    {analyticsSummary.today.success_rate.toFixed(0)}% success
+                  </div>
+                </Card>
+                <Card className="p-4">
+                  <div className="text-2xl font-bold">{analyticsSummary.week.comments}</div>
+                  <div className="text-sm text-[#666666]">This Week</div>
+                  <div className="text-xs text-green-600 mt-1">
+                    {analyticsSummary.week.success_rate.toFixed(0)}% success
+                  </div>
+                </Card>
+                <Card className="p-4">
+                  <div className="text-2xl font-bold text-green-600">{analyticsSummary.profiles.active}</div>
+                  <div className="text-sm text-[#666666]">Active Profiles</div>
+                </Card>
+                <Card className="p-4">
+                  <div className="text-2xl font-bold text-red-500">{analyticsSummary.profiles.restricted}</div>
+                  <div className="text-sm text-[#666666]">Restricted</div>
+                </Card>
+              </div>
+            )}
+
+            {/* Profile Usage Table */}
+            <Card>
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <User className="w-5 h-5" />
+                    Profile Usage Tracker
+                  </CardTitle>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fetchProfileAnalytics()}
+                    disabled={loadingAnalytics}
+                  >
+                    {loadingAnalytics ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4" />
+                    )}
+                    Refresh
+                  </Button>
+                </div>
+                <p className="text-sm text-[#666666] mt-2">
+                  Profiles are rotated using LRU (least recently used first) to prevent overuse.
+                </p>
+              </CardHeader>
+              <CardContent className="pt-4">
+                {loadingAnalytics ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-[#999999]" />
+                    <span className="ml-2 text-[#666666]">Loading profile stats...</span>
+                  </div>
+                ) : profileAnalytics.length === 0 ? (
+                  <div className="text-center py-8 text-[#999999]">
+                    <User className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                    <p>No profile data yet.</p>
+                    <p className="text-sm">Run a campaign to see usage stats.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                    {profileAnalytics.map((profile) => {
+                      const isExpanded = expandedProfile === profile.profile_name;
+                      const isRestricted = profile.status === 'restricted';
+
+                      return (
+                        <div
+                          key={profile.profile_name}
+                          className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                            isExpanded ? 'bg-[rgba(51,51,51,0.04)]' : 'hover:bg-[rgba(51,51,51,0.02)]'
+                          }`}
+                          onClick={() => setExpandedProfile(isExpanded ? null : profile.profile_name)}
+                        >
+                          {/* Profile Row */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              {isRestricted ? (
+                                <div className="w-2 h-2 rounded-full bg-red-500" />
+                              ) : (
+                                <div className="w-2 h-2 rounded-full bg-green-500" />
+                              )}
+                              <span className="font-medium">{profile.profile_name}</span>
+                              {isRestricted && (
+                                <Badge variant="destructive" className="text-xs">
+                                  Restricted
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-4 text-sm text-[#666666]">
+                              <span>{profile.usage_count} uses</span>
+                              <span>{profile.success_rate.toFixed(0)}% success</span>
+                              <span>
+                                {profile.last_used_at
+                                  ? new Date(profile.last_used_at).toLocaleDateString()
+                                  : 'Never used'}
+                              </span>
+                              <ChevronRight
+                                className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Expanded Content */}
+                          {isExpanded && (
+                            <div className="mt-3 pt-3 border-t space-y-3">
+                              {/* Actions */}
+                              <div className="flex gap-2">
+                                {isRestricted ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={(e) => { e.stopPropagation(); unblockProfile(profile.profile_name); }}
+                                  >
+                                    <CheckCircle className="w-4 h-4 mr-1" />
+                                    Unblock
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={(e) => { e.stopPropagation(); restrictProfile(profile.profile_name, 24); }}
+                                  >
+                                    <XCircle className="w-4 h-4 mr-1" />
+                                    Restrict 24h
+                                  </Button>
+                                )}
+                              </div>
+
+                              {/* Restriction Info */}
+                              {isRestricted && profile.restriction_expires_at && (
+                                <div className="text-sm text-red-600">
+                                  Expires: {new Date(profile.restriction_expires_at).toLocaleString()}
+                                  {profile.restriction_reason && ` (${profile.restriction_reason})`}
+                                </div>
+                              )}
+
+                              {/* Recent History */}
+                              {profile.usage_history && profile.usage_history.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-medium text-[#666666] mb-2">Recent Activity:</p>
+                                  <div className="space-y-1">
+                                    {profile.usage_history.slice(0, 5).map((entry, idx) => (
+                                      <div key={idx} className="flex items-center gap-2 text-xs">
+                                        {entry.success ? (
+                                          <CheckCircle className="w-3 h-3 text-green-500" />
+                                        ) : (
+                                          <XCircle className="w-3 h-3 text-red-500" />
+                                        )}
+                                        <span className="text-[#999999]">
+                                          {new Date(entry.timestamp).toLocaleString()}
+                                        </span>
+                                        {entry.comment && (
+                                          <span className="truncate max-w-[200px]">
+                                            "{entry.comment}"
+                                          </span>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Gemini Observations Card */}
+            <Card>
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <BarChart3 className="w-5 h-5" />
+                    Gemini AI Observations
+                  </CardTitle>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => fetchGeminiObservations()}
+                      disabled={loadingObservations}
+                    >
+                      {loadingObservations ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-4 h-4" />
+                      )}
+                      Refresh
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => clearGeminiObservations()}
+                      disabled={geminiObservations.length === 0}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+                <p className="text-sm text-[#666666] mt-2">
+                  View full AI responses to understand what Gemini sees on each screenshot.
+                  This helps debug false negatives and understand why actions fail.
+                </p>
+              </CardHeader>
+              <CardContent className="pt-4">
+                {loadingObservations ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-[#999999]" />
+                    <span className="ml-2 text-[#666666]">Loading observations...</span>
+                  </div>
+                ) : geminiObservations.length === 0 ? (
+                  <div className="text-center py-8 text-[#999999]">
+                    <Eye className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                    <p>No Gemini observations yet.</p>
+                    <p className="text-sm">Run a campaign to see AI vision responses.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-[600px] overflow-y-auto">
+                    {geminiObservations.map((obs, index) => {
+                      const isExpanded = expandedObservation === index;
+                      const result = obs.parsed_result;
+                      const isSuccess = result.success === true || result.found === true || result.status === 'verified';
+
+                      return (
+                        <div
+                          key={`${obs.timestamp}-${index}`}
+                          className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                            isExpanded ? 'bg-[rgba(51,51,51,0.04)]' : 'hover:bg-[rgba(51,51,51,0.02)]'
+                          }`}
+                          onClick={() => setExpandedObservation(isExpanded ? null : index)}
+                        >
+                          {/* Header Row */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              {isSuccess ? (
+                                <CheckCircle className="w-4 h-4 text-green-500" />
+                              ) : (
+                                <XCircle className="w-4 h-4 text-red-500" />
+                              )}
+                              <span className="font-medium text-sm">
+                                {obs.operation_type}/{obs.prompt_type}
+                              </span>
+                              <Badge variant="outline" className="text-xs">
+                                {obs.screenshot_name}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-[#999999]">
+                              {obs.profile_name && (
+                                <Badge variant="secondary" className="text-xs">
+                                  {obs.profile_name}
+                                </Badge>
+                              )}
+                              <span>
+                                {new Date(obs.timestamp).toLocaleTimeString()}
+                              </span>
+                              <ChevronRight
+                                className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Collapsed Preview */}
+                          {!isExpanded && (
+                            <p className="text-sm text-[#666666] mt-1 truncate">
+                              {obs.full_response.slice(0, 100)}...
+                            </p>
+                          )}
+
+                          {/* Expanded Content */}
+                          {isExpanded && (
+                            <div className="mt-3 space-y-3">
+                              {/* Parsed Result */}
+                              <div className="bg-white rounded border p-3">
+                                <p className="text-xs font-medium text-[#666666] mb-1">Parsed Result:</p>
+                                <pre className="text-xs font-mono bg-[rgba(0,0,0,0.03)] p-2 rounded overflow-x-auto">
+                                  {JSON.stringify(result, null, 2)}
+                                </pre>
+                              </div>
+
+                              {/* Full Response */}
+                              <div className="bg-white rounded border p-3">
+                                <p className="text-xs font-medium text-[#666666] mb-1">Full AI Response:</p>
+                                <p className="text-sm whitespace-pre-wrap bg-[rgba(0,0,0,0.03)] p-2 rounded">
+                                  {obs.full_response}
+                                </p>
+                              </div>
+
+                              {/* Metadata */}
+                              <div className="flex gap-4 text-xs text-[#999999]">
+                                <span>Campaign: {obs.campaign_id || 'N/A'}</span>
+                                <span>Time: {new Date(obs.timestamp).toLocaleString()}</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {user?.role === 'admin' && (
