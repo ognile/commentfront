@@ -85,6 +85,69 @@ In production, screenshots are saved to Railway's ephemeral container filesystem
 This project has **Railway MCP** access configured. You can use Railway MCP tools for maximum access and testing.
 Use these tools when debugging production issues.
 
+## Developer/Testing Access (Claude "God Mode")
+
+Claude has permanent API access for testing the backend independently of the frontend UI.
+
+### API Key Authentication
+- **Header**: `X-API-Key: <key>`
+- **Env var**: `CLAUDE_API_KEY` (stored in Railway)
+- Works alongside JWT auth - no expiration, no login needed
+
+### Test Campaign Endpoint
+Use `/test-campaign` to run campaigns without affecting the main queue:
+
+```bash
+curl -X POST "https://commentbot-production.up.railway.app/test-campaign" \
+  -H "X-API-Key: $CLAUDE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://facebook.com/permalink.php?story_fbid=...",
+    "comments": ["Test comment 1", "Test comment 2"],
+    "enable_warmup": true
+  }'
+```
+
+**Response includes:**
+- `test_id`: Unique test campaign ID
+- `results`: Array with per-profile success/failure, warmup stats, errors
+- Profile rotation (LRU), warmup, analytics tracking all work
+
+### Useful Endpoints for Testing
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/test-campaign` | POST | Run isolated test campaign |
+| `/analytics/summary` | GET | Today/week stats, active/restricted counts |
+| `/analytics/profiles` | GET | All profiles with status, usage history |
+| `/analytics/profiles/{name}` | GET | Single profile detailed history |
+| `/analytics/profiles/{name}/unblock` | POST | Manually unblock restricted profile |
+| `/queue/history` | GET | Recent campaign results |
+| `/sessions` | GET | All session profiles |
+
+### Checking Warm-up & System Health
+```bash
+# Get recent logs with warm-up activity
+mcp__railway__get-logs --filter "warmup OR Warm-up OR scroll"
+
+# Check profile statuses
+curl -s "https://commentbot-production.up.railway.app/analytics/profiles" \
+  -H "X-API-Key: $CLAUDE_API_KEY"
+
+# Check overall success rate
+curl -s "https://commentbot-production.up.railway.app/analytics/summary" \
+  -H "X-API-Key: $CLAUDE_API_KEY"
+```
+
+### Data Storage
+All data is stored as JSON files on Railway Volume (`/data`):
+- `campaign_queue.json` - Campaign queue and history
+- `profile_state.json` - Profile rotation, restrictions, analytics
+- `sessions/*.json` - Browser session cookies/proxies
+- `users.json` - User accounts
+- `credentials.json` - Facebook credentials
+- `proxies.json` - Proxy list
+
 ## Critical Decision-Making Principles
 
 ### 1. NEVER GUESS - ALWAYS VERIFY WITH DATA
