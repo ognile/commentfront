@@ -366,6 +366,64 @@ class CampaignQueueManager:
                 return campaign
         return None
 
+    def add_bulk_retry_results(self, campaign_id: str, results: List[dict]) -> Optional[dict]:
+        """
+        Add multiple retry results to a campaign in history.
+
+        Args:
+            campaign_id: ID of the campaign to update
+            results: List of job results to add
+
+        Returns:
+            Updated campaign or None if not found
+        """
+        # Find campaign in history
+        for i, campaign in enumerate(self.history):
+            if campaign.get("id") == campaign_id:
+                # Initialize results array if missing
+                if "results" not in campaign:
+                    campaign["results"] = []
+
+                # Add all retry results
+                campaign["results"].extend(results)
+
+                # Recalculate success_count as unique job_indexes with at least one success
+                job_successes = {}
+                original_job_count = 0
+                for r in campaign["results"]:
+                    job_idx = r.get("job_index", 0)
+                    # Track the highest job_index to determine original job count
+                    if not r.get("is_retry"):
+                        original_job_count = max(original_job_count, job_idx + 1)
+                    if r.get("success"):
+                        job_successes[job_idx] = True
+
+                campaign["success_count"] = len(job_successes)
+                # total_count should stay as original number of comments
+                if original_job_count > 0:
+                    campaign["total_count"] = original_job_count
+
+                # Update status if all original jobs now have a success
+                if campaign["success_count"] >= campaign.get("total_count", 0):
+                    campaign["status"] = "completed"
+
+                # Mark as having retries
+                campaign["has_retries"] = True
+                campaign["last_retry_at"] = datetime.utcnow().isoformat()
+                campaign["bulk_retry_count"] = campaign.get("bulk_retry_count", 0) + 1
+
+                self.save()
+                succeeded = sum(1 for r in results if r.get("success"))
+                self.logger.info(
+                    f"Added {len(results)} bulk retry results to campaign {campaign_id}: "
+                    f"{succeeded}/{len(results)} succeeded"
+                )
+
+                return campaign
+
+        self.logger.warning(f"Campaign {campaign_id} not found in history for bulk retry")
+        return None
+
     # =========================================================================
     # State Management
     # =========================================================================

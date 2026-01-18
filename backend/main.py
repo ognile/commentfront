@@ -111,6 +111,30 @@ async def broadcast_update(update_type: str, data: dict):
 # Get proxy from environment
 PROXY_URL = os.getenv("PROXY_URL", "")
 
+
+def get_effective_proxy() -> Optional[str]:
+    """
+    Get the effective system proxy.
+
+    Resolution order:
+    1. User-set default proxy (from proxies.json with is_default=True)
+    2. PROXY_URL environment variable (fallback)
+
+    Returns:
+        Proxy URL string or None if no proxy configured
+    """
+    # Check for user-set default proxy first (proxy_manager initialized below)
+    try:
+        default_proxy = proxy_manager.get_default_proxy()
+        if default_proxy:
+            return default_proxy.get("url")
+    except NameError:
+        # proxy_manager not yet initialized during startup
+        pass
+
+    # Fall back to environment variable
+    return PROXY_URL if PROXY_URL else None
+
 # Initialize credential manager
 credential_manager = CredentialManager()
 
@@ -336,7 +360,7 @@ class QueueProcessor:
                         session=session,
                         url=url,
                         comment=comment,
-                        proxy=PROXY_URL if PROXY_URL else None,
+                        proxy=get_effective_proxy(),
                         enable_warmup=enable_warmup
                     )
 
@@ -558,6 +582,7 @@ class ProxyInfo(BaseModel):
     assigned_sessions: List[str]
     created_at: Optional[str]  # Optional for system proxy
     is_system: bool = False  # True for PROXY_URL system proxy
+    is_default: bool = False  # True if this is the user-set default proxy
 
 
 class ProxyTestResult(BaseModel):
@@ -1125,7 +1150,7 @@ async def sync_all_sessions_to_env_proxy(current_user: dict = Depends(get_curren
 async def test_session_endpoint(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Test if a session is valid."""
     session = FacebookSession(profile_name)
-    result = await test_session(session, PROXY_URL if PROXY_URL else None)
+    result = await test_session(session, get_effective_proxy())
     return result
 
 
@@ -1184,7 +1209,7 @@ async def post_comment_endpoint(request: CommentRequest, current_user: dict = De
         session=session,
         url=request.url,
         comment=request.comment,
-        proxy=PROXY_URL if PROXY_URL else None
+        proxy=get_effective_proxy()
     )
     
     if not result["success"]:
@@ -1233,7 +1258,7 @@ async def run_campaign(request: CampaignRequest, current_user: dict = Depends(ge
                 session=session,
                 url=request.url,
                 comment=comment,
-                proxy=PROXY_URL if PROXY_URL else None
+                proxy=get_effective_proxy()
             )
 
             await broadcast_update("job_complete", {
@@ -1416,7 +1441,7 @@ async def run_campaign_queue(request: CampaignQueueRequest, current_user: dict =
                     session=session,
                     url=campaign.url,
                     comment=comment,
-                    proxy=PROXY_URL if PROXY_URL else None
+                    proxy=get_effective_proxy()
                 )
 
                 await broadcast_update("job_complete", {
@@ -1489,6 +1514,16 @@ class RetryJobRequest(BaseModel):
     profile_name: str
     comment: str
     original_profile: Optional[str] = None  # Track which profile originally failed
+
+
+class BulkRetryRequest(BaseModel):
+    """Request to retry all failed jobs in a completed campaign."""
+    strategy: str = "auto"  # "auto" | "single" | "manual"
+    # auto: Rotate through available healthy profiles
+    # single: Use one profile for all retries
+    # manual: Explicit mapping (advanced)
+    profile_name: Optional[str] = None  # For "single" strategy
+    profile_mapping: Optional[Dict[int, str]] = None  # For "manual" strategy {job_index: profile_name}
 
 
 class TestCampaignRequest(BaseModel):
@@ -1603,7 +1638,7 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
                 session=session,
                 url=request.url,
                 comment=comment,
-                proxy=PROXY_URL if PROXY_URL else None,
+                proxy=get_effective_proxy(),
                 enable_warmup=request.enable_warmup
             )
 
@@ -1799,7 +1834,7 @@ async def retry_campaign_job(
             session=session,
             url=url,
             comment=request.comment,
-            proxy=PROXY_URL if PROXY_URL else None
+            proxy=get_effective_proxy()
         )
 
         # Create the retry result record
@@ -1870,6 +1905,186 @@ async def retry_campaign_job(
             "result": retry_result,
             "campaign": updated_campaign
         }
+
+
+def get_available_profiles_for_retry() -> List[str]:
+    """Get profiles that are healthy and not restricted."""
+    sessions = list_saved_sessions()
+    available = []
+    for s in sessions:
+        session = FacebookSession(s["profile_name"])
+        if session.load() and session.get_cookies():
+            # TODO: Check if profile is not restricted via profile_state_manager
+            available.append(s["profile_name"])
+    return available
+
+
+def assign_profiles_to_jobs(
+    failed_jobs: List[dict],
+    profiles: List[str],
+    request: BulkRetryRequest
+) -> List[dict]:
+    """Assign profiles to jobs based on strategy."""
+    if request.strategy == "single":
+        # Use the same profile for all
+        profile = request.profile_name or profiles[0]
+        return [{**job, "profile_name": profile} for job in failed_jobs]
+
+    elif request.strategy == "manual" and request.profile_mapping:
+        # Use explicit mapping
+        return [{
+            **job,
+            "profile_name": request.profile_mapping.get(job["job_index"], profiles[0])
+        } for job in failed_jobs]
+
+    else:  # "auto" - rotate through profiles
+        assigned = []
+        for i, job in enumerate(failed_jobs):
+            profile = profiles[i % len(profiles)]
+            assigned.append({**job, "profile_name": profile})
+        return assigned
+
+
+@app.post("/queue/{campaign_id}/bulk-retry")
+async def bulk_retry_failed_jobs(
+    campaign_id: str,
+    request: BulkRetryRequest,
+    current_user: dict = Depends(get_current_user)
+) -> Dict:
+    """
+    Retry all failed jobs in a completed campaign.
+
+    Strategies:
+    - auto: Rotate through available healthy profiles
+    - single: Use one profile for all retries
+    - manual: Use explicit job_index -> profile_name mapping
+    """
+    # Verify campaign exists in history
+    campaign = queue_manager.get_campaign_from_history(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found in history")
+
+    # Get the campaign URL
+    url = campaign.get("url")
+    if not url:
+        raise HTTPException(status_code=400, detail="Campaign has no URL")
+
+    # Identify failed jobs (consolidated - latest result for each job_index)
+    consolidated: Dict[int, dict] = {}
+    for result in campaign.get("results", []):
+        consolidated[result.get("job_index", 0)] = result
+
+    failed_jobs = [
+        {"job_index": idx, "comment": r.get("comment", ""), "original_profile": r.get("profile_name", "")}
+        for idx, r in consolidated.items()
+        if not r.get("success")
+    ]
+
+    if not failed_jobs:
+        return {"success": True, "message": "No failed jobs to retry", "retried": 0, "succeeded": 0, "failed": 0}
+
+    # Get available profiles for retry
+    profiles = get_available_profiles_for_retry()
+    if not profiles:
+        raise HTTPException(status_code=400, detail="No available profiles for retry")
+
+    # Assign profiles based on strategy
+    assignments = assign_profiles_to_jobs(failed_jobs, profiles, request)
+
+    # Broadcast that bulk retry is starting
+    await broadcast_update("queue_campaign_bulk_retry_start", {
+        "campaign_id": campaign_id,
+        "total_jobs": len(assignments),
+        "strategy": request.strategy
+    })
+
+    # Execute retries sequentially
+    results = []
+    for i, job in enumerate(assignments):
+        try:
+            session = FacebookSession(job["profile_name"])
+            if not session.load() or not session.has_valid_cookies():
+                # Skip invalid sessions
+                results.append({
+                    "profile_name": job["profile_name"],
+                    "comment": job["comment"],
+                    "success": False,
+                    "verified": False,
+                    "method": "skipped",
+                    "error": f"Session '{job['profile_name']}' is invalid or expired",
+                    "job_index": job["job_index"],
+                    "is_retry": True,
+                    "original_profile": job.get("original_profile"),
+                    "retried_at": datetime.utcnow().isoformat()
+                })
+                continue
+
+            result = await post_comment_verified(
+                session=session,
+                url=url,
+                comment=job["comment"],
+                proxy=get_effective_proxy()
+            )
+
+            results.append({
+                "profile_name": job["profile_name"],
+                "comment": job["comment"],
+                "success": result.get("success", False),
+                "verified": result.get("verified", False),
+                "method": result.get("method", "unknown"),
+                "error": result.get("error"),
+                "job_index": job["job_index"],
+                "is_retry": True,
+                "original_profile": job.get("original_profile"),
+                "retried_at": datetime.utcnow().isoformat()
+            })
+
+            # Broadcast progress
+            await broadcast_update("queue_campaign_bulk_retry_progress", {
+                "campaign_id": campaign_id,
+                "completed": i + 1,
+                "total": len(assignments),
+                "last_result": results[-1]
+            })
+
+        except Exception as e:
+            logger.error(f"Bulk retry job {job['job_index']} failed: {e}")
+            results.append({
+                "profile_name": job["profile_name"],
+                "comment": job["comment"],
+                "success": False,
+                "verified": False,
+                "method": "error",
+                "error": str(e),
+                "job_index": job["job_index"],
+                "is_retry": True,
+                "original_profile": job.get("original_profile"),
+                "retried_at": datetime.utcnow().isoformat()
+            })
+
+    # Batch update campaign with all retry results
+    updated_campaign = queue_manager.add_bulk_retry_results(campaign_id, results)
+
+    succeeded = sum(1 for r in results if r.get("success"))
+    failed_count = len(results) - succeeded
+
+    # Broadcast completion
+    await broadcast_update("queue_campaign_bulk_retry_complete", {
+        "campaign_id": campaign_id,
+        "retried": len(results),
+        "succeeded": succeeded,
+        "failed": failed_count,
+        "campaign": updated_campaign
+    })
+
+    return {
+        "success": True,
+        "retried": len(results),
+        "succeeded": succeeded,
+        "failed": failed_count,
+        "results": results,
+        "campaign": updated_campaign
+    }
 
 
 @app.get("/config")
@@ -2038,7 +2253,8 @@ async def get_proxies(current_user: dict = Depends(get_current_user)):
             test_count=0,
             assigned_sessions=assigned,
             created_at=None,
-            is_system=True
+            is_system=True,
+            is_default=False  # System proxy cannot be set as default
         ))
 
     # Add user-configured proxies
@@ -2058,7 +2274,8 @@ async def get_proxies(current_user: dict = Depends(get_current_user)):
             test_count=p.get("test_count", 0),
             assigned_sessions=p.get("assigned_sessions", []),
             created_at=p.get("created_at", ""),
-            is_system=False
+            is_system=False,
+            is_default=p.get("is_default", False)
         ))
 
     return result
@@ -2125,6 +2342,43 @@ async def test_proxy(proxy_id: str, current_user: dict = Depends(get_current_use
     )
 
 
+@app.post("/proxies/{proxy_id}/set-default")
+async def set_default_proxy(proxy_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """
+    Set a proxy as the system default.
+
+    The default proxy will be used for all operations that don't have
+    a per-session proxy configured. This takes precedence over the
+    PROXY_URL environment variable.
+    """
+    success = proxy_manager.set_default(proxy_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Proxy not found: {proxy_id}")
+
+    proxy = proxy_manager.get_proxy(proxy_id)
+    return {
+        "success": True,
+        "default_proxy_id": proxy_id,
+        "default_proxy_name": proxy.get("name") if proxy else None,
+        "message": f"Proxy '{proxy.get('name')}' is now the default"
+    }
+
+
+@app.post("/proxies/clear-default")
+async def clear_default_proxy(current_user: dict = Depends(get_current_user)) -> Dict:
+    """
+    Clear the default proxy setting.
+
+    After clearing, the system will fall back to using the PROXY_URL
+    environment variable.
+    """
+    proxy_manager.clear_default()
+    return {
+        "success": True,
+        "message": "Default proxy cleared. System will use PROXY_URL environment variable."
+    }
+
+
 @app.post("/sessions/{profile_name}/assign-proxy")
 async def assign_proxy_to_session(profile_name: str, proxy_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Assign a proxy to a session."""
@@ -2160,8 +2414,8 @@ async def create_session(request: SessionCreateRequest, current_user: dict = Dep
     """
     credential_uid = request.credential_uid
 
-    # Get proxy URL - ALWAYS use PROXY_URL as default, allow override from proxy_id
-    proxy_url = PROXY_URL  # Start with environment variable
+    # Get proxy URL - use effective proxy (user default > env var), allow override from proxy_id
+    proxy_url = get_effective_proxy()  # Start with effective proxy (respects user default)
     if request.proxy_id:
         proxy = proxy_manager.get_proxy(request.proxy_id)
         if proxy:
@@ -2173,7 +2427,7 @@ async def create_session(request: SessionCreateRequest, current_user: dict = Dep
     if not proxy_url:
         raise HTTPException(
             status_code=400,
-            detail="Cannot create session: No proxy configured. Set PROXY_URL environment variable or specify a proxy_id."
+            detail="Cannot create session: No proxy configured. Set a default proxy or PROXY_URL environment variable."
         )
 
     # Broadcast that session creation is starting
@@ -2223,8 +2477,8 @@ async def create_sessions_batch(request: BatchSessionCreateRequest, current_user
     if not credential_uids:
         raise HTTPException(status_code=400, detail="No credentials provided")
 
-    # Get proxy URL - ALWAYS use PROXY_URL as default, allow override from proxy_id
-    proxy_url = PROXY_URL
+    # Get proxy URL - use effective proxy (user default > env var), allow override from proxy_id
+    proxy_url = get_effective_proxy()
     if request.proxy_id:
         proxy = proxy_manager.get_proxy(request.proxy_id)
         if proxy:
@@ -2235,7 +2489,7 @@ async def create_sessions_batch(request: BatchSessionCreateRequest, current_user
     if not proxy_url:
         raise HTTPException(
             status_code=400,
-            detail="Cannot create sessions: No proxy configured. Set PROXY_URL environment variable or specify a proxy_id."
+            detail="Cannot create sessions: No proxy configured. Set a default proxy or PROXY_URL environment variable."
         )
 
     logger.info(f"Starting batch session creation for {len(credential_uids)} credentials")

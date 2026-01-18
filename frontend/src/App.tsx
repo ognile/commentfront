@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag, User, ChevronRight, RotateCw, BarChart3 } from "lucide-react"
+import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag, User, ChevronRight, RotateCw, BarChart3, Star, Check } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Toaster, toast } from 'sonner'
@@ -126,6 +126,7 @@ interface Proxy {
   assigned_sessions: string[];
   created_at: string | null;
   is_system?: boolean;  // True for PROXY_URL system proxy
+  is_default?: boolean;  // True if this is the user-set default proxy
 }
 
 interface SessionCreateStatus {
@@ -275,6 +276,12 @@ function App() {
   const [retryProfile, setRetryProfile] = useState<string>('');
   const [isRetrying, setIsRetrying] = useState(false);
 
+  // Bulk retry state
+  const [isBulkRetrying, setIsBulkRetrying] = useState(false);
+  const [showBulkRetryDialog, setShowBulkRetryDialog] = useState(false);
+  const [bulkRetryStrategy, setBulkRetryStrategy] = useState<'auto' | 'single'>('auto');
+  const [bulkRetryProfile, setBulkRetryProfile] = useState<string>('');
+
   const [newUid, setNewUid] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newSecret, setNewSecret] = useState('');
@@ -289,6 +296,7 @@ function App() {
   const [newProxyType, setNewProxyType] = useState('mobile');
   const [newProxyCountry, setNewProxyCountry] = useState('US');
   const [testingProxy, setTestingProxy] = useState<string | null>(null);
+  const [settingDefaultProxy, setSettingDefaultProxy] = useState<string | null>(null);
 
   // Session creation state
   const [creatingSession, setCreatingSession] = useState<string | null>(null);
@@ -1039,6 +1047,40 @@ function App() {
     }
   };
 
+  // Bulk retry all failed jobs in a campaign
+  const handleBulkRetry = async () => {
+    if (!selectedCampaign) return;
+
+    setIsBulkRetrying(true);
+    try {
+      const res = await fetch(`${API_BASE}/queue/${selectedCampaign.id}/bulk-retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({
+          strategy: bulkRetryStrategy,
+          profile_name: bulkRetryStrategy === 'single' ? bulkRetryProfile : undefined
+        })
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        toast.success(`Bulk Retry Complete: ${data.succeeded}/${data.retried} succeeded`);
+        if (data.campaign) {
+          setSelectedCampaign(data.campaign);
+        }
+      } else {
+        toast.error(data.detail || 'Bulk retry failed');
+      }
+    } catch (error) {
+      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsBulkRetrying(false);
+      setShowBulkRetryDialog(false);
+      setBulkRetryProfile('');
+    }
+  };
+
   // Copy text to clipboard
   const copyToClipboard = (text: string, label: string = 'Text') => {
     navigator.clipboard.writeText(text);
@@ -1371,6 +1413,28 @@ function App() {
       alert(`Error: ${error}`);
     } finally {
       setTestingProxy(null);
+    }
+  };
+
+  const setProxyAsDefault = async (proxyId: string) => {
+    setSettingDefaultProxy(proxyId);
+    try {
+      const res = await fetch(`${API_BASE}/proxies/${encodeURIComponent(proxyId)}/set-default`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      const result = await res.json();
+
+      if (result.success) {
+        toast.success(result.message || 'Proxy is now the default for all operations');
+      } else {
+        toast.error(result.detail || 'Failed to set default proxy');
+      }
+      fetchProxies();
+    } catch (error) {
+      toast.error(`Failed to set default proxy: ${error}`);
+    } finally {
+      setSettingDefaultProxy(null);
     }
   };
 
@@ -2842,12 +2906,15 @@ function App() {
                   ) : (
                     <div className="divide-y divide-[rgba(0,0,0,0.1)] max-h-[500px] overflow-y-auto">
                       {proxies.map((proxy) => (
-                        <div key={proxy.id} className={`p-4 hover:bg-white ${proxy.is_system ? 'bg-green-50/50' : ''}`}>
+                        <div key={proxy.id} className={`p-4 hover:bg-white ${proxy.is_system ? 'bg-green-50/50' : ''} ${proxy.is_default ? 'bg-blue-50/50 border-l-4 border-blue-500' : ''}`}>
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-center gap-2">
                               <span className="font-medium text-[#111111]">{proxy.name}</span>
                               {proxy.is_system && (
                                 <Badge variant="secondary" className="text-[10px]">System</Badge>
+                              )}
+                              {proxy.is_default && (
+                                <Badge variant="default" className="text-[10px] bg-blue-500">Default</Badge>
                               )}
                             </div>
                             <div className="flex items-center gap-2">
@@ -2862,6 +2929,21 @@ function App() {
                               </Badge>
                               {!proxy.is_system && (
                                 <>
+                                  <Button
+                                    size="sm"
+                                    variant={proxy.is_default ? "default" : "outline"}
+                                    onClick={() => setProxyAsDefault(proxy.id)}
+                                    disabled={proxy.is_default || settingDefaultProxy === proxy.id}
+                                    className={proxy.is_default ? "bg-blue-500 hover:bg-blue-600" : ""}
+                                  >
+                                    {settingDefaultProxy === proxy.id ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : proxy.is_default ? (
+                                      <Check className="w-3 h-3" />
+                                    ) : (
+                                      <Star className="w-3 h-3" />
+                                    )}
+                                  </Button>
                                   <Button
                                     size="sm"
                                     variant="outline"
@@ -3347,6 +3429,41 @@ function App() {
                 )}
               </div>
 
+              {/* Retry All Failed Banner */}
+              {selectedCampaign.results && selectedCampaign.results.length > 0 && (() => {
+                const consolidated = getConsolidatedResults(selectedCampaign.results);
+                const failedCount = consolidated.filter(r => !r.success).length;
+                if (failedCount === 0) return null;
+                return (
+                  <div className="flex items-center justify-between gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-500" />
+                      <span className="text-sm text-red-700 font-medium">
+                        {failedCount} failed job{failedCount > 1 ? 's' : ''}
+                      </span>
+                    </div>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setShowBulkRetryDialog(true)}
+                      disabled={isBulkRetrying}
+                    >
+                      {isBulkRetrying ? (
+                        <>
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                          Retrying...
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="h-3 w-3 mr-1" />
+                          Retry All Failed
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                );
+              })()}
+
               {/* Results by Profile - Consolidated (latest result per job_index) */}
               {selectedCampaign.results && selectedCampaign.results.length > 0 && (
                 <div>
@@ -3506,6 +3623,81 @@ function App() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Retry Dialog */}
+      <Dialog open={showBulkRetryDialog} onOpenChange={setShowBulkRetryDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Retry Failed Jobs</DialogTitle>
+            <DialogDescription>
+              {selectedCampaign?.results && (() => {
+                const consolidated = getConsolidatedResults(selectedCampaign.results);
+                const failedCount = consolidated.filter(r => !r.success).length;
+                return `Retry ${failedCount} failed job${failedCount > 1 ? 's' : ''} in this campaign.`;
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Profile Assignment</label>
+              <Select value={bulkRetryStrategy} onValueChange={(v: 'auto' | 'single') => setBulkRetryStrategy(v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    Auto-rotate (use all available profiles)
+                  </SelectItem>
+                  <SelectItem value="single">
+                    Single profile (use one for all)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {bulkRetryStrategy === 'single' && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Select Profile</label>
+                <Select value={bulkRetryProfile} onValueChange={setBulkRetryProfile}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select profile" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sessions.map(s => (
+                      <SelectItem key={s.profile_name} value={s.profile_name}>
+                        {s.profile_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowBulkRetryDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleBulkRetry}
+              disabled={isBulkRetrying || (bulkRetryStrategy === 'single' && !bulkRetryProfile)}
+            >
+              {isBulkRetrying ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Retrying...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Retry Jobs
+                </>
+              )}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 

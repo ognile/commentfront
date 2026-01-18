@@ -93,7 +93,8 @@ class ProxyManager:
             "avg_response_ms": None,
             "test_count": 0,
             "assigned_sessions": [],
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": datetime.utcnow().isoformat(),
+            "is_default": False
         }
 
         self.proxies[proxy_id] = proxy
@@ -332,3 +333,57 @@ class ProxyManager:
             if session_name in proxy.get("assigned_sessions", []):
                 return proxy.get("url")
         return None
+
+    def set_default(self, proxy_id: str) -> bool:
+        """
+        Set a proxy as the default. Clears default from other proxies.
+
+        Args:
+            proxy_id: Proxy ID to set as default
+
+        Returns:
+            True if successful, False if proxy not found
+        """
+        if proxy_id not in self.proxies:
+            return False
+
+        # Clear is_default from all proxies
+        for pid in self.proxies:
+            self.proxies[pid]["is_default"] = False
+
+        # Set is_default=True on target proxy
+        self.proxies[proxy_id]["is_default"] = True
+        self.save_proxies()
+        self.logger.info(f"Set default proxy: {self.proxies[proxy_id].get('name')} ({proxy_id})")
+
+        return True
+
+    def clear_default(self) -> bool:
+        """Clear the default proxy setting."""
+        for pid in self.proxies:
+            self.proxies[pid]["is_default"] = False
+        self.save_proxies()
+        self.logger.info("Cleared default proxy")
+        return True
+
+    def get_default_proxy(self) -> Optional[Dict]:
+        """
+        Get the proxy marked as default.
+
+        Returns:
+            The default proxy object, or None if no default is set
+        """
+        for proxy in self.proxies.values():
+            if proxy.get("is_default"):
+                return proxy
+        return None
+
+    def get_default_proxy_url(self) -> Optional[str]:
+        """
+        Get the URL of the default proxy.
+
+        Returns:
+            Proxy URL or None if no default is set
+        """
+        default = self.get_default_proxy()
+        return default.get("url") if default else None
