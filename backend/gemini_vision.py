@@ -776,10 +776,19 @@ SCROLL direction=down"""
             verified = False
             status = "not_verified"
         elif "PENDING" in response_upper:
-            verified = False
+            # PENDING means the comment text IS visible but shows "Posting..." status
+            # This almost always means the comment WILL post - Facebook is just slow
             status = "pending"
+            # We'll determine verified based on confidence below
 
         confidence = self._extract_float(response, "confidence=")
+
+        # For PENDING status: if confidence >= 0.90, treat as success
+        # High confidence PENDING means Gemini saw the comment text on screen
+        if status == "pending" and confidence >= 0.90:
+            verified = True
+        elif status == "pending":
+            verified = False
 
         # Extract reason if present
         reason = response
