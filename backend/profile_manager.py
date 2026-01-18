@@ -127,78 +127,119 @@ class ProfileManager:
         """Get all profile states."""
         return self.state["profiles"]
 
-    def get_profiles_by_priority(
+    def get_eligible_profiles(
         self,
         filter_tags: Optional[List[str]] = None,
-        count: int = 10,
-        sessions: Optional[List[Dict]] = None
+        count: int = 1,
+        sessions: Optional[List[Dict]] = None,
+        exclude_profiles: Optional[List[str]] = None
     ) -> List[str]:
         """
-        Get profiles sorted by priority (LRU - least recently used first).
+        UNIFIED profile selection - ALL features must use this.
+
+        Selection criteria (applied in order):
+        1. Must have valid cookies
+        2. Must match ALL filter_tags (AND logic)
+        3. Must NOT be restricted (or restriction expired)
+        4. Sorted by last_used_at (least recently SUCCESSFULLY used first)
 
         Args:
-            filter_tags: Optional list of tags to filter by
+            filter_tags: Tags that profiles must have (AND logic - must match ALL)
             count: Number of profiles to return
-            sessions: List of session dicts (with profile_name, valid, tags)
+            sessions: Pre-loaded sessions list (optional, loads from fb_session if not provided)
+            exclude_profiles: Profile names to skip (e.g., already assigned)
 
         Returns:
-            List of profile names in priority order
+            List of profile names in LRU order (least recently successfully used first)
         """
-        # Check restrictions and auto-expire them
-        self._check_restriction_expiry()
+        # Import here to avoid circular imports
+        from fb_session import list_saved_sessions
 
-        # Get valid profile names
-        valid_profiles = []
+        if sessions is None:
+            sessions = list_saved_sessions()
 
-        if sessions:
-            for session in sessions:
-                if not session.get("valid", False):
+        exclude_set = set(exclude_profiles or [])
+        eligible = []
+
+        for session in sessions:
+            profile_name = session.get("profile_name")
+
+            # Skip excluded profiles
+            if profile_name in exclude_set:
+                continue
+
+            # Must have valid cookies
+            if not session.get("has_valid_cookies", False):
+                continue
+
+            # Must match ALL tags (AND logic)
+            if filter_tags:
+                session_tags = session.get("tags", [])
+                if not all(tag in session_tags for tag in filter_tags):
                     continue
 
-                profile_name = session.get("profile_name") or session.get("file", "").replace(".json", "")
-
-                # Apply tag filter if specified
-                if filter_tags:
-                    session_tags = session.get("tags", [])
-                    if not any(tag in session_tags for tag in filter_tags):
+            # Must not be restricted (check and auto-expire if needed)
+            state = self.get_profile_state(profile_name) or {}
+            if state.get("status") == "restricted":
+                expires_at = state.get("restriction_expires_at")
+                if expires_at:
+                    try:
+                        expires_dt = datetime.fromisoformat(expires_at.replace("Z", ""))
+                        if datetime.utcnow() < expires_dt:
+                            # Still restricted, skip
+                            continue
+                        else:
+                            # Restriction expired, auto-unblock
+                            self._clear_restriction(profile_name)
+                    except Exception:
+                        # Invalid date, skip to be safe
                         continue
-
-                # Skip restricted profiles
-                profile_state = self.state["profiles"].get(profile_name, {})
-                if profile_state.get("status") == "restricted":
-                    logger.info(f"Skipping restricted profile: {profile_name}")
+                else:
+                    # Restricted with no expiry, skip
                     continue
 
-                valid_profiles.append(profile_name)
+            eligible.append({
+                "profile_name": profile_name,
+                "last_used_at": state.get("last_used_at")  # None = never used = highest priority
+            })
 
-        # Sort by last_used_at (oldest first, None = never used = highest priority)
-        def sort_key(name):
-            state = self.state["profiles"].get(name, {})
-            last_used = state.get("last_used_at")
-            if last_used is None:
-                return ""  # Empty string sorts before any date
-            return last_used
+        # Sort by LRU (None/oldest first - never used profiles get highest priority)
+        eligible.sort(key=lambda x: x["last_used_at"] or "")
 
-        sorted_profiles = sorted(valid_profiles, key=sort_key)
+        result = [p["profile_name"] for p in eligible[:count]]
+        logger.info(f"get_eligible_profiles: tags={filter_tags}, returning {len(result)}/{len(eligible)} profiles: {result}")
+        return result
 
-        logger.info(f"Profile priority order: {sorted_profiles[:count]}")
-        return sorted_profiles[:count]
+    def _clear_restriction(self, profile_name: str):
+        """Clear restriction on a profile (internal use for auto-expiry)."""
+        if profile_name in self.state["profiles"]:
+            self.state["profiles"][profile_name]["status"] = "active"
+            self.state["profiles"][profile_name]["restriction_expires_at"] = None
+            self.state["profiles"][profile_name]["restriction_reason"] = None
+            logger.info(f"Auto-unblocked profile {profile_name} (restriction expired)")
+            self._save_state()
 
     def mark_profile_used(
         self,
         profile_name: str,
         campaign_id: Optional[str] = None,
         comment: Optional[str] = None,
-        success: bool = True
+        success: bool = True,
+        failure_type: Optional[str] = None  # "restriction", "infrastructure", "facebook_error", None
     ):
         """
-        Mark a profile as used (updates last_used_at, moves to back of queue).
+        Mark a profile as used. Only updates LRU timestamp on SUCCESS.
 
         Args:
             profile_name: The profile name
             campaign_id: Optional campaign ID for tracking
             comment: Optional comment text for history
             success: Whether the comment was successful
+            failure_type: Type of failure for analytics granularity:
+                - "restriction": Profile got restricted/throttled
+                - "infrastructure": Timeout, proxy, connection issues
+                - "facebook_error": UI issues, element not found, etc.
+                - None: Success or unknown failure
         """
         if profile_name not in self.state["profiles"]:
             self.state["profiles"][profile_name] = {
@@ -208,15 +249,20 @@ class ProfileManager:
                 "restriction_expires_at": None,
                 "restriction_reason": None,
                 "daily_stats": {},
-                "usage_history": []
+                "usage_history": [],
+                "failure_breakdown": {}
             }
 
         now = datetime.utcnow()
         profile = self.state["profiles"][profile_name]
 
-        # Update last used timestamp
-        profile["last_used_at"] = now.isoformat() + "Z"
+        # Always increment usage count (for total attempts tracking)
         profile["usage_count"] = profile.get("usage_count", 0) + 1
+
+        # ONLY update LRU timestamp on SUCCESS
+        # This ensures failed attempts don't push profile to back of queue
+        if success:
+            profile["last_used_at"] = now.isoformat() + "Z"
 
         # Update daily stats
         today = now.strftime("%Y-%m-%d")
@@ -231,19 +277,35 @@ class ProfileManager:
         else:
             profile["daily_stats"][today]["failed"] += 1
 
+        # Track failure types separately for analytics granularity
+        if failure_type:
+            if "failure_breakdown" not in profile:
+                profile["failure_breakdown"] = {}
+            profile["failure_breakdown"][failure_type] = profile["failure_breakdown"].get(failure_type, 0) + 1
+
         # Add to usage history (keep last 20)
         if "usage_history" not in profile:
             profile["usage_history"] = []
 
-        profile["usage_history"].append({
+        history_entry = {
             "timestamp": now.isoformat() + "Z",
             "campaign_id": campaign_id,
             "comment": (comment[:100] + "...") if comment and len(comment) > 100 else comment,
             "success": success
-        })
+        }
+        if failure_type:
+            history_entry["failure_type"] = failure_type
+
+        profile["usage_history"].append(history_entry)
         profile["usage_history"] = profile["usage_history"][-20:]
 
-        logger.info(f"Marked profile {profile_name} as used (count: {profile['usage_count']})")
+        failure_desc = failure_type or "unknown"
+        log_msg = f"Profile {profile_name}: {'SUCCESS' if success else f'FAILED ({failure_desc})'}"
+        if success:
+            logger.info(log_msg)
+        else:
+            logger.warning(log_msg)
+
         self._save_state()
 
     def mark_profile_restricted(

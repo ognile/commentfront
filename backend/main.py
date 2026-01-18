@@ -229,20 +229,17 @@ class QueueProcessor:
                 "total_comments": len(comments)
             })
 
-            # Get all valid sessions
-            sessions_list = list_saved_sessions()
-            valid_profiles = [s for s in sessions_list if s.get("has_valid_cookies", False)]
+            # Use UNIFIED profile selection (handles cookies, tags, restrictions, LRU)
+            from profile_manager import get_profile_manager
+            profile_manager = get_profile_manager()
 
-            # Filter by tags if specified (AND logic - must match ALL tags)
-            if filter_tags:
-                valid_profiles = [
-                    s for s in valid_profiles
-                    if all(tag in s.get("tags", []) for tag in filter_tags)
-                ]
-                self.logger.info(f"Filtered to {len(valid_profiles)} profiles matching tags: {filter_tags}")
+            assigned_profiles = profile_manager.get_eligible_profiles(
+                filter_tags=filter_tags if filter_tags else None,
+                count=len(comments)
+            )
 
-            if len(valid_profiles) == 0:
-                error_msg = f"No valid sessions match tags: {filter_tags}" if filter_tags else "No valid sessions available"
+            if not assigned_profiles:
+                error_msg = f"No eligible profiles match tags: {filter_tags}" if filter_tags else "No eligible profiles available"
                 self.queue_manager.set_failed(campaign_id, error_msg)
                 await broadcast_update("queue_campaign_failed", {
                     "campaign_id": campaign_id,
@@ -250,24 +247,7 @@ class QueueProcessor:
                 })
                 return
 
-            # Assign profiles using LRU priority queue (least recently used first)
-            from profile_manager import get_profile_manager
-            profile_manager = get_profile_manager()
-
-            # Convert session list to format expected by profile manager
-            sessions_for_priority = [
-                {"profile_name": s["profile_name"], "valid": True, "tags": s.get("tags", [])}
-                for s in valid_profiles
-            ]
-
-            # Get profiles in priority order (LRU - least recently used first)
-            assigned_profiles = profile_manager.get_profiles_by_priority(
-                filter_tags=None,  # Already filtered above
-                count=len(comments),
-                sessions=sessions_for_priority
-            )
-
-            self.logger.info(f"Profile priority order (LRU): {assigned_profiles}")
+            self.logger.info(f"Profile selection (LRU by success): {assigned_profiles}")
 
             if len(assigned_profiles) < len(comments):
                 self.logger.warning(f"Only {len(assigned_profiles)} profiles available for {len(comments)} comments")
@@ -386,12 +366,24 @@ class QueueProcessor:
                         "warmup": result.get("warmup")
                     })
 
-                    # Track profile usage for rotation (LRU)
+                    # Determine failure type for analytics granularity
+                    failure_type = None
+                    if not result["success"]:
+                        error = result.get("error", "")
+                        if result.get("throttled") or "restricted" in str(error).lower() or "ban" in str(error).lower():
+                            failure_type = "restriction"
+                        elif any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
+                            failure_type = "infrastructure"
+                        else:
+                            failure_type = "facebook_error"
+
+                    # Track profile usage for rotation (LRU - only updates timestamp on success)
                     profile_manager.mark_profile_used(
                         profile_name=profile_name,
                         campaign_id=campaign_id,
                         comment=comment,
-                        success=result["success"]
+                        success=result["success"],
+                        failure_type=failure_type
                     )
 
                     # Check for throttling/restriction detection
@@ -427,6 +419,21 @@ class QueueProcessor:
                         "error": str(e),
                         "job_index": job_idx
                     })
+
+                    # Track exception in analytics (classify as infrastructure error)
+                    error_str = str(e).lower()
+                    if any(x in error_str for x in ["timeout", "proxy", "connection", "network"]):
+                        exc_failure_type = "infrastructure"
+                    else:
+                        exc_failure_type = "facebook_error"
+
+                    profile_manager.mark_profile_used(
+                        profile_name=profile_name,
+                        campaign_id=campaign_id,
+                        comment=comment,
+                        success=False,
+                        failure_type=exc_failure_type
+                    )
 
             # Campaign completed
             success_count = sum(1 for r in results if r.get("success"))
@@ -1542,6 +1549,7 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
 
     This endpoint:
     - Runs in parallel with scheduled campaigns (doesn't wait in queue)
+    - Uses UNIFIED profile selection (tags, restrictions, LRU by success)
     - Uses full pipeline: warmup, vision, posting, analytics tracking
     - Useful for testing while production campaigns are running
     - Does NOT add to queue or affect queue state
@@ -1551,37 +1559,36 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
 
     profile_manager = get_profile_manager()
 
-    # Get valid sessions
-    sessions_list = list_saved_sessions()
-    valid_profiles = [s for s in sessions_list if s.get("has_valid_cookies", False)]
-
-    # Filter by tags if specified
-    if request.filter_tags:
-        valid_profiles = [
-            s for s in valid_profiles
-            if all(tag in s.get("tags", []) for tag in request.filter_tags)
-        ]
-
-    if not valid_profiles:
-        raise HTTPException(status_code=400, detail="No valid profiles match criteria")
-
-    # If specific profile requested, use it
+    # If specific profile requested, validate it's eligible
     if request.profile_name:
-        matching = [s for s in valid_profiles if s["profile_name"] == request.profile_name]
-        if not matching:
-            raise HTTPException(status_code=404, detail=f"Profile {request.profile_name} not found or invalid")
+        eligible = profile_manager.get_eligible_profiles(
+            filter_tags=request.filter_tags,
+            count=100  # Get all to check membership
+        )
+        if request.profile_name not in eligible:
+            if request.filter_tags:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Profile '{request.profile_name}' is not eligible (must match tags {request.filter_tags} and not be restricted)"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Profile '{request.profile_name}' is not eligible (may be restricted or have invalid cookies)"
+                )
         assigned_profiles = [request.profile_name] * len(request.comments)
     else:
-        # Use LRU selection
-        sessions_for_priority = [
-            {"profile_name": s["profile_name"], "valid": True, "tags": s.get("tags", [])}
-            for s in valid_profiles
-        ]
-        assigned_profiles = profile_manager.get_profiles_by_priority(
-            filter_tags=None,
-            count=len(request.comments),
-            sessions=sessions_for_priority
+        # Use UNIFIED selection (handles cookies, tags, restrictions, LRU by success)
+        assigned_profiles = profile_manager.get_eligible_profiles(
+            filter_tags=request.filter_tags,
+            count=len(request.comments)
         )
+
+    if not assigned_profiles:
+        if request.filter_tags:
+            raise HTTPException(status_code=400, detail=f"No eligible profiles match tags: {request.filter_tags}")
+        else:
+            raise HTTPException(status_code=400, detail="No eligible profiles available")
 
     if len(assigned_profiles) < len(request.comments):
         logger.warning(f"[TEST] Only {len(assigned_profiles)} profiles for {len(request.comments)} comments")
@@ -1662,12 +1669,24 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
                 "job_index": job_idx
             })
 
-            # Track in analytics (same as production)
+            # Determine failure type for analytics granularity
+            failure_type = None
+            if not result["success"]:
+                error = result.get("error", "")
+                if result.get("throttled") or "restricted" in str(error).lower() or "ban" in str(error).lower():
+                    failure_type = "restriction"
+                elif any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
+                    failure_type = "infrastructure"
+                else:
+                    failure_type = "facebook_error"
+
+            # Track in analytics (LRU only updates on success)
             profile_manager.mark_profile_used(
                 profile_name=profile_name,
                 campaign_id=test_id,
                 comment=comment,
-                success=result["success"]
+                success=result["success"],
+                failure_type=failure_type
             )
 
             # Check for throttling
@@ -1681,6 +1700,22 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
 
         except Exception as e:
             logger.error(f"[TEST-CAMPAIGN] Job {job_idx} error: {e}")
+
+            # Track exception in analytics
+            error_str = str(e).lower()
+            if any(x in error_str for x in ["timeout", "proxy", "connection", "network"]):
+                exc_failure_type = "infrastructure"
+            else:
+                exc_failure_type = "facebook_error"
+
+            profile_manager.mark_profile_used(
+                profile_name=profile_name,
+                campaign_id=test_id,
+                comment=comment,
+                success=False,
+                failure_type=exc_failure_type
+            )
+
             results.append({
                 "profile_name": profile_name,
                 "success": False,
@@ -1800,41 +1835,92 @@ async def retry_campaign_job(
 ) -> Dict:
     """
     Retry a failed job in a completed campaign.
-    Uses the specified profile to post the comment and updates the campaign results.
+
+    RESPECTS original campaign settings:
+    - filter_tags: Profile must match ALL original tags
+    - warmup: Uses original campaign's warmup setting
+    - restrictions: Profile must not be restricted
+    - analytics: Tracks with failure_type granularity
+
+    SKIPS queue (immediate execution).
     """
+    from profile_manager import get_profile_manager
+    profile_manager = get_profile_manager()
+
     # Verify campaign exists in history
     campaign = queue_manager.get_campaign_from_history(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found in history")
 
-    # Get the campaign URL
+    # Get the campaign URL and settings
     url = campaign.get("url")
     if not url:
         raise HTTPException(status_code=400, detail="Campaign has no URL")
 
-    # Verify the profile/session exists and is valid
+    filter_tags = campaign.get("filter_tags", [])
+    enable_warmup = campaign.get("enable_warmup", False)
+
+    # Validate profile is eligible using UNIFIED selection
+    eligible_profiles = profile_manager.get_eligible_profiles(
+        filter_tags=filter_tags if filter_tags else None,
+        count=100  # Get all eligible to check membership
+    )
+
+    if request.profile_name not in eligible_profiles:
+        # Give helpful error message
+        if filter_tags:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Profile '{request.profile_name}' is not eligible (must match tags {filter_tags} and not be restricted)"
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Profile '{request.profile_name}' is not eligible (may be restricted or have invalid cookies)"
+            )
+
+    # Load the session
     session = FacebookSession(request.profile_name)
     if not session.load():
         raise HTTPException(status_code=400, detail=f"Session '{request.profile_name}' not found")
-
-    if not session.has_valid_cookies():
-        raise HTTPException(status_code=400, detail=f"Session '{request.profile_name}' is invalid or expired")
 
     # Broadcast that retry is starting
     await broadcast_update("queue_campaign_retry_start", {
         "campaign_id": campaign_id,
         "job_index": request.job_index,
         "profile_name": request.profile_name,
-        "comment": request.comment[:50]
+        "comment": request.comment[:50],
+        "warmup_enabled": enable_warmup
     })
 
     try:
-        # Run the comment posting
+        # Run the comment posting WITH WARMUP from original campaign
         result = await post_comment_verified(
             session=session,
             url=url,
             comment=request.comment,
-            proxy=get_effective_proxy()
+            proxy=get_effective_proxy(),
+            enable_warmup=enable_warmup  # RESPECT original campaign's warmup setting
+        )
+
+        # Determine failure type for analytics granularity
+        failure_type = None
+        if not result.get("success", False):
+            error = result.get("error", "")
+            if result.get("throttled") or "restricted" in str(error).lower() or "ban" in str(error).lower():
+                failure_type = "restriction"
+            elif any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
+                failure_type = "infrastructure"
+            else:
+                failure_type = "facebook_error"
+
+        # Track in profile analytics (LRU only updates on success)
+        profile_manager.mark_profile_used(
+            profile_name=request.profile_name,
+            campaign_id=campaign_id,
+            comment=request.comment,
+            success=result.get("success", False),
+            failure_type=failure_type
         )
 
         # Create the retry result record
@@ -1848,8 +1934,18 @@ async def retry_campaign_job(
             "job_index": request.job_index,
             "is_retry": True,
             "original_profile": request.original_profile,
-            "retried_at": datetime.utcnow().isoformat()
+            "retried_at": datetime.utcnow().isoformat(),
+            "warmup": result.get("warmup")
         }
+
+        # Check for throttling/restriction and auto-block
+        if result.get("throttled"):
+            throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
+            profile_manager.mark_profile_restricted(
+                profile_name=request.profile_name,
+                hours=24,
+                reason=throttle_reason
+            )
 
         # Update the campaign in history
         updated_campaign = queue_manager.add_retry_result(campaign_id, retry_result)
@@ -1874,6 +1970,21 @@ async def retry_campaign_job(
 
     except Exception as e:
         logger.error(f"Retry failed for campaign {campaign_id}: {e}")
+
+        # Track exception in analytics
+        error_str = str(e).lower()
+        if any(x in error_str for x in ["timeout", "proxy", "connection", "network"]):
+            exc_failure_type = "infrastructure"
+        else:
+            exc_failure_type = "facebook_error"
+
+        profile_manager.mark_profile_used(
+            profile_name=request.profile_name,
+            campaign_id=campaign_id,
+            comment=request.comment,
+            success=False,
+            failure_type=exc_failure_type
+        )
 
         # Create failed retry result
         retry_result = {
@@ -1905,18 +2016,6 @@ async def retry_campaign_job(
             "result": retry_result,
             "campaign": updated_campaign
         }
-
-
-def get_available_profiles_for_retry() -> List[str]:
-    """Get profiles that are healthy and not restricted."""
-    sessions = list_saved_sessions()
-    available = []
-    for s in sessions:
-        session = FacebookSession(s["profile_name"])
-        if session.load() and session.get_cookies():
-            # TODO: Check if profile is not restricted via profile_state_manager
-            available.append(s["profile_name"])
-    return available
 
 
 def assign_profiles_to_jobs(
@@ -1954,20 +2053,34 @@ async def bulk_retry_failed_jobs(
     """
     Retry all failed jobs in a completed campaign.
 
+    RESPECTS original campaign settings:
+    - filter_tags: Profiles must match ALL original tags
+    - warmup: Uses original campaign's warmup setting
+    - restrictions: Profiles must not be restricted
+    - analytics: Tracks with failure_type granularity
+
+    SKIPS queue (immediate execution).
+
     Strategies:
-    - auto: Rotate through available healthy profiles
-    - single: Use one profile for all retries
-    - manual: Use explicit job_index -> profile_name mapping
+    - auto: Rotate through ELIGIBLE profiles (respects tags, restrictions)
+    - single: Use one profile for all retries (must be eligible)
+    - manual: Use explicit job_index -> profile_name mapping (all must be eligible)
     """
+    from profile_manager import get_profile_manager
+    profile_manager = get_profile_manager()
+
     # Verify campaign exists in history
     campaign = queue_manager.get_campaign_from_history(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found in history")
 
-    # Get the campaign URL
+    # Get the campaign URL and settings
     url = campaign.get("url")
     if not url:
         raise HTTPException(status_code=400, detail="Campaign has no URL")
+
+    filter_tags = campaign.get("filter_tags", [])
+    enable_warmup = campaign.get("enable_warmup", False)
 
     # Identify failed jobs (consolidated - latest result for each job_index)
     consolidated: Dict[int, dict] = {}
@@ -1983,19 +2096,46 @@ async def bulk_retry_failed_jobs(
     if not failed_jobs:
         return {"success": True, "message": "No failed jobs to retry", "retried": 0, "succeeded": 0, "failed": 0}
 
-    # Get available profiles for retry
-    profiles = get_available_profiles_for_retry()
-    if not profiles:
-        raise HTTPException(status_code=400, detail="No available profiles for retry")
+    # Get ELIGIBLE profiles using UNIFIED selection (respects tags, restrictions, LRU)
+    eligible_profiles = profile_manager.get_eligible_profiles(
+        filter_tags=filter_tags if filter_tags else None,
+        count=len(failed_jobs)  # Get enough for all jobs
+    )
 
-    # Assign profiles based on strategy
-    assignments = assign_profiles_to_jobs(failed_jobs, profiles, request)
+    if not eligible_profiles:
+        if filter_tags:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No eligible profiles match original campaign tags: {filter_tags}"
+            )
+        else:
+            raise HTTPException(status_code=400, detail="No eligible profiles for retry")
+
+    # Validate manual/single profile selections against eligible pool
+    if request.strategy == "single" and request.profile_name:
+        if request.profile_name not in eligible_profiles:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Profile '{request.profile_name}' is not eligible (must match tags {filter_tags} and not be restricted)"
+            )
+
+    if request.strategy == "manual" and request.profile_mapping:
+        for job_idx, profile_name in request.profile_mapping.items():
+            if profile_name not in eligible_profiles:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Profile '{profile_name}' for job {job_idx} is not eligible (must match tags {filter_tags} and not be restricted)"
+                )
+
+    # Assign profiles based on strategy (using only eligible profiles)
+    assignments = assign_profiles_to_jobs(failed_jobs, eligible_profiles, request)
 
     # Broadcast that bulk retry is starting
     await broadcast_update("queue_campaign_bulk_retry_start", {
         "campaign_id": campaign_id,
         "total_jobs": len(assignments),
-        "strategy": request.strategy
+        "strategy": request.strategy,
+        "warmup_enabled": enable_warmup
     })
 
     # Execute retries sequentially
@@ -2004,7 +2144,7 @@ async def bulk_retry_failed_jobs(
         try:
             session = FacebookSession(job["profile_name"])
             if not session.load() or not session.has_valid_cookies():
-                # Skip invalid sessions
+                # Skip invalid sessions (shouldn't happen with unified selection, but safety check)
                 results.append({
                     "profile_name": job["profile_name"],
                     "comment": job["comment"],
@@ -2019,12 +2159,43 @@ async def bulk_retry_failed_jobs(
                 })
                 continue
 
+            # Execute with WARMUP from original campaign
             result = await post_comment_verified(
                 session=session,
                 url=url,
                 comment=job["comment"],
-                proxy=get_effective_proxy()
+                proxy=get_effective_proxy(),
+                enable_warmup=enable_warmup  # RESPECT original campaign's warmup setting
             )
+
+            # Determine failure type for analytics
+            failure_type = None
+            if not result.get("success", False):
+                error = result.get("error", "")
+                if result.get("throttled") or "restricted" in str(error).lower() or "ban" in str(error).lower():
+                    failure_type = "restriction"
+                elif any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
+                    failure_type = "infrastructure"
+                else:
+                    failure_type = "facebook_error"
+
+            # Track in profile analytics (LRU only updates on success)
+            profile_manager.mark_profile_used(
+                profile_name=job["profile_name"],
+                campaign_id=campaign_id,
+                comment=job["comment"],
+                success=result.get("success", False),
+                failure_type=failure_type
+            )
+
+            # Check for throttling/restriction and auto-block
+            if result.get("throttled"):
+                throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
+                profile_manager.mark_profile_restricted(
+                    profile_name=job["profile_name"],
+                    hours=24,
+                    reason=throttle_reason
+                )
 
             results.append({
                 "profile_name": job["profile_name"],
@@ -2036,7 +2207,8 @@ async def bulk_retry_failed_jobs(
                 "job_index": job["job_index"],
                 "is_retry": True,
                 "original_profile": job.get("original_profile"),
-                "retried_at": datetime.utcnow().isoformat()
+                "retried_at": datetime.utcnow().isoformat(),
+                "warmup": result.get("warmup")
             })
 
             # Broadcast progress
@@ -2049,6 +2221,22 @@ async def bulk_retry_failed_jobs(
 
         except Exception as e:
             logger.error(f"Bulk retry job {job['job_index']} failed: {e}")
+
+            # Track exception in analytics
+            error_str = str(e).lower()
+            if any(x in error_str for x in ["timeout", "proxy", "connection", "network"]):
+                exc_failure_type = "infrastructure"
+            else:
+                exc_failure_type = "facebook_error"
+
+            profile_manager.mark_profile_used(
+                profile_name=job["profile_name"],
+                campaign_id=campaign_id,
+                comment=job["comment"],
+                success=False,
+                failure_type=exc_failure_type
+            )
+
             results.append({
                 "profile_name": job["profile_name"],
                 "comment": job["comment"],
