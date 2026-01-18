@@ -256,7 +256,7 @@ function App() {
   // isProcessing removed - now using queueState.processor_running instead
   const [loading, setLoading] = useState(true);
   const [campaignDuration, setCampaignDuration] = useState(30); // Duration in minutes (10-1440)
-  const [enableWarmup, setEnableWarmup] = useState(true); // Enable warm-up browsing before commenting (always on, hidden from UI)
+  const enableWarmup = true; // Warmup always enabled for new campaigns
 
   // Campaign queue state - synced with backend
   const [queueState, setQueueState] = useState<QueueState>({
