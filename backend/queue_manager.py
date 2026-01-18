@@ -103,7 +103,7 @@ class CampaignQueueManager:
         duration_minutes: int,
         username: str,
         filter_tags: Optional[List[str]] = None,
-        enable_warmup: bool = False
+        enable_warmup: bool = True
     ) -> dict:
         """
         Add a new campaign to the queue.

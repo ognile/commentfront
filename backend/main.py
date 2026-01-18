@@ -1512,7 +1512,7 @@ class AddToQueueRequest(BaseModel):
     comments: List[str]
     duration_minutes: int = 30
     filter_tags: Optional[List[str]] = None
-    enable_warmup: bool = False  # If True, profiles browse feed before commenting
+    enable_warmup: bool = True  # Warmup enabled by default for new campaigns
 
 
 class RetryJobRequest(BaseModel):
