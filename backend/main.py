@@ -3782,11 +3782,35 @@ REASONING: Comment was submitted"""
                                     try:
                                         locator = page.locator(f'[aria-label="{aria}"]').first
                                         if await locator.count() > 0:
+                                            # Log element state before click
+                                            el_html = await locator.evaluate("el => el.outerHTML.substring(0, 500)")
+                                            logger.info(f"[ADAPTIVE-V2] Request review button HTML: {el_html}")
+
                                             await locator.scroll_into_view_if_needed()
                                             await asyncio.sleep(0.3)
+
+                                            # Try multiple click methods
+                                            url_before = page.url
+                                            element_count_before = len(await get_interactive_elements(page))
+
+                                            # Method 1: JS click()
                                             await locator.evaluate("el => el.click()")
-                                            await asyncio.sleep(2)
-                                            logger.info(f"[ADAPTIVE-V2] Fallback JS clicked 'Request review'")
+                                            await asyncio.sleep(3)
+
+                                            url_after = page.url
+                                            element_count_after = len(await get_interactive_elements(page))
+
+                                            logger.info(f"[ADAPTIVE-V2] After JS click: URL changed={url_before != url_after}, elements {element_count_before}->{element_count_after}")
+
+                                            # If nothing changed, try dispatchEvent
+                                            if url_before == url_after and element_count_before == element_count_after:
+                                                logger.info(f"[ADAPTIVE-V2] JS click didn't work, trying dispatchEvent...")
+                                                await locator.evaluate("""el => {
+                                                    el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+                                                }""")
+                                                await asyncio.sleep(3)
+
+                                            logger.info(f"[ADAPTIVE-V2] Fallback clicked 'Request review'")
                                             results["steps"].append({
                                                 "step": step_num,
                                                 "action_taken": f"FALLBACK_JS_CLICK 'Request review'",
