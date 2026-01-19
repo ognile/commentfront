@@ -276,11 +276,8 @@ function App() {
   const [retryProfile, setRetryProfile] = useState<string>('');
   const [isRetrying, setIsRetrying] = useState(false);
 
-  // Bulk retry state
+  // Bulk retry state (simplified - no strategy selection needed)
   const [isBulkRetrying, setIsBulkRetrying] = useState(false);
-  const [showBulkRetryDialog, setShowBulkRetryDialog] = useState(false);
-  const [bulkRetryStrategy, setBulkRetryStrategy] = useState<'auto' | 'single'>('auto');
-  const [bulkRetryProfile, setBulkRetryProfile] = useState<string>('');
 
   const [newUid, setNewUid] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -1048,24 +1045,27 @@ function App() {
   };
 
   // Bulk retry all failed jobs in a campaign
+  // Now simplified - no strategy selection needed, just click and it works
   const handleBulkRetry = async () => {
     if (!selectedCampaign) return;
 
     setIsBulkRetrying(true);
+    toast.info('Starting bulk retry... This may take a while.');
+
     try {
       const res = await fetch(`${API_BASE}/queue/${selectedCampaign.id}/bulk-retry`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({
-          strategy: bulkRetryStrategy,
-          profile_name: bulkRetryStrategy === 'single' ? bulkRetryProfile : undefined
-        })
+        headers: { ...getAuthHeaders() }
+        // No body needed - backend handles everything automatically
       });
 
       const data = await res.json();
 
       if (data.success) {
-        toast.success(`Bulk Retry Complete: ${data.succeeded}/${data.retried} succeeded`);
+        toast.success(`Retry Complete: ${data.jobs_succeeded}/${data.jobs_retried} jobs succeeded`);
+        if (data.jobs_exhausted > 0) {
+          toast.warning(`${data.jobs_exhausted} jobs ran out of eligible profiles`);
+        }
         if (data.campaign) {
           setSelectedCampaign(data.campaign);
         }
@@ -1076,8 +1076,6 @@ function App() {
       toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsBulkRetrying(false);
-      setShowBulkRetryDialog(false);
-      setBulkRetryProfile('');
     }
   };
 
@@ -3426,7 +3424,7 @@ function App() {
                     <Button
                       variant="destructive"
                       size="sm"
-                      onClick={() => setShowBulkRetryDialog(true)}
+                      onClick={handleBulkRetry}
                       disabled={isBulkRetrying}
                     >
                       {isBulkRetrying ? (
@@ -3607,80 +3605,7 @@ function App() {
         </DialogContent>
       </Dialog>
 
-      {/* Bulk Retry Dialog */}
-      <Dialog open={showBulkRetryDialog} onOpenChange={setShowBulkRetryDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Retry Failed Jobs</DialogTitle>
-            <DialogDescription>
-              {selectedCampaign?.results && (() => {
-                const consolidated = getConsolidatedResults(selectedCampaign.results);
-                const failedCount = consolidated.filter(r => !r.success).length;
-                return `Retry ${failedCount} failed job${failedCount > 1 ? 's' : ''} in this campaign.`;
-              })()}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Profile Assignment</label>
-              <Select value={bulkRetryStrategy} onValueChange={(v: 'auto' | 'single') => setBulkRetryStrategy(v)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="auto">
-                    Auto-rotate (use all available profiles)
-                  </SelectItem>
-                  <SelectItem value="single">
-                    Single profile (use one for all)
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {bulkRetryStrategy === 'single' && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Select Profile</label>
-                <Select value={bulkRetryProfile} onValueChange={setBulkRetryProfile}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select profile" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {sessions.map(s => (
-                      <SelectItem key={s.profile_name} value={s.profile_name}>
-                        {s.profile_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setShowBulkRetryDialog(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleBulkRetry}
-              disabled={isBulkRetrying || (bulkRetryStrategy === 'single' && !bulkRetryProfile)}
-            >
-              {isBulkRetrying ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Retrying...
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Retry Jobs
-                </>
-              )}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Bulk Retry Dialog - REMOVED: Now just click "Retry All Failed" and it works */}
 
       {/* Remote Control Modal */}
       {remoteModalOpen && remoteSession && (
