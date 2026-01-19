@@ -3833,6 +3833,35 @@ REASONING: Comment was submitted"""
                                         fallback_clicked = True
                                         break
 
+                        # If button not found, try scrolling down to find it
+                        if not fallback_clicked:
+                            logger.info(f"[ADAPTIVE-V2] Request review not found, trying scroll down...")
+                            await page.mouse.wheel(0, 500)
+                            await asyncio.sleep(2)
+
+                            # Re-scan for the button after scroll
+                            elements_after_scroll = await extract_elements_with_bounds(page)
+                            visible_after = [e for e in elements_after_scroll if is_element_visible(e, viewport_height)]
+
+                            for el in visible_after:
+                                aria = el.get('ariaLabel', '')
+                                if 'request review' in aria.lower():
+                                    try:
+                                        locator = page.locator(f'[aria-label="{aria}"]').first
+                                        if await locator.count() > 0:
+                                            await locator.click(force=True, timeout=5000)
+                                            await asyncio.sleep(3)
+                                            logger.info(f"[ADAPTIVE-V2] Fallback clicked 'Request review' after scroll")
+                                            results["steps"].append({
+                                                "step": step_num,
+                                                "action_taken": f"FALLBACK_CLICK_AFTER_SCROLL 'Request review'",
+                                                "screenshot": screenshot_path
+                                            })
+                                            fallback_clicked = True
+                                            break
+                                    except Exception as e:
+                                        logger.warning(f"[ADAPTIVE-V2] Click after scroll failed: {e}")
+
                         if not fallback_clicked:
                             results["errors"].append(f"Step {step_num}: Gemini returned empty response")
                         continue
