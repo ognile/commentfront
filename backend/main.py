@@ -3906,7 +3906,18 @@ REASONING: Comment was submitted"""
                                 aria = el.get('ariaLabel', '').lower()
                                 text = el.get('text', '').lower()
                                 original_aria = el.get('ariaLabel', '')
-                                if button_name in aria or button_name in text:
+
+                                # For "see why" require exact match to avoid matching notification rows
+                                # that contain "see why" in their aria-label
+                                is_match = False
+                                if button_name == 'see why':
+                                    # Look for element with aria-label exactly "See why" or text exactly "See why"
+                                    if aria == 'see why' or text.strip() == 'see why':
+                                        is_match = True
+                                elif button_name in aria or button_name in text:
+                                    is_match = True
+
+                                if is_match:
                                     bounds = el.get('bounds', {})
                                     if bounds.get('y', 0) > 0:
                                         logger.info(f"[ADAPTIVE-V2] Found button '{button_name}' with aria='{original_aria}'")
