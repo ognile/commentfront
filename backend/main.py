@@ -3695,8 +3695,18 @@ async def test_adaptive_agent_v2(
         try:
             # Step 0: Navigate to Facebook
             logger.info("[ADAPTIVE-V2] Navigating to Facebook...")
-            await page.goto("https://m.facebook.com", wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+            await page.goto("https://m.facebook.com", wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(5)  # Extra wait for slow proxies
+
+            # Check if page loaded (has interactive elements)
+            initial_elements = await dump_interactive_elements(page, "step_0_check")
+            if len(initial_elements) == 0:
+                logger.warning("[ADAPTIVE-V2] Page didn't load, trying reload...")
+                await page.reload(wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(5)
+                initial_elements = await dump_interactive_elements(page, "step_0_retry")
+                if len(initial_elements) == 0:
+                    logger.warning("[ADAPTIVE-V2] Page still empty after reload, proxy may be too slow")
 
             screenshot_path = await save_debug_screenshot(page, "adaptive_v2_step_0")
 
@@ -3716,7 +3726,8 @@ async def test_adaptive_agent_v2(
                 "action": "navigate",
                 "target": "https://m.facebook.com",
                 "url": page.url,
-                "screenshot": screenshot_path or "failed"
+                "screenshot": screenshot_path or "failed",
+                "elements_found": len(initial_elements)
             })
 
             # Track action history for loop detection
