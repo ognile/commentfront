@@ -3874,16 +3874,23 @@ REASONING: Comment was submitted"""
                                         await locator.scroll_into_view_if_needed()
                                         await asyncio.sleep(0.3)
 
-                                        # Try tap first (better for mobile viewport)
+                                        # Try JavaScript click first (bypasses all actionability checks)
                                         try:
-                                            await locator.tap(timeout=3000)
-                                            clicked_via = f"native locator TAP [aria-label=\"{aria_label}\"]"
-                                            logger.info(f"[ADAPTIVE-V2] Tapped via native locator: {aria_label}")
-                                        except Exception:
-                                            # Fallback to click with force
-                                            await locator.click(timeout=5000, force=True)
-                                            clicked_via = f"native locator CLICK [aria-label=\"{aria_label}\"]"
-                                            logger.info(f"[ADAPTIVE-V2] Clicked (force) via native locator: {aria_label}")
+                                            await locator.evaluate("el => el.click()")
+                                            clicked_via = f"JS click [aria-label=\"{aria_label}\"]"
+                                            logger.info(f"[ADAPTIVE-V2] JS clicked: {aria_label}")
+                                        except Exception as js_err:
+                                            logger.warning(f"[ADAPTIVE-V2] JS click failed: {js_err}")
+                                            # Fallback to tap (mobile)
+                                            try:
+                                                await locator.tap(timeout=3000)
+                                                clicked_via = f"TAP [aria-label=\"{aria_label}\"]"
+                                                logger.info(f"[ADAPTIVE-V2] Tapped: {aria_label}")
+                                            except Exception:
+                                                # Last resort: click with force
+                                                await locator.click(timeout=5000, force=True)
+                                                clicked_via = f"CLICK force [aria-label=\"{aria_label}\"]"
+                                                logger.info(f"[ADAPTIVE-V2] Click force: {aria_label}")
                                 except Exception as e:
                                     logger.warning(f"[ADAPTIVE-V2] Native click failed: {e}, falling back to coordinates")
 
