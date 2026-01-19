@@ -3839,9 +3839,9 @@ REASONING: Comment was submitted"""
                             await page.mouse.wheel(0, 500)
                             await asyncio.sleep(2)
 
-                            # Re-scan for the button after scroll
-                            elements_after_scroll = await extract_elements_with_bounds(page)
-                            visible_after = [e for e in elements_after_scroll if is_element_visible(e, viewport_height)]
+                            # Re-scan for the button after scroll using dump_interactive_elements
+                            elements_after_scroll = await dump_interactive_elements(page, f"scroll_fallback_{step_num}")
+                            visible_after = [e for e in elements_after_scroll if is_element_visible(e)]
 
                             for el in visible_after:
                                 aria = el.get('ariaLabel', '')

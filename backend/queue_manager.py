@@ -479,3 +479,48 @@ class CampaignQueueManager:
         if current_profile:
             campaign["current_profile"] = current_profile
         # Don't save on every update - too frequent. Processor handles save on completion.
+
+    def save_job_result(self, campaign_id: str, job_index: int, result: dict):
+        """
+        Save a single job result immediately to disk.
+        This ensures results survive deployments/crashes.
+
+        CRITICAL: This is the key to deployment resilience - each job result
+        is persisted immediately so we never re-attempt completed jobs.
+        """
+        if campaign_id not in self.campaigns:
+            return False
+
+        campaign = self.campaigns[campaign_id]
+
+        # Initialize results array if missing
+        if "results" not in campaign:
+            campaign["results"] = []
+
+        # Add job_index to result if not present
+        result_with_index = {**result, "job_index": job_index}
+
+        # Check if we already have a result for this job_index (avoid duplicates)
+        existing_indexes = {r.get("job_index") for r in campaign["results"]}
+        if job_index in existing_indexes:
+            self.logger.warning(f"Job {job_index} already has result, skipping duplicate save")
+            return False
+
+        campaign["results"].append(result_with_index)
+
+        # Save immediately to disk
+        self.save()
+        self.logger.info(f"Saved result for job {job_index} in campaign {campaign_id[:8]}... (success={result.get('success')})")
+        return True
+
+    def get_completed_job_indexes(self, campaign_id: str) -> set:
+        """
+        Get set of job indexes that have already been attempted.
+        Used on recovery to skip already-processed jobs.
+        """
+        if campaign_id not in self.campaigns:
+            return set()
+
+        campaign = self.campaigns[campaign_id]
+        results = campaign.get("results", [])
+        return {r.get("job_index") for r in results if r.get("job_index") is not None}
