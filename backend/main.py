@@ -4139,32 +4139,63 @@ REASONING: Comment was submitted"""
                                                     }""")
                                                     logger.info(f"[ADAPTIVE-V2] Request review button state: {button_state}")
 
-                                                    await asyncio.sleep(0.5)
-                                                    # Strategy 1: Force click
-                                                    await locator.click(force=True, timeout=5000)
-                                                    logger.info(f"[ADAPTIVE-V2] Request review: force click")
-                                                    await asyncio.sleep(0.5)
-                                                    # Strategy 2: Click inner span/text element
-                                                    try:
-                                                        inner = page.locator('[aria-label="Request review"] span, [aria-label="Request review"] > div').first
-                                                        if await inner.count() > 0:
-                                                            await inner.click(force=True, timeout=3000)
-                                                            logger.info(f"[ADAPTIVE-V2] Request review: inner element click")
-                                                    except:
-                                                        pass
-                                                    await asyncio.sleep(0.5)
-                                                    # Strategy 3: JS dispatchEvent for native click
-                                                    await locator.evaluate("""el => {
-                                                        el.dispatchEvent(new MouseEvent('click', {
-                                                            bubbles: true, cancelable: true, view: window
-                                                        }));
-                                                    }""")
-                                                    logger.info(f"[ADAPTIVE-V2] Request review: JS click dispatch")
-                                                    # Strategy 4: Try focus then Enter key
+                                                    # Strategy: Deep click on the innermost clickable element
+                                                    # Facebook's MComponent may need click on specific child
                                                     await asyncio.sleep(0.3)
-                                                    await locator.focus()
-                                                    await page.keyboard.press('Enter')
-                                                    logger.info(f"[ADAPTIVE-V2] Request review: focus + Enter key")
+                                                    try:
+                                                        # Find and click the deepest text-containing element
+                                                        deepest = page.locator('[aria-label="Request review"] [data-mcomponent="ServerTextArea"]').first
+                                                        if await deepest.count() > 0:
+                                                            await deepest.tap(timeout=5000)
+                                                            logger.info(f"[ADAPTIVE-V2] Request review: tapped ServerTextArea")
+                                                        else:
+                                                            # Try MContainer
+                                                            container = page.locator('[aria-label="Request review"] [data-mcomponent="MContainer"]').first
+                                                            if await container.count() > 0:
+                                                                await container.tap(timeout=5000)
+                                                                logger.info(f"[ADAPTIVE-V2] Request review: tapped MContainer")
+                                                    except Exception as e:
+                                                        logger.warning(f"[ADAPTIVE-V2] Deep click failed: {e}")
+
+                                                    await asyncio.sleep(0.5)
+                                                    # Strategy 2: PointerEvent sequence (like a real finger)
+                                                    await locator.evaluate("""(el) => {
+                                                        const rect = el.getBoundingClientRect();
+                                                        const x = rect.left + rect.width / 2;
+                                                        const y = rect.top + rect.height / 2;
+
+                                                        // Dispatch pointer events sequence
+                                                        ['pointerdown', 'pointerup'].forEach(type => {
+                                                            el.dispatchEvent(new PointerEvent(type, {
+                                                                bubbles: true,
+                                                                cancelable: true,
+                                                                pointerType: 'touch',
+                                                                isPrimary: true,
+                                                                clientX: x,
+                                                                clientY: y,
+                                                                pointerId: 1
+                                                            }));
+                                                        });
+                                                    }""")
+                                                    logger.info(f"[ADAPTIVE-V2] Request review: PointerEvent sequence")
+
+                                                    await asyncio.sleep(0.5)
+                                                    # Strategy 3: Use Playwright's CDPSession for raw input
+                                                    try:
+                                                        cdp = await page.context.new_cdp_session(page)
+                                                        await cdp.send('Input.dispatchTouchEvent', {
+                                                            'type': 'touchStart',
+                                                            'touchPoints': [{'x': center_x, 'y': center_y}]
+                                                        })
+                                                        await asyncio.sleep(0.1)
+                                                        await cdp.send('Input.dispatchTouchEvent', {
+                                                            'type': 'touchEnd',
+                                                            'touchPoints': []
+                                                        })
+                                                        logger.info(f"[ADAPTIVE-V2] Request review: CDP touch events at ({center_x:.0f},{center_y:.0f})")
+                                                    except Exception as e:
+                                                        logger.warning(f"[ADAPTIVE-V2] CDP touch failed: {e}")
+
                                                     clicked_via += " + MULTI_STRATEGY"
                                             else:
                                                 # Fallback to locator.tap()
