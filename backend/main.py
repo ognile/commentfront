@@ -3773,23 +3773,44 @@ REASONING: Comment was submitted"""
 
                         # Check for "Request review" button (restriction flow)
                         for el in visible_elements:
-                            aria = el.get('ariaLabel', '').lower()
+                            aria = el.get('ariaLabel', '')
                             text = el.get('text', '').lower()
-                            if 'request review' in aria or 'request review' in text:
+                            if 'request review' in aria.lower() or 'request review' in text:
                                 bounds = el.get('bounds', {})
                                 if bounds.get('y', 0) > 0:
-                                    x = bounds['x'] + bounds['w'] // 2
-                                    y = bounds['y'] + bounds['h'] // 2
-                                    await page.mouse.click(x, y)
-                                    await asyncio.sleep(2)
-                                    logger.info(f"[ADAPTIVE-V2] Fallback clicked 'Request review' at ({x},{y})")
-                                    results["steps"].append({
-                                        "step": step_num,
-                                        "action_taken": f"FALLBACK_CLICK 'Request review' at ({x},{y})",
-                                        "screenshot": screenshot_path
-                                    })
-                                    fallback_clicked = True
-                                    break
+                                    # Use JS click via locator (more reliable than mouse.click)
+                                    try:
+                                        locator = page.locator(f'[aria-label="{aria}"]').first
+                                        if await locator.count() > 0:
+                                            await locator.scroll_into_view_if_needed()
+                                            await asyncio.sleep(0.3)
+                                            await locator.evaluate("el => el.click()")
+                                            await asyncio.sleep(2)
+                                            logger.info(f"[ADAPTIVE-V2] Fallback JS clicked 'Request review'")
+                                            results["steps"].append({
+                                                "step": step_num,
+                                                "action_taken": f"FALLBACK_JS_CLICK 'Request review'",
+                                                "screenshot": screenshot_path
+                                            })
+                                            fallback_clicked = True
+                                            break
+                                    except Exception as e:
+                                        logger.warning(f"[ADAPTIVE-V2] Fallback JS click failed: {e}, trying coordinates")
+
+                                    # Fallback to mouse click if JS fails
+                                    if not fallback_clicked:
+                                        x = bounds['x'] + bounds['w'] // 2
+                                        y = bounds['y'] + bounds['h'] // 2
+                                        await page.mouse.click(x, y)
+                                        await asyncio.sleep(2)
+                                        logger.info(f"[ADAPTIVE-V2] Fallback mouse clicked 'Request review' at ({x},{y})")
+                                        results["steps"].append({
+                                            "step": step_num,
+                                            "action_taken": f"FALLBACK_MOUSE_CLICK 'Request review' at ({x},{y})",
+                                            "screenshot": screenshot_path
+                                        })
+                                        fallback_clicked = True
+                                        break
 
                         if not fallback_clicked:
                             results["errors"].append(f"Step {step_num}: Gemini returned empty response")
