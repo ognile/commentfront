@@ -3170,6 +3170,264 @@ async def cleanup_expired_uploads():
                     pass
 
 
+# ===========================================================================
+# TEMPORARY TEST ENDPOINT - Dialog Navigation Testing
+# Remove after testing is complete
+# ===========================================================================
+
+class DialogTestRequest(BaseModel):
+    """Request model for dialog navigation test."""
+    profile_name: str = "anna_pelfrey"
+    max_steps: int = 10
+    navigate_to_feed: bool = True
+
+
+@app.post("/test-dialog-navigation")
+async def test_dialog_navigation(
+    request: DialogTestRequest,
+    current_user: dict = Depends(get_current_user)
+) -> Dict:
+    """
+    TEMPORARY TEST ENDPOINT - Remove after testing.
+
+    Tests adaptive dialog navigation using Gemini Vision.
+    Uses the SAME setup as post_comment_verified() for consistency.
+    """
+    from playwright.async_api import async_playwright
+    from playwright_stealth import Stealth
+    from fb_session import FacebookSession, apply_session_to_context
+    from gemini_vision import get_vision_client, set_observation_context
+    from comment_bot import save_debug_screenshot, _build_playwright_proxy
+    from google.genai import types
+    import re
+
+    results = {
+        "profile_name": request.profile_name,
+        "steps": [],
+        "screenshots": [],
+        "errors": [],
+        "final_status": "unknown"
+    }
+
+    # Load session
+    session = FacebookSession(request.profile_name)
+    if not session.load():
+        return {"error": f"Failed to load session for {request.profile_name}"}
+
+    # Get vision client
+    vision = get_vision_client()
+    if not vision:
+        return {"error": "Vision client not available"}
+
+    # Set context for Gemini logging
+    set_observation_context(profile_name=request.profile_name, campaign_id="dialog_test")
+
+    logger.info(f"[DIALOG-TEST] Starting test for {request.profile_name}")
+
+    async with async_playwright() as p:
+        # Build context options - SAME as post_comment_verified()
+        fingerprint = session.get_device_fingerprint()
+        context_options = {
+            "user_agent": session.get_user_agent(),
+            "viewport": session.get_viewport() or {"width": 393, "height": 873},
+            "ignore_https_errors": True,
+            "device_scale_factor": 1,
+            "timezone_id": fingerprint["timezone"],
+            "locale": fingerprint["locale"],
+        }
+
+        # Add proxy if session has one
+        proxy = session.get_proxy()
+        if proxy:
+            context_options["proxy"] = _build_playwright_proxy(proxy)
+            logger.info(f"[DIALOG-TEST] Using proxy: {proxy[:30]}...")
+
+        # Launch browser
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-notifications", "--disable-gpu"]
+        )
+        context = await browser.new_context(**context_options)
+
+        # Apply stealth
+        await Stealth().apply_stealth_async(context)
+
+        # Create page and apply session cookies
+        page = await context.new_page()
+        await apply_session_to_context(context, session)
+
+        try:
+            # Step 1: Navigate to Facebook
+            if request.navigate_to_feed:
+                logger.info("[DIALOG-TEST] Navigating to Facebook feed...")
+                await page.goto("https://m.facebook.com", wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(3)
+
+                screenshot_path = await save_debug_screenshot(page, "dialog_test_initial")
+                results["screenshots"].append(screenshot_path)
+                results["steps"].append({
+                    "step": 0,
+                    "action": "navigate_to_feed",
+                    "url": page.url,
+                    "screenshot": screenshot_path
+                })
+                logger.info(f"[DIALOG-TEST] Initial URL: {page.url}")
+
+            # Step 2: Adaptive dialog navigation loop
+            for step_num in range(1, request.max_steps + 1):
+                logger.info(f"[DIALOG-TEST] Step {step_num}/{request.max_steps}")
+
+                # Take screenshot
+                screenshot_path = await save_debug_screenshot(page, f"dialog_test_step_{step_num}")
+                results["screenshots"].append(screenshot_path)
+
+                # Read screenshot
+                with open(screenshot_path, "rb") as f:
+                    image_data = f.read()
+
+                # Ask Gemini to analyze the screenshot
+                prompt = """Analyze this Facebook mobile screenshot (393x873 pixels).
+
+Is there a dialog/popup/modal/notice visible? Look for:
+- "We removed your comment" notice
+- Survey or questionnaire dialogs
+- "See why", "OK", "Done", "Continue", "Close", "Got it" buttons
+- Radio buttons asking "Why did you comment this?"
+- Any overlay that blocks the main content
+- Cookie consent or privacy notices
+
+If you see a DIALOG/POPUP/MODAL:
+1. Identify what kind of dialog it is
+2. Find the best button to dismiss it (usually "OK", "Done", "Continue", "Close", "Got it", etc.)
+3. Provide the CENTER coordinates (x, y) of that button
+
+Response format if dialog found:
+DIALOG_FOUND type="<dialog type>" button="<button text>" x=<center_x> y=<center_y>
+
+Response format if NO dialog (just normal Facebook feed/page):
+NO_DIALOG page_type="<feed/profile/post/login/other>"
+
+Response format if you see a dialog but can't determine what to click:
+UNCLEAR reason=<explanation>
+
+IMPORTANT: Coordinates must be within 0-393 for x and 0-873 for y."""
+
+                image_part = types.Part.from_bytes(data=image_data, mime_type="image/png")
+
+                try:
+                    response = await asyncio.to_thread(
+                        vision.client.models.generate_content,
+                        model=vision.model,
+                        contents=[prompt, image_part]
+                    )
+                    result_text = response.text.strip()
+                    logger.info(f"[DIALOG-TEST] Gemini response: {result_text}")
+                except Exception as e:
+                    logger.error(f"[DIALOG-TEST] Gemini API error: {e}")
+                    results["errors"].append(f"Step {step_num}: Gemini API error - {e}")
+                    continue
+
+                step_result = {
+                    "step": step_num,
+                    "gemini_response": result_text,
+                    "screenshot": screenshot_path,
+                    "action_taken": None
+                }
+
+                # Parse Gemini response
+                if "NO_DIALOG" in result_text.upper():
+                    step_result["action_taken"] = "no_dialog_detected"
+                    results["steps"].append(step_result)
+                    results["final_status"] = "success_no_dialogs"
+                    logger.info("[DIALOG-TEST] No dialog detected - test complete")
+                    break
+
+                if "DIALOG_FOUND" in result_text.upper():
+                    # Extract coordinates using regex
+                    x_match = re.search(r'x=(\d+)', result_text)
+                    y_match = re.search(r'y=(\d+)', result_text)
+                    button_match = re.search(r'button="([^"]+)"', result_text)
+                    type_match = re.search(r'type="([^"]+)"', result_text)
+
+                    if x_match and y_match:
+                        x = int(x_match.group(1))
+                        y = int(y_match.group(1))
+                        button_text = button_match.group(1) if button_match else "unknown"
+                        dialog_type = type_match.group(1) if type_match else "unknown"
+
+                        # Validate coordinates
+                        if 0 <= x <= 393 and 0 <= y <= 873:
+                            logger.info(f"[DIALOG-TEST] Clicking '{button_text}' at ({x}, {y})")
+                            await page.mouse.click(x, y)
+                            await asyncio.sleep(2)
+
+                            step_result["action_taken"] = f"clicked_{button_text}_at_{x}_{y}"
+                            step_result["dialog_type"] = dialog_type
+                            results["steps"].append(step_result)
+                            continue
+                        else:
+                            logger.warning(f"[DIALOG-TEST] Invalid coordinates: ({x}, {y})")
+                            step_result["action_taken"] = f"invalid_coordinates_{x}_{y}"
+                    else:
+                        step_result["action_taken"] = "could_not_parse_coordinates"
+
+                    results["steps"].append(step_result)
+
+                    # Try CSS selector fallback for common buttons
+                    fallback_selectors = [
+                        '[aria-label="OK"]',
+                        '[aria-label="Done"]',
+                        '[aria-label="Close"]',
+                        '[aria-label="Got it"]',
+                        '[aria-label="Continue"]',
+                        'button:has-text("OK")',
+                        'button:has-text("Done")',
+                        'button:has-text("Close")',
+                        'div[role="button"]:has-text("OK")',
+                        'div[role="button"]:has-text("Done")',
+                    ]
+
+                    for selector in fallback_selectors:
+                        try:
+                            if await page.locator(selector).count() > 0:
+                                logger.info(f"[DIALOG-TEST] CSS fallback: clicking {selector}")
+                                await page.locator(selector).first.click()
+                                await asyncio.sleep(2)
+                                results["steps"][-1]["action_taken"] = f"css_fallback_{selector}"
+                                break
+                        except Exception:
+                            pass
+                    continue
+
+                if "UNCLEAR" in result_text.upper():
+                    step_result["action_taken"] = "unclear_gemini_response"
+                    results["steps"].append(step_result)
+                    results["errors"].append(f"Step {step_num}: Gemini unclear - {result_text}")
+                    continue
+
+                # Unknown response format
+                step_result["action_taken"] = "unknown_response_format"
+                results["steps"].append(step_result)
+            else:
+                # Loop completed without finding end
+                results["final_status"] = "max_steps_reached"
+
+            # Take final screenshot
+            final_screenshot = await save_debug_screenshot(page, "dialog_test_final")
+            results["screenshots"].append(final_screenshot)
+            results["final_url"] = page.url
+
+        except Exception as e:
+            logger.error(f"[DIALOG-TEST] Error: {e}")
+            results["errors"].append(str(e))
+            results["final_status"] = "error"
+        finally:
+            await browser.close()
+
+    logger.info(f"[DIALOG-TEST] Test complete: {results['final_status']}")
+    return results
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks on app startup."""
