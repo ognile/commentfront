@@ -4125,6 +4125,20 @@ REASONING: Comment was submitted"""
 
                                                 # For request review button, try multiple strategies
                                                 if is_request_review:
+                                                    # Debug: Check button state
+                                                    button_state = await locator.evaluate("""el => {
+                                                        return {
+                                                            disabled: el.disabled,
+                                                            ariaDisabled: el.getAttribute('aria-disabled'),
+                                                            className: el.className,
+                                                            innerHTML: el.innerHTML.substring(0, 200),
+                                                            parentClass: el.parentElement?.className,
+                                                            computedPointerEvents: getComputedStyle(el).pointerEvents,
+                                                            computedOpacity: getComputedStyle(el).opacity
+                                                        };
+                                                    }""")
+                                                    logger.info(f"[ADAPTIVE-V2] Request review button state: {button_state}")
+
                                                     await asyncio.sleep(0.5)
                                                     # Strategy 1: Force click
                                                     await locator.click(force=True, timeout=5000)
@@ -4146,6 +4160,11 @@ REASONING: Comment was submitted"""
                                                         }));
                                                     }""")
                                                     logger.info(f"[ADAPTIVE-V2] Request review: JS click dispatch")
+                                                    # Strategy 4: Try focus then Enter key
+                                                    await asyncio.sleep(0.3)
+                                                    await locator.focus()
+                                                    await page.keyboard.press('Enter')
+                                                    logger.info(f"[ADAPTIVE-V2] Request review: focus + Enter key")
                                                     clicked_via += " + MULTI_STRATEGY"
                                             else:
                                                 # Fallback to locator.tap()
