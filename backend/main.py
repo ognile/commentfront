@@ -3893,96 +3893,112 @@ REASONING: Comment was submitted"""
                         logger.info(f"[ADAPTIVE-V2] Gemini empty - trying DOM fallback for known buttons")
                         fallback_clicked = False
 
-                        # Check for "Request review" button (restriction flow)
-                        for el in visible_elements:
-                            aria = el.get('ariaLabel', '')
-                            text = el.get('text', '').lower()
-                            if 'request review' in aria.lower() or 'request review' in text:
-                                bounds = el.get('bounds', {})
-                                if bounds.get('y', 0) > 0:
-                                    # Use JS click via locator (more reliable than mouse.click)
-                                    try:
-                                        locator = page.locator(f'[aria-label="{aria}"]').first
-                                        if await locator.count() > 0:
-                                            await locator.scroll_into_view_if_needed()
-                                            await asyncio.sleep(0.5)
+                        # Priority order for restriction flow buttons
+                        priority_buttons = ['request review', 'see why', 'ok', 'done', 'continue', 'close']
 
-                                            # Log element info
-                                            el_tag = await locator.evaluate("el => el.tagName")
-                                            el_role = await locator.evaluate("el => el.getAttribute('role')")
-                                            logger.info(f"[ADAPTIVE-V2] Request review button: tag={el_tag}, role={el_role}")
+                        # Check for known buttons (restriction flow)
+                        for button_name in priority_buttons:
+                            if fallback_clicked:
+                                break
+                            for el in visible_elements:
+                                if fallback_clicked:
+                                    break
+                                aria = el.get('ariaLabel', '').lower()
+                                text = el.get('text', '').lower()
+                                original_aria = el.get('ariaLabel', '')
+                                if button_name in aria or button_name in text:
+                                    bounds = el.get('bounds', {})
+                                    if bounds.get('y', 0) > 0:
+                                        logger.info(f"[ADAPTIVE-V2] Found button '{button_name}' with aria='{original_aria}'")
+                                        # Try touch events first (works for React components)
+                                        try:
+                                            if original_aria:
+                                                locator = page.locator(f'[aria-label="{original_aria}"]').first
+                                            else:
+                                                locator = page.locator(f'text="{el.get("text", "")}"').first
+                                            if await locator.count() > 0:
+                                                await locator.scroll_into_view_if_needed()
+                                                await asyncio.sleep(0.3)
 
-                                            # Try Playwright's built-in click with force (bypasses actionability)
-                                            url_before = page.url
-                                            await locator.click(force=True, timeout=5000)
-                                            await asyncio.sleep(3)
-                                            url_after = page.url
-
-                                            logger.info(f"[ADAPTIVE-V2] After click(force): URL changed={url_before != url_after}")
-
-                                            # If URL didn't change, try tap (mobile gesture)
-                                            if url_before == url_after:
-                                                logger.info(f"[ADAPTIVE-V2] click(force) didn't work, trying tap...")
-                                                try:
-                                                    await locator.tap(timeout=5000)
-                                                    await asyncio.sleep(3)
-                                                except Exception as tap_err:
-                                                    logger.warning(f"[ADAPTIVE-V2] tap() failed: {tap_err}")
-
-                                            logger.info(f"[ADAPTIVE-V2] Fallback clicked 'Request review'")
+                                                # Dispatch touch events (React mobile handlers)
+                                                touch_result = await locator.evaluate("""(el) => {
+                                                    const rect = el.getBoundingClientRect();
+                                                    const centerX = rect.left + rect.width / 2;
+                                                    const centerY = rect.top + rect.height / 2;
+                                                    const touch = new Touch({
+                                                        identifier: Date.now(),
+                                                        target: el,
+                                                        clientX: centerX,
+                                                        clientY: centerY,
+                                                        pageX: centerX,
+                                                        pageY: centerY
+                                                    });
+                                                    el.dispatchEvent(new TouchEvent('touchstart', {
+                                                        bubbles: true, cancelable: true,
+                                                        touches: [touch], targetTouches: [touch], changedTouches: [touch]
+                                                    }));
+                                                    el.dispatchEvent(new TouchEvent('touchend', {
+                                                        bubbles: true, cancelable: true,
+                                                        touches: [], targetTouches: [], changedTouches: [touch]
+                                                    }));
+                                                    el.click();
+                                                    return {success: true, x: centerX, y: centerY};
+                                                }""")
+                                                logger.info(f"[ADAPTIVE-V2] Fallback touch events for '{button_name}': {touch_result}")
+                                                await asyncio.sleep(2)
+                                                results["steps"].append({
+                                                    "step": step_num,
+                                                    "action_taken": f"FALLBACK_TOUCH '{button_name}'",
+                                                    "screenshot": screenshot_path
+                                                })
+                                                fallback_clicked = True
+                                        except Exception as e:
+                                            logger.warning(f"[ADAPTIVE-V2] Fallback touch failed for '{button_name}': {e}")
+                                            # Fallback to coordinate click
+                                            x = bounds['x'] + bounds['w'] // 2
+                                            y = bounds['y'] + bounds['h'] // 2
+                                            await page.mouse.click(x, y)
+                                            await asyncio.sleep(2)
+                                            logger.info(f"[ADAPTIVE-V2] Fallback mouse click '{button_name}' at ({x},{y})")
                                             results["steps"].append({
                                                 "step": step_num,
-                                                "action_taken": f"FALLBACK_CLICK 'Request review'",
+                                                "action_taken": f"FALLBACK_CLICK '{button_name}' at ({x},{y})",
                                                 "screenshot": screenshot_path
                                             })
                                             fallback_clicked = True
-                                            break
-                                    except Exception as e:
-                                        logger.warning(f"[ADAPTIVE-V2] Fallback click failed: {e}, trying coordinates")
-
-                                    # Fallback to mouse click if JS fails
-                                    if not fallback_clicked:
-                                        x = bounds['x'] + bounds['w'] // 2
-                                        y = bounds['y'] + bounds['h'] // 2
-                                        await page.mouse.click(x, y)
-                                        await asyncio.sleep(2)
-                                        logger.info(f"[ADAPTIVE-V2] Fallback mouse clicked 'Request review' at ({x},{y})")
-                                        results["steps"].append({
-                                            "step": step_num,
-                                            "action_taken": f"FALLBACK_MOUSE_CLICK 'Request review' at ({x},{y})",
-                                            "screenshot": screenshot_path
-                                        })
-                                        fallback_clicked = True
-                                        break
 
                         # If button not found, try scrolling down to find it
                         if not fallback_clicked:
-                            logger.info(f"[ADAPTIVE-V2] Request review not found, trying scroll down...")
+                            logger.info(f"[ADAPTIVE-V2] No known buttons found, trying scroll down...")
                             await page.mouse.wheel(0, 500)
                             await asyncio.sleep(2)
 
-                            # Re-scan for the button after scroll using dump_interactive_elements
+                            # Re-scan for buttons after scroll
                             elements_after_scroll = await dump_interactive_elements(page, f"scroll_fallback_{step_num}")
                             visible_after = [e for e in elements_after_scroll if is_element_visible(e)]
 
-                            for el in visible_after:
-                                aria = el.get('ariaLabel', '')
-                                if 'request review' in aria.lower():
-                                    try:
-                                        locator = page.locator(f'[aria-label="{aria}"]').first
-                                        if await locator.count() > 0:
-                                            await locator.click(force=True, timeout=5000)
-                                            await asyncio.sleep(3)
-                                            logger.info(f"[ADAPTIVE-V2] Fallback clicked 'Request review' after scroll")
-                                            results["steps"].append({
-                                                "step": step_num,
-                                                "action_taken": f"FALLBACK_CLICK_AFTER_SCROLL 'Request review'",
-                                                "screenshot": screenshot_path
-                                            })
-                                            fallback_clicked = True
-                                            break
-                                    except Exception as e:
-                                        logger.warning(f"[ADAPTIVE-V2] Click after scroll failed: {e}")
+                            for button_name in priority_buttons:
+                                if fallback_clicked:
+                                    break
+                                for el in visible_after:
+                                    aria = el.get('ariaLabel', '').lower()
+                                    if button_name in aria:
+                                        try:
+                                            original_aria = el.get('ariaLabel', '')
+                                            locator = page.locator(f'[aria-label="{original_aria}"]').first
+                                            if await locator.count() > 0:
+                                                await locator.tap(timeout=5000)
+                                                await asyncio.sleep(2)
+                                                logger.info(f"[ADAPTIVE-V2] Fallback tapped '{button_name}' after scroll")
+                                                results["steps"].append({
+                                                    "step": step_num,
+                                                    "action_taken": f"FALLBACK_TAP_AFTER_SCROLL '{button_name}'",
+                                                    "screenshot": screenshot_path
+                                                })
+                                                fallback_clicked = True
+                                                break
+                                        except Exception as e:
+                                            logger.warning(f"[ADAPTIVE-V2] Click after scroll failed: {e}")
 
                         if not fallback_clicked:
                             results["errors"].append(f"Step {step_num}: Gemini returned empty response")
