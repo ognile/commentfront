@@ -3716,11 +3716,32 @@ REASONING: Comment was submitted"""
 
                 image_part = types.Part.from_bytes(data=image_data, mime_type="image/png")
 
+                # Safety settings to allow processing of restriction/policy pages
+                safety_settings = [
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                ]
+
                 try:
                     response = await asyncio.to_thread(
                         vision.client.models.generate_content,
                         model=vision.model,
-                        contents=[prompt, image_part]
+                        contents=[prompt, image_part],
+                        config=types.GenerateContentConfig(safety_settings=safety_settings)
                     )
 
                     # Debug: log full response structure if text is empty
@@ -3735,9 +3756,9 @@ REASONING: Comment was submitted"""
                             if hasattr(candidate, 'content') and candidate.content:
                                 logger.warning(f"[ADAPTIVE-V2] Content parts: {candidate.content.parts if hasattr(candidate.content, 'parts') else 'N/A'}")
 
-                        # Retry once
-                        logger.warning(f"[ADAPTIVE-V2] Retrying Gemini call...")
-                        await asyncio.sleep(1)
+                        # Retry with longer delay (might be rate limited)
+                        logger.warning(f"[ADAPTIVE-V2] Retrying Gemini call after 3s delay...")
+                        await asyncio.sleep(3)
                         response = await asyncio.to_thread(
                             vision.client.models.generate_content,
                             model=vision.model,
