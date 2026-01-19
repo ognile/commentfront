@@ -1,0 +1,36 @@
+{
+  "profiles": {
+    "fb_android_1": {
+      "last_used_at": null,
+      "usage_count": 0,
+      "status": "active",
+      "restriction_expires_at": null,
+      "restriction_reason": null,
+      "daily_stats": {},
+      "usage_history": []
+    },
+    "test_profile": {
+      "last_used_at": "2026-01-19T15:16:53.327600Z",
+      "usage_count": 1,
+      "status": "active",
+      "restriction_expires_at": null,
+      "restriction_reason": null,
+      "daily_stats": {
+        "2026-01-19": {
+          "comments": 1,
+          "success": 1,
+          "failed": 0
+        }
+      },
+      "usage_history": [
+        {
+          "timestamp": "2026-01-19T15:16:53.327600Z",
+          "campaign_id": "test123",
+          "comment": null,
+          "success": true
+        }
+      ],
+      "failure_breakdown": {}
+    }
+  }
+}

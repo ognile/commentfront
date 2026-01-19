@@ -3516,54 +3516,80 @@ async def test_adaptive_agent_v2(
         page = await context.new_page()
         await apply_session_to_context(context, session)
 
+        # Helper function to check if element is visible on screen
+        def is_element_visible(el: dict, viewport_height: int = 873) -> bool:
+            """Check if element is within visible viewport."""
+            bounds = el.get('bounds', {})
+            if not bounds:
+                return False
+            y = bounds.get('y', -1)
+            h = bounds.get('h', 0)
+            # Element must be at least partially visible (y > 0 and top edge below viewport)
+            # Allow elements that are partially visible at top (y > -h/2)
+            return y > -(h // 2) and y < viewport_height
+
         # Helper function to find element by Gemini's description
         async def find_element_by_description(description: str, elements: list) -> Optional[dict]:
-            """Match Gemini's description to a DOM element."""
+            """Match Gemini's description to a DOM element. Only matches VISIBLE elements."""
             desc_lower = description.lower()
 
+            # Filter to only visible elements first
+            visible_elements = [el for el in elements if is_element_visible(el)]
+            logger.info(f"[ADAPTIVE-V2] Matching '{description}' against {len(visible_elements)} visible elements (filtered from {len(elements)} total)")
+
             # Priority 1: Exact aria-label match
-            for el in elements:
+            for el in visible_elements:
                 if el.get('ariaLabel', '').lower() == desc_lower:
+                    logger.info(f"[ADAPTIVE-V2] Matched by exact aria-label: {el.get('ariaLabel')}")
                     return el
 
             # Priority 2: Partial aria-label match
-            for el in elements:
+            for el in visible_elements:
                 if desc_lower in el.get('ariaLabel', '').lower():
+                    logger.info(f"[ADAPTIVE-V2] Matched by partial aria-label (desc in aria): {el.get('ariaLabel')}")
                     return el
                 if el.get('ariaLabel', '').lower() in desc_lower:
+                    logger.info(f"[ADAPTIVE-V2] Matched by partial aria-label (aria in desc): {el.get('ariaLabel')}")
                     return el
 
             # Priority 3: Text content match
-            for el in elements:
+            for el in visible_elements:
                 if desc_lower in el.get('text', '').lower():
+                    logger.info(f"[ADAPTIVE-V2] Matched by text content (desc in text): {el.get('text', '')[:30]}")
                     return el
                 if el.get('text', '').lower() in desc_lower:
+                    logger.info(f"[ADAPTIVE-V2] Matched by text content (text in desc): {el.get('text', '')[:30]}")
                     return el
 
             # Priority 4: Role-based matching for common elements
             if 'back' in desc_lower or 'close' in desc_lower or 'dismiss' in desc_lower:
-                for el in elements:
+                for el in visible_elements:
                     aria = el.get('ariaLabel', '').lower()
                     if 'back' in aria or 'close' in aria or aria == 'x':
+                        logger.info(f"[ADAPTIVE-V2] Matched back/close button: {el.get('ariaLabel')}")
                         return el
 
             if 'comment' in desc_lower:
-                for el in elements:
+                for el in visible_elements:
                     aria = el.get('ariaLabel', '').lower()
                     if 'comment' in aria:
+                        logger.info(f"[ADAPTIVE-V2] Matched comment element: {el.get('ariaLabel')}")
                         return el
 
             if 'like' in desc_lower:
-                for el in elements:
+                for el in visible_elements:
                     aria = el.get('ariaLabel', '').lower()
                     if 'like' in aria and 'unlike' not in aria:
+                        logger.info(f"[ADAPTIVE-V2] Matched like element: {el.get('ariaLabel')}")
                         return el
 
             if 'see why' in desc_lower:
-                for el in elements:
+                for el in visible_elements:
                     if 'see why' in el.get('text', '').lower():
+                        logger.info(f"[ADAPTIVE-V2] Matched 'see why' element")
                         return el
 
+            logger.warning(f"[ADAPTIVE-V2] No visible element matched for: {description}")
             return None
 
         async def click_element(el: dict) -> bool:
@@ -3602,12 +3628,17 @@ async def test_adaptive_agent_v2(
                 # Dump DOM elements
                 elements = await dump_interactive_elements(page, f"step_{step_num}")
 
-                # Format elements for Gemini (simplified view)
+                # Filter to visible elements only
+                visible_elements = [el for el in elements if is_element_visible(el)]
+                logger.info(f"[ADAPTIVE-V2] Found {len(elements)} total elements, {len(visible_elements)} visible")
+
+                # Format elements for Gemini (simplified view) - ONLY VISIBLE
                 elements_summary = []
-                for i, el in enumerate(elements[:30]):  # Limit to 30 elements
+                for i, el in enumerate(visible_elements[:30]):  # Limit to 30 visible elements
                     text = el.get('text', '')[:40] or el.get('ariaLabel', '')[:40] or el.get('placeholder', '')[:40]
+                    bounds = el.get('bounds', {})
                     if text:
-                        elements_summary.append(f"[{i}] {el['tag']} \"{text}\"")
+                        elements_summary.append(f"[{i}] {el['tag']} \"{text}\" (y={bounds.get('y', '?')})")
 
                 # Read screenshot
                 with open(screenshot_path, "rb") as f:
@@ -3786,14 +3817,15 @@ REASONING: Comment was submitted"""
                     if text_match:
                         text = text_match.group(1)
 
-                        # First try to find and focus an input
+                        # First try to find and focus a VISIBLE input
                         input_focused = False
-                        for el in elements:
+                        for el in visible_elements:  # Use visible_elements, not all elements
                             if el.get('contentEditable') == 'true' or el['tag'] in ['INPUT', 'TEXTAREA']:
                                 bounds = el.get('bounds', {})
-                                if bounds:
+                                if bounds and bounds.get('y', -1) > 0:  # Extra check for visibility
                                     x = bounds['x'] + bounds['w'] // 2
                                     y = bounds['y'] + bounds['h'] // 2
+                                    logger.info(f"[ADAPTIVE-V2] Focusing input at ({x},{y})")
                                     await page.mouse.click(x, y)
                                     await asyncio.sleep(0.5)
                                     input_focused = True
@@ -3802,7 +3834,8 @@ REASONING: Comment was submitted"""
                         await page.keyboard.type(text, delay=50)
                         await asyncio.sleep(1)
                         step_result["action_taken"] = f"TYPE: {text[:50]}..."
-                        logger.info(f"[ADAPTIVE-V2] Typed: {text[:50]}...")
+                        step_result["input_focused"] = input_focused
+                        logger.info(f"[ADAPTIVE-V2] Typed: {text[:50]}... (input_focused={input_focused})")
                     else:
                         step_result["action_taken"] = "TYPE_PARSE_ERROR"
 
