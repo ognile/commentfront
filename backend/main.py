@@ -3618,6 +3618,9 @@ async def test_adaptive_agent_v2(
                 "screenshot": screenshot_path
             })
 
+            # Track action history for loop detection
+            action_history = []
+
             # Adaptive loop
             for step_num in range(1, request.max_steps + 1):
                 logger.info(f"[ADAPTIVE-V2] Step {step_num}/{request.max_steps}")
@@ -3644,12 +3647,29 @@ async def test_adaptive_agent_v2(
                 with open(screenshot_path, "rb") as f:
                     image_data = f.read()
 
+                # Build action history summary for loop detection
+                recent_actions = action_history[-5:] if action_history else []
+                history_text = chr(10).join([f"  Step {a['step']}: {a['action']}" for a in recent_actions]) if recent_actions else "  (none yet)"
+
+                # Detect repeated actions
+                if len(action_history) >= 3:
+                    last_3 = [a['action'] for a in action_history[-3:]]
+                    if len(set(last_3)) == 1:  # All 3 are the same
+                        loop_warning = f"\n⚠️ WARNING: You have repeated '{last_3[0]}' 3 times with no progress. TRY SOMETHING DIFFERENT!"
+                    else:
+                        loop_warning = ""
+                else:
+                    loop_warning = ""
+
                 # Build the adaptive prompt - NO COORDINATES
                 prompt = f"""You are an AI agent controlling a Facebook mobile browser.
 
 TASK: {request.task}
 
 CURRENT STEP: {step_num} of {request.max_steps}
+
+RECENT ACTION HISTORY:
+{history_text}{loop_warning}
 
 INTERACTIVE ELEMENTS ON PAGE (from DOM):
 {chr(10).join(elements_summary) if elements_summary else "No elements found"}
@@ -3670,7 +3690,9 @@ IMPORTANT RULES:
 - If you see a "We removed your comment" notification, click "Back" or the back arrow to dismiss
 - To comment on a post, first CLICK the post or its Comment button, then TYPE your comment
 - Make comments contextual to the post content (not generic)
-- If stuck, try scrolling to find different content
+- CRITICAL: If an action didn't change the page, DO NOT repeat it! Try a DIFFERENT action.
+- If a button doesn't work after clicking, try scrolling or clicking other elements
+- If stuck in a loop, use FAILED to report that the task cannot be completed
 
 RESPONSE FORMAT:
 ACTION: <action_type> <parameters>
@@ -3850,6 +3872,13 @@ REASONING: Comment was submitted"""
 
                 results["steps"].append(step_result)
                 results["screenshots"].append(screenshot_path)
+
+                # Track action for loop detection
+                if step_result.get("action_taken"):
+                    action_history.append({
+                        "step": step_num,
+                        "action": step_result["action_taken"]
+                    })
 
             else:
                 results["final_status"] = "max_steps_reached"
