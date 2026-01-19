@@ -3870,9 +3870,20 @@ REASONING: Comment was submitted"""
                                 try:
                                     locator = page.locator(f'[aria-label="{aria_label}"]').first
                                     if await locator.count() > 0:
-                                        await locator.click(timeout=5000)
-                                        clicked_via = f"native locator [aria-label=\"{aria_label}\"]"
-                                        logger.info(f"[ADAPTIVE-V2] Clicked via native locator: {aria_label}")
+                                        # Scroll into view first
+                                        await locator.scroll_into_view_if_needed()
+                                        await asyncio.sleep(0.3)
+
+                                        # Try tap first (better for mobile viewport)
+                                        try:
+                                            await locator.tap(timeout=3000)
+                                            clicked_via = f"native locator TAP [aria-label=\"{aria_label}\"]"
+                                            logger.info(f"[ADAPTIVE-V2] Tapped via native locator: {aria_label}")
+                                        except Exception:
+                                            # Fallback to click with force
+                                            await locator.click(timeout=5000, force=True)
+                                            clicked_via = f"native locator CLICK [aria-label=\"{aria_label}\"]"
+                                            logger.info(f"[ADAPTIVE-V2] Clicked (force) via native locator: {aria_label}")
                                 except Exception as e:
                                     logger.warning(f"[ADAPTIVE-V2] Native click failed: {e}, falling back to coordinates")
 
@@ -3885,9 +3896,18 @@ REASONING: Comment was submitted"""
                                 clicked_via = f"coordinates ({x},{y})"
                                 logger.info(f"[ADAPTIVE-V2] Clicked via coordinates: ({x},{y})")
 
+                            # Wait for potential page change
+                            url_before = page.url
                             await asyncio.sleep(2)
 
+                            # Check if page changed
+                            url_after = page.url
+                            page_changed = url_before != url_after
+                            if page_changed:
+                                logger.info(f"[ADAPTIVE-V2] Page changed after click: {url_before} -> {url_after}")
+
                             step_result["action_taken"] = f"CLICK \"{element_desc}\" via {clicked_via}"
+                            step_result["page_changed"] = page_changed
                             step_result["matched_element"] = {
                                 "tag": target_el.get('tag'),
                                 "ariaLabel": aria_label,
