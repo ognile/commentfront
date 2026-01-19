@@ -79,9 +79,10 @@ async def save_debug_screenshot(page: Page, name: str) -> str:
     try:
         path = os.path.join(DEBUG_DIR, f"{name}.png")
         # scale=1 ensures screenshot pixels = viewport pixels (no DPI scaling)
-        await page.screenshot(path=path, scale="css")
+        # timeout=10s to avoid hanging on slow pages waiting for fonts
+        await page.screenshot(path=path, scale="css", timeout=10000)
         latest_path = os.path.join(DEBUG_DIR, "latest.png")
-        await page.screenshot(path=latest_path, scale="css")
+        await page.screenshot(path=latest_path, scale="css", timeout=10000)
         logger.info(f"Saved debug screenshot: {path}")
         return path
     except Exception as e:
