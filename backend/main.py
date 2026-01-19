@@ -3699,13 +3699,24 @@ async def test_adaptive_agent_v2(
             await asyncio.sleep(3)
 
             screenshot_path = await save_debug_screenshot(page, "adaptive_v2_step_0")
-            results["screenshots"].append(screenshot_path)
+
+            # Handle screenshot failure on step 0 (slow proxy)
+            if not screenshot_path:
+                logger.warning("[ADAPTIVE-V2] Step 0: Screenshot failed, retrying after delay...")
+                await asyncio.sleep(5)
+                screenshot_path = await save_debug_screenshot(page, "adaptive_v2_step_0_retry")
+                if not screenshot_path:
+                    results["errors"].append("Step 0: Screenshot failed twice (slow proxy)")
+                    # Continue anyway - DOM-based analysis can work without screenshots
+
+            if screenshot_path:
+                results["screenshots"].append(screenshot_path)
             results["steps"].append({
                 "step": 0,
                 "action": "navigate",
                 "target": "https://m.facebook.com",
                 "url": page.url,
-                "screenshot": screenshot_path
+                "screenshot": screenshot_path or "failed"
             })
 
             # Track action history for loop detection
@@ -3715,8 +3726,18 @@ async def test_adaptive_agent_v2(
             for step_num in range(1, request.max_steps + 1):
                 logger.info(f"[ADAPTIVE-V2] Step {step_num}/{request.max_steps}")
 
-                # Take screenshot
+                # Take screenshot (may fail on slow proxies)
                 screenshot_path = await save_debug_screenshot(page, f"adaptive_v2_step_{step_num}")
+
+                # Handle screenshot failure (slow proxy, timeout)
+                if not screenshot_path:
+                    logger.warning(f"[ADAPTIVE-V2] Step {step_num}: Screenshot failed, retrying with longer timeout...")
+                    await asyncio.sleep(5)  # Wait for slow proxy
+                    screenshot_path = await save_debug_screenshot(page, f"adaptive_v2_step_{step_num}_retry")
+                    if not screenshot_path:
+                        results["errors"].append(f"Step {step_num}: Screenshot failed twice")
+                        logger.error(f"[ADAPTIVE-V2] Step {step_num}: Screenshot failed twice, skipping step")
+                        continue  # Skip this step, try next one
 
                 # Dump DOM elements
                 elements = await dump_interactive_elements(page, f"step_{step_num}")
@@ -4154,7 +4175,8 @@ REASONING: Comment was submitted"""
                     results["errors"].append(f"Step {step_num}: Unknown action: {action_type}")
 
                 results["steps"].append(step_result)
-                results["screenshots"].append(screenshot_path)
+                if screenshot_path:
+                    results["screenshots"].append(screenshot_path)
 
                 # Track action for loop detection
                 if step_result.get("action_taken"):
@@ -4168,7 +4190,8 @@ REASONING: Comment was submitted"""
 
             # Take final screenshot
             final_screenshot = await save_debug_screenshot(page, "adaptive_v2_final")
-            results["screenshots"].append(final_screenshot)
+            if final_screenshot:
+                results["screenshots"].append(final_screenshot)
             results["final_url"] = page.url
 
         except Exception as e:
