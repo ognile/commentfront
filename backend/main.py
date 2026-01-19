@@ -3508,6 +3508,7 @@ IMPORTANT: Coordinates must be within 0-393 for x and 0-873 for y."""
 # ===========================================================================
 
 from adaptive_agent import run_adaptive_task
+from workflows import update_profile_photo
 
 
 class AdaptiveAgentRequest(BaseModel):
@@ -3515,6 +3516,12 @@ class AdaptiveAgentRequest(BaseModel):
     profile_name: str
     task: str
     max_steps: int = 15
+
+
+class ProfilePhotoRequest(BaseModel):
+    """Request model for profile photo update workflow."""
+    profile_name: str
+    persona_description: str
 
 
 @app.post("/adaptive-agent")
@@ -3540,6 +3547,46 @@ async def adaptive_agent_endpoint(
         profile_name=request.profile_name,
         task=request.task,
         max_steps=request.max_steps
+    )
+
+    return result
+
+
+# ===========================================================================
+# Workflow Endpoints
+# High-level workflows combining multiple capabilities
+# ===========================================================================
+
+@app.post("/workflow/update-profile-photo")
+async def workflow_update_profile_photo(
+    request: ProfilePhotoRequest,
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """
+    Generate AI profile photo and upload to Facebook.
+
+    This workflow:
+    1. Generates a hyper-realistic AI selfie using Gemini 2.5 Flash Image
+    2. Uses the Adaptive Agent to navigate Facebook and upload the photo
+    3. Returns results from both steps
+
+    Example:
+        POST /workflow/update-profile-photo
+        {
+            "profile_name": "Priscilla Hicks",
+            "persona_description": "friendly middle-aged white woman with light brown hair"
+        }
+    """
+    # Verify API key
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    logger.info(f"[WORKFLOW] Starting profile photo update for {request.profile_name}")
+    logger.info(f"[WORKFLOW] Persona: {request.persona_description}")
+
+    result = await update_profile_photo(
+        profile_name=request.profile_name,
+        persona_description=request.persona_description
     )
 
     return result

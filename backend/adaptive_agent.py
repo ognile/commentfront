@@ -141,12 +141,14 @@ class AdaptiveAgent:
         profile_name: str,
         task: str,
         max_steps: int = 15,
-        start_url: str = "https://m.facebook.com"
+        start_url: str = "https://m.facebook.com",
+        upload_file_path: Optional[str] = None
     ):
         self.profile_name = profile_name
         self.task = task
         self.max_steps = max_steps
         self.start_url = start_url
+        self.upload_file_path = upload_file_path  # Pre-staged file for UPLOAD action
         self.log_prefix = f"[ADAPTIVE:{profile_name}]"
 
         self.results: Dict[str, Any] = {
@@ -162,6 +164,7 @@ class AdaptiveAgent:
         self.vision = None
         self.page: Optional[Page] = None
         self.action_history: List[Dict] = []
+        self._file_chooser_handler_set = False
 
     def _build_prompt(self, step_num: int, elements_summary: List[str]) -> str:
         """Build the Gemini prompt for decision making."""
@@ -195,8 +198,9 @@ AVAILABLE ACTIONS:
 2. CLICK element="<description>" - Click an element (describe it by text/label, NOT coordinates)
 3. TYPE text="<text to type>" - Type text into active input field
 4. WAIT reason="<why>" - Wait for content to load
-5. DONE reason="<why task is complete>" - Task completed
-6. FAILED reason="<why task cannot be completed>" - Task failed
+5. UPLOAD element="<description>" - Click element to trigger file upload (image will be auto-selected)
+6. DONE reason="<why task is complete>" - Task completed
+7. FAILED reason="<why task cannot be completed>" - Task failed
 
 IMPORTANT RULES:
 - For CLICK: describe the element by its TEXT or LABEL, not coordinates
@@ -479,6 +483,16 @@ REASONING: Comment was submitted"""
             self.page = await context.new_page()
             await apply_session_to_context(context, self.session)
 
+            # Set up file chooser handler for UPLOAD action
+            if self.upload_file_path:
+                async def handle_file_chooser(file_chooser):
+                    logger.info(f"{self.log_prefix} File chooser triggered, uploading: {self.upload_file_path}")
+                    await file_chooser.set_files(self.upload_file_path)
+                    logger.info(f"{self.log_prefix} File uploaded successfully")
+
+                self.page.on("filechooser", handle_file_chooser)
+                logger.info(f"{self.log_prefix} File chooser handler registered for: {self.upload_file_path}")
+
             try:
                 # Step 0: Navigate to start URL
                 logger.info(f"{self.log_prefix} Navigating to {self.start_url}...")
@@ -724,6 +738,55 @@ REASONING: Comment was submitted"""
                         await asyncio.sleep(2)
                         step_result["action_taken"] = "WAIT 2s"
 
+                    elif action_type == "UPLOAD":
+                        # UPLOAD action: click element to trigger file chooser (handler auto-selects file)
+                        if not self.upload_file_path:
+                            step_result["action_taken"] = "UPLOAD_ERROR: No file path configured"
+                            self.results["errors"].append(f"Step {step_num}: UPLOAD called but no upload_file_path set")
+                        else:
+                            element_match = re.search(r'element="([^"]+)"', action_params)
+                            if element_match:
+                                element_desc = element_match.group(1)
+                                target_el = await find_element_by_description(element_desc, elements, self.log_prefix)
+
+                                if target_el:
+                                    # Click triggers file chooser, handler auto-selects file
+                                    clicked_via = await self._click_element(target_el, element_desc)
+                                    await asyncio.sleep(3)  # Wait for file upload to process
+                                    step_result["action_taken"] = f"UPLOAD via \"{element_desc}\" ({clicked_via})"
+                                    step_result["file_uploaded"] = self.upload_file_path
+                                    logger.info(f"{self.log_prefix} UPLOAD action completed for '{element_desc}'")
+                                else:
+                                    # Fallback: try clicking elements with file-related labels
+                                    upload_selectors = [
+                                        '[aria-label*="Upload" i]',
+                                        '[aria-label*="Choose" i]',
+                                        '[aria-label*="Photo" i]',
+                                        'input[type="file"]',
+                                        'text="Upload Photo"',
+                                        'text="Choose Photo"',
+                                    ]
+                                    clicked = False
+                                    for selector in upload_selectors:
+                                        try:
+                                            locator = self.page.locator(selector).first
+                                            if await locator.count() > 0:
+                                                await locator.click()
+                                                await asyncio.sleep(3)
+                                                step_result["action_taken"] = f"UPLOAD via selector {selector}"
+                                                step_result["file_uploaded"] = self.upload_file_path
+                                                clicked = True
+                                                break
+                                        except Exception:
+                                            continue
+
+                                    if not clicked:
+                                        step_result["action_taken"] = f"UPLOAD_FAILED: Could not find \"{element_desc}\""
+                                        self.results["errors"].append(f"Step {step_num}: Upload element not found: {element_desc}")
+                            else:
+                                step_result["action_taken"] = "UPLOAD_PARSE_ERROR"
+                                self.results["errors"].append(f"Step {step_num}: Could not parse UPLOAD element description")
+
                     else:
                         step_result["action_taken"] = f"UNKNOWN: {action_type}"
                         self.results["errors"].append(f"Step {step_num}: Unknown action: {action_type}")
@@ -763,7 +826,8 @@ async def run_adaptive_task(
     profile_name: str,
     task: str,
     max_steps: int = 15,
-    start_url: str = "https://m.facebook.com"
+    start_url: str = "https://m.facebook.com",
+    upload_file_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Convenience function to run an adaptive agent task.
@@ -773,6 +837,7 @@ async def run_adaptive_task(
         task: Natural language task description
         max_steps: Maximum number of agent steps
         start_url: Starting URL for the agent
+        upload_file_path: Optional path to file for UPLOAD action
 
     Returns:
         Dict with results including steps, screenshots, errors, final_status
@@ -781,6 +846,7 @@ async def run_adaptive_task(
         profile_name=profile_name,
         task=task,
         max_steps=max_steps,
-        start_url=start_url
+        start_url=start_url,
+        upload_file_path=upload_file_path
     )
     return await agent.run()
