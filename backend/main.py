@@ -955,14 +955,25 @@ async def get_analytics_summary(current_user: dict = Depends(get_current_user)):
 
 @app.get("/analytics/profiles")
 async def get_all_profile_analytics(current_user: dict = Depends(get_current_user)):
-    """Get analytics for all profiles."""
+    """Get analytics for profiles that have been used (usage_count > 0)."""
     from profile_manager import get_profile_manager
+    from fb_session import list_saved_sessions
     pm = get_profile_manager()
+
+    # Build display name lookup from sessions (normalized_name -> display_name)
+    sessions = list_saved_sessions()
+    display_names = {}
+    for s in sessions:
+        display_name = s.get("profile_name", "")
+        normalized = display_name.replace(" ", "_").replace("/", "_").lower()
+        display_names[normalized] = display_name
 
     profiles = []
     for profile_name in pm.get_all_profiles():
         analytics = pm.get_profile_analytics(profile_name)
-        if analytics:
+        if analytics and analytics.get("usage_count", 0) > 0:
+            # Add pretty display name from session data
+            analytics["display_name"] = display_names.get(profile_name, profile_name)
             profiles.append(analytics)
 
     # Sort by last_used_at (most recent first)

@@ -78,6 +78,10 @@ class ProfileManager:
         except Exception as e:
             logger.error(f"Failed to save profile state: {e}")
 
+    def _normalize_name(self, name: str) -> str:
+        """Normalize profile name to match session filename format."""
+        return name.replace(" ", "_").replace("/", "_").lower()
+
     def _sync_with_sessions(self):
         """Sync state with actual session files on disk."""
         try:
@@ -121,7 +125,8 @@ class ProfileManager:
 
     def get_profile_state(self, profile_name: str) -> Optional[Dict]:
         """Get state for a specific profile."""
-        return self.state["profiles"].get(profile_name)
+        normalized = self._normalize_name(profile_name)
+        return self.state["profiles"].get(normalized)
 
     def get_all_profiles(self) -> Dict[str, Dict]:
         """Get all profile states."""
@@ -241,8 +246,9 @@ class ProfileManager:
                 - "facebook_error": UI issues, element not found, etc.
                 - None: Success or unknown failure
         """
-        if profile_name not in self.state["profiles"]:
-            self.state["profiles"][profile_name] = {
+        normalized = self._normalize_name(profile_name)
+        if normalized not in self.state["profiles"]:
+            self.state["profiles"][normalized] = {
                 "last_used_at": None,
                 "usage_count": 0,
                 "status": "active",
@@ -254,7 +260,7 @@ class ProfileManager:
             }
 
         now = datetime.utcnow()
-        profile = self.state["profiles"][profile_name]
+        profile = self.state["profiles"][normalized]
 
         # Always increment usage count (for total attempts tracking)
         profile["usage_count"] = profile.get("usage_count", 0) + 1
@@ -300,7 +306,7 @@ class ProfileManager:
         profile["usage_history"] = profile["usage_history"][-20:]
 
         failure_desc = failure_type or "unknown"
-        log_msg = f"Profile {profile_name}: {'SUCCESS' if success else f'FAILED ({failure_desc})'}"
+        log_msg = f"Profile {normalized}: {'SUCCESS' if success else f'FAILED ({failure_desc})'}"
         if success:
             logger.info(log_msg)
         else:
@@ -322,8 +328,9 @@ class ProfileManager:
             hours: How many hours to restrict (default 24)
             reason: Reason for restriction (moderation_notice, comment_ban, manual)
         """
-        if profile_name not in self.state["profiles"]:
-            self.state["profiles"][profile_name] = {
+        normalized = self._normalize_name(profile_name)
+        if normalized not in self.state["profiles"]:
+            self.state["profiles"][normalized] = {
                 "last_used_at": None,
                 "usage_count": 0,
                 "status": "active",
@@ -334,7 +341,7 @@ class ProfileManager:
         now = datetime.utcnow()
         expires_at = now + timedelta(hours=hours)
 
-        profile = self.state["profiles"][profile_name]
+        profile = self.state["profiles"][normalized]
         profile["status"] = "restricted"
         profile["restriction_expires_at"] = expires_at.isoformat() + "Z"
         profile["restriction_reason"] = reason
@@ -349,28 +356,30 @@ class ProfileManager:
         })
         profile["restriction_history"] = profile["restriction_history"][-10:]
 
-        logger.warning(f"Restricted profile {profile_name} for {hours}h (reason: {reason})")
+        logger.warning(f"Restricted profile {normalized} for {hours}h (reason: {reason})")
         self._save_state()
 
     def unblock_profile(self, profile_name: str):
         """Manually unblock a restricted profile."""
-        if profile_name not in self.state["profiles"]:
+        normalized = self._normalize_name(profile_name)
+        if normalized not in self.state["profiles"]:
             return
 
-        profile = self.state["profiles"][profile_name]
+        profile = self.state["profiles"][normalized]
         profile["status"] = "active"
         profile["restriction_expires_at"] = None
         profile["restriction_reason"] = None
 
-        logger.info(f"Unblocked profile: {profile_name}")
+        logger.info(f"Unblocked profile: {normalized}")
         self._save_state()
 
     def extend_restriction(self, profile_name: str, additional_hours: int):
         """Extend an existing restriction."""
-        if profile_name not in self.state["profiles"]:
+        normalized = self._normalize_name(profile_name)
+        if normalized not in self.state["profiles"]:
             return
 
-        profile = self.state["profiles"][profile_name]
+        profile = self.state["profiles"][normalized]
 
         if profile.get("status") != "restricted":
             return
@@ -383,7 +392,7 @@ class ProfileManager:
             new_expires = datetime.utcnow() + timedelta(hours=additional_hours)
 
         profile["restriction_expires_at"] = new_expires.isoformat().replace("+00:00", "") + "Z"
-        logger.info(f"Extended restriction for {profile_name} by {additional_hours}h")
+        logger.info(f"Extended restriction for {normalized} by {additional_hours}h")
         self._save_state()
 
     def _check_restriction_expiry(self):
