@@ -4063,22 +4063,69 @@ REASONING: Comment was submitted"""
                                             center_y = bbox['y'] + bbox['height'] / 2
                                             logger.info(f"[ADAPTIVE-V2] Element {aria_label} at ({center_x:.0f}, {center_y:.0f})")
 
-                                        # Try tap() first (mobile touch gesture - works better for mobile FB)
+                                        # Try dispatch touch events (React listens for these on mobile)
                                         try:
-                                            await locator.tap(timeout=5000)
-                                            clicked_via = f"TAP [aria-label=\"{aria_label}\"]"
-                                            logger.info(f"[ADAPTIVE-V2] Tapped: {aria_label}")
-                                        except Exception as tap_err:
-                                            logger.warning(f"[ADAPTIVE-V2] tap() failed: {tap_err}, trying mouse.click")
-                                            # Fallback to mouse.click if tap fails
-                                            if bbox:
-                                                await page.mouse.click(center_x, center_y)
-                                                clicked_via = f"mouse.click [aria-label=\"{aria_label}\"] at ({center_x:.0f},{center_y:.0f})"
-                                                logger.info(f"[ADAPTIVE-V2] Mouse clicked: {aria_label}")
-                                            else:
-                                                await locator.click(timeout=5000, force=True)
-                                                clicked_via = f"CLICK force [aria-label=\"{aria_label}\"]"
-                                                logger.info(f"[ADAPTIVE-V2] Click force: {aria_label}")
+                                            # Dispatch touchstart + touchend events via JS (React mobile handlers)
+                                            touch_result = await locator.evaluate("""(el) => {
+                                                const rect = el.getBoundingClientRect();
+                                                const centerX = rect.left + rect.width / 2;
+                                                const centerY = rect.top + rect.height / 2;
+
+                                                // Create touch event
+                                                const touch = new Touch({
+                                                    identifier: Date.now(),
+                                                    target: el,
+                                                    clientX: centerX,
+                                                    clientY: centerY,
+                                                    pageX: centerX,
+                                                    pageY: centerY
+                                                });
+
+                                                // Dispatch touchstart
+                                                const touchStartEvent = new TouchEvent('touchstart', {
+                                                    bubbles: true,
+                                                    cancelable: true,
+                                                    touches: [touch],
+                                                    targetTouches: [touch],
+                                                    changedTouches: [touch]
+                                                });
+                                                el.dispatchEvent(touchStartEvent);
+
+                                                // Dispatch touchend after small delay
+                                                const touchEndEvent = new TouchEvent('touchend', {
+                                                    bubbles: true,
+                                                    cancelable: true,
+                                                    touches: [],
+                                                    targetTouches: [],
+                                                    changedTouches: [touch]
+                                                });
+                                                el.dispatchEvent(touchEndEvent);
+
+                                                // Also dispatch click for good measure
+                                                el.click();
+
+                                                return {success: true, x: centerX, y: centerY};
+                                            }""")
+                                            clicked_via = f"TOUCH_EVENTS [aria-label=\"{aria_label}\"]"
+                                            logger.info(f"[ADAPTIVE-V2] Touch events dispatched: {aria_label} result={touch_result}")
+                                        except Exception as touch_err:
+                                            logger.warning(f"[ADAPTIVE-V2] Touch events failed: {touch_err}, trying tap()")
+                                            # Fallback to Playwright tap
+                                            try:
+                                                await locator.tap(timeout=5000)
+                                                clicked_via = f"TAP [aria-label=\"{aria_label}\"]"
+                                                logger.info(f"[ADAPTIVE-V2] Tapped: {aria_label}")
+                                            except Exception as tap_err:
+                                                logger.warning(f"[ADAPTIVE-V2] tap() failed: {tap_err}, trying mouse.click")
+                                                # Fallback to mouse.click if tap fails
+                                                if bbox:
+                                                    await page.mouse.click(center_x, center_y)
+                                                    clicked_via = f"mouse.click [aria-label=\"{aria_label}\"] at ({center_x:.0f},{center_y:.0f})"
+                                                    logger.info(f"[ADAPTIVE-V2] Mouse clicked: {aria_label}")
+                                                else:
+                                                    await locator.click(timeout=5000, force=True)
+                                                    clicked_via = f"CLICK force [aria-label=\"{aria_label}\"]"
+                                                    logger.info(f"[ADAPTIVE-V2] Click force: {aria_label}")
                                 except Exception as e:
                                     logger.warning(f"[ADAPTIVE-V2] Native click failed: {e}, falling back to coordinates")
 
