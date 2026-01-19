@@ -3790,20 +3790,37 @@ REASONING: Comment was submitted"""
                         target_el = await find_element_by_description(element_desc, elements)
 
                         if target_el:
-                            bounds = target_el.get('bounds', {})
-                            x = bounds['x'] + bounds['w'] // 2
-                            y = bounds['y'] + bounds['h'] // 2
+                            aria_label = target_el.get('ariaLabel', '')
+                            clicked_via = None
 
-                            await page.mouse.click(x, y)
+                            # Try native Playwright click FIRST (more reliable for React buttons)
+                            if aria_label:
+                                try:
+                                    locator = page.locator(f'[aria-label="{aria_label}"]').first
+                                    if await locator.count() > 0:
+                                        await locator.click(timeout=5000)
+                                        clicked_via = f"native locator [aria-label=\"{aria_label}\"]"
+                                        logger.info(f"[ADAPTIVE-V2] Clicked via native locator: {aria_label}")
+                                except Exception as e:
+                                    logger.warning(f"[ADAPTIVE-V2] Native click failed: {e}, falling back to coordinates")
+
+                            # Fallback to coordinate click if native failed
+                            if not clicked_via:
+                                bounds = target_el.get('bounds', {})
+                                x = bounds['x'] + bounds['w'] // 2
+                                y = bounds['y'] + bounds['h'] // 2
+                                await page.mouse.click(x, y)
+                                clicked_via = f"coordinates ({x},{y})"
+                                logger.info(f"[ADAPTIVE-V2] Clicked via coordinates: ({x},{y})")
+
                             await asyncio.sleep(2)
 
-                            step_result["action_taken"] = f"CLICK \"{element_desc}\" at ({x},{y})"
+                            step_result["action_taken"] = f"CLICK \"{element_desc}\" via {clicked_via}"
                             step_result["matched_element"] = {
                                 "tag": target_el.get('tag'),
-                                "ariaLabel": target_el.get('ariaLabel'),
+                                "ariaLabel": aria_label,
                                 "text": target_el.get('text', '')[:30]
                             }
-                            logger.info(f"[ADAPTIVE-V2] Clicked \"{element_desc}\" at ({x},{y})")
                         else:
                             # Fallback: try common selectors
                             clicked = False
