@@ -4026,7 +4026,7 @@ REASONING: Comment was submitted"""
                             aria_label = target_el.get('ariaLabel', '')
                             clicked_via = None
 
-                            # Try native Playwright click FIRST (dispatches proper events for React)
+                            # Try native Playwright tap/click (mobile mode enabled)
                             if aria_label:
                                 try:
                                     locator = page.locator(f'[aria-label="{aria_label}"]').first
@@ -4035,26 +4035,26 @@ REASONING: Comment was submitted"""
                                         await locator.scroll_into_view_if_needed()
                                         await asyncio.sleep(0.3)
 
-                                        # Get bounding box for coordinate-based click (most reliable for React)
+                                        # Get bounding box for logging
                                         bbox = await locator.bounding_box()
                                         if bbox:
-                                            # Click center of element with mouse (triggers proper React events)
                                             center_x = bbox['x'] + bbox['width'] / 2
                                             center_y = bbox['y'] + bbox['height'] / 2
-                                            logger.info(f"[ADAPTIVE-V2] Clicking {aria_label} at ({center_x:.0f}, {center_y:.0f})")
+                                            logger.info(f"[ADAPTIVE-V2] Element {aria_label} at ({center_x:.0f}, {center_y:.0f})")
 
-                                            # Use page.mouse.click for precise control
-                                            await page.mouse.click(center_x, center_y)
-                                            clicked_via = f"mouse.click [aria-label=\"{aria_label}\"] at ({center_x:.0f},{center_y:.0f})"
-                                            logger.info(f"[ADAPTIVE-V2] Mouse clicked: {aria_label}")
-                                        else:
-                                            # Fallback to tap if bbox not available
-                                            try:
-                                                await locator.tap(timeout=3000)
-                                                clicked_via = f"TAP [aria-label=\"{aria_label}\"]"
-                                                logger.info(f"[ADAPTIVE-V2] Tapped: {aria_label}")
-                                            except Exception:
-                                                # Last resort: click with force
+                                        # Try tap() first (mobile touch gesture - works better for mobile FB)
+                                        try:
+                                            await locator.tap(timeout=5000)
+                                            clicked_via = f"TAP [aria-label=\"{aria_label}\"]"
+                                            logger.info(f"[ADAPTIVE-V2] Tapped: {aria_label}")
+                                        except Exception as tap_err:
+                                            logger.warning(f"[ADAPTIVE-V2] tap() failed: {tap_err}, trying mouse.click")
+                                            # Fallback to mouse.click if tap fails
+                                            if bbox:
+                                                await page.mouse.click(center_x, center_y)
+                                                clicked_via = f"mouse.click [aria-label=\"{aria_label}\"] at ({center_x:.0f},{center_y:.0f})"
+                                                logger.info(f"[ADAPTIVE-V2] Mouse clicked: {aria_label}")
+                                            else:
                                                 await locator.click(timeout=5000, force=True)
                                                 clicked_via = f"CLICK force [aria-label=\"{aria_label}\"]"
                                                 logger.info(f"[ADAPTIVE-V2] Click force: {aria_label}")
