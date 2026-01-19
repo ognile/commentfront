@@ -3722,7 +3722,20 @@ REASONING: Comment was submitted"""
                         model=vision.model,
                         contents=[prompt, image_part]
                     )
-                    result_text = response.text.strip()
+                    result_text = response.text
+                    if not result_text:
+                        logger.warning(f"[ADAPTIVE-V2] Gemini returned empty response, retrying...")
+                        await asyncio.sleep(1)
+                        response = await asyncio.to_thread(
+                            vision.client.models.generate_content,
+                            model=vision.model,
+                            contents=[prompt, image_part]
+                        )
+                        result_text = response.text
+                    if not result_text:
+                        results["errors"].append(f"Step {step_num}: Gemini returned empty response")
+                        continue
+                    result_text = result_text.strip()
                     logger.info(f"[ADAPTIVE-V2] Gemini response:\n{result_text}")
                 except Exception as e:
                     logger.error(f"[ADAPTIVE-V2] Gemini API error: {e}")
