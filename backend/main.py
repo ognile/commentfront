@@ -3767,7 +3767,32 @@ REASONING: Comment was submitted"""
                         result_text = response.text
 
                     if not result_text:
-                        results["errors"].append(f"Step {step_num}: Gemini returned empty response")
+                        # Fallback: try to find and click known buttons when Gemini fails
+                        logger.info(f"[ADAPTIVE-V2] Gemini empty - trying DOM fallback for known buttons")
+                        fallback_clicked = False
+
+                        # Check for "Request review" button (restriction flow)
+                        for el in visible_elements:
+                            aria = el.get('ariaLabel', '').lower()
+                            text = el.get('text', '').lower()
+                            if 'request review' in aria or 'request review' in text:
+                                bounds = el.get('bounds', {})
+                                if bounds.get('y', 0) > 0:
+                                    x = bounds['x'] + bounds['w'] // 2
+                                    y = bounds['y'] + bounds['h'] // 2
+                                    await page.mouse.click(x, y)
+                                    await asyncio.sleep(2)
+                                    logger.info(f"[ADAPTIVE-V2] Fallback clicked 'Request review' at ({x},{y})")
+                                    results["steps"].append({
+                                        "step": step_num,
+                                        "action_taken": f"FALLBACK_CLICK 'Request review' at ({x},{y})",
+                                        "screenshot": screenshot_path
+                                    })
+                                    fallback_clicked = True
+                                    break
+
+                        if not fallback_clicked:
+                            results["errors"].append(f"Step {step_num}: Gemini returned empty response")
                         continue
                     result_text = result_text.strip()
                     logger.info(f"[ADAPTIVE-V2] Gemini response:\n{result_text}")
