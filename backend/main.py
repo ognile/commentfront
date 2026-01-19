@@ -3509,7 +3509,7 @@ async def adaptive_agent_endpoint(
     - Performing multi-step tasks
     """
     # Verify API key
-    if not verify_api_key(api_key):
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     logger.info(f"[ADAPTIVE] Starting task for {request.profile_name}: {request.task}")
