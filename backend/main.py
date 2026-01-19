@@ -3429,8 +3429,8 @@ IMPORTANT: Coordinates must be within 0-393 for x and 0-873 for y."""
 
 
 # ===========================================================================
-# TEMPORARY TEST ENDPOINT - Adaptive Agent Testing
-# A true goal-based adaptive agent that uses vision at each step
+# TEMPORARY TEST ENDPOINT - DOM-Based Adaptive Agent
+# Gemini decides WHAT to do, Playwright finds WHERE (no coordinate hallucination)
 # ===========================================================================
 
 class AdaptiveAgentRequest(BaseModel):
@@ -3440,27 +3440,24 @@ class AdaptiveAgentRequest(BaseModel):
     max_steps: int = 20
 
 
-@app.post("/test-adaptive-agent")
-async def test_adaptive_agent(
+@app.post("/test-adaptive-agent-v2")
+async def test_adaptive_agent_v2(
     request: AdaptiveAgentRequest,
     current_user: dict = Depends(get_current_user)
 ) -> Dict:
     """
-    TEMPORARY TEST ENDPOINT - True adaptive agent.
+    DOM-Based Adaptive Agent - Gemini decides WHAT, Playwright finds WHERE.
 
-    Given a high-level task, uses Gemini Vision to:
-    1. Analyze current screen state
-    2. Decide what action to take next
-    3. Execute the action (scroll, click, type)
-    4. Loop until goal achieved or max steps reached
+    No coordinate hallucination - uses DOM element matching instead.
     """
     from playwright.async_api import async_playwright
     from playwright_stealth import Stealth
     from fb_session import FacebookSession, apply_session_to_context
     from gemini_vision import get_vision_client, set_observation_context
-    from comment_bot import save_debug_screenshot, _build_playwright_proxy
+    from comment_bot import save_debug_screenshot, _build_playwright_proxy, dump_interactive_elements
     from google.genai import types
     import re
+    import json as json_module
 
     results = {
         "profile_name": request.profile_name,
@@ -3482,10 +3479,10 @@ async def test_adaptive_agent(
         return {"error": "Vision client not available"}
 
     # Set context for Gemini logging
-    set_observation_context(profile_name=request.profile_name, campaign_id="adaptive_agent_test")
+    set_observation_context(profile_name=request.profile_name, campaign_id="adaptive_agent_v2")
 
-    logger.info(f"[ADAPTIVE-AGENT] Starting task: {request.task}")
-    logger.info(f"[ADAPTIVE-AGENT] Profile: {request.profile_name}, Max steps: {request.max_steps}")
+    logger.info(f"[ADAPTIVE-V2] Starting task: {request.task}")
+    logger.info(f"[ADAPTIVE-V2] Profile: {request.profile_name}, Max steps: {request.max_steps}")
 
     async with async_playwright() as p:
         # Build context options - SAME as post_comment_verified()
@@ -3503,7 +3500,7 @@ async def test_adaptive_agent(
         proxy = session.get_proxy()
         if proxy:
             context_options["proxy"] = _build_playwright_proxy(proxy)
-            logger.info(f"[ADAPTIVE-AGENT] Using proxy: {proxy[:30]}...")
+            logger.info(f"[ADAPTIVE-V2] Using proxy: {proxy[:30]}...")
 
         # Launch browser
         browser = await p.chromium.launch(
@@ -3519,13 +3516,73 @@ async def test_adaptive_agent(
         page = await context.new_page()
         await apply_session_to_context(context, session)
 
+        # Helper function to find element by Gemini's description
+        async def find_element_by_description(description: str, elements: list) -> Optional[dict]:
+            """Match Gemini's description to a DOM element."""
+            desc_lower = description.lower()
+
+            # Priority 1: Exact aria-label match
+            for el in elements:
+                if el.get('ariaLabel', '').lower() == desc_lower:
+                    return el
+
+            # Priority 2: Partial aria-label match
+            for el in elements:
+                if desc_lower in el.get('ariaLabel', '').lower():
+                    return el
+                if el.get('ariaLabel', '').lower() in desc_lower:
+                    return el
+
+            # Priority 3: Text content match
+            for el in elements:
+                if desc_lower in el.get('text', '').lower():
+                    return el
+                if el.get('text', '').lower() in desc_lower:
+                    return el
+
+            # Priority 4: Role-based matching for common elements
+            if 'back' in desc_lower or 'close' in desc_lower or 'dismiss' in desc_lower:
+                for el in elements:
+                    aria = el.get('ariaLabel', '').lower()
+                    if 'back' in aria or 'close' in aria or aria == 'x':
+                        return el
+
+            if 'comment' in desc_lower:
+                for el in elements:
+                    aria = el.get('ariaLabel', '').lower()
+                    if 'comment' in aria:
+                        return el
+
+            if 'like' in desc_lower:
+                for el in elements:
+                    aria = el.get('ariaLabel', '').lower()
+                    if 'like' in aria and 'unlike' not in aria:
+                        return el
+
+            if 'see why' in desc_lower:
+                for el in elements:
+                    if 'see why' in el.get('text', '').lower():
+                        return el
+
+            return None
+
+        async def click_element(el: dict) -> bool:
+            """Click an element using its bounding box center."""
+            bounds = el.get('bounds', {})
+            if not bounds:
+                return False
+            x = bounds['x'] + bounds['w'] // 2
+            y = bounds['y'] + bounds['h'] // 2
+            await page.mouse.click(x, y)
+            return True
+
         try:
             # Step 0: Navigate to Facebook
-            logger.info("[ADAPTIVE-AGENT] Navigating to Facebook...")
+            logger.info("[ADAPTIVE-V2] Navigating to Facebook...")
             await page.goto("https://m.facebook.com", wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
 
-            screenshot_path = await save_debug_screenshot(page, "adaptive_step_0")
+            screenshot_path = await save_debug_screenshot(page, "adaptive_v2_step_0")
             results["screenshots"].append(screenshot_path)
             results["steps"].append({
                 "step": 0,
@@ -3537,67 +3594,72 @@ async def test_adaptive_agent(
 
             # Adaptive loop
             for step_num in range(1, request.max_steps + 1):
-                logger.info(f"[ADAPTIVE-AGENT] Step {step_num}/{request.max_steps}")
+                logger.info(f"[ADAPTIVE-V2] Step {step_num}/{request.max_steps}")
 
                 # Take screenshot
-                screenshot_path = await save_debug_screenshot(page, f"adaptive_step_{step_num}")
+                screenshot_path = await save_debug_screenshot(page, f"adaptive_v2_step_{step_num}")
+
+                # Dump DOM elements
+                elements = await dump_interactive_elements(page, f"step_{step_num}")
+
+                # Format elements for Gemini (simplified view)
+                elements_summary = []
+                for i, el in enumerate(elements[:30]):  # Limit to 30 elements
+                    text = el.get('text', '')[:40] or el.get('ariaLabel', '')[:40] or el.get('placeholder', '')[:40]
+                    if text:
+                        elements_summary.append(f"[{i}] {el['tag']} \"{text}\"")
 
                 # Read screenshot
                 with open(screenshot_path, "rb") as f:
                     image_data = f.read()
 
-                # Build the adaptive prompt
-                prompt = f"""You are an AI agent controlling a Facebook mobile browser (393x873 pixels).
+                # Build the adaptive prompt - NO COORDINATES
+                prompt = f"""You are an AI agent controlling a Facebook mobile browser.
 
 TASK: {request.task}
 
 CURRENT STEP: {step_num} of {request.max_steps}
 
-Analyze this screenshot and decide the NEXT ACTION to progress toward completing the task.
+INTERACTIVE ELEMENTS ON PAGE (from DOM):
+{chr(10).join(elements_summary) if elements_summary else "No elements found"}
+
+Analyze the screenshot and DOM elements. Decide the NEXT ACTION.
 
 AVAILABLE ACTIONS:
-1. SCROLL direction=<up|down> amount=<pixels> - Scroll the page
-2. CLICK x=<x> y=<y> description="<what you're clicking>" - Click at coordinates
-3. TYPE text="<text to type>" - Type text (only if an input field is focused/active)
-4. WAIT seconds=<1-5> reason="<why waiting>" - Wait for content to load
-5. DONE reason="<why task is complete>" - Task completed successfully
-6. FAILED reason="<why task cannot be completed>" - Task cannot be completed
+1. SCROLL direction=<up|down> - Scroll to see more content
+2. CLICK element="<description>" - Click an element (describe it by text/label, NOT coordinates)
+3. TYPE text="<text to type>" - Type text into active input field
+4. WAIT reason="<why>" - Wait for content to load
+5. DONE reason="<why task is complete>" - Task completed
+6. FAILED reason="<why task cannot be completed>" - Task failed
 
-COORDINATE ACCURACY IS CRITICAL:
-- Screen is 393 pixels wide (x: 0=left edge, 196=center, 393=right edge)
-- Screen is 873 pixels tall (y: 0=top edge, 436=center, 873=bottom edge)
-- Back arrows/X buttons in top-left are typically around x=15-30, y=20-35
-- Center buttons are around x=180-210
-- Buttons at bottom of screen are around y=800-860
-- MEASURE CAREFULLY from the edges before giving coordinates
+IMPORTANT RULES:
+- For CLICK: describe the element by its TEXT or LABEL, not coordinates
+- Example: CLICK element="Comment" or CLICK element="Back" or CLICK element="See why"
+- If you see a "We removed your comment" notification, click "Back" or the back arrow to dismiss
+- To comment on a post, first CLICK the post or its Comment button, then TYPE your comment
+- Make comments contextual to the post content (not generic)
+- If stuck, try scrolling to find different content
 
-RULES:
-- If you see a dialog/popup, dismiss it first before continuing the task
-- For "We removed your comment" screens: click the back arrow (←) at TOP-LEFT corner (around x=20, y=25) or "See why" button at bottom
-- If you need to comment, first click on a post to open it, then find the comment input
-- Generate contextual comments that fit the post content (not generic spam)
-- SCROLL down to see more posts if the current ones aren't interesting
-- If same action fails 3+ times, try a DIFFERENT approach
-
-RESPONSE FORMAT (exactly one action per response):
+RESPONSE FORMAT:
 ACTION: <action_type> <parameters>
-REASONING: <brief explanation of why this action helps complete the task>
+REASONING: <brief explanation>
 
-Example responses:
-ACTION: SCROLL direction=down amount=400
-REASONING: Need to see more posts to find one worth commenting on
+Examples:
+ACTION: SCROLL direction=down
+REASONING: Looking for an interesting post to comment on
 
-ACTION: CLICK x=20 y=25 description="Back arrow to dismiss notification"
-REASONING: Clicking the back arrow in the top-left to return to feed
+ACTION: CLICK element="Comment"
+REASONING: Opening comments on the NFL post to write a comment
 
-ACTION: CLICK x=196 y=843 description="See why button"
-REASONING: Clicking See why to understand and dismiss the notification
+ACTION: CLICK element="Back"
+REASONING: Dismissing the notification to return to feed
 
-ACTION: TYPE text="Great game! The Patriots really showed up today"
-REASONING: Writing a contextual comment about the NFL post content
+ACTION: TYPE text="What a great play! The defense really stepped up."
+REASONING: Writing a contextual comment about the football post
 
-ACTION: DONE reason="Successfully posted a contextual comment on an NFL post"
-REASONING: Comment was typed and submitted successfully"""
+ACTION: DONE reason="Successfully commented on a post"
+REASONING: Comment was submitted"""
 
                 image_part = types.Part.from_bytes(data=image_data, mime_type="image/png")
 
@@ -3608,9 +3670,9 @@ REASONING: Comment was typed and submitted successfully"""
                         contents=[prompt, image_part]
                     )
                     result_text = response.text.strip()
-                    logger.info(f"[ADAPTIVE-AGENT] Gemini response:\n{result_text}")
+                    logger.info(f"[ADAPTIVE-V2] Gemini response:\n{result_text}")
                 except Exception as e:
-                    logger.error(f"[ADAPTIVE-AGENT] Gemini API error: {e}")
+                    logger.error(f"[ADAPTIVE-V2] Gemini API error: {e}")
                     results["errors"].append(f"Step {step_num}: Gemini API error - {e}")
                     continue
 
@@ -3618,6 +3680,7 @@ REASONING: Comment was typed and submitted successfully"""
                     "step": step_num,
                     "gemini_response": result_text,
                     "screenshot": screenshot_path,
+                    "elements_count": len(elements),
                     "action_taken": None,
                     "url": page.url
                 }
@@ -3629,12 +3692,12 @@ REASONING: Comment was typed and submitted successfully"""
                 if not action_match:
                     step_result["action_taken"] = "could_not_parse_action"
                     results["steps"].append(step_result)
-                    results["errors"].append(f"Step {step_num}: Could not parse action from response")
+                    results["errors"].append(f"Step {step_num}: Could not parse action")
                     continue
 
                 action_type = action_match.group(1).upper()
                 action_params = action_match.group(2).strip()
-                reasoning = reasoning_match.group(1).strip() if reasoning_match else "No reasoning provided"
+                reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
 
                 step_result["reasoning"] = reasoning
 
@@ -3643,96 +3706,134 @@ REASONING: Comment was typed and submitted successfully"""
                     step_result["action_taken"] = f"DONE: {action_params}"
                     results["steps"].append(step_result)
                     results["final_status"] = "task_completed"
-                    logger.info(f"[ADAPTIVE-AGENT] Task completed: {action_params}")
+                    logger.info(f"[ADAPTIVE-V2] Task completed: {action_params}")
                     break
 
                 elif action_type == "FAILED":
                     step_result["action_taken"] = f"FAILED: {action_params}"
                     results["steps"].append(step_result)
                     results["final_status"] = "task_failed"
-                    logger.info(f"[ADAPTIVE-AGENT] Task failed: {action_params}")
+                    logger.info(f"[ADAPTIVE-V2] Task failed: {action_params}")
                     break
 
                 elif action_type == "SCROLL":
                     direction_match = re.search(r'direction=(\w+)', action_params)
-                    amount_match = re.search(r'amount=(\d+)', action_params)
                     direction = direction_match.group(1) if direction_match else "down"
-                    amount = int(amount_match.group(1)) if amount_match else 300
-
-                    # Convert direction to delta
-                    delta_y = amount if direction == "down" else -amount
+                    delta_y = 400 if direction == "down" else -400
 
                     await page.mouse.wheel(0, delta_y)
                     await asyncio.sleep(1.5)
 
-                    step_result["action_taken"] = f"SCROLL {direction} {amount}px"
-                    logger.info(f"[ADAPTIVE-AGENT] Scrolled {direction} {amount}px")
+                    step_result["action_taken"] = f"SCROLL {direction}"
+                    logger.info(f"[ADAPTIVE-V2] Scrolled {direction}")
 
                 elif action_type == "CLICK":
-                    x_match = re.search(r'x=(\d+)', action_params)
-                    y_match = re.search(r'y=(\d+)', action_params)
-                    desc_match = re.search(r'description="([^"]+)"', action_params)
+                    # Extract element description
+                    element_match = re.search(r'element="([^"]+)"', action_params)
+                    if element_match:
+                        element_desc = element_match.group(1)
 
-                    if x_match and y_match:
-                        x = int(x_match.group(1))
-                        y = int(y_match.group(1))
-                        description = desc_match.group(1) if desc_match else "unknown element"
+                        # Find element in DOM
+                        target_el = await find_element_by_description(element_desc, elements)
 
-                        if 0 <= x <= 393 and 0 <= y <= 873:
+                        if target_el:
+                            bounds = target_el.get('bounds', {})
+                            x = bounds['x'] + bounds['w'] // 2
+                            y = bounds['y'] + bounds['h'] // 2
+
                             await page.mouse.click(x, y)
                             await asyncio.sleep(2)
-                            step_result["action_taken"] = f"CLICK ({x}, {y}) - {description}"
-                            logger.info(f"[ADAPTIVE-AGENT] Clicked ({x}, {y}) - {description}")
+
+                            step_result["action_taken"] = f"CLICK \"{element_desc}\" at ({x},{y})"
+                            step_result["matched_element"] = {
+                                "tag": target_el.get('tag'),
+                                "ariaLabel": target_el.get('ariaLabel'),
+                                "text": target_el.get('text', '')[:30]
+                            }
+                            logger.info(f"[ADAPTIVE-V2] Clicked \"{element_desc}\" at ({x},{y})")
                         else:
-                            step_result["action_taken"] = f"INVALID_COORDS ({x}, {y})"
-                            results["errors"].append(f"Step {step_num}: Invalid coordinates ({x}, {y})")
+                            # Fallback: try common selectors
+                            clicked = False
+                            fallback_selectors = [
+                                f'[aria-label*="{element_desc}" i]',
+                                f'text="{element_desc}"',
+                                f'button:has-text("{element_desc}")',
+                                f'div[role="button"]:has-text("{element_desc}")',
+                            ]
+
+                            for selector in fallback_selectors:
+                                try:
+                                    locator = page.locator(selector).first
+                                    if await locator.count() > 0:
+                                        await locator.click()
+                                        await asyncio.sleep(2)
+                                        step_result["action_taken"] = f"CLICK \"{element_desc}\" via selector {selector}"
+                                        clicked = True
+                                        logger.info(f"[ADAPTIVE-V2] Clicked via selector: {selector}")
+                                        break
+                                except Exception:
+                                    continue
+
+                            if not clicked:
+                                step_result["action_taken"] = f"CLICK_FAILED: Could not find \"{element_desc}\""
+                                results["errors"].append(f"Step {step_num}: Element not found: {element_desc}")
                     else:
                         step_result["action_taken"] = "CLICK_PARSE_ERROR"
-                        results["errors"].append(f"Step {step_num}: Could not parse click coordinates")
+                        results["errors"].append(f"Step {step_num}: Could not parse element description")
 
                 elif action_type == "TYPE":
                     text_match = re.search(r'text="([^"]+)"', action_params)
                     if text_match:
                         text = text_match.group(1)
+
+                        # First try to find and focus an input
+                        input_focused = False
+                        for el in elements:
+                            if el.get('contentEditable') == 'true' or el['tag'] in ['INPUT', 'TEXTAREA']:
+                                bounds = el.get('bounds', {})
+                                if bounds:
+                                    x = bounds['x'] + bounds['w'] // 2
+                                    y = bounds['y'] + bounds['h'] // 2
+                                    await page.mouse.click(x, y)
+                                    await asyncio.sleep(0.5)
+                                    input_focused = True
+                                    break
+
                         await page.keyboard.type(text, delay=50)
                         await asyncio.sleep(1)
                         step_result["action_taken"] = f"TYPE: {text[:50]}..."
-                        logger.info(f"[ADAPTIVE-AGENT] Typed: {text[:50]}...")
+                        logger.info(f"[ADAPTIVE-V2] Typed: {text[:50]}...")
                     else:
                         step_result["action_taken"] = "TYPE_PARSE_ERROR"
-                        results["errors"].append(f"Step {step_num}: Could not parse text to type")
 
                 elif action_type == "WAIT":
-                    seconds_match = re.search(r'seconds=(\d+)', action_params)
-                    seconds = min(int(seconds_match.group(1)), 5) if seconds_match else 2
-                    await asyncio.sleep(seconds)
-                    step_result["action_taken"] = f"WAIT {seconds}s"
-                    logger.info(f"[ADAPTIVE-AGENT] Waited {seconds}s")
+                    await asyncio.sleep(2)
+                    step_result["action_taken"] = "WAIT 2s"
+                    logger.info("[ADAPTIVE-V2] Waited 2s")
 
                 else:
-                    step_result["action_taken"] = f"UNKNOWN_ACTION: {action_type}"
-                    results["errors"].append(f"Step {step_num}: Unknown action type: {action_type}")
+                    step_result["action_taken"] = f"UNKNOWN: {action_type}"
+                    results["errors"].append(f"Step {step_num}: Unknown action: {action_type}")
 
                 results["steps"].append(step_result)
                 results["screenshots"].append(screenshot_path)
 
             else:
-                # Loop completed without DONE/FAILED
                 results["final_status"] = "max_steps_reached"
 
             # Take final screenshot
-            final_screenshot = await save_debug_screenshot(page, "adaptive_final")
+            final_screenshot = await save_debug_screenshot(page, "adaptive_v2_final")
             results["screenshots"].append(final_screenshot)
             results["final_url"] = page.url
 
         except Exception as e:
-            logger.error(f"[ADAPTIVE-AGENT] Error: {e}")
+            logger.error(f"[ADAPTIVE-V2] Error: {e}")
             results["errors"].append(str(e))
             results["final_status"] = "error"
         finally:
             await browser.close()
 
-    logger.info(f"[ADAPTIVE-AGENT] Test complete: {results['final_status']}")
+    logger.info(f"[ADAPTIVE-V2] Test complete: {results['final_status']}")
     return results
 
 
