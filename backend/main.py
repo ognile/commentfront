@@ -2129,16 +2129,30 @@ async def bulk_retry_failed_jobs(
     }
     logger.info(f"Bulk retry: {len(succeeded_profiles)} profiles already succeeded, will be excluded")
 
-    # Identify failed jobs (consolidated - latest result for each job_index)
-    consolidated: Dict[int, dict] = {}
-    for result in campaign.get("results", []):
-        consolidated[result.get("job_index", 0)] = result
+    # Identify jobs that have NEVER succeeded (check ALL results, not just latest)
+    # This is critical for deployment resilience - if a retry succeeded but then
+    # deployment killed the process, we don't want to retry that job again
+    job_has_success: Dict[int, bool] = {}
+    job_comment: Dict[int, str] = {}
+    job_original_profile: Dict[int, str] = {}
 
+    for result in campaign.get("results", []):
+        idx = result.get("job_index", 0)
+        if idx not in job_has_success:
+            job_has_success[idx] = False
+            job_comment[idx] = result.get("comment", "")
+            job_original_profile[idx] = result.get("profile_name", "")
+        if result.get("success"):
+            job_has_success[idx] = True
+
+    # Only retry jobs that have NEVER succeeded
     failed_jobs = [
-        {"job_index": idx, "comment": r.get("comment", ""), "original_profile": r.get("profile_name", "")}
-        for idx, r in consolidated.items()
-        if not r.get("success")
+        {"job_index": idx, "comment": job_comment.get(idx, ""), "original_profile": job_original_profile.get(idx, "")}
+        for idx, has_success in job_has_success.items()
+        if not has_success
     ]
+
+    logger.info(f"Bulk retry: {len(failed_jobs)} jobs still need success (out of {len(job_has_success)} total)")
 
     if not failed_jobs:
         return {"success": True, "message": "No failed jobs to retry", "retried": 0, "succeeded": 0, "failed": 0}
