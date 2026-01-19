@@ -3494,6 +3494,8 @@ async def test_adaptive_agent_v2(
             "device_scale_factor": 1,
             "timezone_id": fingerprint["timezone"],
             "locale": fingerprint["locale"],
+            "has_touch": True,  # Enable touch support for mobile tap gestures
+            "is_mobile": True,  # Mobile mode for proper touch handling
         }
 
         # Add proxy if session has one
