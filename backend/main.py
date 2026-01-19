@@ -3563,13 +3563,21 @@ AVAILABLE ACTIONS:
 5. DONE reason="<why task is complete>" - Task completed successfully
 6. FAILED reason="<why task cannot be completed>" - Task cannot be completed
 
+COORDINATE ACCURACY IS CRITICAL:
+- Screen is 393 pixels wide (x: 0=left edge, 196=center, 393=right edge)
+- Screen is 873 pixels tall (y: 0=top edge, 436=center, 873=bottom edge)
+- Back arrows/X buttons in top-left are typically around x=15-30, y=20-35
+- Center buttons are around x=180-210
+- Buttons at bottom of screen are around y=800-860
+- MEASURE CAREFULLY from the edges before giving coordinates
+
 RULES:
-- Coordinates must be within 0-393 for x and 0-873 for y
-- Be specific about what you're clicking and why
 - If you see a dialog/popup, dismiss it first before continuing the task
+- For "We removed your comment" screens: click the back arrow (←) at TOP-LEFT corner (around x=20, y=25) or "See why" button at bottom
 - If you need to comment, first click on a post to open it, then find the comment input
 - Generate contextual comments that fit the post content (not generic spam)
 - SCROLL down to see more posts if the current ones aren't interesting
+- If same action fails 3+ times, try a DIFFERENT approach
 
 RESPONSE FORMAT (exactly one action per response):
 ACTION: <action_type> <parameters>
@@ -3579,10 +3587,13 @@ Example responses:
 ACTION: SCROLL direction=down amount=400
 REASONING: Need to see more posts to find one worth commenting on
 
-ACTION: CLICK x=196 y=450 description="Comment button on NFL post"
-REASONING: Found an interesting sports post, clicking to open comments
+ACTION: CLICK x=20 y=25 description="Back arrow to dismiss notification"
+REASONING: Clicking the back arrow in the top-left to return to feed
 
-ACTION: TYPE text="Great game! The Patriots really showed up today 🏈"
+ACTION: CLICK x=196 y=843 description="See why button"
+REASONING: Clicking See why to understand and dismiss the notification
+
+ACTION: TYPE text="Great game! The Patriots really showed up today"
 REASONING: Writing a contextual comment about the NFL post content
 
 ACTION: DONE reason="Successfully posted a contextual comment on an NFL post"
