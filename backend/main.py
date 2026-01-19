@@ -2150,8 +2150,8 @@ async def bulk_retry_failed_jobs(
         "warmup_enabled": enable_warmup
     })
 
-    # Track all profiles we've tried (to avoid retrying with same profile)
-    tried_profiles = set(succeeded_profiles)  # Start with succeeded profiles excluded
+    # Track profiles that SUCCEEDED - these must be excluded from ALL jobs to prevent duplicates
+    # But failed profiles should only be excluded within the SAME job retry loop
     all_results = []
     jobs_succeeded = 0
     jobs_exhausted = 0  # Jobs where we ran out of profiles
@@ -2163,15 +2163,21 @@ async def bulk_retry_failed_jobs(
         job_succeeded = False
         attempt = 0
 
+        # For THIS job, track profiles we've tried (reset for each job)
+        # But always exclude profiles that already succeeded in the campaign
+        job_tried_profiles = set(succeeded_profiles)
+
         logger.info(f"Bulk retry: Starting job {job_index} (comment: {comment[:30]}...)")
 
         # Keep trying profiles until success or no more profiles available
         while not job_succeeded:
-            # Get eligible profiles, excluding ones we've already tried
+            # Get eligible profiles, excluding:
+            # 1. Profiles that already succeeded in this campaign (prevents duplicates)
+            # 2. Profiles we've already tried for THIS specific job
             eligible = profile_manager.get_eligible_profiles(
                 filter_tags=filter_tags if filter_tags else None,
                 count=5,  # Get a small batch
-                exclude_profiles=list(tried_profiles)
+                exclude_profiles=list(job_tried_profiles)
             )
 
             if not eligible:
@@ -2198,7 +2204,7 @@ async def bulk_retry_failed_jobs(
 
             # Try the first eligible profile (LRU order)
             profile_name = eligible[0]
-            tried_profiles.add(profile_name)
+            job_tried_profiles.add(profile_name)
             attempt += 1
 
             logger.info(f"Bulk retry: Job {job_index} attempt {attempt} with {profile_name}")
@@ -2269,6 +2275,8 @@ async def bulk_retry_failed_jobs(
                 if post_result.get("success"):
                     job_succeeded = True
                     jobs_succeeded += 1
+                    # Add to succeeded_profiles so future jobs don't use this profile
+                    succeeded_profiles.add(profile_name)
                     logger.info(f"Bulk retry: Job {job_index} succeeded with {profile_name} on attempt {attempt}")
                 else:
                     logger.info(f"Bulk retry: Job {job_index} failed with {profile_name}, trying next profile")
