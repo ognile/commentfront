@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-IMAGE_MODEL = "gemini-2.5-flash-image"  # Production image gen model (Nano Banana)
+IMAGE_MODEL = "gemini-3-pro-image-preview"  # Gemini 3 image generation model
 
 # Output directory for generated images
 IMAGE_OUTPUT_DIR = Path(os.getenv("IMAGE_OUTPUT_DIR", "/tmp/profile_photos"))
