@@ -4101,51 +4101,18 @@ REASONING: Comment was submitted"""
                                             center_y = bbox['y'] + bbox['height'] / 2
                                             logger.info(f"[ADAPTIVE-V2] Element {aria_label} at ({center_x:.0f}, {center_y:.0f})")
 
-                                        # Try dispatch touch events (React listens for these on mobile)
+                                        # Try Playwright's touchscreen.tap() for trusted touch events
                                         try:
-                                            # Dispatch touchstart + touchend events via JS (React mobile handlers)
-                                            touch_result = await locator.evaluate("""(el) => {
-                                                const rect = el.getBoundingClientRect();
-                                                const centerX = rect.left + rect.width / 2;
-                                                const centerY = rect.top + rect.height / 2;
-
-                                                // Create touch event
-                                                const touch = new Touch({
-                                                    identifier: Date.now(),
-                                                    target: el,
-                                                    clientX: centerX,
-                                                    clientY: centerY,
-                                                    pageX: centerX,
-                                                    pageY: centerY
-                                                });
-
-                                                // Dispatch touchstart
-                                                const touchStartEvent = new TouchEvent('touchstart', {
-                                                    bubbles: true,
-                                                    cancelable: true,
-                                                    touches: [touch],
-                                                    targetTouches: [touch],
-                                                    changedTouches: [touch]
-                                                });
-                                                el.dispatchEvent(touchStartEvent);
-
-                                                // Dispatch touchend after small delay
-                                                const touchEndEvent = new TouchEvent('touchend', {
-                                                    bubbles: true,
-                                                    cancelable: true,
-                                                    touches: [],
-                                                    targetTouches: [],
-                                                    changedTouches: [touch]
-                                                });
-                                                el.dispatchEvent(touchEndEvent);
-
-                                                // Also dispatch click for good measure
-                                                el.click();
-
-                                                return {success: true, x: centerX, y: centerY};
-                                            }""")
-                                            clicked_via = f"TOUCH_EVENTS [aria-label=\"{aria_label}\"]"
-                                            logger.info(f"[ADAPTIVE-V2] Touch events dispatched: {aria_label} result={touch_result}")
+                                            if bbox:
+                                                # Use Playwright's touchscreen API for trusted events
+                                                await page.touchscreen.tap(center_x, center_y)
+                                                clicked_via = f"TOUCHSCREEN_TAP [aria-label=\"{aria_label}\"] at ({center_x:.0f},{center_y:.0f})"
+                                                logger.info(f"[ADAPTIVE-V2] Touchscreen tap: {aria_label} at ({center_x:.0f},{center_y:.0f})")
+                                            else:
+                                                # Fallback to locator.tap()
+                                                await locator.tap(timeout=5000)
+                                                clicked_via = f"LOCATOR_TAP [aria-label=\"{aria_label}\"]"
+                                                logger.info(f"[ADAPTIVE-V2] Locator tap: {aria_label}")
                                         except Exception as touch_err:
                                             logger.warning(f"[ADAPTIVE-V2] Touch events failed: {touch_err}, trying tap()")
                                             # Fallback to Playwright tap
