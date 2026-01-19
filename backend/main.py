@@ -3428,6 +3428,303 @@ IMPORTANT: Coordinates must be within 0-393 for x and 0-873 for y."""
     return results
 
 
+# ===========================================================================
+# TEMPORARY TEST ENDPOINT - Adaptive Agent Testing
+# A true goal-based adaptive agent that uses vision at each step
+# ===========================================================================
+
+class AdaptiveAgentRequest(BaseModel):
+    """Request model for adaptive agent test."""
+    profile_name: str = "anna_pelfrey"
+    task: str = "scroll the feed, find an interesting post, open it, and write a contextual comment"
+    max_steps: int = 20
+
+
+@app.post("/test-adaptive-agent")
+async def test_adaptive_agent(
+    request: AdaptiveAgentRequest,
+    current_user: dict = Depends(get_current_user)
+) -> Dict:
+    """
+    TEMPORARY TEST ENDPOINT - True adaptive agent.
+
+    Given a high-level task, uses Gemini Vision to:
+    1. Analyze current screen state
+    2. Decide what action to take next
+    3. Execute the action (scroll, click, type)
+    4. Loop until goal achieved or max steps reached
+    """
+    from playwright.async_api import async_playwright
+    from playwright_stealth import Stealth
+    from fb_session import FacebookSession, apply_session_to_context
+    from gemini_vision import get_vision_client, set_observation_context
+    from comment_bot import save_debug_screenshot, _build_playwright_proxy
+    from google.genai import types
+    import re
+
+    results = {
+        "profile_name": request.profile_name,
+        "task": request.task,
+        "steps": [],
+        "screenshots": [],
+        "errors": [],
+        "final_status": "unknown"
+    }
+
+    # Load session
+    session = FacebookSession(request.profile_name)
+    if not session.load():
+        return {"error": f"Failed to load session for {request.profile_name}"}
+
+    # Get vision client
+    vision = get_vision_client()
+    if not vision:
+        return {"error": "Vision client not available"}
+
+    # Set context for Gemini logging
+    set_observation_context(profile_name=request.profile_name, campaign_id="adaptive_agent_test")
+
+    logger.info(f"[ADAPTIVE-AGENT] Starting task: {request.task}")
+    logger.info(f"[ADAPTIVE-AGENT] Profile: {request.profile_name}, Max steps: {request.max_steps}")
+
+    async with async_playwright() as p:
+        # Build context options - SAME as post_comment_verified()
+        fingerprint = session.get_device_fingerprint()
+        context_options = {
+            "user_agent": session.get_user_agent(),
+            "viewport": session.get_viewport() or {"width": 393, "height": 873},
+            "ignore_https_errors": True,
+            "device_scale_factor": 1,
+            "timezone_id": fingerprint["timezone"],
+            "locale": fingerprint["locale"],
+        }
+
+        # Add proxy if session has one
+        proxy = session.get_proxy()
+        if proxy:
+            context_options["proxy"] = _build_playwright_proxy(proxy)
+            logger.info(f"[ADAPTIVE-AGENT] Using proxy: {proxy[:30]}...")
+
+        # Launch browser
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-notifications", "--disable-gpu"]
+        )
+        context = await browser.new_context(**context_options)
+
+        # Apply stealth
+        await Stealth().apply_stealth_async(context)
+
+        # Create page and apply session cookies
+        page = await context.new_page()
+        await apply_session_to_context(context, session)
+
+        try:
+            # Step 0: Navigate to Facebook
+            logger.info("[ADAPTIVE-AGENT] Navigating to Facebook...")
+            await page.goto("https://m.facebook.com", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+
+            screenshot_path = await save_debug_screenshot(page, "adaptive_step_0")
+            results["screenshots"].append(screenshot_path)
+            results["steps"].append({
+                "step": 0,
+                "action": "navigate",
+                "target": "https://m.facebook.com",
+                "url": page.url,
+                "screenshot": screenshot_path
+            })
+
+            # Adaptive loop
+            for step_num in range(1, request.max_steps + 1):
+                logger.info(f"[ADAPTIVE-AGENT] Step {step_num}/{request.max_steps}")
+
+                # Take screenshot
+                screenshot_path = await save_debug_screenshot(page, f"adaptive_step_{step_num}")
+
+                # Read screenshot
+                with open(screenshot_path, "rb") as f:
+                    image_data = f.read()
+
+                # Build the adaptive prompt
+                prompt = f"""You are an AI agent controlling a Facebook mobile browser (393x873 pixels).
+
+TASK: {request.task}
+
+CURRENT STEP: {step_num} of {request.max_steps}
+
+Analyze this screenshot and decide the NEXT ACTION to progress toward completing the task.
+
+AVAILABLE ACTIONS:
+1. SCROLL direction=<up|down> amount=<pixels> - Scroll the page
+2. CLICK x=<x> y=<y> description="<what you're clicking>" - Click at coordinates
+3. TYPE text="<text to type>" - Type text (only if an input field is focused/active)
+4. WAIT seconds=<1-5> reason="<why waiting>" - Wait for content to load
+5. DONE reason="<why task is complete>" - Task completed successfully
+6. FAILED reason="<why task cannot be completed>" - Task cannot be completed
+
+RULES:
+- Coordinates must be within 0-393 for x and 0-873 for y
+- Be specific about what you're clicking and why
+- If you see a dialog/popup, dismiss it first before continuing the task
+- If you need to comment, first click on a post to open it, then find the comment input
+- Generate contextual comments that fit the post content (not generic spam)
+- SCROLL down to see more posts if the current ones aren't interesting
+
+RESPONSE FORMAT (exactly one action per response):
+ACTION: <action_type> <parameters>
+REASONING: <brief explanation of why this action helps complete the task>
+
+Example responses:
+ACTION: SCROLL direction=down amount=400
+REASONING: Need to see more posts to find one worth commenting on
+
+ACTION: CLICK x=196 y=450 description="Comment button on NFL post"
+REASONING: Found an interesting sports post, clicking to open comments
+
+ACTION: TYPE text="Great game! The Patriots really showed up today 🏈"
+REASONING: Writing a contextual comment about the NFL post content
+
+ACTION: DONE reason="Successfully posted a contextual comment on an NFL post"
+REASONING: Comment was typed and submitted successfully"""
+
+                image_part = types.Part.from_bytes(data=image_data, mime_type="image/png")
+
+                try:
+                    response = await asyncio.to_thread(
+                        vision.client.models.generate_content,
+                        model=vision.model,
+                        contents=[prompt, image_part]
+                    )
+                    result_text = response.text.strip()
+                    logger.info(f"[ADAPTIVE-AGENT] Gemini response:\n{result_text}")
+                except Exception as e:
+                    logger.error(f"[ADAPTIVE-AGENT] Gemini API error: {e}")
+                    results["errors"].append(f"Step {step_num}: Gemini API error - {e}")
+                    continue
+
+                step_result = {
+                    "step": step_num,
+                    "gemini_response": result_text,
+                    "screenshot": screenshot_path,
+                    "action_taken": None,
+                    "url": page.url
+                }
+
+                # Parse the action from response
+                action_match = re.search(r'ACTION:\s*(\w+)\s*(.*)', result_text, re.IGNORECASE)
+                reasoning_match = re.search(r'REASONING:\s*(.*)', result_text, re.IGNORECASE | re.DOTALL)
+
+                if not action_match:
+                    step_result["action_taken"] = "could_not_parse_action"
+                    results["steps"].append(step_result)
+                    results["errors"].append(f"Step {step_num}: Could not parse action from response")
+                    continue
+
+                action_type = action_match.group(1).upper()
+                action_params = action_match.group(2).strip()
+                reasoning = reasoning_match.group(1).strip() if reasoning_match else "No reasoning provided"
+
+                step_result["reasoning"] = reasoning
+
+                # Execute the action
+                if action_type == "DONE":
+                    step_result["action_taken"] = f"DONE: {action_params}"
+                    results["steps"].append(step_result)
+                    results["final_status"] = "task_completed"
+                    logger.info(f"[ADAPTIVE-AGENT] Task completed: {action_params}")
+                    break
+
+                elif action_type == "FAILED":
+                    step_result["action_taken"] = f"FAILED: {action_params}"
+                    results["steps"].append(step_result)
+                    results["final_status"] = "task_failed"
+                    logger.info(f"[ADAPTIVE-AGENT] Task failed: {action_params}")
+                    break
+
+                elif action_type == "SCROLL":
+                    direction_match = re.search(r'direction=(\w+)', action_params)
+                    amount_match = re.search(r'amount=(\d+)', action_params)
+                    direction = direction_match.group(1) if direction_match else "down"
+                    amount = int(amount_match.group(1)) if amount_match else 300
+
+                    # Convert direction to delta
+                    delta_y = amount if direction == "down" else -amount
+
+                    await page.mouse.wheel(0, delta_y)
+                    await asyncio.sleep(1.5)
+
+                    step_result["action_taken"] = f"SCROLL {direction} {amount}px"
+                    logger.info(f"[ADAPTIVE-AGENT] Scrolled {direction} {amount}px")
+
+                elif action_type == "CLICK":
+                    x_match = re.search(r'x=(\d+)', action_params)
+                    y_match = re.search(r'y=(\d+)', action_params)
+                    desc_match = re.search(r'description="([^"]+)"', action_params)
+
+                    if x_match and y_match:
+                        x = int(x_match.group(1))
+                        y = int(y_match.group(1))
+                        description = desc_match.group(1) if desc_match else "unknown element"
+
+                        if 0 <= x <= 393 and 0 <= y <= 873:
+                            await page.mouse.click(x, y)
+                            await asyncio.sleep(2)
+                            step_result["action_taken"] = f"CLICK ({x}, {y}) - {description}"
+                            logger.info(f"[ADAPTIVE-AGENT] Clicked ({x}, {y}) - {description}")
+                        else:
+                            step_result["action_taken"] = f"INVALID_COORDS ({x}, {y})"
+                            results["errors"].append(f"Step {step_num}: Invalid coordinates ({x}, {y})")
+                    else:
+                        step_result["action_taken"] = "CLICK_PARSE_ERROR"
+                        results["errors"].append(f"Step {step_num}: Could not parse click coordinates")
+
+                elif action_type == "TYPE":
+                    text_match = re.search(r'text="([^"]+)"', action_params)
+                    if text_match:
+                        text = text_match.group(1)
+                        await page.keyboard.type(text, delay=50)
+                        await asyncio.sleep(1)
+                        step_result["action_taken"] = f"TYPE: {text[:50]}..."
+                        logger.info(f"[ADAPTIVE-AGENT] Typed: {text[:50]}...")
+                    else:
+                        step_result["action_taken"] = "TYPE_PARSE_ERROR"
+                        results["errors"].append(f"Step {step_num}: Could not parse text to type")
+
+                elif action_type == "WAIT":
+                    seconds_match = re.search(r'seconds=(\d+)', action_params)
+                    seconds = min(int(seconds_match.group(1)), 5) if seconds_match else 2
+                    await asyncio.sleep(seconds)
+                    step_result["action_taken"] = f"WAIT {seconds}s"
+                    logger.info(f"[ADAPTIVE-AGENT] Waited {seconds}s")
+
+                else:
+                    step_result["action_taken"] = f"UNKNOWN_ACTION: {action_type}"
+                    results["errors"].append(f"Step {step_num}: Unknown action type: {action_type}")
+
+                results["steps"].append(step_result)
+                results["screenshots"].append(screenshot_path)
+
+            else:
+                # Loop completed without DONE/FAILED
+                results["final_status"] = "max_steps_reached"
+
+            # Take final screenshot
+            final_screenshot = await save_debug_screenshot(page, "adaptive_final")
+            results["screenshots"].append(final_screenshot)
+            results["final_url"] = page.url
+
+        except Exception as e:
+            logger.error(f"[ADAPTIVE-AGENT] Error: {e}")
+            results["errors"].append(str(e))
+            results["final_status"] = "error"
+        finally:
+            await browser.close()
+
+    logger.info(f"[ADAPTIVE-AGENT] Test complete: {results['final_status']}")
+    return results
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks on app startup."""
