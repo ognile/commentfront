@@ -3722,9 +3722,21 @@ REASONING: Comment was submitted"""
                         model=vision.model,
                         contents=[prompt, image_part]
                     )
+
+                    # Debug: log full response structure if text is empty
                     result_text = response.text
                     if not result_text:
-                        logger.warning(f"[ADAPTIVE-V2] Gemini returned empty response, retrying...")
+                        # Check for safety blocks or other issues
+                        logger.warning(f"[ADAPTIVE-V2] Gemini empty response. Candidates: {response.candidates if hasattr(response, 'candidates') else 'N/A'}")
+                        if hasattr(response, 'candidates') and response.candidates:
+                            candidate = response.candidates[0]
+                            if hasattr(candidate, 'finish_reason'):
+                                logger.warning(f"[ADAPTIVE-V2] Finish reason: {candidate.finish_reason}")
+                            if hasattr(candidate, 'content') and candidate.content:
+                                logger.warning(f"[ADAPTIVE-V2] Content parts: {candidate.content.parts if hasattr(candidate.content, 'parts') else 'N/A'}")
+
+                        # Retry once
+                        logger.warning(f"[ADAPTIVE-V2] Retrying Gemini call...")
                         await asyncio.sleep(1)
                         response = await asyncio.to_thread(
                             vision.client.models.generate_content,
@@ -3732,6 +3744,7 @@ REASONING: Comment was submitted"""
                             contents=[prompt, image_part]
                         )
                         result_text = response.text
+
                     if not result_text:
                         results["errors"].append(f"Step {step_num}: Gemini returned empty response")
                         continue
