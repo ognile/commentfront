@@ -3938,7 +3938,7 @@ REASONING: Comment was submitted"""
                             aria_label = target_el.get('ariaLabel', '')
                             clicked_via = None
 
-                            # Try native Playwright click FIRST (more reliable for React buttons)
+                            # Try native Playwright click FIRST (dispatches proper events for React)
                             if aria_label:
                                 try:
                                     locator = page.locator(f'[aria-label="{aria_label}"]').first
@@ -3947,14 +3947,20 @@ REASONING: Comment was submitted"""
                                         await locator.scroll_into_view_if_needed()
                                         await asyncio.sleep(0.3)
 
-                                        # Try JavaScript click first (bypasses all actionability checks)
-                                        try:
-                                            await locator.evaluate("el => el.click()")
-                                            clicked_via = f"JS click [aria-label=\"{aria_label}\"]"
-                                            logger.info(f"[ADAPTIVE-V2] JS clicked: {aria_label}")
-                                        except Exception as js_err:
-                                            logger.warning(f"[ADAPTIVE-V2] JS click failed: {js_err}")
-                                            # Fallback to tap (mobile)
+                                        # Get bounding box for coordinate-based click (most reliable for React)
+                                        bbox = await locator.bounding_box()
+                                        if bbox:
+                                            # Click center of element with mouse (triggers proper React events)
+                                            center_x = bbox['x'] + bbox['width'] / 2
+                                            center_y = bbox['y'] + bbox['height'] / 2
+                                            logger.info(f"[ADAPTIVE-V2] Clicking {aria_label} at ({center_x:.0f}, {center_y:.0f})")
+
+                                            # Use page.mouse.click for precise control
+                                            await page.mouse.click(center_x, center_y)
+                                            clicked_via = f"mouse.click [aria-label=\"{aria_label}\"] at ({center_x:.0f},{center_y:.0f})"
+                                            logger.info(f"[ADAPTIVE-V2] Mouse clicked: {aria_label}")
+                                        else:
+                                            # Fallback to tap if bbox not available
                                             try:
                                                 await locator.tap(timeout=3000)
                                                 clicked_via = f"TAP [aria-label=\"{aria_label}\"]"
