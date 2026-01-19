@@ -3600,6 +3600,20 @@ async def test_adaptive_agent_v2(
             visible_elements = [el for el in elements if is_element_visible(el)]
             logger.info(f"[ADAPTIVE-V2] Matching '{description}' against {len(visible_elements)} visible elements (filtered from {len(elements)} total)")
 
+            # Check if description is an icon character (non-ASCII single char or short string with special chars)
+            is_icon_search = len(description) <= 3 and any(ord(c) > 127 for c in description)
+            if is_icon_search:
+                logger.info(f"[ADAPTIVE-V2] Icon search detected: '{description}'")
+
+            # Priority 0: For icon searches, find element with EXACTLY that icon as text (back button, etc.)
+            if is_icon_search:
+                for el in visible_elements:
+                    el_text = el.get('text', '').strip()
+                    # Match if the element's text IS the icon (for single-icon buttons like back arrow)
+                    if el_text == description:
+                        logger.info(f"[ADAPTIVE-V2] Matched icon by exact text: '{el_text}' aria-label={el.get('ariaLabel', '')}")
+                        return el
+
             # Priority 1: Exact aria-label match
             for el in visible_elements:
                 if el.get('ariaLabel', '').lower() == desc_lower:
@@ -3615,12 +3629,17 @@ async def test_adaptive_agent_v2(
                     logger.info(f"[ADAPTIVE-V2] Matched by partial aria-label (aria in desc): {el.get('ariaLabel')}")
                     return el
 
-            # Priority 3: Text content match
+            # Priority 3: Text content match (but skip very short text matches for longer descriptions)
             for el in visible_elements:
-                if desc_lower in el.get('text', '').lower():
+                el_text = el.get('text', '').lower()
+                # For icon searches, require exact match (already handled above)
+                if is_icon_search:
+                    continue
+                if desc_lower in el_text:
                     logger.info(f"[ADAPTIVE-V2] Matched by text content (desc in text): {el.get('text', '')[:30]}")
                     return el
-                if el.get('text', '').lower() in desc_lower:
+                # Only match if element text is meaningful (not just a short word in a longer description)
+                if len(el_text) > 2 and el_text in desc_lower:
                     logger.info(f"[ADAPTIVE-V2] Matched by text content (text in desc): {el.get('text', '')[:30]}")
                     return el
 
@@ -3650,6 +3669,14 @@ async def test_adaptive_agent_v2(
                 for el in visible_elements:
                     if 'see why' in el.get('text', '').lower():
                         logger.info(f"[ADAPTIVE-V2] Matched 'see why' element")
+                        return el
+
+            # Priority 5: For icons, try to find element that STARTS with the icon
+            if is_icon_search:
+                for el in visible_elements:
+                    el_text = el.get('text', '').strip()
+                    if el_text.startswith(description):
+                        logger.info(f"[ADAPTIVE-V2] Matched icon by text prefix: '{el_text[:20]}' aria-label={el.get('ariaLabel', '')}")
                         return el
 
             logger.warning(f"[ADAPTIVE-V2] No visible element matched for: {description}")
