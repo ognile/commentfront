@@ -4101,6 +4101,20 @@ REASONING: Comment was submitted"""
                                             center_y = bbox['y'] + bbox['height'] / 2
                                             logger.info(f"[ADAPTIVE-V2] Element {aria_label} at ({center_x:.0f}, {center_y:.0f})")
 
+                                        # Scroll element to center of viewport first (some buttons need this)
+                                        await locator.scroll_into_view_if_needed()
+                                        await asyncio.sleep(0.3)
+
+                                        # Re-get bounding box after scroll
+                                        bbox = await locator.bounding_box()
+                                        if bbox:
+                                            center_x = bbox['x'] + bbox['width'] / 2
+                                            center_y = bbox['y'] + bbox['height'] / 2
+                                            logger.info(f"[ADAPTIVE-V2] Element {aria_label} at ({center_x:.0f}, {center_y:.0f}) after scroll")
+
+                                        # For "Request review" button, try multiple click strategies
+                                        is_request_review = 'request review' in aria_label.lower()
+
                                         # Try Playwright's touchscreen.tap() for trusted touch events
                                         try:
                                             if bbox:
@@ -4108,6 +4122,31 @@ REASONING: Comment was submitted"""
                                                 await page.touchscreen.tap(center_x, center_y)
                                                 clicked_via = f"TOUCHSCREEN_TAP [aria-label=\"{aria_label}\"] at ({center_x:.0f},{center_y:.0f})"
                                                 logger.info(f"[ADAPTIVE-V2] Touchscreen tap: {aria_label} at ({center_x:.0f},{center_y:.0f})")
+
+                                                # For request review button, try multiple strategies
+                                                if is_request_review:
+                                                    await asyncio.sleep(0.5)
+                                                    # Strategy 1: Force click
+                                                    await locator.click(force=True, timeout=5000)
+                                                    logger.info(f"[ADAPTIVE-V2] Request review: force click")
+                                                    await asyncio.sleep(0.5)
+                                                    # Strategy 2: Click inner span/text element
+                                                    try:
+                                                        inner = page.locator('[aria-label="Request review"] span, [aria-label="Request review"] > div').first
+                                                        if await inner.count() > 0:
+                                                            await inner.click(force=True, timeout=3000)
+                                                            logger.info(f"[ADAPTIVE-V2] Request review: inner element click")
+                                                    except:
+                                                        pass
+                                                    await asyncio.sleep(0.5)
+                                                    # Strategy 3: JS dispatchEvent for native click
+                                                    await locator.evaluate("""el => {
+                                                        el.dispatchEvent(new MouseEvent('click', {
+                                                            bubbles: true, cancelable: true, view: window
+                                                        }));
+                                                    }""")
+                                                    logger.info(f"[ADAPTIVE-V2] Request review: JS click dispatch")
+                                                    clicked_via += " + MULTI_STRATEGY"
                                             else:
                                                 # Fallback to locator.tap()
                                                 await locator.tap(timeout=5000)
