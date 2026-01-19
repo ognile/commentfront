@@ -252,10 +252,51 @@ class QueueProcessor:
             if len(assigned_profiles) < len(comments):
                 self.logger.warning(f"Only {len(assigned_profiles)} profiles available for {len(comments)} comments")
 
-            # Calculate timing
+            # Calculate total jobs based on available profiles
             total_jobs = min(len(comments), len(assigned_profiles))
             duration_seconds = duration_minutes * 60
-            base_delay = duration_seconds / total_jobs if total_jobs > 1 else 0
+
+            # DEPLOYMENT RESILIENCE: Get already-attempted job indexes
+            attempted_indexes = self.queue_manager.get_completed_job_indexes(campaign_id)
+
+            # Build list of PENDING jobs with their ORIGINAL indexes preserved
+            pending_jobs = []
+            for original_idx, comment in enumerate(comments[:total_jobs]):
+                if original_idx not in attempted_indexes:
+                    pending_jobs.append((original_idx, comment))
+
+            if attempted_indexes:
+                self.logger.info(f"Campaign {campaign_id}: RESUMING - {len(attempted_indexes)} jobs already attempted, {len(pending_jobs)} remaining")
+
+            if not pending_jobs:
+                # All jobs already attempted - mark complete with existing results
+                existing_results = self.queue_manager.get_campaign(campaign_id).get("results", [])
+                success_count = sum(1 for r in existing_results if r.get("success"))
+                self.queue_manager.set_completed(campaign_id, success_count, len(existing_results), existing_results)
+                await broadcast_update("queue_campaign_complete", {
+                    "campaign_id": campaign_id,
+                    "success": success_count,
+                    "total": len(existing_results)
+                })
+                self.logger.info(f"Campaign {campaign_id}: All jobs already completed, marking done")
+                return
+
+            # Get profiles ONLY for pending jobs (not all jobs)
+            pending_profiles = profile_manager.get_eligible_profiles(
+                filter_tags=filter_tags if filter_tags else None,
+                count=len(pending_jobs)
+            )
+
+            if not pending_profiles:
+                error_msg = f"No eligible profiles for {len(pending_jobs)} remaining jobs"
+                self.queue_manager.set_failed(campaign_id, error_msg)
+                await broadcast_update("queue_campaign_failed", {"campaign_id": campaign_id, "error": error_msg})
+                return
+
+            self.logger.info(f"Profiles for {len(pending_jobs)} pending jobs: {pending_profiles}")
+
+            # Recalculate timing for REMAINING jobs only
+            base_delay = duration_seconds / len(pending_jobs) if len(pending_jobs) > 1 else 0
 
             # Broadcast campaign start
             await broadcast_update("campaign_start", {
@@ -264,10 +305,15 @@ class QueueProcessor:
                 "duration_minutes": duration_minutes
             })
 
-            # Process jobs
+            # Process jobs - results list for this run only
             results = []
 
-            for job_idx, (profile_name, comment) in enumerate(zip(assigned_profiles, comments[:total_jobs])):
+            for pending_idx, (original_job_idx, comment) in enumerate(pending_jobs):
+                # Get profile for this pending job
+                profile_name = pending_profiles[pending_idx] if pending_idx < len(pending_profiles) else None
+                if not profile_name:
+                    self.logger.error(f"No profile available for pending job {pending_idx}")
+                    continue
                 # Check for cancellation before each job
                 if self._current_campaign_cancelled:
                     self.logger.info(f"Campaign {campaign_id} was cancelled, stopping")
@@ -281,27 +327,27 @@ class QueueProcessor:
                     await broadcast_update("queue_campaign_cancelled", {"campaign_id": campaign_id})
                     return
 
-                # Staggered delay (except first job)
-                if job_idx > 0:
+                # Staggered delay (except first pending job in this run)
+                if pending_idx > 0:
                     jitter = random.uniform(0.8, 1.2)
                     delay_seconds = base_delay * jitter
 
                     await broadcast_update("job_waiting", {
                         "campaign_id": campaign_id,
-                        "job_index": job_idx,
+                        "job_index": original_job_idx,
                         "delay_seconds": round(delay_seconds),
                         "profile_name": profile_name
                     })
 
-                    self.logger.info(f"Campaign {campaign_id}: Waiting {delay_seconds:.0f}s before job {job_idx}")
+                    self.logger.info(f"Campaign {campaign_id}: Waiting {delay_seconds:.0f}s before job {original_job_idx}")
                     await asyncio.sleep(delay_seconds)
 
-                # Update progress
-                self.queue_manager.update_job_progress(campaign_id, job_idx + 1, total_jobs, profile_name)
+                # Update progress (use pending_idx for progress, original_job_idx for tracking)
+                self.queue_manager.update_job_progress(campaign_id, pending_idx + 1, len(pending_jobs), profile_name)
 
                 await broadcast_update("job_start", {
                     "campaign_id": campaign_id,
-                    "job_index": job_idx,
+                    "job_index": original_job_idx,
                     "total_jobs": total_jobs,
                     "profile_name": profile_name,
                     "comment": comment[:50]
@@ -312,15 +358,18 @@ class QueueProcessor:
                 if not session.load():
                     await broadcast_update("job_error", {
                         "campaign_id": campaign_id,
-                        "job_index": job_idx,
+                        "job_index": original_job_idx,
                         "error": "Session not found"
                     })
-                    results.append({
+                    job_result = {
                         "profile_name": profile_name,
                         "success": False,
                         "error": "Session not found",
-                        "job_index": job_idx
-                    })
+                        "job_index": original_job_idx
+                    }
+                    results.append(job_result)
+                    # DEPLOYMENT RESILIENCE: Save immediately to disk
+                    self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
                     continue
 
                 try:
@@ -332,7 +381,7 @@ class QueueProcessor:
                     if enable_warmup:
                         await broadcast_update("warmup_start", {
                             "campaign_id": campaign_id,
-                            "job_index": job_idx,
+                            "job_index": original_job_idx,
                             "profile_name": profile_name
                         })
 
@@ -346,7 +395,7 @@ class QueueProcessor:
 
                     await broadcast_update("job_complete", {
                         "campaign_id": campaign_id,
-                        "job_index": job_idx,
+                        "job_index": original_job_idx,
                         "profile_name": profile_name,
                         "success": result["success"],
                         "verified": result.get("verified", False),
@@ -355,16 +404,19 @@ class QueueProcessor:
                         "warmup": result.get("warmup")
                     })
 
-                    results.append({
+                    job_result = {
                         "profile_name": profile_name,
                         "comment": comment,
                         "success": result["success"],
                         "verified": result.get("verified", False),
                         "method": result.get("method", "unknown"),
                         "error": result.get("error"),
-                        "job_index": job_idx,
+                        "job_index": original_job_idx,
                         "warmup": result.get("warmup")
-                    })
+                    }
+                    results.append(job_result)
+                    # DEPLOYMENT RESILIENCE: Save immediately to disk
+                    self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
 
                     # Determine failure type for analytics granularity
                     failure_type = None
@@ -403,22 +455,25 @@ class QueueProcessor:
                             "profile_name": profile_name,
                             "reason": throttle_reason,
                             "campaign_id": campaign_id,
-                            "job_index": job_idx
+                            "job_index": original_job_idx
                         })
 
                 except Exception as e:
-                    self.logger.error(f"Error processing job {job_idx} in campaign {campaign_id}: {e}")
+                    self.logger.error(f"Error processing job {original_job_idx} in campaign {campaign_id}: {e}")
                     await broadcast_update("job_error", {
                         "campaign_id": campaign_id,
-                        "job_index": job_idx,
+                        "job_index": original_job_idx,
                         "error": str(e)
                     })
-                    results.append({
+                    job_result = {
                         "profile_name": profile_name,
                         "success": False,
                         "error": str(e),
-                        "job_index": job_idx
-                    })
+                        "job_index": original_job_idx
+                    }
+                    results.append(job_result)
+                    # DEPLOYMENT RESILIENCE: Save immediately to disk
+                    self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
 
                     # Track exception in analytics (classify as infrastructure error)
                     error_str = str(e).lower()
@@ -435,17 +490,23 @@ class QueueProcessor:
                         failure_type=exc_failure_type
                     )
 
-            # Campaign completed
-            success_count = sum(1 for r in results if r.get("success"))
-            self.queue_manager.set_completed(campaign_id, success_count, len(results), results)
+            # Campaign completed - get ALL results (including from previous runs before deployment)
+            current_campaign = self.queue_manager.get_campaign(campaign_id)
+            all_results = current_campaign.get("results", []) if current_campaign else results
+
+            # Total count should be original number of comments
+            total_count = len(comments[:total_jobs])
+            success_count = sum(1 for r in all_results if r.get("success"))
+
+            self.queue_manager.set_completed(campaign_id, success_count, total_count, all_results)
 
             await broadcast_update("queue_campaign_complete", {
                 "campaign_id": campaign_id,
                 "success": success_count,
-                "total": len(results)
+                "total": total_count
             })
 
-            await broadcast_update("campaign_complete", {"total": len(results), "success": success_count})
+            await broadcast_update("campaign_complete", {"total": total_count, "success": success_count})
 
         except Exception as e:
             self.logger.error(f"Campaign {campaign_id} failed: {e}")
