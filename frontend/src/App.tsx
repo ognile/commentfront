@@ -255,7 +255,9 @@ function App() {
   const [campaignFilterTags, setCampaignFilterTags] = useState<string[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   // isProcessing removed - now using queueState.processor_running instead
-  const [loading, setLoading] = useState(true);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [credentialsLoading, setCredentialsLoading] = useState(true);
+  const [proxiesLoading, setProxiesLoading] = useState(true);
   const [campaignDuration, setCampaignDuration] = useState(30); // Duration in minutes (10-1440)
   const enableWarmup = true; // Warmup always enabled for new campaigns
 
@@ -705,14 +707,16 @@ function App() {
 
   const fetchSessions = async () => {
     try {
+      setSessionsLoading(true);
       const res = await fetch(`${API_BASE}/sessions`, { headers: getAuthHeaders() });
       if (!res.ok) throw new Error('Failed to fetch sessions');
       const data = await res.json();
       setSessions(data);
     } catch (error) {
       console.error("Failed to fetch sessions:", error);
+      toast.error('Failed to load sessions');
     } finally {
-      setLoading(false);
+      setSessionsLoading(false);
     }
   };
 
@@ -745,23 +749,31 @@ function App() {
 
   const fetchCredentials = async () => {
     try {
+      setCredentialsLoading(true);
       const res = await fetch(`${API_BASE}/credentials`, { headers: getAuthHeaders() });
       if (!res.ok) throw new Error('Failed to fetch credentials');
       const data = await res.json();
       setCredentials(data);
     } catch (error) {
       console.error("Failed to fetch credentials:", error);
+      toast.error('Failed to load credentials');
+    } finally {
+      setCredentialsLoading(false);
     }
   };
 
   const fetchProxies = async () => {
     try {
+      setProxiesLoading(true);
       const res = await fetch(`${API_BASE}/proxies`, { headers: getAuthHeaders() });
       if (!res.ok) throw new Error('Failed to fetch proxies');
       const data = await res.json();
       setProxies(data);
     } catch (error) {
       console.error("Failed to fetch proxies:", error);
+      toast.error('Failed to load proxies');
+    } finally {
+      setProxiesLoading(false);
     }
   };
 
@@ -861,13 +873,22 @@ function App() {
     }
   };
 
+  // Tier 1: Critical path - load immediately for Campaign tab
   useEffect(() => {
     fetchSessions();
-    fetchCredentials();
-    fetchProxies();
     fetchTags();
     fetchQueue();
   }, []);
+
+  // Tier 2: Background loading - load after critical data, during idle time
+  useEffect(() => {
+    if (!sessionsLoading) {
+      // Use requestIdleCallback to load during browser idle time
+      const scheduleIdle = window.requestIdleCallback || ((cb: IdleRequestCallback) => setTimeout(cb, 100));
+      scheduleIdle(() => fetchCredentials());
+      scheduleIdle(() => fetchProxies());
+    }
+  }, [sessionsLoading]);
 
   // Filter sessions by selected tags (AND logic)
   const filteredSessions = useMemo(() => {
@@ -1955,10 +1976,10 @@ function App() {
                 {(() => {
                   const isProcessing = queueState.pending.some(c => c.status === 'processing');
                   return (
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[rgba(0,0,0,0.1)]" style={{ background: loading ? 'rgba(245,158,11,0.1)' : isProcessing ? 'rgba(59,130,246,0.1)' : 'rgba(34,197,94,0.1)' }}>
-                      <div className={`status-dot`} style={{ background: loading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }} />
-                      <span className="text-xs font-medium" style={{ color: loading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }}>
-                        {loading ? 'Loading...' : isProcessing ? 'Processing' : 'Ready'}
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[rgba(0,0,0,0.1)]" style={{ background: sessionsLoading ? 'rgba(245,158,11,0.1)' : isProcessing ? 'rgba(59,130,246,0.1)' : 'rgba(34,197,94,0.1)' }}>
+                      <div className={`status-dot`} style={{ background: sessionsLoading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }} />
+                      <span className="text-xs font-medium" style={{ color: sessionsLoading ? '#f59e0b' : isProcessing ? '#3b82f6' : '#22c55e' }}>
+                        {sessionsLoading ? 'Loading...' : isProcessing ? 'Processing' : 'Ready'}
                       </span>
                     </div>
                   );
@@ -2444,7 +2465,7 @@ function App() {
               )}
 
               <CardContent className="p-0">
-                {loading ? (
+                {sessionsLoading ? (
                   <div className="p-8 text-center text-[#999999]">
                     <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
                     Loading sessions...
@@ -2697,7 +2718,12 @@ function App() {
                   </div>
                 </CardHeader>
                 <CardContent className="p-0">
-                  {credentials.length === 0 ? (
+                  {credentialsLoading ? (
+                    <div className="p-8 text-center text-[#999999]">
+                      <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
+                      Loading credentials...
+                    </div>
+                  ) : credentials.length === 0 ? (
                     <div className="p-8 text-center text-[#999999]">
                       No credentials saved yet.
                     </div>
@@ -2879,7 +2905,12 @@ function App() {
                   </Button>
                 </CardHeader>
                 <CardContent className="p-0">
-                  {proxies.length === 0 ? (
+                  {proxiesLoading ? (
+                    <div className="p-8 text-center text-[#999999]">
+                      <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
+                      Loading proxies...
+                    </div>
+                  ) : proxies.length === 0 ? (
                     <div className="p-8 text-center text-[#999999]">
                       No proxies configured yet.
                     </div>
