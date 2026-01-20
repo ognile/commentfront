@@ -582,6 +582,7 @@ class CampaignQueueRequest(BaseModel):
 class SessionInfo(BaseModel):
     file: str
     profile_name: str
+    display_name: Optional[str] = None  # Pretty name for UI display
     user_id: Optional[str]
     extracted_at: str
     valid: bool
@@ -1163,6 +1164,7 @@ async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[S
         results.append(SessionInfo(
             file=s["file"],
             profile_name=s["profile_name"],
+            display_name=s.get("display_name"),
             user_id=s.get("user_id"),
             extracted_at=s["extracted_at"],
             valid=s["has_valid_cookies"],
