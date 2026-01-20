@@ -39,6 +39,9 @@ playwright install chromium  # Install browser (first time setup)
 Key files:
 - `main.py` - API endpoints, WebSocket broadcast
 - `comment_bot.py` - Core automation logic (navigation, clicking, typing, verification)
+- `adaptive_agent.py` - AI-guided multi-step automation (Gemini Vision + DOM)
+- `gemini_image_gen.py` - AI profile photo generation (Gemini 3 Pro Image)
+- `workflows.py` - High-level workflow orchestration
 - `fb_session.py` - Session persistence, cookie extraction/validation
 - `credentials.py` - Credential CRUD, TOTP generation (pyotp)
 - `gemini_vision.py` - Vision prompts, element detection
@@ -118,6 +121,8 @@ curl -X POST "https://commentbot-production.up.railway.app/test-campaign" \
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/test-campaign` | POST | Run isolated test campaign |
+| `/adaptive-agent` | POST | Run AI-guided multi-step task (see `.claude/rules/backend/adaptive-agent.md`) |
+| `/workflow/update-profile-photo` | POST | Generate AI photo + upload to profile (see `.claude/rules/backend/workflows.md`) |
 | `/analytics/summary` | GET | Today/week stats, active/restricted counts |
 | `/analytics/profiles` | GET | All profiles with status, usage history |
 | `/analytics/profiles/{name}` | GET | Single profile detailed history |
