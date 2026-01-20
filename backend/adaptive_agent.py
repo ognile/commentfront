@@ -356,10 +356,20 @@ REASONING: Comment was submitted"""
 
         return clicked_via
 
-    async def _fallback_click_known_buttons(self, visible_elements: List[dict], step_num: int, screenshot_path: str) -> bool:
-        """Try to click known buttons when Gemini fails. Returns True if clicked."""
+    async def _fallback_click_known_buttons(self, visible_elements: List[dict], step_num: int, screenshot_path: str) -> str:
+        """
+        Try to click known buttons when Gemini fails.
+        Returns:
+            - "completion" if a completion button (update/save/confirm/done) was clicked
+            - "clicked" if another button was clicked
+            - "" if nothing was clicked
+        """
         # Priority order for known action buttons (profile photo updates + restriction flows)
-        priority_buttons = ['update', 'save', 'confirm', 'request review', 'see why', 'ok', 'done', 'continue', 'close']
+        # Completion buttons that should end the task
+        completion_buttons = ['update', 'save', 'confirm', 'done']
+        # Other navigation buttons
+        other_buttons = ['request review', 'see why', 'ok', 'continue', 'close']
+        priority_buttons = completion_buttons + other_buttons
 
         for button_name in priority_buttons:
             for el in visible_elements:
@@ -417,7 +427,7 @@ REASONING: Comment was submitted"""
                                     "action_taken": f"FALLBACK_TOUCH '{button_name}'",
                                     "screenshot": screenshot_path
                                 })
-                                return True
+                                return "completion" if button_name in completion_buttons else "clicked"
                         except Exception as e:
                             logger.warning(f"{self.log_prefix} Fallback touch failed for '{button_name}': {e}")
                             # Fallback to coordinate click
@@ -431,9 +441,9 @@ REASONING: Comment was submitted"""
                                 "action_taken": f"FALLBACK_CLICK '{button_name}' at ({x},{y})",
                                 "screenshot": screenshot_path
                             })
-                            return True
+                            return "completion" if button_name in completion_buttons else "clicked"
 
-        return False
+        return ""
 
     async def run(self) -> Dict[str, Any]:
         """Run the adaptive agent task. Returns results dict."""
@@ -593,18 +603,29 @@ REASONING: Comment was submitted"""
                         if not result_text:
                             # Fallback: try known buttons
                             logger.info(f"{self.log_prefix} Gemini empty - trying DOM fallback")
-                            fallback_clicked = await self._fallback_click_known_buttons(visible_elements, step_num, screenshot_path)
+                            fallback_result = await self._fallback_click_known_buttons(visible_elements, step_num, screenshot_path)
 
-                            if not fallback_clicked:
+                            if not fallback_result:
                                 # Try scrolling and re-scanning
                                 await self.page.mouse.wheel(0, 500)
                                 await asyncio.sleep(2)
                                 elements_after_scroll = await dump_interactive_elements(self.page, f"scroll_fallback_{step_num}")
                                 visible_after = [e for e in elements_after_scroll if is_element_visible(e)]
-                                fallback_clicked = await self._fallback_click_known_buttons(visible_after, step_num, screenshot_path)
+                                fallback_result = await self._fallback_click_known_buttons(visible_after, step_num, screenshot_path)
 
-                            if not fallback_clicked:
+                            if not fallback_result:
                                 self.results["errors"].append(f"Step {step_num}: Gemini returned empty response")
+                            elif fallback_result == "completion":
+                                # DOM fallback clicked a completion button (update/save/confirm/done)
+                                # Wait for any loading/upload to complete
+                                logger.info(f"{self.log_prefix} Completion button clicked via fallback, waiting for completion...")
+                                await asyncio.sleep(5)
+                                # Take final screenshot and mark as complete
+                                final_screenshot = await save_debug_screenshot(self.page, "adaptive_final")
+                                self.results["final_screenshot"] = final_screenshot
+                                self.results["final_status"] = "task_completed"
+                                logger.info(f"{self.log_prefix} Task completed via DOM fallback")
+                                break
                             continue
 
                         result_text = result_text.strip()
