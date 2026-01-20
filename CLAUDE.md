@@ -123,6 +123,8 @@ curl -X POST "https://commentbot-production.up.railway.app/test-campaign" \
 | `/test-campaign` | POST | Run isolated test campaign |
 | `/adaptive-agent` | POST | Run AI-guided multi-step task (see `.claude/rules/backend/adaptive-agent.md`) |
 | `/workflow/update-profile-photo` | POST | Generate AI photo + upload to profile (see `.claude/rules/backend/workflows.md`) |
+| `/workflow/regenerate-profile-photo` | POST | Regenerate photo preserving identity (new pose/setting) |
+| `/workflow/regenerate-all-imported-photos` | POST | Batch regenerate all "imported" tagged profiles |
 
 ### Common Operations
 
