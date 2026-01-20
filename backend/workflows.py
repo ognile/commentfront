@@ -124,16 +124,26 @@ IMPORTANT:
             result["success"] = True
             logger.info(f"[WORKFLOW] Profile photo upload completed successfully!")
         elif upload_result.get("final_status") == "max_steps_reached":
-            # Check if we got far enough (uploaded the photo)
+            # Check if we BOTH uploaded the file AND clicked save/update
+            # Just uploading the file is NOT enough - we need to confirm the save
+            has_upload = False
+            has_save_click = False
             for step in upload_result.get("steps", []):
-                action = str(step.get("action_taken", ""))
+                action = str(step.get("action_taken", "")).upper()
                 if "UPLOAD" in action and "FAILED" not in action:
-                    result["success"] = True
-                    logger.info(f"[WORKFLOW] Photo was uploaded (max_steps_reached but upload successful)")
-                    break
+                    has_upload = True
+                # Check if Update/Save/Confirm/Done was clicked AFTER upload
+                if has_upload and "CLICK" in action:
+                    element = str(step.get("action_taken", "")).lower()
+                    if any(word in element for word in ["update", "save", "confirm", "done"]):
+                        has_save_click = True
+                        break
 
-            if not result["success"]:
-                logger.warning(f"[WORKFLOW] Max steps reached without confirmed upload")
+            if has_upload and has_save_click:
+                result["success"] = True
+                logger.info(f"[WORKFLOW] Photo uploaded and saved (max_steps_reached but workflow completed)")
+            else:
+                logger.warning(f"[WORKFLOW] Max steps reached - upload={has_upload}, save_clicked={has_save_click}")
         else:
             logger.warning(f"[WORKFLOW] Upload ended with status: {upload_result.get('final_status')}")
 
@@ -352,16 +362,26 @@ IMPORTANT:
             upload_success = True
             logger.info(f"[WORKFLOW] Profile photo upload completed successfully!")
         elif upload_result.get("final_status") == "max_steps_reached":
-            # Check if we got far enough (uploaded the photo)
+            # Check if we BOTH uploaded the file AND clicked save/update
+            # Just uploading the file is NOT enough - we need to confirm the save
+            has_upload = False
+            has_save_click = False
             for step in upload_result.get("steps", []):
-                action = str(step.get("action_taken", ""))
+                action = str(step.get("action_taken", "")).upper()
                 if "UPLOAD" in action and "FAILED" not in action:
-                    upload_success = True
-                    logger.info(f"[WORKFLOW] Photo was uploaded (max_steps_reached but upload successful)")
-                    break
+                    has_upload = True
+                # Check if Update/Save/Confirm/Done was clicked AFTER upload
+                if has_upload and "CLICK" in action:
+                    element = str(step.get("action_taken", "")).lower()
+                    if any(word in element for word in ["update", "save", "confirm", "done"]):
+                        has_save_click = True
+                        break
 
-            if not upload_success:
-                logger.warning(f"[WORKFLOW] Max steps reached without confirmed upload")
+            if has_upload and has_save_click:
+                upload_success = True
+                logger.info(f"[WORKFLOW] Photo uploaded and saved (max_steps_reached but workflow completed)")
+            else:
+                logger.warning(f"[WORKFLOW] Max steps reached - upload={has_upload}, save_clicked={has_save_click}")
         else:
             logger.warning(f"[WORKFLOW] Upload ended with status: {upload_result.get('final_status')}")
 
