@@ -3767,7 +3767,12 @@ IMPORTANT: Coordinates must be within 0-393 for x and 0-873 for y."""
 # ===========================================================================
 
 from adaptive_agent import run_adaptive_task
-from workflows import update_profile_photo
+from workflows import (
+    update_profile_photo,
+    regenerate_profile_photo_with_pose,
+    batch_regenerate_imported_photos
+)
+from gemini_image_gen import POSE_VARIATIONS
 
 
 class AdaptiveAgentRequest(BaseModel):
@@ -3781,6 +3786,12 @@ class ProfilePhotoRequest(BaseModel):
     """Request model for profile photo update workflow."""
     profile_name: str
     persona_description: str
+
+
+class RegeneratePhotoRequest(BaseModel):
+    """Request model for profile photo regeneration with pose."""
+    profile_name: str
+    pose_name: Optional[str] = None  # If None, picks random pose
 
 
 @app.post("/adaptive-agent")
@@ -3847,6 +3858,100 @@ async def workflow_update_profile_photo(
         profile_name=request.profile_name,
         persona_description=request.persona_description
     )
+
+    return result
+
+
+@app.post("/workflow/regenerate-profile-photo")
+async def workflow_regenerate_profile_photo(
+    request: RegeneratePhotoRequest,
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """
+    Regenerate profile photo using existing face as reference.
+    Creates a new photo of the same person in a different pose/setting.
+
+    This workflow:
+    1. Loads current profile picture from session (as identity reference)
+    2. Generates new image with same person in new pose using Gemini
+    3. Uploads the new photo to Facebook via Adaptive Agent
+    4. Updates the session file with new profile picture
+
+    Args:
+        profile_name: The profile to update (must have existing profile_picture)
+        pose_name: Specific pose (e.g., "beach", "gym_mirror"). Random if not specified.
+
+    Available poses:
+        beach, gym_mirror, coffee_shop, car, kitchen, living_room,
+        outdoor_walk, with_pet, restaurant, bathroom_mirror, hiking, pool_backyard
+
+    Example:
+        POST /workflow/regenerate-profile-photo
+        {
+            "profile_name": "adele_compton",
+            "pose_name": "beach"
+        }
+    """
+    # Verify API key
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    logger.info(f"[WORKFLOW] Starting photo regeneration for {request.profile_name}")
+    if request.pose_name:
+        logger.info(f"[WORKFLOW] Requested pose: {request.pose_name}")
+
+    result = await regenerate_profile_photo_with_pose(
+        profile_name=request.profile_name,
+        pose_name=request.pose_name
+    )
+
+    return result
+
+
+@app.get("/workflow/available-poses")
+async def get_available_poses(
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """
+    Get list of available poses for profile photo regeneration.
+    """
+    # Verify API key
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    return {
+        "poses": [
+            {"name": p["name"], "description": p["prompt"][:80] + "..."}
+            for p in POSE_VARIATIONS
+        ],
+        "total": len(POSE_VARIATIONS)
+    }
+
+
+@app.post("/workflow/regenerate-all-imported-photos")
+async def workflow_regenerate_all_imported_photos(
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """
+    Regenerate profile photos for all profiles with 'imported' tag.
+    Each profile gets a random unique pose from the variations pool.
+
+    This is a long-running operation - may take several minutes for many profiles.
+
+    Returns:
+        Dict with:
+            - total: Number of profiles processed
+            - successful: Number of successful regenerations
+            - failed: Number of failed regenerations
+            - results: Detailed results for each profile
+    """
+    # Verify API key
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    logger.info(f"[WORKFLOW] Starting batch photo regeneration for all imported profiles")
+
+    result = await batch_regenerate_imported_photos()
 
     return result
 
