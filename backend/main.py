@@ -2489,10 +2489,14 @@ def convert_cookie_to_playwright(cookie: Dict) -> Dict:
     }
 
     # Convert expirationDate to expires
-    if "expirationDate" in cookie:
-        result["expires"] = cookie["expirationDate"]
-    elif "expires" in cookie:
-        result["expires"] = cookie["expires"]
+    # Playwright only accepts -1 (session cookie) or positive unix timestamp
+    expires_val = cookie.get("expirationDate") or cookie.get("expires")
+    if expires_val is not None:
+        # Handle negative/invalid expiration dates (except -1)
+        if expires_val <= 0 and expires_val != -1:
+            result["expires"] = -1  # Convert to session cookie
+        else:
+            result["expires"] = int(expires_val)  # Convert to int for safety
     else:
         result["expires"] = -1  # Session cookie
 
