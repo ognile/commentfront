@@ -30,56 +30,20 @@ IMAGE_MODEL = "gemini-3-pro-image-preview"  # Gemini 3 image generation model
 IMAGE_OUTPUT_DIR = Path(os.getenv("IMAGE_OUTPUT_DIR", "/tmp/profile_photos"))
 IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Pose variations for profile photo regeneration
+# Pose variations for profile photo regeneration - simple natural language phrases
 POSE_VARIATIONS: List[Dict[str, str]] = [
-    {
-        "name": "beach",
-        "prompt": "Casual beach selfie with ocean waves visible in background, sun-kissed natural skin, messy beach hair from the wind, wearing a casual summer top or bikini strap visible, squinting slightly from the sun, authentic vacation vibe"
-    },
-    {
-        "name": "gym_mirror",
-        "prompt": "Gym mirror selfie in casual workout clothes (tank top or sports bra), visible gym equipment in reflection, slight sheen of sweat, confident but relaxed expression, phone held at chest level, good fluorescent gym lighting"
-    },
-    {
-        "name": "coffee_shop",
-        "prompt": "Cozy coffee shop selfie holding a latte or coffee cup, warm indoor lighting, wearing a cozy sweater or casual top, slight smile, coffee shop interior blurred in background, morning vibes"
-    },
-    {
-        "name": "car",
-        "prompt": "Casual car selfie from driver seat, seatbelt visible across chest, natural daylight streaming through windows, wearing casual clothes, relaxed expression, car interior visible, parked car setting"
-    },
-    {
-        "name": "kitchen",
-        "prompt": "Relaxed home selfie in kitchen, morning golden light through windows, wearing casual home clothes (t-shirt, robe, or casual top), coffee mug or kitchen items visible in background, freshly woken up natural look"
-    },
-    {
-        "name": "living_room",
-        "prompt": "Selfie on couch or armchair, cozy blanket or throw pillow visible, soft evening lamp lighting, wearing comfortable lounge clothes, relaxed happy expression, living room decor in background"
-    },
-    {
-        "name": "outdoor_walk",
-        "prompt": "Walking selfie in park or neighborhood sidewalk, sunny day with trees or houses in background, slightly windswept hair, wearing casual outdoor clothes (jacket, hoodie, or t-shirt), natural smile, bright natural lighting"
-    },
-    {
-        "name": "with_pet",
-        "prompt": "Selfie with a dog or cat visible in frame, happy excited expression, pet partially visible (face, ear, or paw), home setting, warm loving expression, casual home clothes, genuine joy"
-    },
-    {
-        "name": "restaurant",
-        "prompt": "Nice restaurant or dinner selfie, evening attire (nice top or blouse), subtle romantic restaurant lighting, background slightly blurred showing restaurant interior, dressed up but casual, confident expression"
-    },
-    {
-        "name": "bathroom_mirror",
-        "prompt": "Classic bathroom mirror selfie, good vanity lighting, casual everyday outfit visible, clean modern bathroom in reflection, natural pose, phone clearly visible in mirror, getting ready vibe"
-    },
-    {
-        "name": "hiking",
-        "prompt": "Outdoor hiking trail selfie, nature background with trees or mountains, wearing athletic hiking clothes, slight sweat or exertion visible, happy accomplished expression, bright natural daylight, adventure vibe"
-    },
-    {
-        "name": "pool_backyard",
-        "prompt": "Backyard selfie by pool or patio, summer casual clothes or swimwear, bright sunny lighting, pool water or patio furniture visible, relaxed vacation vibe, sunglasses pushed up on head or nearby"
-    },
+    {"name": "beach", "prompt": "at the beach with ocean in background, sunny day"},
+    {"name": "gym_mirror", "prompt": "gym mirror selfie in workout clothes"},
+    {"name": "coffee_shop", "prompt": "in a cozy coffee shop holding a latte"},
+    {"name": "car", "prompt": "car selfie, sitting in driver seat with seatbelt"},
+    {"name": "kitchen", "prompt": "in the kitchen at home, morning light"},
+    {"name": "living_room", "prompt": "relaxing on the couch at home"},
+    {"name": "outdoor_walk", "prompt": "outside walking in a park, sunny day"},
+    {"name": "with_dog", "prompt": "with her dog, happy expression"},
+    {"name": "restaurant", "prompt": "at a nice restaurant, evening"},
+    {"name": "bathroom_mirror", "prompt": "bathroom mirror selfie getting ready"},
+    {"name": "hiking", "prompt": "hiking outdoors with nature in background"},
+    {"name": "pool", "prompt": "by the pool on a sunny day"},
 ]
 
 
@@ -280,11 +244,11 @@ async def generate_profile_photo_with_reference(
 ) -> Dict[str, Any]:
     """
     Generate a new photo of the same person in a different pose/setting.
-    Uses the reference image to preserve the person's identity/face.
+    Uses simple natural language prompt with reference image.
 
     Args:
         reference_image_base64: The current profile picture (base64 PNG/JPEG)
-        pose_prompt: Description of the new pose/setting
+        pose_prompt: Simple description like "at the beach", "in a coffee shop"
         profile_name: Optional profile name for filename
 
     Returns:
@@ -298,9 +262,7 @@ async def generate_profile_photo_with_reference(
         client = get_image_client()
 
         # Decode base64 to PIL Image
-        # Handle both raw base64 and data URL format
         if reference_image_base64.startswith("data:"):
-            # Strip data URL prefix (e.g., "data:image/png;base64,")
             base64_data = reference_image_base64.split(",", 1)[1]
         else:
             base64_data = reference_image_base64
@@ -308,39 +270,11 @@ async def generate_profile_photo_with_reference(
         image_bytes = base64.b64decode(base64_data)
         reference_image = Image.open(io.BytesIO(image_bytes))
 
-        # Build the prompt for identity-preserving generation
-        full_prompt = f"""Generate a realistic iPhone selfie photo of this EXACT same person.
+        # Simple, natural language prompt - this works better with Gemini
+        full_prompt = f"iPhone selfie of her {pose_prompt}"
 
-IDENTITY PRESERVATION (CRITICAL - HIGHEST PRIORITY):
-- This MUST be the EXACT same person as in the reference image
-- Preserve their face shape, eye color, skin tone, hair color, and all distinctive features
-- The generated image should look like a different photo of the SAME person, not a different person
-- Do NOT change their ethnicity, age, or fundamental facial features
-
-NEW POSE/SETTING:
-{pose_prompt}
-
-PHOTO STYLE REQUIREMENTS:
-- iPhone 15 Pro front camera selfie
-- Natural, candid, casual expression with genuine emotion
-- Slight imperfections: flyaway hairs, real skin texture, natural pores
-- NO professional studio lighting
-- NO heavy filters or editing
-- Appropriate clothing for the setting
-
-ANTI-AI TELLS TO AVOID:
-- No waxy or overly smooth skin
-- No perfectly symmetrical features
-- No uncanny valley expressions
-- No blurred or melted ears/jewelry/fingers
-- No text or watermarks
-- No unnatural eye reflections
-
-ASPECT RATIO: 1:1 square (for profile picture use)
-OUTPUT: Single photo of the same person in the new setting"""
-
-        logger.info(f"[IMAGE_GEN] Generating reference-based photo for: {profile_name}")
-        logger.debug(f"[IMAGE_GEN] Pose prompt: {pose_prompt}")
+        logger.info(f"[IMAGE_GEN] Generating photo for: {profile_name}")
+        logger.info(f"[IMAGE_GEN] Prompt: {full_prompt}")
 
         # Generate image with reference
         response = await asyncio.to_thread(
