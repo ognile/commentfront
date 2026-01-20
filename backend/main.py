@@ -2428,13 +2428,21 @@ async def add_credential(request: CredentialAddRequest, current_user: dict = Dep
 async def bulk_import_credentials(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)) -> Dict:
     """
     Import credentials from text file.
-    Format per line: uid:password:2fa_secret
-    Example: 61571384288937:BHvSDSchultz:EBKJL7AVC3X6PPCG56HPDQTKV4X5R37K
+
+    Supports two formats:
+    1. Old format (3 fields): uid:password:2fa_secret
+       Example: 61571384288937:BHvSDSchultz:EBKJL7AVC3X6PPCG56HPDQTKV4X5R37K
+       -> Stores credential for later login
+
+    2. New format (6 fields): uid:password:dob:2fa_secret:user_agent:base64_cookies
+       Example: 61571384288937:Pass123:01.01.1990:SECRETKEY:Mozilla/5.0...:W3siZG9t...
+       -> Creates session directly with cookies, fetches profile name & photo
     """
     content = await file.read()
     lines = content.decode("utf-8").strip().split("\n")
 
     imported = 0
+    sessions_created = 0
     errors = []
 
     for i, line in enumerate(lines):
@@ -2443,28 +2451,105 @@ async def bulk_import_credentials(file: UploadFile = File(...), current_user: di
             continue
 
         parts = line.split(":")
-        if len(parts) != 3:
-            errors.append(f"Line {i+1}: Invalid format (expected uid:password:secret)")
-            continue
 
-        uid, password, secret = parts
+        # Detect format by field count
+        if len(parts) == 3:
+            # Old format: uid:password:secret
+            uid, password, secret = parts
+            profile_name = f"fb_{uid[-6:]}"
 
-        # Auto-generate profile name from last 6 digits of UID
-        profile_name = f"fb_{uid[-6:]}"
+            try:
+                credential_manager.add_credential(
+                    uid=uid,
+                    password=password,
+                    secret=secret,
+                    profile_name=profile_name
+                )
+                imported += 1
+                logger.info(f"Imported credential for {uid} as {profile_name}")
+            except Exception as e:
+                errors.append(f"Line {i+1}: {str(e)}")
 
-        try:
-            credential_manager.add_credential(
-                uid=uid,
-                password=password,
-                secret=secret,
-                profile_name=profile_name
-            )
-            imported += 1
-            logger.info(f"Imported credential for {uid} as {profile_name}")
-        except Exception as e:
-            errors.append(f"Line {i+1}: {str(e)}")
+        elif len(parts) >= 6:
+            # New format: uid:password:dob:secret:user_agent:cookies_base64
+            # Note: user_agent may contain colons, so we join the rest
+            uid = parts[0]
+            password = parts[1]
+            dob = parts[2]  # Date of birth (stored but not used currently)
+            secret = parts[3]
+            user_agent = parts[4]
+            cookies_base64 = ":".join(parts[5:])  # In case base64 has colons (shouldn't but be safe)
 
-    return {"imported": imported, "errors": errors, "total_lines": len(lines)}
+            try:
+                # 1. Decode and convert cookies
+                import base64
+                cookies_json = base64.b64decode(cookies_base64).decode("utf-8")
+                raw_cookies = json.loads(cookies_json)
+
+                # Filter to Facebook domain and convert to Playwright format
+                playwright_cookies = []
+                for cookie in raw_cookies:
+                    if ".facebook.com" in cookie.get("domain", ""):
+                        playwright_cookies.append(convert_cookie_to_playwright(cookie))
+
+                if not playwright_cookies:
+                    errors.append(f"Line {i+1}: No Facebook cookies found")
+                    continue
+
+                # 2. Fetch profile data (name + photo) using cookies
+                logger.info(f"Line {i+1}: Fetching profile data for UID {uid}...")
+                profile_data = await fetch_profile_data_from_cookies(
+                    cookies=playwright_cookies,
+                    user_agent=user_agent,
+                    proxy=None,  # Use service proxy
+                )
+
+                if not profile_data["success"]:
+                    errors.append(f"Line {i+1}: Failed to fetch profile - {profile_data['error']}")
+                    continue
+
+                # 3. Generate profile name from real Facebook name
+                real_name = profile_data["profile_name"]
+                sanitized_name = real_name.lower().replace(" ", "_").replace("-", "_")
+                # Remove any non-alphanumeric characters
+                sanitized_name = "".join(c for c in sanitized_name if c.isalnum() or c == "_")
+
+                # 4. Create session
+                session = FacebookSession(sanitized_name)
+                session.import_from_cookies(
+                    cookies=playwright_cookies,
+                    user_agent=user_agent,
+                    proxy="",  # Empty = use service proxy
+                    profile_picture=profile_data["profile_picture"],
+                    tags=["imported", "with_cookies"]
+                )
+                session.save()
+
+                # 5. Store credentials (for potential re-login later)
+                credential_manager.add_credential(
+                    uid=uid,
+                    password=password,
+                    secret=secret,
+                    profile_name=sanitized_name
+                )
+
+                sessions_created += 1
+                imported += 1
+                logger.info(f"Line {i+1}: Created session '{sanitized_name}' ({real_name}) with profile photo")
+
+            except Exception as e:
+                logger.error(f"Line {i+1}: Error processing cookies - {e}")
+                errors.append(f"Line {i+1}: {str(e)}")
+        else:
+            errors.append(f"Line {i+1}: Invalid format (expected 3 or 6+ fields, got {len(parts)})")
+
+    return {
+        "imported": imported,
+        "sessions_created": sessions_created,
+        "credentials_only": imported - sessions_created,
+        "errors": errors,
+        "total_lines": len(lines)
+    }
 
 
 class CookieImportRequest(BaseModel):
