@@ -35,7 +35,7 @@ from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
 from queue_manager import CampaignQueueManager
-from login_bot import create_session_from_credentials, refresh_session_profile_name
+from login_bot import create_session_from_credentials, refresh_session_profile_name, fetch_profile_data_from_cookies
 from browser_manager import get_browser_manager, UPLOAD_DIR
 
 # Setup Logging - JSON structured logs for production, readable logs for dev
@@ -2465,6 +2465,143 @@ async def bulk_import_credentials(file: UploadFile = File(...), current_user: di
             errors.append(f"Line {i+1}: {str(e)}")
 
     return {"imported": imported, "errors": errors, "total_lines": len(lines)}
+
+
+class CookieImportRequest(BaseModel):
+    """Request to import a session with pre-made cookies."""
+    uid: str  # Facebook UID
+    password: str  # For credential storage
+    secret: Optional[str] = None  # 2FA secret
+    user_agent: str  # User agent from the order file
+    cookies_base64: str  # Base64 encoded cookies JSON array
+    proxy: Optional[str] = ""  # Optional proxy URL
+
+
+def convert_cookie_to_playwright(cookie: Dict) -> Dict:
+    """Convert browser-export cookie format to Playwright format."""
+    result = {
+        "name": cookie["name"],
+        "value": cookie["value"],
+        "domain": cookie["domain"],
+        "path": cookie["path"],
+        "secure": cookie.get("secure", True),
+        "httpOnly": cookie.get("httpOnly", False),
+    }
+
+    # Convert expirationDate to expires
+    if "expirationDate" in cookie:
+        result["expires"] = cookie["expirationDate"]
+    elif "expires" in cookie:
+        result["expires"] = cookie["expires"]
+    else:
+        result["expires"] = -1  # Session cookie
+
+    # Convert sameSite
+    same_site = cookie.get("sameSite", "Unspecified")
+    if same_site in ("Unspecified", "no_restriction"):
+        result["sameSite"] = "None"
+    elif same_site == "lax":
+        result["sameSite"] = "Lax"
+    elif same_site == "strict":
+        result["sameSite"] = "Strict"
+    else:
+        result["sameSite"] = same_site
+
+    return result
+
+
+@app.post("/sessions/import-cookies")
+async def import_session_with_cookies(
+    request: CookieImportRequest,
+    current_user: dict = Depends(get_current_user)
+) -> Dict:
+    """
+    Import a session directly from pre-made cookies (bypass login flow).
+
+    This endpoint:
+    1. Converts cookies to Playwright format
+    2. Validates session by connecting to Facebook
+    3. Fetches real profile name from Facebook
+    4. Extracts profile picture
+    5. Creates session file
+    6. Stores credentials for future use
+
+    All steps are mandatory - if any fails, the import fails.
+
+    Authentication: JWT Bearer token OR X-API-Key header
+    """
+    import base64
+
+    try:
+        # Decode and convert cookies
+        cookies_raw = json.loads(base64.b64decode(request.cookies_base64))
+        cookies = [
+            convert_cookie_to_playwright(c)
+            for c in cookies_raw
+            if c.get("domain", "").endswith("facebook.com")
+        ]
+
+        # Validate essential cookies exist
+        cookie_names = [c["name"] for c in cookies]
+        if "c_user" not in cookie_names or "xs" not in cookie_names:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing essential cookies: c_user and xs are required"
+            )
+
+        logger.info(f"Importing session for UID: {request.uid} with {len(cookies)} cookies")
+
+        # Fetch profile data (name + photo) from Facebook
+        profile_data = await fetch_profile_data_from_cookies(
+            cookies=cookies,
+            user_agent=request.user_agent,
+            proxy=request.proxy if request.proxy else None
+        )
+
+        if not profile_data["success"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to fetch profile data: {profile_data['error']}"
+            )
+
+        # Generate profile_name from real Facebook name
+        real_name = profile_data["profile_name"]
+        profile_name = real_name.lower().replace(" ", "_").replace(".", "")
+        logger.info(f"Using profile name: {real_name} -> {profile_name}")
+
+        # Create session using FacebookSession
+        session = FacebookSession(profile_name)
+        session.import_from_cookies(
+            cookies=cookies,
+            user_agent=request.user_agent,
+            proxy=request.proxy or "",
+            profile_picture=profile_data["profile_picture"],
+            tags=["imported"]
+        )
+        session.save()
+
+        # Store credentials for future re-login if needed
+        credential_manager.add_credential(
+            uid=request.uid,
+            password=request.password,
+            secret=request.secret,
+            profile_name=profile_name
+        )
+
+        return {
+            "success": True,
+            "profile_name": profile_name,
+            "display_name": real_name,
+            "user_id": profile_data["user_id"],
+            "has_profile_picture": True,
+            "cookies_count": len(cookies)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to import session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/credentials/{uid}")

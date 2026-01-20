@@ -1786,3 +1786,127 @@ async def create_session_from_credentials(
     )
 
     return result
+
+
+async def fetch_profile_data_from_cookies(
+    cookies: List[Dict],
+    user_agent: str,
+    proxy: str = None,
+) -> Dict[str, Any]:
+    """
+    Fetch Facebook profile name AND photo using pre-made cookies.
+    This bypasses the login flow entirely - just uses existing cookies to verify
+    the session and extract profile data.
+
+    Args:
+        cookies: List of cookies in Playwright format (already converted)
+        user_agent: User agent string to use
+        proxy: Optional proxy URL
+
+    Returns:
+        Dict with:
+            - success: bool
+            - profile_name: str (real Facebook name, e.g., "John Smith")
+            - profile_picture: str (base64 encoded PNG)
+            - user_id: str (Facebook user ID from c_user cookie)
+            - error: str (if failed)
+    """
+    result = {
+        "success": False,
+        "profile_name": None,
+        "profile_picture": None,
+        "user_id": None,
+        "error": None
+    }
+
+    # Extract user_id from c_user cookie
+    user_id = next((c.get("value") for c in cookies if c.get("name") == "c_user"), None)
+    if not user_id:
+        result["error"] = "No c_user cookie found - cannot verify session"
+        return result
+    result["user_id"] = user_id
+
+    logger.info(f"Fetching profile data for user_id: {user_id}")
+
+    try:
+        async with async_playwright() as p:
+            # Build browser args
+            browser_args = [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-site-isolation-trials',
+            ]
+
+            # Build proxy config if provided
+            proxy_config = None
+            if proxy:
+                from urllib.parse import urlparse
+                parsed = urlparse(proxy)
+                proxy_config = {
+                    "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
+                }
+                if parsed.username:
+                    proxy_config["username"] = parsed.username
+                    proxy_config["password"] = parsed.password or ""
+
+            # Launch browser
+            browser = await p.chromium.launch(
+                headless=True,
+                args=browser_args
+            )
+
+            # Create context with the provided user agent
+            context = await browser.new_context(
+                viewport=MOBILE_VIEWPORT,
+                user_agent=user_agent,
+                locale="en-US",
+                proxy=proxy_config,
+            )
+
+            # Apply stealth
+            stealth = Stealth(
+                navigator_languages=False,
+                navigator_vendor=False,
+                navigator_user_agent=False,
+            )
+            await stealth.apply_stealth(context)
+
+            # Apply cookies
+            await context.add_cookies(cookies)
+            logger.info(f"Applied {len(cookies)} cookies to context")
+
+            # Create page
+            page = await context.new_page()
+
+            # Verify session and extract profile data
+            # Use the existing verify_logged_in which extracts name + picture
+            is_logged_in, profile_name, profile_picture = await verify_logged_in(
+                page,
+                extract_picture=True,
+                user_id=user_id
+            )
+
+            await browser.close()
+
+            if not is_logged_in:
+                result["error"] = "Session cookies are invalid or expired"
+                return result
+
+            if not profile_name:
+                result["error"] = "Could not extract profile name"
+                return result
+
+            if not profile_picture:
+                result["error"] = "Could not extract profile picture"
+                return result
+
+            result["success"] = True
+            result["profile_name"] = profile_name
+            result["profile_picture"] = profile_picture
+            logger.info(f"✅ Successfully fetched profile data: {profile_name}")
+            return result
+
+    except Exception as e:
+        logger.error(f"Error fetching profile data: {e}")
+        result["error"] = str(e)
+        return result

@@ -157,6 +157,53 @@ class FacebookSession:
                 return cookie.get("value")
         return None
 
+    def import_from_cookies(
+        self,
+        cookies: List[Dict],
+        user_agent: str,
+        proxy: str = "",
+        profile_picture: str = None,
+        tags: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Import session from pre-made cookies (bypass login flow).
+
+        Args:
+            cookies: List of cookies in Playwright format
+            user_agent: User agent string to use
+            proxy: Proxy URL (optional, empty = use service proxy)
+            profile_picture: Base64 encoded profile picture (optional)
+            tags: List of tags for filtering (optional)
+
+        Returns:
+            Dict containing all session data
+        """
+        # Validate essential cookies
+        cookie_names = [c.get("name") for c in cookies]
+        if "c_user" not in cookie_names or "xs" not in cookie_names:
+            raise ValueError("Missing essential cookies: c_user and xs are required")
+
+        # Extract user ID from c_user cookie
+        user_id = next((c.get("value") for c in cookies if c.get("name") == "c_user"), None)
+
+        # Build session data
+        self.data = {
+            "profile_name": self.profile_name,
+            "extracted_at": datetime.now().isoformat(),
+            "cookies": cookies,
+            "user_agent": user_agent,
+            "viewport": {"width": 393, "height": 873},
+            "proxy": proxy,
+            "tags": tags or ["imported"],
+        }
+
+        # Add profile picture if provided
+        if profile_picture:
+            self.data["profile_picture"] = profile_picture
+
+        logger.info(f"Session imported for user {user_id} as {self.profile_name}")
+        return self.data
+
     def get_device_fingerprint(self) -> Dict[str, str]:
         """
         Get device fingerprint (timezone, locale) for this session.
