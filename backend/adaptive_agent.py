@@ -358,8 +358,8 @@ REASONING: Comment was submitted"""
 
     async def _fallback_click_known_buttons(self, visible_elements: List[dict], step_num: int, screenshot_path: str) -> bool:
         """Try to click known buttons when Gemini fails. Returns True if clicked."""
-        # Priority order for restriction flow buttons
-        priority_buttons = ['request review', 'see why', 'ok', 'done', 'continue', 'close']
+        # Priority order for known action buttons (profile photo updates + restriction flows)
+        priority_buttons = ['update', 'save', 'confirm', 'request review', 'see why', 'ok', 'done', 'continue', 'close']
 
         for button_name in priority_buttons:
             for el in visible_elements:
