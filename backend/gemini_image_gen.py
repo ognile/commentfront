@@ -352,18 +352,51 @@ OUTPUT: Single photo of the same person in the new setting"""
             )
         )
 
+        # Debug: Log the raw response structure
+        logger.info(f"[IMAGE_GEN] Response received, checking structure...")
+
+        # Check if response has candidates with content
+        if hasattr(response, 'candidates') and response.candidates:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'finish_reason'):
+                logger.info(f"[IMAGE_GEN] Finish reason: {candidate.finish_reason}")
+            if hasattr(candidate, 'safety_ratings'):
+                logger.info(f"[IMAGE_GEN] Safety ratings: {candidate.safety_ratings}")
+
+        # Check for prompt feedback (policy blocks)
+        if hasattr(response, 'prompt_feedback'):
+            logger.warning(f"[IMAGE_GEN] Prompt feedback: {response.prompt_feedback}")
+
         # Extract image from response
         image_data = None
-        for part in response.parts:
-            if part.inline_data is not None:
-                image_data = part.inline_data.data
-                break
+        parts = getattr(response, 'parts', None)
+        if parts is None:
+            # Try to get parts from candidates
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content:
+                    parts = getattr(candidate.content, 'parts', [])
+
+        if parts:
+            for part in parts:
+                if hasattr(part, 'inline_data') and part.inline_data is not None:
+                    image_data = part.inline_data.data
+                    break
 
         if not image_data:
-            logger.error("[IMAGE_GEN] No image in reference-based response")
+            # Check for text response (might be an error message)
+            text_response = ""
+            if parts:
+                for part in parts:
+                    if hasattr(part, 'text') and part.text:
+                        text_response = part.text
+                        break
+
+            error_msg = f"No image generated. Response: {text_response[:200] if text_response else 'Empty response'}"
+            logger.error(f"[IMAGE_GEN] {error_msg}")
             return {
                 "success": False,
-                "error": "No image generated in response"
+                "error": error_msg
             }
 
         # Save image
