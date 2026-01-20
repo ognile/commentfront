@@ -2521,7 +2521,8 @@ async def bulk_import_credentials(file: UploadFile = File(...), current_user: di
                     user_agent=user_agent,
                     proxy="",  # Empty = use service proxy
                     profile_picture=profile_data["profile_picture"],
-                    tags=["imported", "with_cookies"]
+                    tags=["imported", "with_cookies"],
+                    display_name=real_name  # Pretty name for UI (e.g., "Elizabeth Cruz")
                 )
                 session.save()
 
@@ -3102,6 +3103,36 @@ async def refresh_profile_name(profile_name: str, current_user: dict = Depends(g
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to refresh profile name"))
 
     return result
+
+
+@app.post("/sessions/fix-display-names")
+async def fix_display_names(current_user: dict = Depends(get_current_user)) -> Dict:
+    """
+    Fix display_name field for existing sessions.
+
+    Converts profile_name (e.g., "elizabeth_cruz") to display_name (e.g., "Elizabeth Cruz").
+    """
+    sessions = list_saved_sessions()
+    fixed = 0
+
+    for s in sessions:
+        profile_name = s.get("profile_name")
+        if not profile_name:
+            continue
+
+        session = FacebookSession(profile_name)
+        if session.load():
+            # Check if display_name is missing or same as profile_name
+            current_display = session.data.get("display_name")
+            if not current_display or current_display == profile_name:
+                # Convert profile_name to title case (elizabeth_cruz -> Elizabeth Cruz)
+                pretty_name = profile_name.replace("_", " ").title()
+                session.data["display_name"] = pretty_name
+                session.save()
+                fixed += 1
+                logger.info(f"Fixed display_name for {profile_name} -> {pretty_name}")
+
+    return {"fixed": fixed, "total": len(sessions)}
 
 
 @app.post("/sessions/refresh-all-names")

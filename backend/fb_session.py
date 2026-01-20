@@ -163,7 +163,8 @@ class FacebookSession:
         user_agent: str,
         proxy: str = "",
         profile_picture: str = None,
-        tags: List[str] = None
+        tags: List[str] = None,
+        display_name: str = None
     ) -> Dict[str, Any]:
         """
         Import session from pre-made cookies (bypass login flow).
@@ -174,6 +175,7 @@ class FacebookSession:
             proxy: Proxy URL (optional, empty = use service proxy)
             profile_picture: Base64 encoded profile picture (optional)
             tags: List of tags for filtering (optional)
+            display_name: Pretty name for UI display (e.g., "Elizabeth Cruz")
 
         Returns:
             Dict containing all session data
@@ -189,6 +191,7 @@ class FacebookSession:
         # Build session data
         self.data = {
             "profile_name": self.profile_name,
+            "display_name": display_name or self.profile_name,  # Pretty name for UI
             "extracted_at": datetime.now().isoformat(),
             "cookies": cookies,
             "user_agent": user_agent,
@@ -201,7 +204,7 @@ class FacebookSession:
         if profile_picture:
             self.data["profile_picture"] = profile_picture
 
-        logger.info(f"Session imported for user {user_id} as {self.profile_name}")
+        logger.info(f"Session imported for user {user_id} as {self.profile_name} ({display_name})")
         return self.data
 
     def get_device_fingerprint(self) -> Dict[str, str]:
@@ -342,6 +345,7 @@ def list_saved_sessions() -> List[Dict[str, Any]]:
             sessions.append({
                 "file": session_file.name,
                 "profile_name": data.get("profile_name"),
+                "display_name": data.get("display_name") or data.get("profile_name"),  # Pretty name for UI
                 "user_id": None,  # Will extract below
                 "extracted_at": data.get("extracted_at"),
                 "proxy": data.get("proxy"),
