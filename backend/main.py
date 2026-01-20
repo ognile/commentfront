@@ -342,8 +342,8 @@ class QueueProcessor:
                     self.logger.info(f"Campaign {campaign_id}: Waiting {delay_seconds:.0f}s before job {original_job_idx}")
                     await asyncio.sleep(delay_seconds)
 
-                # Update progress (use pending_idx for progress, original_job_idx for tracking)
-                self.queue_manager.update_job_progress(campaign_id, pending_idx + 1, len(pending_jobs), profile_name)
+                # Update progress with ORIGINAL job index for accurate display (e.g., "Job 8/13" not "Job 1/6")
+                self.queue_manager.update_job_progress(campaign_id, original_job_idx + 1, total_jobs, profile_name)
 
                 await broadcast_update("job_start", {
                     "campaign_id": campaign_id,
