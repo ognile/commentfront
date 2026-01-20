@@ -1071,9 +1071,9 @@ async def post_comment_verified(
 
             if not verification.success:
                 if verification.status == "pending":
-                    # Comment pending, wait more
-                    logger.info("Comment appears pending, waiting...")
-                    await asyncio.sleep(3)
+                    # Comment pending, wait more (7s to give FB time to finish posting)
+                    logger.info("Comment appears pending, waiting 7 more seconds...")
+                    await asyncio.sleep(7)
                     verify_screenshot = await save_debug_screenshot(page, "step5_pending")
                     verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
                 else:

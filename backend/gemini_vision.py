@@ -783,12 +783,10 @@ SCROLL direction=down"""
 
         confidence = self._extract_float(response, "confidence=")
 
-        # For PENDING status: if confidence >= 0.90, treat as success
-        # High confidence PENDING means Gemini saw the comment text on screen
-        if status == "pending" and confidence >= 0.90:
-            verified = True
-        elif status == "pending":
-            verified = False
+        # PENDING always means "comment is still being posted" - NEVER treat as success
+        # The retry logic in comment_bot.py will wait and re-verify
+        if status == "pending":
+            verified = False  # Always false for pending - let caller decide to retry
 
         # Extract reason if present
         reason = response
