@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # Mobile viewport dimensions
 MOBILE_VIEWPORT = {"width": 393, "height": 873}
 
+# Concurrency control - limit simultaneous browser sessions
+# Prevents server overload when running many profiles in parallel
+ADAPTIVE_AGENT_SEMAPHORE = asyncio.Semaphore(5)
+
 
 def is_element_visible(el: dict, viewport_height: int = 873) -> bool:
     """Check if element is within visible viewport."""
@@ -831,6 +835,7 @@ async def run_adaptive_task(
 ) -> Dict[str, Any]:
     """
     Convenience function to run an adaptive agent task.
+    Limited to 5 concurrent executions via semaphore to prevent server overload.
 
     Args:
         profile_name: Name of the Facebook session profile
@@ -842,11 +847,12 @@ async def run_adaptive_task(
     Returns:
         Dict with results including steps, screenshots, errors, final_status
     """
-    agent = AdaptiveAgent(
-        profile_name=profile_name,
-        task=task,
-        max_steps=max_steps,
-        start_url=start_url,
-        upload_file_path=upload_file_path
-    )
-    return await agent.run()
+    async with ADAPTIVE_AGENT_SEMAPHORE:
+        agent = AdaptiveAgent(
+            profile_name=profile_name,
+            task=task,
+            max_steps=max_steps,
+            start_url=start_url,
+            upload_file_path=upload_file_path
+        )
+        return await agent.run()

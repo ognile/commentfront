@@ -123,6 +123,10 @@ curl -X POST "https://commentbot-production.up.railway.app/test-campaign" \
 | `/test-campaign` | POST | Run isolated test campaign |
 | `/adaptive-agent` | POST | Run AI-guided multi-step task (see `.claude/rules/backend/adaptive-agent.md`) |
 | `/workflow/update-profile-photo` | POST | Generate AI photo + upload to profile (see `.claude/rules/backend/workflows.md`) |
+
+### Common Operations
+
+For **restriction appeals**, see `.claude/rules/backend/restriction-appeals.md` - includes workflow, common failures (FALLBACK_TOUCH loop, click not registering), and solutions.
 | `/analytics/summary` | GET | Today/week stats, active/restricted counts |
 | `/analytics/profiles` | GET | All profiles with status, usage history |
 | `/analytics/profiles/{name}` | GET | Single profile detailed history |
