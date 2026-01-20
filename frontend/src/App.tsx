@@ -22,6 +22,7 @@ import { TagInput } from '@/components/TagInput'
 interface Session {
   file: string;
   profile_name: string;
+  display_name?: string;  // Pretty name for UI display (e.g., "Elizabeth Cruz")
   user_id: string | null;
   extracted_at: string;
   valid: boolean;
@@ -2482,7 +2483,7 @@ function App() {
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-[#999999] text-sm font-medium">
-                              {session.profile_name?.[0]?.toUpperCase() || '?'}
+                              {(session.display_name || session.profile_name)?.[0]?.toUpperCase() || '?'}
                             </div>
                           )}
                         </div>
@@ -2490,7 +2491,7 @@ function App() {
                         {/* Name & Info - horizontal */}
                         <div className="flex-1 min-w-0 flex items-center gap-4">
                           <div className="min-w-[140px]">
-                            <div className="font-medium text-[#111111] text-sm truncate">{session.profile_name}</div>
+                            <div className="font-medium text-[#111111] text-sm truncate">{session.display_name || session.profile_name}</div>
                             <div className="text-xs text-[#999999] flex items-center gap-2">
                               <span className="truncate">{session.user_id?.slice(0, 10) || 'Unknown'}</span>
                               <span>•</span>
