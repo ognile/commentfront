@@ -1863,13 +1863,8 @@ async def fetch_profile_data_from_cookies(
                 proxy=proxy_config,
             )
 
-            # Apply stealth
-            stealth = Stealth(
-                navigator_languages=False,
-                navigator_vendor=False,
-                navigator_user_agent=False,
-            )
-            await stealth.apply_stealth(context)
+            # Apply stealth (MANDATORY for anti-detection)
+            await Stealth().apply_stealth_async(context)
 
             # Apply cookies
             await context.add_cookies(cookies)
