@@ -32,12 +32,13 @@ export function TagInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Filter tags based on search and exclude already selected
+  // Filter tags based on search, exclude already selected, and sort alphabetically
   const filteredTags = useMemo(() => {
     const available = allTags.filter(t => !selectedTags.includes(t));
-    if (!search) return available;
+    const sorted = available.sort((a, b) => a.localeCompare(b));
+    if (!search) return sorted;
     const lower = search.toLowerCase();
-    return available.filter(t => t.toLowerCase().includes(lower));
+    return sorted.filter(t => t.toLowerCase().includes(lower));
   }, [allTags, selectedTags, search]);
 
   // Check if we should show the "Create" option
@@ -101,8 +102,8 @@ export function TagInput({
   return (
     <div ref={containerRef} className="relative inline-block">
       <div className="flex items-center gap-2 flex-wrap">
-        {/* Selected tags as badges (when showSelectedAsBadges is true) */}
-        {showSelectedAsBadges && selectedTags.map(tag => (
+        {/* Selected tags as badges (when showSelectedAsBadges is true), sorted alphabetically */}
+        {showSelectedAsBadges && [...selectedTags].sort().map(tag => (
           <Badge
             key={tag}
             variant="default"

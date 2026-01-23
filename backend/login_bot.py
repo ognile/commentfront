@@ -1281,22 +1281,27 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
                 # Use extracted name if different, otherwise keep current
                 final_name = extracted_name if extracted_name != profile_name else profile_name
 
-                # Create new/updated session
+                # Create new/updated session, preserving tags and other metadata
                 new_session = FacebookSession(final_name)
                 new_session.data = {
                     "profile_name": final_name,
+                    "display_name": extracted_name,  # Use extracted name as display name
                     "extracted_at": datetime.now().isoformat(),
                     "cookies": session.get_cookies(),
                     "user_agent": session.get_user_agent(),
                     "viewport": session.get_viewport(),
                     "proxy": session.get_proxy(),
                     "device": device_fingerprint,  # Preserve device fingerprint for consistency
+                    "tags": session.data.get("tags", []),  # Preserve existing tags
                 }
 
-                # Add profile picture if we got one
+                # Add profile picture - use new one if extracted, otherwise keep existing
                 if profile_picture:
                     new_session.data["profile_picture"] = profile_picture
-                    logger.info("Added profile picture to session")
+                    logger.info("Added new profile picture to session")
+                elif session.data.get("profile_picture"):
+                    new_session.data["profile_picture"] = session.data["profile_picture"]
+                    logger.info("Preserved existing profile picture")
 
                 new_session.save()
 

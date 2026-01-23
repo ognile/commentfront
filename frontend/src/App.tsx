@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag, User, ChevronRight, RotateCw, BarChart3, Star, Check } from "lucide-react"
+import { Loader2, CheckCircle, XCircle, RefreshCw, Key, Copy, Trash2, Wifi, WifiOff, Eye, Upload, Globe, Plus, Play, AlertCircle, X, Mouse, LogOut, Shield, Tag, User, ChevronRight, RotateCw, BarChart3, Star, Check, Search } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Toaster, toast } from 'sonner'
@@ -252,6 +252,11 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [sessionFilterTags, setSessionFilterTags] = useState<string[]>([]);
+  const [sessionSearchQuery, setSessionSearchQuery] = useState('');
+  const [sessionStatusFilters, setSessionStatusFilters] = useState<{
+    valid?: boolean;
+    hasProxy?: boolean;
+  }>({});
   const [campaignFilterTags, setCampaignFilterTags] = useState<string[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   // isProcessing removed - now using queueState.processor_running instead
@@ -307,6 +312,8 @@ function App() {
 
   // Bulk session selection state
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
+  const [keepSelection, setKeepSelection] = useState(false);
   const [bulkRefreshing, setBulkRefreshing] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [bulkTagModalOpen, setBulkTagModalOpen] = useState(false);
@@ -890,13 +897,41 @@ function App() {
     }
   }, [sessionsLoading]);
 
-  // Filter sessions by selected tags (AND logic)
+  // Filter sessions by search query, status, and selected tags (AND logic)
   const filteredSessions = useMemo(() => {
-    if (sessionFilterTags.length === 0) return sessions;
-    return sessions.filter(s =>
-      sessionFilterTags.every(tag => (s.tags || []).includes(tag))
-    );
-  }, [sessions, sessionFilterTags]);
+    let result = sessions;
+
+    // Filter by search query (name, profile_name, or user_id)
+    if (sessionSearchQuery.trim()) {
+      const query = sessionSearchQuery.toLowerCase().trim();
+      result = result.filter(s =>
+        (s.display_name || '').toLowerCase().includes(query) ||
+        (s.profile_name || '').toLowerCase().includes(query) ||
+        (s.user_id || '').toLowerCase().includes(query)
+      );
+    }
+
+    // Filter by status (valid/invalid)
+    if (sessionStatusFilters.valid !== undefined) {
+      result = result.filter(s => s.valid === sessionStatusFilters.valid);
+    }
+
+    // Filter by proxy status
+    if (sessionStatusFilters.hasProxy !== undefined) {
+      result = result.filter(s =>
+        sessionStatusFilters.hasProxy ? !!s.proxy_masked : !s.proxy_masked
+      );
+    }
+
+    // Filter by tags (AND logic)
+    if (sessionFilterTags.length > 0) {
+      result = result.filter(s =>
+        sessionFilterTags.every(tag => (s.tags || []).includes(tag))
+      );
+    }
+
+    return result;
+  }, [sessions, sessionSearchQuery, sessionStatusFilters, sessionFilterTags]);
 
   // Add campaign to queue (API call)
   const addToQueue = async () => {
@@ -1144,17 +1179,30 @@ function App() {
     }
   };
 
-  // Bulk session operations
-  const toggleSessionSelection = (profileName: string) => {
+  // Bulk session operations with shift-click support
+  const toggleSessionSelection = (profileName: string, index: number, shiftKey: boolean = false) => {
     setSelectedSessions(prev => {
       const newSet = new Set(prev);
-      if (newSet.has(profileName)) {
-        newSet.delete(profileName);
+
+      // Shift-click: select range from last selected to current
+      if (shiftKey && lastSelectedIndex !== null) {
+        const start = Math.min(lastSelectedIndex, index);
+        const end = Math.max(lastSelectedIndex, index);
+        for (let i = start; i <= end; i++) {
+          newSet.add(filteredSessions[i].profile_name);
+        }
       } else {
-        newSet.add(profileName);
+        // Normal click: toggle single item
+        if (newSet.has(profileName)) {
+          newSet.delete(profileName);
+        } else {
+          newSet.add(profileName);
+        }
       }
+
       return newSet;
     });
+    setLastSelectedIndex(index);
   };
 
   const toggleAllSessions = () => {
@@ -1191,6 +1239,7 @@ function App() {
     }
 
     setBulkDeleting(false);
+    // Always clear selection for delete since items no longer exist
     setSelectedSessions(new Set());
     fetchSessions();
     fetchCredentials();
@@ -1227,7 +1276,7 @@ function App() {
     }
 
     setBulkRefreshing(false);
-    setSelectedSessions(new Set());
+    if (!keepSelection) setSelectedSessions(new Set());
     fetchSessions();
 
     if (failCount === 0) {
@@ -1273,6 +1322,7 @@ function App() {
     fetchSessions();
     fetchTags();
     setBulkTagModalOpen(false);
+    if (!keepSelection) setSelectedSessions(new Set());
 
     if (failCount === 0) {
       toast.success(`Added tag "${tag}" to ${successCount} sessions`);
@@ -2416,14 +2466,24 @@ function App() {
                       Delete
                     </Button>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setSelectedSessions(new Set())}
-                    className="h-7 text-xs ml-auto"
-                  >
-                    Clear selection
-                  </Button>
+                  <div className="flex items-center gap-2 ml-auto">
+                    <label className="flex items-center gap-1.5 text-xs text-[#666666] cursor-pointer">
+                      <Checkbox
+                        checked={keepSelection}
+                        onCheckedChange={(checked) => setKeepSelection(checked === true)}
+                        className="h-3.5 w-3.5 data-[state=checked]:bg-[#333333]"
+                      />
+                      Keep selection
+                    </label>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSelectedSessions(new Set())}
+                      className="h-7 text-xs"
+                    >
+                      Clear
+                    </Button>
+                  </div>
                 </div>
               )}
 
@@ -2449,24 +2509,112 @@ function App() {
                 </div>
               )}
 
-              {/* Tag Filter Section */}
+              {/* Filter Bar - Search, Tags, Status */}
               {!bulkTagModalOpen && (
-                <div className="px-4 py-3 bg-[rgba(51,51,51,0.02)] border-b border-[rgba(0,0,0,0.1)] flex items-center gap-2 flex-wrap">
-                  <Tag className="w-4 h-4 text-[#666666]" />
-                  <span className="text-sm text-[#666666]">Filter:</span>
-                  <TagInput
-                    allTags={allTags}
-                    selectedTags={sessionFilterTags}
-                    onTagAdd={(tag) => setSessionFilterTags(prev => [...prev, tag])}
-                    onTagRemove={(tag) => setSessionFilterTags(prev => prev.filter(t => t !== tag))}
-                    placeholder="Search tags..."
-                    showSelectedAsBadges={true}
-                    allowCreate={false}
-                  />
-                  {sessionFilterTags.length > 0 && (
-                    <Button variant="ghost" size="sm" onClick={() => setSessionFilterTags([])}>
-                      Clear
-                    </Button>
+                <div className="px-4 py-3 bg-[rgba(51,51,51,0.02)] border-b border-[rgba(0,0,0,0.1)] flex items-center gap-3 flex-wrap">
+                  {/* Search Input */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#999999]" />
+                    <input
+                      type="text"
+                      value={sessionSearchQuery}
+                      onChange={(e) => setSessionSearchQuery(e.target.value)}
+                      placeholder="Search names..."
+                      className="h-9 pl-9 pr-3 w-48 rounded-full border border-[rgba(0,0,0,0.1)] bg-white text-sm text-[#111111] placeholder:text-[#999999] focus:outline-none focus:border-[#333333] transition-colors"
+                    />
+                  </div>
+
+                  <div className="w-px h-6 bg-[rgba(0,0,0,0.1)]" />
+
+                  {/* Tag Filter */}
+                  <div className="flex items-center gap-2">
+                    <Tag className="w-4 h-4 text-[#666666]" />
+                    <TagInput
+                      allTags={allTags}
+                      selectedTags={sessionFilterTags}
+                      onTagAdd={(tag) => setSessionFilterTags(prev => [...prev, tag])}
+                      onTagRemove={(tag) => setSessionFilterTags(prev => prev.filter(t => t !== tag))}
+                      placeholder="Filter tags..."
+                      showSelectedAsBadges={true}
+                      allowCreate={false}
+                    />
+                  </div>
+
+                  <div className="w-px h-6 bg-[rgba(0,0,0,0.1)]" />
+
+                  {/* Status Quick Filters */}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setSessionStatusFilters(prev => ({
+                        ...prev,
+                        valid: prev.valid === true ? undefined : true
+                      }))}
+                      className={`h-7 px-2.5 text-xs rounded-full border transition-colors ${
+                        sessionStatusFilters.valid === true
+                          ? 'bg-green-100 border-green-300 text-green-700'
+                          : 'bg-white border-[rgba(0,0,0,0.1)] text-[#666666] hover:border-[#999999]'
+                      }`}
+                    >
+                      Valid
+                    </button>
+                    <button
+                      onClick={() => setSessionStatusFilters(prev => ({
+                        ...prev,
+                        valid: prev.valid === false ? undefined : false
+                      }))}
+                      className={`h-7 px-2.5 text-xs rounded-full border transition-colors ${
+                        sessionStatusFilters.valid === false
+                          ? 'bg-red-100 border-red-300 text-red-700'
+                          : 'bg-white border-[rgba(0,0,0,0.1)] text-[#666666] hover:border-[#999999]'
+                      }`}
+                    >
+                      Invalid
+                    </button>
+                    <button
+                      onClick={() => setSessionStatusFilters(prev => ({
+                        ...prev,
+                        hasProxy: prev.hasProxy === true ? undefined : true
+                      }))}
+                      className={`h-7 px-2.5 text-xs rounded-full border transition-colors ${
+                        sessionStatusFilters.hasProxy === true
+                          ? 'bg-blue-100 border-blue-300 text-blue-700'
+                          : 'bg-white border-[rgba(0,0,0,0.1)] text-[#666666] hover:border-[#999999]'
+                      }`}
+                    >
+                      Proxy
+                    </button>
+                    <button
+                      onClick={() => setSessionStatusFilters(prev => ({
+                        ...prev,
+                        hasProxy: prev.hasProxy === false ? undefined : false
+                      }))}
+                      className={`h-7 px-2.5 text-xs rounded-full border transition-colors ${
+                        sessionStatusFilters.hasProxy === false
+                          ? 'bg-orange-100 border-orange-300 text-orange-700'
+                          : 'bg-white border-[rgba(0,0,0,0.1)] text-[#666666] hover:border-[#999999]'
+                      }`}
+                    >
+                      No Proxy
+                    </button>
+                  </div>
+
+                  {/* Clear All Filters */}
+                  {(sessionSearchQuery || sessionFilterTags.length > 0 || Object.keys(sessionStatusFilters).some(k => sessionStatusFilters[k as keyof typeof sessionStatusFilters] !== undefined)) && (
+                    <>
+                      <div className="w-px h-6 bg-[rgba(0,0,0,0.1)]" />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setSessionSearchQuery('');
+                          setSessionFilterTags([]);
+                          setSessionStatusFilters({});
+                        }}
+                        className="h-7 text-xs"
+                      >
+                        Clear All
+                      </Button>
+                    </>
                   )}
                 </div>
               )}
@@ -2483,21 +2631,24 @@ function App() {
                   </div>
                 ) : filteredSessions.length === 0 ? (
                   <div className="p-8 text-center text-[#999999]">
-                    No sessions match the selected tags.
+                    No sessions match the current filters.
                   </div>
                 ) : (
                   <div className="divide-y divide-[rgba(0,0,0,0.1)]">
-                    {filteredSessions.map((session) => (
+                    {filteredSessions.map((session, index) => (
                       <div
                         key={session.file}
                         className={`px-4 py-3 flex items-center gap-4 hover:bg-white transition-colors ${
                           selectedSessions.has(session.profile_name) ? 'bg-blue-50' : ''
                         }`}
                       >
-                        {/* Checkbox */}
+                        {/* Checkbox with shift-click support */}
                         <Checkbox
                           checked={selectedSessions.has(session.profile_name)}
-                          onCheckedChange={() => toggleSessionSelection(session.profile_name)}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            toggleSessionSelection(session.profile_name, index, e.shiftKey);
+                          }}
                           className="data-[state=checked]:bg-[#333333] flex-shrink-0"
                         />
 
@@ -2532,9 +2683,9 @@ function App() {
                             </div>
                           </div>
 
-                          {/* Tags - inline */}
+                          {/* Tags - inline (sorted alphabetically) */}
                           <div className="flex items-center gap-1 flex-wrap flex-1">
-                            {(session.tags || []).map(tag => (
+                            {[...(session.tags || [])].sort().map(tag => (
                               <Badge
                                 key={tag}
                                 variant="secondary"
