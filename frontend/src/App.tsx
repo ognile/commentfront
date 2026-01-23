@@ -1614,6 +1614,13 @@ function App() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
+  // Sessions tab auto-refresh when switching to it
+  useEffect(() => {
+    if (activeTab === 'sessions') {
+      fetchSessions();
+    }
+  }, [activeTab]);
+
   // ============================================================================
   // Remote Control Functions
   // ============================================================================

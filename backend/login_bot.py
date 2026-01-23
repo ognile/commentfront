@@ -1300,12 +1300,15 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
 
                 new_session.save()
 
-                # Delete old session file if name changed
-                if extracted_name != profile_name and os.path.exists(session.session_file):
+                # Delete old session file ONLY if the sanitized filename actually changed
+                # Bug fix: "Ciara Durham" and "ciara_durham" both sanitize to "ciara_durham.json"
+                # so we must compare sanitized names, not display names
+                old_filename = session.session_file.name  # e.g., "ciara_durham.json"
+                new_filename = new_session.session_file.name  # e.g., "ciara_durham.json"
+
+                if old_filename != new_filename and session.session_file.exists():
                     os.remove(session.session_file)
                     logger.info(f"Removed old session file: {session.session_file}")
-
-                if extracted_name != profile_name:
                     logger.info(f"Renamed session from {profile_name} to {extracted_name}")
 
             result["success"] = True

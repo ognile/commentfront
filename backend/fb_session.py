@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import random
+import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -89,17 +90,36 @@ class FacebookSession:
         return self.data
 
     def save(self) -> bool:
-        """Save session data to file."""
+        """Save session data to file atomically with backup."""
         if not self.data:
             logger.error("No session data to save")
             return False
 
+        backup_file = self.session_file.with_suffix('.json.bak')
+        temp_file = self.session_file.with_suffix('.json.tmp')
+
         try:
-            self.session_file.write_text(json.dumps(self.data, indent=2))
+            # 1. Backup existing file if it exists
+            if self.session_file.exists():
+                shutil.copy2(self.session_file, backup_file)
+
+            # 2. Write to temp file first
+            temp_file.write_text(json.dumps(self.data, indent=2))
+
+            # 3. Atomic rename (atomic on unix filesystems)
+            temp_file.rename(self.session_file)
+
             logger.info(f"Session saved to {self.session_file}")
             return True
         except Exception as e:
             logger.error(f"Failed to save session: {e}")
+            # Try to restore from backup if save failed
+            if backup_file.exists() and not self.session_file.exists():
+                try:
+                    shutil.copy2(backup_file, self.session_file)
+                    logger.info(f"Restored session from backup after failed save")
+                except Exception:
+                    pass
             return False
 
     def load(self) -> Optional[Dict[str, Any]]:
