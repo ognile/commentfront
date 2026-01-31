@@ -1,7 +1,41 @@
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-IMPORTANT: 
-- ALWAYS THINK FROM HIGH LEVEL ARCHITECTURAL PERSPECTIVE.
-- ALWAYS LOOK FOR OPPORTUNITY TO UTILIZE SUBAGENTS FOR A MORE COMPREHENSIVE AND FAST INFO GATHERING AND EXECUTION.
+
+## CRITICAL: Principles
+1. always reply in lowercase, be direct, unapologetic. first principles thinking.
+2. test EVERY FUNCTIONALITY locally until verified passing all success criteria, before pushing to GitHub. NEVER SKIP.
+3. Always build concise, efficient solutions. 100 lines of clean code is better than 1000 lines of over-abstracted code. Be resourceful — reuse existing functions. But make sure you always have proper logging and error handling for easy debugging.
+4. YOU execute everything end-to-end. YOU test vigorously. YOU verify with real API calls, real data, real logs.
+5. every change, addition & decision MUST be based on verified data from the codebase, API docs, and tested behavior. when working with external APIs, always fetch API docs and verify behavior.
+6. when debugging, start from source of data and trace forward with actual values. don't guess backwards from the error.
+7. always ask "what's different between when this works and when it doesn't?" before diving into code.
+8. test assumptions with real data before changing code.
+9. always have a hyper-specific TODO list active. each item: action + expected output + verification method.
+10. if a fix requires touching multiple files/layers, re-check if you understood the root cause correctly. usually the real fix is surgical.
+11. check for competing processes FIRST before debugging "not responding" issues.
+12. verify deployment is complete before running production tests. never assume deployment is done based on timeouts.
+13. this codebase will outlive you. every shortcut becomes someone else's burden. every hack compounds. leave the codebase better than you found it.
+14. always take advantage of subagents to delegate tasks and orchestrate them. YOU ARE THE STRATEGIST AND ORCHESTRATOR. make sure every subagent has enough context and specific success criteria.
+15. prioritize commands and MCPs, CLIs, curl, bash etc to test quickly. use Claude Chrome extension when everything works with commands to verify frontend.
+16. when asking user a question or giving options, ALWAYS use AskUserQuestion tool.
+
+---
+
+## CRITICAL: Plan Mode
+
+- explore current state of relevant files, THEN fetch API docs for any external service being used.
+- never write plan without a deep interview. only start writing plan when user explicitly agrees via AskUserQuestion.
+- make the plan extremely concise. sacrifice grammar for concision.
+- at the end of each plan, list unresolved questions if any.
+- when editing a plan, verify changes were not already implemented. plan should only contain NOT-YET-IMPLEMENTED items.
+- always use AskUserQuestion for in-depth interview to clarify intent and expectations. if unsure, interview user.
+- deliver findings in table format: current state, root cause, fix, final state.
+- ALWAYS include SPECIFIC 'success criteria' and LOCAL testing before production deployment. EVERY plan MUST end with exact verification steps that prove the change works on local dev server.
+- ALWAYS require complete end-to-end execution (changes + local testing + production verification). agent must not stop until e2e is complete.
+- always require having local testing and production verification in TODO list. 'push to production' is blocked until ALL local tests pass.
+- after coding, create a verification task for EACH plan item and execute them.
+- if any local test fails → fix → rerun local test.
+- after ALL local verification criteria PASS, push to production and verify deployment.
+- after e2e execution, require a [PASS/FAIL] criterion list with evidence (API response, log output, or screenshot).
+
 ## Project Overview
 
 CommentBot is a Facebook comment automation system with a React frontend and FastAPI backend. It uses Playwright for browser automation and Google Gemini Vision for visual element detection.
@@ -35,18 +69,6 @@ playwright install chromium  # Install browser (first time setup)
 - **FastAPI** with async/await throughout
 - **Browser**: Playwright with stealth mode, mobile viewport (393x873)
 - **Vision**: Gemini 3 Flash for element detection with CSS selector fallback
-
-Key files:
-- `main.py` - API endpoints, WebSocket broadcast
-- `comment_bot.py` - Core automation logic (navigation, clicking, typing, verification)
-- `adaptive_agent.py` - AI-guided multi-step automation (Gemini Vision + DOM)
-- `gemini_image_gen.py` - AI profile photo generation (Gemini 3 Pro Image)
-- `workflows.py` - High-level workflow orchestration
-- `fb_session.py` - Session persistence, cookie extraction/validation
-- `credentials.py` - Credential CRUD, TOTP generation (pyotp)
-- `gemini_vision.py` - Vision prompts, element detection
-- `fb_selectors.py` - Mobile Facebook CSS selectors
-- `url_utils.py` - Facebook URL parsing, redirect resolution
 
 ### Automation Flow
 1. Load session from JSON file (cookies, proxy, user_agent)
@@ -158,69 +180,3 @@ All data is stored as JSON files on Railway Volume (`/data`):
 - `users.json` - User accounts
 - `credentials.json` - Facebook credentials
 - `proxies.json` - Proxy list
-
-## Critical Decision-Making Principles
-
-### 1. NEVER GUESS - ALWAYS VERIFY WITH DATA
-
-**Before making ANY code change, you MUST have concrete evidence:**
-- Don't guess what selectors exist → Use `dump_interactive_elements()` to see what's actually on the page
-- Don't assume screenshots show what you think → Actually READ the screenshots
-- Don't assume code is deployed → Check Railway logs to see what's ACTUALLY running
-- Don't assume an element is/isn't visible → Check the audit trail output
-
-**The Pattern:**
-1. Gather data first (logs, screenshots, selector audits)
-2. Analyze the data
-3. Form concrete hypothesis based on evidence
-4. Only THEN make changes
-
-### 2. PROACTIVE AUDIT TRAIL
-
-When debugging automation failures, you need visibility into:
-- What elements were available on the page (use `dump_interactive_elements()`)
-- Which selectors matched / didn't match
-- What was clicked and when
-- What Gemini decided and why
-
-**Key function:** `dump_interactive_elements(page, context)` in `comment_bot.py` dumps all interactive elements with their aria-labels, roles, text content, and positions. Call this:
-- After page load confirmed
-- After major state changes (comments opened, etc.)
-- Before attempting clicks
-
-### 3. CSS SELECTORS FOR CLICKING, GEMINI FOR VERIFICATION
-
-- **Clicking:** Use deterministic CSS selectors. Gemini coordinates can hallucinate.
-- **Verification:** Use Gemini to verify state (post visible, comments opened, text typed)
-- **Self-healing:** If CSS selectors fail, ask Gemini for guidance on WHAT to try, not WHERE to click
-
-### 4. DEBUGGING PRODUCTION FAILURES
-
-When a task fails in production:
-1. **Check Railway logs FIRST** - See what actually happened, not what you assume
-2. **Verify deployment** - Is Railway running the latest code? Check commit hash
-3. **Read the audit trail** - What elements were found? What selectors matched?
-4. **Look at screenshots** - What does the page actually show?
-
-**Railway MCP commands:**
-- `mcp__railway__get-logs` - Get deployment logs
-- `mcp__railway__list-deployments` - Check deployment status and commit hash
-
-### 5. SELECTOR DISCOVERY PROCESS
-
-When a selector doesn't work:
-1. Run `dump_interactive_elements()` to see what's actually on the page
-2. Look at the aria-label, role, and text of the target element
-3. Create selector based on ACTUAL attributes, not guesses
-4. Add to `fb_selectors.py` with comment explaining where it came from
-
-**Example:** Send button had `aria-label="Post a comment"` not "Post" or "Send"
-
-### 6. IMPORTANT AFTER EVERY PLAN COMPLETION:
-
-Local changes mean NOTHING until deployed and verified:
-1. Test locally with full logging
-2. `git add` + `git commit` + `git push`
-3. Verify Railway deployment succeeds (CHECK DEPLOYMENT LOGS AND BUILD LOGS)
-4. THEN test from frontend
-5. AFTER test succeeds, notify user.

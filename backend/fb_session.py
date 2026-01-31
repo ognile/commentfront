@@ -394,6 +394,34 @@ def update_session_tags(profile_name: str, tags: List[str]) -> bool:
     return session.save()
 
 
+def append_session_tag(profile_name: str, tag: str) -> bool:
+    """Append a tag to a session if not already present (non-destructive)."""
+    session = FacebookSession(profile_name)
+    if not session.load():
+        return False
+    tags = session.data.get("tags", [])
+    normalized = tag.strip().lower()
+    if normalized and normalized not in tags:
+        tags.append(normalized)
+        session.data["tags"] = tags
+        return session.save()
+    return True
+
+
+def remove_session_tag(profile_name: str, tag: str) -> bool:
+    """Remove a tag from a session if present."""
+    session = FacebookSession(profile_name)
+    if not session.load():
+        return False
+    tags = session.data.get("tags", [])
+    normalized = tag.strip().lower()
+    if normalized in tags:
+        tags.remove(normalized)
+        session.data["tags"] = tags
+        return session.save()
+    return True
+
+
 def get_all_tags() -> List[str]:
     """
     Get all unique tags across all sessions.

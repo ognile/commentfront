@@ -3925,6 +3925,72 @@ async def adaptive_agent_endpoint(
 
 
 # ===========================================================================
+# Appeal Endpoints
+# Batch and single restriction appeal management
+# ===========================================================================
+
+class BatchAppealRequest(BaseModel):
+    max_attempts: int = 3
+    retry_failed: bool = True
+
+class AppealSingleRequest(BaseModel):
+    profile_name: str
+
+
+@app.post("/appeals/batch")
+async def batch_appeal_endpoint(
+    request: BatchAppealRequest = BatchAppealRequest(),
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """Appeal ALL restricted profiles. Runs concurrently with retries."""
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    from appeal_manager import batch_appeal_all
+    return await batch_appeal_all(
+        max_attempts=request.max_attempts,
+        retry_failed=request.retry_failed
+    )
+
+
+@app.post("/appeals/single")
+async def appeal_single_endpoint(
+    request: AppealSingleRequest,
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """Appeal a single restricted profile."""
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    from appeal_manager import appeal_single_profile
+    return await appeal_single_profile(request.profile_name)
+
+
+@app.get("/appeals/status")
+async def appeal_status_endpoint(
+    current_user: dict = Depends(get_current_user)
+) -> Dict:
+    """Get appeal status for all restricted/appealed profiles (for frontend)."""
+    pm = get_profile_manager()
+    profiles = []
+    for name, state in pm.get_all_profiles().items():
+        appeal_status = state.get("appeal_status", "none")
+        if state.get("status") == "restricted" or appeal_status not in ("none", None):
+            profiles.append({
+                "profile_name": name,
+                "status": state.get("status"),
+                "appeal_status": appeal_status,
+                "appeal_attempts": state.get("appeal_attempts", 0),
+                "appeal_last_attempt_at": state.get("appeal_last_attempt_at"),
+                "appeal_last_result": state.get("appeal_last_result"),
+                "appeal_last_error": state.get("appeal_last_error"),
+                "restriction_reason": state.get("restriction_reason"),
+                "restriction_expires_at": state.get("restriction_expires_at"),
+            })
+    return {"profiles": profiles, "total": len(profiles)}
+
+
+# ===========================================================================
 # Workflow Endpoints
 # High-level workflows combining multiple capabilities
 # ===========================================================================

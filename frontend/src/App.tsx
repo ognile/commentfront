@@ -179,6 +179,23 @@ interface ProfileAnalytics {
     comment: string | null;
     success: boolean;
   }>;
+  appeal_status?: string;
+  appeal_attempts?: number;
+  appeal_last_attempt_at?: string | null;
+  appeal_last_result?: string | null;
+  appeal_last_error?: string | null;
+}
+
+interface AppealStatusEntry {
+  profile_name: string;
+  status: string;
+  appeal_status: string;
+  appeal_attempts: number;
+  appeal_last_attempt_at: string | null;
+  appeal_last_result: string | null;
+  appeal_last_error: string | null;
+  restriction_reason: string | null;
+  restriction_expires_at: string | null;
 }
 
 interface AnalyticsSummary {
@@ -250,12 +267,14 @@ function App() {
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [appealStatuses, setAppealStatuses] = useState<Map<string, AppealStatusEntry>>(new Map());
   const [allTags, setAllTags] = useState<string[]>([]);
   const [sessionFilterTags, setSessionFilterTags] = useState<string[]>([]);
   const [sessionSearchQuery, setSessionSearchQuery] = useState('');
   const [sessionStatusFilters, setSessionStatusFilters] = useState<{
     valid?: boolean;
     hasProxy?: boolean;
+    restricted?: boolean;
   }>({});
   const [campaignFilterTags, setCampaignFilterTags] = useState<string[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
@@ -727,6 +746,21 @@ function App() {
     }
   };
 
+  const fetchAppealStatuses = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/appeals/status`, { headers: getAuthHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      const map = new Map<string, AppealStatusEntry>();
+      for (const p of data.profiles || []) {
+        map.set(p.profile_name, p);
+      }
+      setAppealStatuses(map);
+    } catch {
+      // Silently fail - appeal status is supplementary
+    }
+  };
+
   const fetchTags = async () => {
     try {
       const res = await fetch(`${API_BASE}/tags`, { headers: getAuthHeaders() });
@@ -884,6 +918,7 @@ function App() {
   useEffect(() => {
     fetchSessions();
     fetchTags();
+    fetchAppealStatuses();
     fetchQueue();
   }, []);
 
@@ -923,6 +958,14 @@ function App() {
       );
     }
 
+    // Filter by restricted status
+    if (sessionStatusFilters.restricted) {
+      result = result.filter(s => {
+        const appeal = appealStatuses.get(s.profile_name);
+        return appeal && (appeal.status === 'restricted' || appeal.appeal_status !== 'none');
+      });
+    }
+
     // Filter by tags (AND logic)
     if (sessionFilterTags.length > 0) {
       result = result.filter(s =>
@@ -931,7 +974,7 @@ function App() {
     }
 
     return result;
-  }, [sessions, sessionSearchQuery, sessionStatusFilters, sessionFilterTags]);
+  }, [sessions, sessionSearchQuery, sessionStatusFilters, sessionFilterTags, appealStatuses]);
 
   // Add campaign to queue (API call)
   const addToQueue = async () => {
@@ -2596,6 +2639,19 @@ function App() {
                     >
                       No Proxy
                     </button>
+                    <button
+                      onClick={() => setSessionStatusFilters(prev => ({
+                        ...prev,
+                        restricted: prev.restricted ? undefined : true
+                      }))}
+                      className={`h-7 px-2.5 text-xs rounded-full border transition-colors ${
+                        (sessionStatusFilters as Record<string, unknown>).restricted
+                          ? 'bg-amber-100 border-amber-300 text-amber-700'
+                          : 'bg-white border-[rgba(0,0,0,0.1)] text-[#666666] hover:border-[#999999]'
+                      }`}
+                    >
+                      Restricted
+                    </button>
                   </div>
 
                   {/* Clear All Filters */}
@@ -2708,6 +2764,20 @@ function App() {
                               allowCreate={true}
                               showSelectedAsBadges={false}
                             />
+                            {/* Appeal Status Badges */}
+                            {(() => {
+                              const appeal = appealStatuses.get(session.profile_name);
+                              if (!appeal) return null;
+                              if (appeal.appeal_status === 'in_review')
+                                return <Badge variant="outline" className="text-[10px] py-0 h-5 bg-yellow-50 text-yellow-700 border-yellow-300">Appeal In Review</Badge>;
+                              if (appeal.appeal_status === 'failed')
+                                return <Badge variant="outline" className="text-[10px] py-0 h-5 bg-red-50 text-red-700 border-red-300">Appeal Failed ({appeal.appeal_attempts}/3)</Badge>;
+                              if (appeal.appeal_status === 'exhausted')
+                                return <Badge variant="outline" className="text-[10px] py-0 h-5 bg-gray-50 text-gray-600 border-gray-300">Appeals Exhausted</Badge>;
+                              if (appeal.status === 'restricted' && appeal.appeal_status === 'none')
+                                return <Badge variant="outline" className="text-[10px] py-0 h-5 bg-amber-50 text-amber-700 border-amber-300">Restricted</Badge>;
+                              return null;
+                            })()}
                           </div>
                         </div>
 

@@ -401,7 +401,7 @@ class ProfileManager:
         self._save_state()
 
     def unblock_profile(self, profile_name: str):
-        """Manually unblock a restricted profile. Resets restriction_count for fresh start."""
+        """Manually unblock a restricted profile. Resets restriction_count and appeal state."""
         normalized = self._normalize_name(profile_name)
         if normalized not in self.state["profiles"]:
             return
@@ -411,8 +411,12 @@ class ProfileManager:
         profile["restriction_expires_at"] = None
         profile["restriction_reason"] = None
         profile["restriction_count"] = 0  # Reset escalation on manual unblock
+        # Reset appeal state
+        profile["appeal_status"] = "none"
+        profile["appeal_attempts"] = 0
+        profile["appeal_last_error"] = None
 
-        logger.info(f"Unblocked profile: {normalized} (restriction_count reset to 0)")
+        logger.info(f"Unblocked profile: {normalized} (restriction_count + appeal state reset)")
         self._save_state()
 
     def extend_restriction(self, profile_name: str, additional_hours: int):
@@ -534,8 +538,85 @@ class ProfileManager:
             "success_rate": (total_success / total_comments * 100) if total_comments > 0 else 0,
             "daily_stats": daily_stats,
             "usage_history": profile.get("usage_history", [])[-10:],  # Last 10
-            "restriction_history": profile.get("restriction_history", [])
+            "restriction_history": profile.get("restriction_history", []),
+            # Appeal tracking
+            "appeal_status": profile.get("appeal_status", "none"),
+            "appeal_attempts": profile.get("appeal_attempts", 0),
+            "appeal_last_attempt_at": profile.get("appeal_last_attempt_at"),
+            "appeal_last_result": profile.get("appeal_last_result"),
+            "appeal_last_error": profile.get("appeal_last_error"),
         }
+
+
+    # === Appeal Management ===
+
+    def get_appealable_profiles(self, max_attempts: int = 3) -> List[str]:
+        """Get restricted profiles eligible for appeal."""
+        results = []
+        for name, state in self.state["profiles"].items():
+            if state.get("status") != "restricted":
+                continue
+            appeal_status = state.get("appeal_status", "none")
+            if appeal_status in ("in_review", "exhausted"):
+                continue
+            if state.get("appeal_attempts", 0) >= max_attempts:
+                continue
+            results.append(name)
+        return results
+
+    def update_appeal_state(
+        self,
+        profile_name: str,
+        result: str,
+        error: str = None,
+        steps_used: int = 0,
+        max_attempts: int = 3
+    ):
+        """Record an appeal attempt result for a profile."""
+        normalized = self._normalize_name(profile_name)
+        profile = self.state["profiles"].get(normalized)
+        if not profile:
+            return
+
+        now = datetime.utcnow()
+        attempts = profile.get("appeal_attempts", 0) + 1
+        profile["appeal_attempts"] = attempts
+        profile["appeal_last_attempt_at"] = now.isoformat() + "Z"
+        profile["appeal_last_result"] = result
+        profile["appeal_last_error"] = error
+
+        if result == "task_completed":
+            profile["appeal_status"] = "in_review"
+        elif attempts >= max_attempts:
+            profile["appeal_status"] = "exhausted"
+        else:
+            profile["appeal_status"] = "failed"
+
+        if "appeal_history" not in profile:
+            profile["appeal_history"] = []
+        profile["appeal_history"].append({
+            "timestamp": now.isoformat() + "Z",
+            "result": result,
+            "error": error,
+            "steps_used": steps_used,
+            "attempt": attempts
+        })
+        profile["appeal_history"] = profile["appeal_history"][-10:]
+
+        logger.info(f"Appeal update {normalized}: status={profile['appeal_status']}, attempts={attempts}, result={result}")
+        self._save_state()
+
+    def classify_restriction(self, profile_name: str) -> str:
+        """Classify restriction type: 'checkpoint', 'expired', or 'comment_restriction'."""
+        normalized = self._normalize_name(profile_name)
+        profile = self.state["profiles"].get(normalized, {})
+        reason = (profile.get("restriction_reason") or "").lower()
+
+        if "human" in reason or "confirm" in reason:
+            return "checkpoint"
+        if "ended on" in reason:
+            return "expired"
+        return "comment_restriction"
 
 
 # Singleton instance
