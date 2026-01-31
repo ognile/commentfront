@@ -3971,6 +3971,7 @@ async def appeal_status_endpoint(
     current_user: dict = Depends(get_current_user)
 ) -> Dict:
     """Get appeal status for all restricted/appealed profiles (for frontend)."""
+    from profile_manager import get_profile_manager
     pm = get_profile_manager()
     profiles = []
     for name, state in pm.get_all_profiles().items():
