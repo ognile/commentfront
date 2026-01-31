@@ -1044,8 +1044,7 @@ async def health_deep():
     try:
         from profile_manager import ProfileManager
         pm = ProfileManager()
-        state = pm._load_state()
-        profiles = state.get("profiles", {})
+        profiles = pm.state.get("profiles", {})
         active = sum(1 for p in profiles.values() if p.get("status") == "active")
         restricted = sum(1 for p in profiles.values() if p.get("status") == "restricted")
         checks["profiles"] = {
