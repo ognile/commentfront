@@ -18,11 +18,9 @@ from google.genai import types
 from fb_session import FacebookSession, apply_session_to_context
 from gemini_vision import get_vision_client, set_observation_context
 from comment_bot import save_debug_screenshot, dump_interactive_elements, _build_playwright_proxy
+from config import MOBILE_VIEWPORT
 
 logger = logging.getLogger(__name__)
-
-# Mobile viewport dimensions
-MOBILE_VIEWPORT = {"width": 393, "height": 873}
 
 # Concurrency control - limit simultaneous browser sessions
 # Prevents server overload when running many profiles in parallel

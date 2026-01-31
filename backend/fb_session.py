@@ -16,15 +16,7 @@ from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger("FBSession")
 
-# USA timezones only (mobile proxy is in USA)
-USA_TIMEZONES = [
-    "America/New_York",      # Eastern
-    "America/Chicago",       # Central
-    "America/Denver",        # Mountain
-    "America/Los_Angeles",   # Pacific
-    "America/Phoenix",       # Arizona (no DST)
-    "America/Anchorage",     # Alaska
-]
+from config import USA_TIMEZONES
 
 SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", str(Path(__file__).parent / "sessions")))
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)

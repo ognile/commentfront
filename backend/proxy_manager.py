@@ -25,33 +25,28 @@ class ProxyManager:
         self.load_proxies()
 
     def load_proxies(self):
-        """Load proxies from JSON file."""
-        if not os.path.exists(self.file_path):
+        """Load proxies from JSON file with automatic recovery from backup."""
+        from safe_io import safe_read_json
+        data = safe_read_json(self.file_path)
+        if data is None:
             self.logger.info(f"Proxy file not found at {self.file_path}, starting fresh")
             self.proxies = {}
             return
 
-        try:
-            with open(self.file_path, "r") as f:
-                data = json.load(f)
-                self.proxies = data.get("proxies", {})
-            self.logger.info(f"Loaded {len(self.proxies)} proxies.")
-        except Exception as e:
-            self.logger.error(f"Failed to parse proxies: {e}")
-            self.proxies = {}
+        self.proxies = data.get("proxies", {})
+        self.logger.info(f"Loaded {len(self.proxies)} proxies.")
 
     def save_proxies(self):
-        """Save proxies to JSON file."""
-        try:
-            data = {
-                "updated_at": datetime.utcnow().isoformat(),
-                "proxies": self.proxies
-            }
-            with open(self.file_path, "w") as f:
-                json.dump(data, f, indent=2)
+        """Save proxies to JSON file atomically."""
+        from safe_io import atomic_write_json
+        data = {
+            "updated_at": datetime.utcnow().isoformat(),
+            "proxies": self.proxies
+        }
+        if not atomic_write_json(self.file_path, data):
+            self.logger.error(f"Failed to save proxies atomically")
+        else:
             self.logger.info(f"Saved {len(self.proxies)} proxies.")
-        except Exception as e:
-            self.logger.error(f"Failed to save proxies: {e}")
 
     def add_proxy(
         self,
@@ -180,7 +175,8 @@ class ProxyManager:
                 masked = url.replace(f":{parsed.password}@", ":****@")
                 return masked
             return url
-        except:
+        except Exception as e:
+            self.logger.debug(f"Error masking URL: {e}")
             return url
 
     async def test_proxy(self, proxy_id: str) -> Dict:

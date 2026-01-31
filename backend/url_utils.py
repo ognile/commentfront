@@ -1,14 +1,15 @@
 import re
 import logging
-import requests
+import httpx
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 logger = logging.getLogger("URLUtils")
 
-def resolve_facebook_redirect(url: str, timeout: int = 10) -> str:
+async def resolve_facebook_redirect(url: str, timeout: int = 10) -> str:
     """
     Follow redirects and scrape numeric IDs from Facebook page content.
     Converts pfbid format to numeric post IDs when possible.
+    Uses async httpx to avoid blocking the event loop.
     """
     if not url:
         return url
@@ -25,12 +26,13 @@ def resolve_facebook_redirect(url: str, timeout: int = 10) -> str:
             'Accept-Language': 'en-US,en;q=0.9',
         }
 
-        # Ensure url has scheme for requests
+        # Ensure url has scheme
         fetch_url = url if '://' in url else f"https://{url}"
 
-        resp = requests.get(fetch_url, allow_redirects=True, timeout=timeout, headers=headers)
-        final_url = resp.url
-        content = resp.text
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+            resp = await client.get(fetch_url, headers=headers)
+            final_url = str(resp.url)
+            content = resp.text
 
         # Try to find Numeric Post ID from page content
         post_id = None
@@ -73,37 +75,37 @@ def resolve_facebook_redirect(url: str, timeout: int = 10) -> str:
         logger.warning(f"Failed to resolve URL: {e}")
         return url
 
-def clean_facebook_url(url: str) -> str:
+async def clean_facebook_url(url: str) -> str:
     """
     NATIVE ULTRA-SHORTENER for GeeLark (Max 100 chars).
-    
+
     TARGET FORMAT: fb.com/[PAGE_ID]/posts/[POST_ID]
     This is the shortest reliable format that includes context.
     """
     if not url:
         return url
-        
+
     try:
         # Standardize input
         if '://' not in url:
             url = 'https://' + url
-            
+
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
-        
+
         # Extract Component IDs
         fbid = None
         page_id = None
-        
+
         # Strategy 1: From Query Params (permalink.php?story_fbid=...&id=...)
         if 'story_fbid' in query:
             fbid = query['story_fbid'][0]
         elif 'fbid' in query:
             fbid = query['fbid'][0]
-            
+
         if 'id' in query:
             page_id = query['id'][0]
-            
+
         # Strategy 2: From Path (facebook.com/PAGE_ID/posts/POST_ID)
         if not fbid or not page_id:
             path_parts = parsed.path.strip('/').split('/')
@@ -119,7 +121,7 @@ def clean_facebook_url(url: str) -> str:
             # If fbid is a pfbid (base64), try to resolve to numeric ID first
             if fbid.startswith('pfbid'):
                 logger.info(f"Attempting to resolve pfbid to numeric ID...")
-                resolved = resolve_facebook_redirect(url)
+                resolved = await resolve_facebook_redirect(url)
                 # Check if resolution gave us numeric IDs
                 if resolved != url and 'pfbid' not in resolved:
                     logger.info(f"Successfully resolved to: {resolved}")
@@ -148,7 +150,7 @@ def clean_facebook_url(url: str) -> str:
                  clean_url = clean_url.replace('https://', '').replace('http://', '')
 
         return clean_url
-        
+
     except Exception as e:
         logger.error(f"Failed to clean URL: {e}")
         return url

@@ -18,26 +18,11 @@ from playwright_stealth import Stealth
 from fb_session import FacebookSession, apply_session_to_context
 from fb_selectors import LOGIN, TWO_FA, PAGE_STATE, SIGNUP_PROMPT
 from credentials import CredentialManager
+from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT, USA_TIMEZONES, DEBUG_DIR
 
 # Setup logging
 logger = logging.getLogger("LoginBot")
 
-# Mobile viewport (same as comment_bot)
-MOBILE_VIEWPORT = {"width": 393, "height": 873}
-DEFAULT_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-
-# USA timezones for device fingerprinting (matches fb_session.py)
-USA_TIMEZONES = [
-    "America/New_York",
-    "America/Chicago",
-    "America/Denver",
-    "America/Los_Angeles",
-    "America/Phoenix",
-    "America/Anchorage",
-]
-
-# Debug directory
-DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
 
@@ -67,8 +52,8 @@ async def log_failure_context(page: Page, operation: str, error: str, trace_id: 
     try:
         title = await page.title()
         logger.error(f"{prefix}  Page title: {title}")
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Could not get page title: {e}")
 
     # Dump visible elements for debugging
     await dump_interactive_elements(page, f"FAILURE CONTEXT: {operation}")
@@ -321,8 +306,8 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
             await text_locator.click()
             logger.info(f"Clicked '{description}' using text match")
             return True
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Text match fallback failed for '{description}': {e}")
 
     logger.warning(f"  → FAILED: No selector matched for '{description}'")
     await save_debug_screenshot(page, f"failed_click_{description.replace(' ', '_')}")
@@ -360,19 +345,9 @@ async def smart_focus(page: Page, selectors: List[str], description: str) -> boo
 
 
 def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
-    """Build Playwright proxy config from URL."""
-    from urllib.parse import urlparse, unquote
-
-    if not proxy_url:
-        return None
-
-    parsed = urlparse(proxy_url)
-    proxy: Dict[str, str] = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
-    if parsed.username:
-        proxy["username"] = unquote(parsed.username)
-    if parsed.password:
-        proxy["password"] = unquote(parsed.password)
-    return proxy
+    """Wrapper for backward compatibility — delegates to browser_factory."""
+    from browser_factory import build_playwright_proxy
+    return build_playwright_proxy(proxy_url)
 
 
 async def detect_page_state(page: Page, elements: List[dict]) -> str:
@@ -705,7 +680,8 @@ async def handle_2fa_selection(page: Page, elements: List[dict]) -> Dict[str, An
                             await cont_locator.click()
                             logger.info("Clicked Continue button after 2FA selection")
                             break
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Continue button '{cont_selector}' failed: {e}")
                         continue
 
                 result["success"] = True
@@ -737,12 +713,14 @@ async def handle_2fa_selection(page: Page, elements: List[dict]) -> Dict[str, An
                             await cont_locator.click()
                             logger.info("Clicked Continue button after 2FA selection")
                             break
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Continue button '{cont_selector}' failed: {e}")
                         continue
 
                 result["success"] = True
                 return result
-        except:
+        except Exception as e:
+            logger.debug(f"2FA CSS selector '{selector}' failed: {e}")
             continue
 
     # Search through elements for auth app option
@@ -822,7 +800,8 @@ async def handle_device_trust(page: Page) -> Dict[str, Any]:
                 logger.info(f"Clicked trust option: '{keyword}'")
                 result["success"] = True
                 return result
-        except:
+        except Exception as e:
+            logger.debug(f"Trust keyword '{keyword}' failed: {e}")
             continue
 
     # Try checkbox if present
@@ -835,7 +814,8 @@ async def handle_device_trust(page: Page) -> Dict[str, Any]:
                 logger.info("Checked trust device checkbox")
                 result["success"] = True
                 break
-        except:
+        except Exception as e:
+            logger.debug(f"Trust checkbox '{selector}' failed: {e}")
             continue
 
     # Click continue/submit if checkbox was checked or even if not found
@@ -899,7 +879,7 @@ async def verify_logged_in(page: Page, extract_picture: bool = False, user_id: O
                 content_loaded = True
                 logger.info(f"Content loaded - found: {selector}")
                 break
-            except:
+            except Exception:
                 continue
 
         if not content_loaded:
@@ -943,7 +923,8 @@ async def verify_logged_in(page: Page, extract_picture: bool = False, user_id: O
                         logger.info(f"Dismissed dialog via: {selector}")
                         await asyncio.sleep(1)
                         break
-                except:
+                except Exception as e:
+                    logger.debug(f"Dismiss selector '{selector}' failed: {e}")
                     continue
 
             # Re-fetch elements after dismissing dialog
@@ -983,7 +964,8 @@ async def verify_logged_in(page: Page, extract_picture: bool = False, user_id: O
                             logger.info(f"Clicked profile link via: {selector}")
                             await asyncio.sleep(3)
                             break
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Profile selector '{selector}' failed: {e}")
                         continue
 
             if go_to_profile_clicked:
@@ -1048,7 +1030,8 @@ async def verify_logged_in(page: Page, extract_picture: bool = False, user_id: O
                                     profile_name = heading_text
                                     logger.info(f"Extracted profile name from heading ({selector}): {profile_name}")
                                     break
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Heading selector '{selector}' failed: {e}")
                         continue
             except Exception as e:
                 logger.warning(f"Error extracting from headings: {e}")
@@ -1092,7 +1075,8 @@ async def verify_logged_in(page: Page, extract_picture: bool = False, user_id: O
                                     profile_name = name
                                     logger.info(f"Extracted profile name from profile picture: {profile_name}")
                                     break
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Profile pic selector '{selector}' failed: {e}")
                         continue
             except Exception as e:
                 logger.warning(f"Error extracting from profile picture: {e}")
@@ -1378,8 +1362,8 @@ async def login_facebook(
                     "trace_id": trace_id,
                     "details": details or {}
                 })
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Broadcast callback failed: {e}")
         logger.info(f"[{trace_id}] LOGIN PROGRESS: {step} - {status}")
 
     await broadcast("init", "starting")
@@ -1439,8 +1423,8 @@ async def login_facebook(
             try:
                 page_title = await page.title()
                 logger.info(f"[{trace_id}] Page title: {page_title}")
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"[{trace_id}] Could not get page title: {e}")
 
             # Dump elements for audit trail
             elements = await dump_interactive_elements(page, "LOGIN PAGE LOADED")

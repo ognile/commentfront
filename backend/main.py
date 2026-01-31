@@ -443,10 +443,9 @@ class QueueProcessor:
                         throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
                         self.logger.warning(f"Profile {profile_name} throttled: {throttle_reason}")
 
-                        # Mark profile as restricted for 24 hours
+                        # Mark profile as restricted (progressive escalation)
                         profile_manager.mark_profile_restricted(
                             profile_name=profile_name,
-                            hours=24,
                             reason=throttle_reason
                         )
 
@@ -542,7 +541,8 @@ def normalize_url(url: str) -> str:
         # Fallback: use path without query params
         parsed = urlparse(url)
         return f"{parsed.netloc}{parsed.path}".lower()
-    except:
+    except Exception as e:
+        logger.debug(f"Error normalizing URL: {e}")
         return url.lower().strip()
 
 
@@ -972,6 +972,112 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/health/deep")
+async def health_deep():
+    """
+    Deep health check — returns full system status in one call.
+    Checks: Gemini circuit breaker, sessions, disk, queue, profiles, proxy health.
+    """
+    import shutil
+
+    checks = {}
+    overall = "healthy"
+
+    # 1. Gemini circuit breaker status
+    try:
+        from gemini_vision import get_circuit_breaker
+        cb = get_circuit_breaker()
+        checks["gemini"] = cb.get_status()
+        if cb.state == "open":
+            overall = "degraded"
+    except Exception as e:
+        checks["gemini"] = {"error": str(e)}
+        overall = "degraded"
+
+    # 2. Session validity
+    try:
+        sessions = list_saved_sessions()
+        valid_count = sum(1 for s in sessions if s.get("has_valid_cookies"))
+        checks["sessions"] = {
+            "total": len(sessions),
+            "valid": valid_count,
+            "invalid": len(sessions) - valid_count
+        }
+        if valid_count == 0:
+            overall = "critical"
+    except Exception as e:
+        checks["sessions"] = {"error": str(e)}
+        overall = "degraded"
+
+    # 3. Disk usage
+    try:
+        data_dir = os.getenv("DATA_DIR", "/data")
+        if os.path.exists(data_dir):
+            usage = shutil.disk_usage(data_dir)
+            free_gb = round(usage.free / (1024**3), 2)
+            used_pct = round((usage.used / usage.total) * 100, 1)
+            checks["disk"] = {"free_gb": free_gb, "used_pct": used_pct}
+            if used_pct > 90:
+                overall = "degraded"
+        else:
+            checks["disk"] = {"free_gb": None, "used_pct": None, "note": "DATA_DIR not found"}
+    except Exception as e:
+        checks["disk"] = {"error": str(e)}
+
+    # 4. Queue status
+    try:
+        queue_mgr = CampaignQueueManager()
+        queue_mgr.load()
+        pending_count = queue_mgr.count_pending()
+        processor_running = queue_mgr.is_processor_running()
+        checks["queue"] = {
+            "pending": pending_count,
+            "processor_running": processor_running,
+            "total_campaigns": len(queue_mgr.campaigns)
+        }
+    except Exception as e:
+        checks["queue"] = {"error": str(e)}
+
+    # 5. Profile stats
+    try:
+        from profile_manager import ProfileManager
+        pm = ProfileManager()
+        state = pm._load_state()
+        profiles = state.get("profiles", {})
+        active = sum(1 for p in profiles.values() if p.get("status") == "active")
+        restricted = sum(1 for p in profiles.values() if p.get("status") == "restricted")
+        checks["profiles"] = {
+            "active": active,
+            "restricted": restricted,
+            "total": len(profiles)
+        }
+        if active == 0:
+            overall = "critical"
+    except Exception as e:
+        checks["profiles"] = {"error": str(e)}
+
+    # 6. Proxy health
+    try:
+        proxy_mgr = ProxyManager()
+        proxies = proxy_mgr.list_proxies()
+        recent_failures = sum(
+            1 for p in proxies
+            if p.get("health_status") == "failed"
+        )
+        checks["proxy"] = {
+            "total": len(proxies),
+            "recent_failures": recent_failures
+        }
+    except Exception as e:
+        checks["proxy"] = {"error": str(e)}
+
+    return {
+        "status": overall,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "checks": checks
+    }
 
 
 # =============================================================================
@@ -1762,7 +1868,6 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
                 logger.warning(f"[TEST] Profile {profile_name} throttled")
                 profile_manager.mark_profile_restricted(
                     profile_name=profile_name,
-                    hours=24,
                     reason=result.get("throttle_reason", "Test detected throttle")
                 )
 
@@ -2011,7 +2116,6 @@ async def retry_campaign_job(
             throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
             profile_manager.mark_profile_restricted(
                 profile_name=request.profile_name,
-                hours=24,
                 reason=throttle_reason
             )
 
@@ -2265,7 +2369,6 @@ async def bulk_retry_failed_jobs(
                 if post_result.get("throttled"):
                     profile_manager.mark_profile_restricted(
                         profile_name=profile_name,
-                        hours=24,
                         reason=post_result.get("throttle_reason", "Facebook restriction")
                     )
 
@@ -3318,13 +3421,13 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
             except json.JSONDecodeError as e:
                 try:
                     await websocket.send_json({"type": "error", "data": {"message": f"Invalid JSON: {e}"}})
-                except:
+                except Exception:
                     pass  # Connection already dead
             except Exception as e:
                 logger.error(f"Error handling WS message: {e}")
                 try:
                     await websocket.send_json({"type": "error", "data": {"message": str(e)}})
-                except:
+                except Exception:
                     pass  # Connection already dead
 
     except WebSocketDisconnect:
@@ -3437,8 +3540,8 @@ async def clear_pending_upload(session_id: str, current_user: dict = Depends(get
         # Delete temp file
         try:
             Path(upload["path"]).unlink(missing_ok=True)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to delete temp upload file: {e}")
         return {"success": True}
     return {"success": False, "error": "No pending upload"}
 
@@ -3499,8 +3602,8 @@ async def cleanup_expired_uploads():
                 try:
                     Path(upload["path"]).unlink(missing_ok=True)
                     logger.info(f"Cleaned up expired upload: {upload['image_id']}")
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to clean up expired upload: {e}")
 
 
 # ===========================================================================

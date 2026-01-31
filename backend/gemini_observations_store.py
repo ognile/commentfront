@@ -25,42 +25,25 @@ class GeminiObservationsStore:
         self._load()
 
     def _load(self):
-        """Load observations from disk."""
-        try:
-            if os.path.exists(self.file_path):
-                with open(self.file_path, "r") as f:
-                    data = json.load(f)
-                    self.observations = data.get("observations", [])
-                logger.info(f"Loaded {len(self.observations)} Gemini observations from {self.file_path}")
-            else:
-                self.observations = []
-        except Exception as e:
-            logger.error(f"Failed to load observations: {e}")
+        """Load observations from disk with automatic recovery from backup."""
+        from safe_io import safe_read_json
+        data = safe_read_json(self.file_path)
+        if data is not None:
+            self.observations = data.get("observations", [])
+            logger.info(f"Loaded {len(self.observations)} Gemini observations from {self.file_path}")
+        else:
             self.observations = []
 
     def _save(self):
-        """Save observations to disk with backup."""
-        try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
-
-            # Backup before write
-            if os.path.exists(self.file_path):
-                backup_path = self.file_path + ".backup"
-                with open(self.file_path, "r") as f:
-                    backup_data = f.read()
-                with open(backup_path, "w") as f:
-                    f.write(backup_data)
-
-            data = {
-                "updated_at": datetime.utcnow().isoformat() + "Z",
-                "count": len(self.observations),
-                "observations": self.observations
-            }
-            with open(self.file_path, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save observations: {e}")
+        """Save observations to disk atomically."""
+        from safe_io import atomic_write_json
+        data = {
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "count": len(self.observations),
+            "observations": self.observations
+        }
+        if not atomic_write_json(self.file_path, data):
+            logger.error(f"Failed to save observations atomically")
 
     def add_observation(
         self,

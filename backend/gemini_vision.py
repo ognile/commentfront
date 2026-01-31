@@ -1,12 +1,14 @@
 """
 Gemini Vision Module for Facebook Comment Bot
 Uses Gemini 3 Flash for visual element detection and comment verification.
+Includes circuit breaker for automatic failover to CSS selectors during outages.
 """
 
 import asyncio
 import base64
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -18,6 +20,81 @@ from google.genai import types
 from gemini_observations_store import get_observations_store
 
 logger = logging.getLogger("GeminiVision")
+
+
+# =============================================================================
+# CIRCUIT BREAKER
+# Prevents cascading failures when Gemini API is down.
+# States: closed (normal) → open (failing, skip calls) → half_open (test one call)
+# =============================================================================
+
+class CircuitBreaker:
+    """Simple circuit breaker for Gemini API calls."""
+
+    def __init__(self, failure_threshold: int = 3, recovery_timeout: float = 60.0):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = 0.0
+        self.state = "closed"  # closed | open | half_open
+
+    def record_success(self):
+        """Record a successful call. Resets failure count and closes circuit."""
+        self.failure_count = 0
+        self.state = "closed"
+
+    def record_failure(self):
+        """Record a failed call. Opens circuit after threshold."""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            self.state = "open"
+            logger.warning(
+                f"Circuit breaker OPEN after {self.failure_count} consecutive failures. "
+                f"Gemini calls will be skipped for {self.recovery_timeout}s."
+            )
+
+    def can_execute(self) -> bool:
+        """Check if a call is allowed through the circuit breaker."""
+        if self.state == "closed":
+            return True
+
+        if self.state == "open":
+            # Check if recovery timeout has passed
+            elapsed = time.time() - self.last_failure_time
+            if elapsed >= self.recovery_timeout:
+                self.state = "half_open"
+                logger.info("Circuit breaker HALF_OPEN — allowing one test call")
+                return True
+            return False
+
+        if self.state == "half_open":
+            # Allow one test call
+            return True
+
+        return False
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get current circuit breaker status for health endpoint."""
+        return {
+            "state": self.state,
+            "failure_count": self.failure_count,
+            "failure_threshold": self.failure_threshold,
+            "recovery_timeout_seconds": self.recovery_timeout,
+            "seconds_until_recovery": max(
+                0,
+                self.recovery_timeout - (time.time() - self.last_failure_time)
+            ) if self.state == "open" else 0
+        }
+
+
+# Global circuit breaker instance
+_circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=60.0)
+
+
+def get_circuit_breaker() -> CircuitBreaker:
+    """Get the global circuit breaker instance."""
+    return _circuit_breaker
 
 # =============================================================================
 # GEMINI OBSERVATION LOGGING
@@ -77,10 +154,8 @@ def get_observation_context() -> Dict[str, str]:
     """Get current observation context."""
     return _current_context.copy()
 
-# Configuration from environment
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-CONFIDENCE_THRESHOLD = float(os.getenv("VISION_CONFIDENCE_THRESHOLD", "0.7"))
+# Configuration from centralized config
+from config import GEMINI_API_KEY, GEMINI_MODEL, CONFIDENCE_THRESHOLD
 
 
 @dataclass
@@ -320,6 +395,11 @@ class GeminiVisionClient:
             logger.error(f"Unknown element type: {element_type}")
             return None
 
+        # Circuit breaker check
+        if not _circuit_breaker.can_execute():
+            logger.info(f"Circuit breaker OPEN — skipping find_element({element_type}), falling back to CSS")
+            return None
+
         try:
             # Read and encode the image
             with open(screenshot_path, "rb") as f:
@@ -368,10 +448,12 @@ class GeminiVisionClient:
                 campaign_id=context.get("campaign_id")
             )
 
+            _circuit_breaker.record_success()
             return parsed
 
         except Exception as e:
             logger.error(f"Gemini vision error: {e}")
+            _circuit_breaker.record_failure()
             return None
 
     async def verify_state(
@@ -398,6 +480,16 @@ class GeminiVisionClient:
                 confidence=0.0,
                 message=f"Unknown verification type: {verification_type}",
                 status="unknown"
+            )
+
+        # Circuit breaker check
+        if not _circuit_breaker.can_execute():
+            logger.info(f"Circuit breaker OPEN — skipping verify_state({verification_type}), returning unverified")
+            return VerificationResult(
+                success=False,
+                confidence=0.0,
+                message="Circuit breaker open — Gemini unavailable",
+                status="circuit_breaker_open"
             )
 
         try:
@@ -444,10 +536,12 @@ class GeminiVisionClient:
                 campaign_id=context.get("campaign_id")
             )
 
+            _circuit_breaker.record_success()
             return parsed
 
         except Exception as e:
             logger.error(f"Gemini verify_state error: {e}")
+            _circuit_breaker.record_failure()
             return VerificationResult(
                 success=False,
                 confidence=0.0,
@@ -468,6 +562,11 @@ class GeminiVisionClient:
             - reason: str (the restriction message/reason if restricted)
             - confidence: float
         """
+        # Circuit breaker check
+        if not _circuit_breaker.can_execute():
+            logger.info("Circuit breaker OPEN — skipping check_restriction")
+            return {"restricted": False, "reason": None, "confidence": 0.0, "circuit_breaker": True}
+
         try:
             with open(screenshot_path, "rb") as f:
                 image_data = f.read()
@@ -510,7 +609,8 @@ class GeminiVisionClient:
                     try:
                         conf_str = result_text.split("confidence=")[1].split()[0]
                         result["confidence"] = float(conf_str)
-                    except:
+                    except (ValueError, IndexError) as e:
+                        logger.debug(f"Could not parse confidence from restriction check: {e}")
                         result["confidence"] = 0.8
 
             # Log the observation
@@ -526,10 +626,12 @@ class GeminiVisionClient:
                 campaign_id=context.get("campaign_id")
             )
 
+            _circuit_breaker.record_success()
             return result
 
         except Exception as e:
             logger.error(f"Gemini check_restriction error: {e}")
+            _circuit_breaker.record_failure()
             return {
                 "restricted": False,
                 "reason": None,
@@ -552,6 +654,16 @@ class GeminiVisionClient:
         Returns:
             VerificationResult with status and confidence
         """
+        # Circuit breaker check
+        if not _circuit_breaker.can_execute():
+            logger.info("Circuit breaker OPEN — skipping verify_comment_posted")
+            return VerificationResult(
+                success=False,
+                confidence=0.0,
+                message="Circuit breaker open — Gemini unavailable",
+                status="circuit_breaker_open"
+            )
+
         try:
             with open(screenshot_path, "rb") as f:
                 image_data = f.read()
@@ -593,10 +705,12 @@ class GeminiVisionClient:
                 campaign_id=context.get("campaign_id")
             )
 
+            _circuit_breaker.record_success()
             return parsed
 
         except Exception as e:
             logger.error(f"Gemini verification error: {e}")
+            _circuit_breaker.record_failure()
             return VerificationResult(
                 success=False,
                 confidence=0.0,
@@ -623,6 +737,11 @@ class GeminiVisionClient:
         - RETRY: Just try again
         """
         import json
+
+        # Circuit breaker check
+        if not _circuit_breaker.can_execute():
+            logger.info("Circuit breaker OPEN — skipping decide_next_action, defaulting to RETRY")
+            return {"action": "RETRY", "circuit_breaker": True}
 
         try:
             with open(screenshot_path, "rb") as f:
@@ -680,10 +799,12 @@ SCROLL direction=down"""
                 campaign_id=context.get("campaign_id")
             )
 
+            _circuit_breaker.record_success()
             return parsed
 
         except Exception as e:
             logger.error(f"Gemini decide_next_action error: {e}")
+            _circuit_breaker.record_failure()
             return {"action": "RETRY", "error": str(e)}
 
     def _parse_decision(self, response: str) -> dict:
@@ -794,8 +915,8 @@ SCROLL direction=down"""
             try:
                 reason_start = response_lower.index("reason=") + 7
                 reason = response[reason_start:].strip()
-            except:
-                pass
+            except (ValueError, IndexError) as e:
+                logger.debug(f"Could not parse reason from response: {e}")
 
         return VerificationResult(
             success=verified,
@@ -825,8 +946,8 @@ SCROLL direction=down"""
             try:
                 msg_start = response_lower.index("message=") + 8
                 message = response[msg_start:].strip()
-            except:
-                pass
+            except (ValueError, IndexError) as e:
+                logger.debug(f"Could not parse message from response: {e}")
 
         return VerificationResult(
             success=(status == "posted"),
@@ -868,7 +989,7 @@ SCROLL direction=down"""
             if num_str:
                 try:
                     return float(num_str)
-                except:
+                except ValueError:
                     pass
         return 0.0
 

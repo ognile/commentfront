@@ -51,32 +51,17 @@ class ProfileManager:
         self._sync_with_sessions()
 
     def _load_state(self):
-        """Load state from disk."""
-        try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, "r") as f:
-                    self.state = json.load(f)
-                logger.info(f"Loaded profile state from {self.state_file} with {len(self.state.get('profiles', {}))} profiles")
-        except Exception as e:
-            logger.error(f"Failed to load profile state: {e}")
-            self.state = {"profiles": {}}
+        """Load state from disk with automatic recovery from backup."""
+        from safe_io import safe_read_json
+        data = safe_read_json(self.state_file, default={"profiles": {}})
+        self.state = data
+        logger.info(f"Loaded profile state from {self.state_file} with {len(self.state.get('profiles', {}))} profiles")
 
     def _save_state(self):
-        """Save state to disk."""
-        try:
-            # Backup before write
-            if os.path.exists(self.state_file):
-                backup_path = self.state_file + ".backup"
-                with open(self.state_file, "r") as f:
-                    backup_data = f.read()
-                with open(backup_path, "w") as f:
-                    f.write(backup_data)
-
-            with open(self.state_file, "w") as f:
-                json.dump(self.state, f, indent=2)
-            logger.debug(f"Saved profile state to {self.state_file}")
-        except Exception as e:
-            logger.error(f"Failed to save profile state: {e}")
+        """Save state to disk atomically."""
+        from safe_io import atomic_write_json
+        if not atomic_write_json(self.state_file, self.state):
+            logger.error(f"Failed to save profile state atomically")
 
     def _normalize_name(self, name: str) -> str:
         """Normalize profile name to match session filename format."""
@@ -166,21 +151,33 @@ class ProfileManager:
         exclude_set = set(exclude_profiles or [])
         eligible = []
 
+        # Track skip reasons for debugging
+        skip_reasons = {
+            "no_cookies": 0,
+            "tag_mismatch": 0,
+            "restricted": 0,
+            "auto_burned": 0,
+            "excluded": 0
+        }
+
         for session in sessions:
             profile_name = session.get("profile_name")
 
             # Skip excluded profiles
             if profile_name in exclude_set:
+                skip_reasons["excluded"] += 1
                 continue
 
             # Must have valid cookies
             if not session.get("has_valid_cookies", False):
+                skip_reasons["no_cookies"] += 1
                 continue
 
             # Must match ALL tags (AND logic)
             if filter_tags:
                 session_tags = session.get("tags", [])
                 if not all(tag in session_tags for tag in filter_tags):
+                    skip_reasons["tag_mismatch"] += 1
                     continue
 
             # Must not be restricted (check and auto-expire if needed)
@@ -192,15 +189,33 @@ class ProfileManager:
                         expires_dt = datetime.fromisoformat(expires_at.replace("Z", ""))
                         if datetime.utcnow() < expires_dt:
                             # Still restricted, skip
+                            skip_reasons["restricted"] += 1
                             continue
                         else:
                             # Restriction expired, auto-unblock
                             self._clear_restriction(profile_name)
-                    except Exception:
+                    except Exception as e:
                         # Invalid date, skip to be safe
+                        logger.warning(f"Invalid restriction date for {profile_name}: {e}")
+                        skip_reasons["restricted"] += 1
                         continue
                 else:
                     # Restricted with no expiry, skip
+                    skip_reasons["restricted"] += 1
+                    continue
+
+            # Auto-restrict profiles with very low success rates
+            total_attempts = state.get("usage_count", 0)
+            if total_attempts >= 10:
+                daily_stats = state.get("daily_stats", {})
+                total_success = sum(d.get("success", 0) for d in daily_stats.values())
+                success_rate = total_success / total_attempts
+                if success_rate < 0.10:
+                    self.mark_profile_restricted(
+                        profile_name,
+                        reason=f"auto-burned: {total_success}/{total_attempts} success rate ({success_rate:.0%})"
+                    )
+                    skip_reasons["auto_burned"] += 1
                     continue
 
             eligible.append({
@@ -212,7 +227,10 @@ class ProfileManager:
         eligible.sort(key=lambda x: x["last_used_at"] or "")
 
         result = [p["profile_name"] for p in eligible[:count]]
-        logger.info(f"get_eligible_profiles: tags={filter_tags}, returning {len(result)}/{len(eligible)} profiles: {result}")
+        logger.info(
+            f"Profile selection: {len(result)}/{len(eligible)} eligible, "
+            f"skipped: {skip_reasons}, tags={filter_tags}"
+        )
         return result
 
     def _clear_restriction(self, profile_name: str):
@@ -317,16 +335,22 @@ class ProfileManager:
     def mark_profile_restricted(
         self,
         profile_name: str,
-        hours: int = 24,
+        hours: int = 0,
         reason: str = "unknown"
     ):
         """
-        Mark a profile as restricted for a duration.
+        Mark a profile as restricted with progressive escalation.
+
+        Escalation ladder (based on restriction_count):
+        - 1st offense: 24 hours
+        - 2nd offense: 72 hours (3 days)
+        - 3rd offense: 168 hours (7 days)
+        - 4th+ offense: 720 hours (30 days)
 
         Args:
             profile_name: The profile name
-            hours: How many hours to restrict (default 24)
-            reason: Reason for restriction (moderation_notice, comment_ban, manual)
+            hours: Override duration (0 = use escalation ladder)
+            reason: Reason for restriction
         """
         normalized = self._normalize_name(profile_name)
         if normalized not in self.state["profiles"]:
@@ -339,9 +363,25 @@ class ProfileManager:
             }
 
         now = datetime.utcnow()
+        profile = self.state["profiles"][normalized]
+
+        # Increment restriction count for escalation
+        restriction_count = profile.get("restriction_count", 0) + 1
+        profile["restriction_count"] = restriction_count
+
+        # Use escalation ladder unless caller explicitly overrides
+        if hours == 0:
+            if restriction_count >= 4:
+                hours = 720   # 30 days
+            elif restriction_count == 3:
+                hours = 168   # 7 days
+            elif restriction_count == 2:
+                hours = 72    # 3 days
+            else:
+                hours = 24    # first offense
+
         expires_at = now + timedelta(hours=hours)
 
-        profile = self.state["profiles"][normalized]
         profile["status"] = "restricted"
         profile["restriction_expires_at"] = expires_at.isoformat() + "Z"
         profile["restriction_reason"] = reason
@@ -352,15 +392,16 @@ class ProfileManager:
         profile["restriction_history"].append({
             "timestamp": now.isoformat() + "Z",
             "reason": reason,
-            "duration_hours": hours
+            "duration_hours": hours,
+            "restriction_count": restriction_count
         })
         profile["restriction_history"] = profile["restriction_history"][-10:]
 
-        logger.warning(f"Restricted profile {normalized} for {hours}h (reason: {reason})")
+        logger.warning(f"Restricted profile {normalized} for {hours}h (reason: {reason}, offense #{restriction_count})")
         self._save_state()
 
     def unblock_profile(self, profile_name: str):
-        """Manually unblock a restricted profile."""
+        """Manually unblock a restricted profile. Resets restriction_count for fresh start."""
         normalized = self._normalize_name(profile_name)
         if normalized not in self.state["profiles"]:
             return
@@ -369,8 +410,9 @@ class ProfileManager:
         profile["status"] = "active"
         profile["restriction_expires_at"] = None
         profile["restriction_reason"] = None
+        profile["restriction_count"] = 0  # Reset escalation on manual unblock
 
-        logger.info(f"Unblocked profile: {normalized}")
+        logger.info(f"Unblocked profile: {normalized} (restriction_count reset to 0)")
         self._save_state()
 
     def extend_restriction(self, profile_name: str, additional_hours: int):
@@ -485,6 +527,7 @@ class ProfileManager:
             "status": profile.get("status", "active"),
             "last_used_at": profile.get("last_used_at"),
             "usage_count": profile.get("usage_count", 0),
+            "restriction_count": profile.get("restriction_count", 0),
             "restriction_expires_at": profile.get("restriction_expires_at"),
             "restriction_reason": profile.get("restriction_reason"),
             "total_comments": total_comments,

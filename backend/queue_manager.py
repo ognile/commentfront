@@ -39,22 +39,22 @@ class CampaignQueueManager:
 
     def load(self):
         """Load queue from JSON file with recovery for interrupted campaigns."""
-        if not os.path.exists(self.file_path):
+        from safe_io import safe_read_json
+        data = safe_read_json(self.file_path)
+        if data is None:
             self.logger.info(f"Queue file not found at {self.file_path}, starting fresh")
             self.campaigns = {}
             self.history = []
             return
 
         try:
-            with open(self.file_path, "r") as f:
-                data = json.load(f)
-                self.campaigns = data.get("campaigns", {})
-                self.history = data.get("history", [])
-                self.processor_state = data.get("processor_state", {
-                    "is_running": False,
-                    "current_campaign_id": None,
-                    "last_processed_at": None
-                })
+            self.campaigns = data.get("campaigns", {})
+            self.history = data.get("history", [])
+            self.processor_state = data.get("processor_state", {
+                "is_running": False,
+                "current_campaign_id": None,
+                "last_processed_at": None
+            })
 
             # Recovery: reset any "processing" campaigns back to "pending"
             # This handles server crashes mid-campaign
@@ -79,18 +79,16 @@ class CampaignQueueManager:
             self.history = []
 
     def save(self):
-        """Save queue to JSON file."""
-        try:
-            data = {
-                "updated_at": datetime.utcnow().isoformat(),
-                "processor_state": self.processor_state,
-                "campaigns": self.campaigns,
-                "history": self.history
-            }
-            with open(self.file_path, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            self.logger.error(f"Failed to save queue: {e}")
+        """Save queue to JSON file atomically."""
+        from safe_io import atomic_write_json
+        data = {
+            "updated_at": datetime.utcnow().isoformat(),
+            "processor_state": self.processor_state,
+            "campaigns": self.campaigns,
+            "history": self.history
+        }
+        if not atomic_write_json(self.file_path, data):
+            self.logger.error(f"Failed to save queue atomically")
 
     # =========================================================================
     # CRUD Operations

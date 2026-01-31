@@ -155,7 +155,7 @@ async def navigate_to_feed(page: Page) -> bool:
                 await page.wait_for_selector(selector, timeout=5000)
                 feed_found = True
                 break
-            except:
+            except Exception:
                 continue
 
         if not feed_found:

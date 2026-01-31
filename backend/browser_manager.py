@@ -19,12 +19,9 @@ from playwright_stealth import Stealth
 from urllib.parse import urlparse, unquote
 
 from fb_session import FacebookSession, apply_session_to_context
+from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT
 
 logger = logging.getLogger("BrowserManager")
-
-# Mobile viewport (same as comment_bot.py)
-MOBILE_VIEWPORT = {"width": 393, "height": 873}
-DEFAULT_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
 # Temp directory for uploaded images
 UPLOAD_DIR = Path("/tmp/commentbot_uploads")
@@ -32,16 +29,9 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
-    """Convert proxy URL to Playwright format (same as comment_bot.py)."""
-    parsed = urlparse(proxy_url)
-    if parsed.scheme and parsed.hostname and parsed.port:
-        proxy: Dict[str, str] = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
-        if parsed.username:
-            proxy["username"] = unquote(parsed.username)
-        if parsed.password:
-            proxy["password"] = unquote(parsed.password)
-        return proxy
-    return {"server": proxy_url}
+    """Wrapper for backward compatibility — delegates to browser_factory."""
+    from browser_factory import build_playwright_proxy
+    return build_playwright_proxy(proxy_url) or {"server": proxy_url}
 
 
 class PersistentBrowserManager:
@@ -245,16 +235,16 @@ class PersistentBrowserManager:
         if self._browser:
             try:
                 await self._browser.close()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing browser: {e}")
             self._browser = None
 
         # Stop playwright
         if self._playwright:
             try:
                 await self._playwright.stop()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error stopping playwright: {e}")
             self._playwright = None
 
         self._page = None
@@ -281,8 +271,8 @@ class PersistentBrowserManager:
             logger.warning("File chooser opened but no pending file, canceling")
             try:
                 await file_chooser.set_files([])
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to cancel file chooser: {e}")
 
     def set_pending_file(self, file_path: str):
         """Set the file to use for next file chooser."""
@@ -296,8 +286,8 @@ class PersistentBrowserManager:
         for ws in self._subscribers:
             try:
                 await ws.send_json({"type": "error", "data": {"message": "Browser page closed"}})
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to notify subscriber of page close: {e}")
 
     async def _on_page_crash(self):
         """Handle page crash."""
@@ -306,8 +296,8 @@ class PersistentBrowserManager:
         for ws in self._subscribers:
             try:
                 await ws.send_json({"type": "error", "data": {"message": "Browser page crashed"}})
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to notify subscriber of page crash: {e}")
 
     async def _streaming_loop(self):
         """
@@ -393,7 +383,7 @@ class PersistentBrowserManager:
         for ws in self._subscribers:
             try:
                 await ws.send_text(message)
-            except:
+            except Exception:
                 disconnected.add(ws)
 
         for ws in disconnected:
@@ -416,7 +406,7 @@ class PersistentBrowserManager:
         for ws in self._subscribers:
             try:
                 await ws.send_text(message)
-            except:
+            except Exception:
                 disconnected.add(ws)
 
         for ws in disconnected:
@@ -441,7 +431,7 @@ class PersistentBrowserManager:
         for ws in self._subscribers:
             try:
                 await ws.send_text(message)
-            except:
+            except Exception:
                 disconnected.add(ws)
 
         for ws in disconnected:
@@ -635,7 +625,8 @@ class PersistentBrowserManager:
 
         try:
             return await self._page.screenshot(type="jpeg", quality=80, scale="css")
-        except:
+        except Exception as e:
+            logger.warning(f"Screenshot failed: {e}")
             return None
 
     async def get_current_state(self) -> Dict[str, Any]:
@@ -658,7 +649,8 @@ class PersistentBrowserManager:
                 "subscriber_count": len(self._subscribers),
                 "frame_count": self._frame_count
             }
-        except:
+        except Exception as e:
+            logger.warning(f"Error getting current state: {e}")
             return {"active": False, "session_id": self._session_id}
 
     def _log_action(self, action: str, details: Dict):

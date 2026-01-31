@@ -11,6 +11,8 @@ from urllib.parse import urlparse, unquote
 
 from fb_session import FacebookSession, apply_session_to_context
 import fb_selectors
+from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT, DEBUG_DIR
+from browser_factory import build_playwright_proxy
 
 # Vision integration (optional - will work without it)
 try:
@@ -22,11 +24,6 @@ except ImportError:
 
 logger = logging.getLogger("CommentBot")
 
-MOBILE_VIEWPORT = {"width": 393, "height": 873}
-DEFAULT_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-
-# Directory for debug screenshots (uses env var for Railway persistent volume)
-DEBUG_DIR = os.getenv("DEBUG_DIR", os.path.join(os.path.dirname(__file__), "debug"))
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
 
@@ -59,15 +56,8 @@ def cleanup_old_screenshots(max_keep: int = 100):
         logger.error(f"Failed to cleanup screenshots: {e}")
 
 def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
-    parsed = urlparse(proxy_url)
-    if parsed.scheme and parsed.hostname and parsed.port:
-        proxy: Dict[str, str] = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
-        if parsed.username:
-            proxy["username"] = unquote(parsed.username)
-        if parsed.password:
-            proxy["password"] = unquote(parsed.password)
-        return proxy
-    return {"server": proxy_url}
+    """Wrapper for backward compatibility — delegates to browser_factory."""
+    return build_playwright_proxy(proxy_url) or {"server": proxy_url}
 
 
 async def save_debug_screenshot(page: Page, name: str) -> str:
@@ -187,8 +177,9 @@ async def verify_comment_visually(page: Page, comment_text: str) -> Dict[str, An
     result = {"verified": False, "confidence": 0, "message": ""}
     vision = get_vision_client() if VISION_AVAILABLE else None
     if not vision:
-        result["verified"] = True
-        result["message"] = "Vision not available, assuming success"
+        result["verified"] = False
+        result["verification_skipped"] = True
+        result["message"] = "Vision not available, verification skipped"
         return result
 
     await asyncio.sleep(2)
@@ -284,12 +275,13 @@ async def smart_click(page: Page, selectors: List[str], description: str) -> boo
                 await text_locator.click(timeout=3000)
                 logger.info(f"Clicked '{description}' using text match (native click)")
                 return True
-            except:
+            except Exception as e:
+                logger.debug(f"Native click failed for text match '{description}': {e}")
                 await text_locator.dispatch_event('click')
                 logger.info(f"Clicked '{description}' using text match dispatch_event")
                 return True
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Text match fallback failed for '{description}': {e}")
 
     logger.warning(f"  → FAILED: No selector matched for '{description}'")
     await save_debug_screenshot(page, f"failed_click_{description.replace(' ', '_')}")
@@ -680,7 +672,8 @@ async def verify_post_loaded(page: Page) -> bool:
 
         await save_debug_screenshot(page, "verification_failed")
         return False # Return False if we can't confirm, but caller might proceed anyway
-    except:
+    except Exception as e:
+        logger.warning(f"Post verification error: {e}")
         return False
 
 
