@@ -11,6 +11,9 @@ from typing import Dict, Any, List
 
 logger = logging.getLogger("AppealManager")
 
+# Global lock: prevents concurrent appeal/verify batches (scheduler + manual)
+_appeal_lock = asyncio.Lock()
+
 VERIFY_TASK_PROMPT = """Check if this Facebook account has an ACTIVE restriction:
 
 1. Click the notifications bell icon at top of page.
@@ -297,18 +300,30 @@ async def appeal_single_profile(profile_name: str) -> Dict[str, Any]:
         return {"profile_name": profile_name, "success": False, "scenario": scenario, "error": error_msg}
 
 
-async def verify_all_restricted() -> Dict[str, Any]:
-    """Verify ALL restricted profiles and auto-unblock resolved ones."""
+async def verify_all_restricted(skip_profiles: List[str] = None) -> Dict[str, Any]:
+    """Verify ALL restricted profiles and auto-unblock resolved ones.
+    skip_profiles: profiles currently in use (e.g. by queue processor) — skip them.
+    Acquires global appeal lock; returns busy status if lock held."""
+    if _appeal_lock.locked():
+        return {"status": "busy", "message": "Appeal batch already running"}
+    async with _appeal_lock:
+        return await _verify_all_restricted_inner(skip_profiles)
+
+
+async def _verify_all_restricted_inner(skip_profiles: List[str] = None) -> Dict[str, Any]:
     from profile_manager import get_profile_manager
 
     pm = get_profile_manager()
     batch_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     logger.info(f"[VERIFY_ALL:{batch_id}] Starting verification")
 
+    skip_set = set(skip_profiles or [])
     restricted = [
         name for name, state in pm.get_all_profiles().items()
-        if state.get("status") == "restricted"
+        if state.get("status") == "restricted" and name not in skip_set
     ]
+    if skip_set:
+        logger.info(f"[VERIFY_ALL:{batch_id}] Skipping {len(skip_set)} profiles in use")
     logger.info(f"[VERIFY_ALL:{batch_id}] Found {len(restricted)} restricted profiles")
 
     if not restricted:
@@ -342,9 +357,22 @@ async def verify_all_restricted() -> Dict[str, Any]:
 
 async def batch_appeal_all(
     max_attempts: int = MAX_APPEAL_ATTEMPTS,
-    retry_failed: bool = True
+    retry_failed: bool = True,
+    skip_profiles: List[str] = None
 ) -> Dict[str, Any]:
-    """Appeal ALL restricted profiles: verify first, then appeal confirmed active."""
+    """Appeal ALL restricted profiles: verify first, then appeal confirmed active.
+    Acquires global appeal lock; returns busy status if lock held."""
+    if _appeal_lock.locked():
+        return {"status": "busy", "message": "Appeal batch already running"}
+    async with _appeal_lock:
+        return await _batch_appeal_all_inner(max_attempts, retry_failed, skip_profiles)
+
+
+async def _batch_appeal_all_inner(
+    max_attempts: int = MAX_APPEAL_ATTEMPTS,
+    retry_failed: bool = True,
+    skip_profiles: List[str] = None
+) -> Dict[str, Any]:
     from profile_manager import get_profile_manager
 
     pm = get_profile_manager()
@@ -359,10 +387,11 @@ async def batch_appeal_all(
             pm.update_appeal_state(name, "none")
             logger.info(f"[APPEAL_BATCH:{batch_id}] Reset exhausted profile: {name}")
 
-    # Get all restricted profiles
+    # Get all restricted profiles (skip profiles currently in use)
+    skip_set = set(skip_profiles or [])
     restricted = {
         name: state for name, state in pm.get_all_profiles().items()
-        if state.get("status") == "restricted"
+        if state.get("status") == "restricted" and name not in skip_set
     }
     logger.info(f"[APPEAL_BATCH:{batch_id}] Found {len(restricted)} restricted profiles")
 

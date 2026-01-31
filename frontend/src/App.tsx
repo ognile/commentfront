@@ -55,6 +55,22 @@ interface CampaignResult {
   throttle_reason?: string;
 }
 
+interface AutoRetryState {
+  status: 'scheduled' | 'in_progress' | 'exhausted' | 'completed';
+  current_round: number;
+  max_rounds: number;
+  next_retry_at?: string;
+  schedule_seconds: number[];
+  failed_jobs: Array<{
+    job_index: number;
+    comment: string;
+    excluded_profiles: string[];
+    last_profile: string;
+    exhausted: boolean;
+  }>;
+  completed_at?: string;
+}
+
 interface QueuedCampaign {
   id: string;
   url: string;
@@ -76,6 +92,7 @@ interface QueuedCampaign {
   results?: CampaignResult[];
   has_retries?: boolean;
   last_retry_at?: string;
+  auto_retry?: AutoRetryState;
 }
 
 interface QueueState {
@@ -202,6 +219,25 @@ interface AnalyticsSummary {
   today: { comments: number; success: number; success_rate: number };
   week: { comments: number; success: number; success_rate: number };
   profiles: { active: number; restricted: number; total: number };
+}
+
+interface AppealSchedulerStatus {
+  enabled: boolean;
+  interval_hours: number;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  last_results: {
+    verify_phase?: { total: number; unblocked: number; in_review: number; still_restricted: number; error?: string };
+    appeal_phase?: { total: number; succeeded: number; failed: number; error?: string };
+    per_profile?: Array<{ name: string; phase: string; status: string; action: string; error?: string }>;
+  } | null;
+  run_history: Array<{
+    run_at: string;
+    completed_at: string;
+    verify: Record<string, unknown>;
+    appeal: Record<string, unknown>;
+    profile_count: number;
+  }>;
 }
 
 // Mobile viewport dimensions
@@ -349,6 +385,8 @@ function App() {
   const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
   const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
+  const [schedulerStatus, setSchedulerStatus] = useState<AppealSchedulerStatus | null>(null);
+  const [schedulerRunning, setSchedulerRunning] = useState(false);
 
   // WebSocket and live status
   const [liveStatus, setLiveStatus] = useState<LiveStatus>({
@@ -518,7 +556,7 @@ function App() {
                 break;
 
               case 'queue_campaign_complete':
-                // Campaign completed - move to history
+                // Campaign completed - move to history (includes auto_retry state)
                 setQueueState(prev => {
                   const completed = prev.pending.find(c => c.id === update.data.campaign_id);
                   if (!completed) return prev;
@@ -528,7 +566,8 @@ function App() {
                     status: 'completed',
                     success_count: update.data.success,
                     total_count: update.data.total,
-                    completed_at: new Date().toISOString()
+                    completed_at: new Date().toISOString(),
+                    auto_retry: update.data.auto_retry || undefined
                   };
 
                   return {
@@ -632,6 +671,61 @@ function App() {
                     last_retry_at: new Date().toISOString()
                   } : null);
                 }
+                break;
+
+              // Auto-retry events
+              case 'auto_retry_enabled':
+              case 'auto_retry_round_start':
+              case 'auto_retry_round_complete':
+              case 'auto_retry_complete':
+                // Update auto_retry state on the campaign in history
+                setQueueState(prev => ({
+                  ...prev,
+                  history: prev.history.map(c => {
+                    if (c.id !== update.data.campaign_id) return c;
+                    const ar = c.auto_retry || {} as AutoRetryState;
+                    if (update.type === 'auto_retry_enabled') {
+                      return { ...c, auto_retry: { ...ar, status: 'scheduled' as const, current_round: 0, max_rounds: 4, schedule_seconds: [300, 1800, 7200, 21600], failed_jobs: [], next_retry_at: update.data.first_retry_at } };
+                    }
+                    if (update.type === 'auto_retry_round_start') {
+                      return { ...c, auto_retry: { ...ar, status: 'in_progress' as const, current_round: update.data.round } };
+                    }
+                    if (update.type === 'auto_retry_round_complete') {
+                      return { ...c, auto_retry: { ...ar, status: 'scheduled' as const, next_retry_at: update.data.next_retry_at } };
+                    }
+                    if (update.type === 'auto_retry_complete') {
+                      return { ...c, auto_retry: { ...ar, status: update.data.final_status as AutoRetryState['status'] } };
+                    }
+                    return c;
+                  })
+                }));
+                if (update.type === 'auto_retry_enabled') {
+                  toast.info(`Auto-retry scheduled for ${update.data.failed_count} failed job(s)`);
+                }
+                if (update.type === 'auto_retry_complete') {
+                  toast.info(`Auto-retry ${update.data.final_status}`);
+                }
+                break;
+
+              case 'auto_retry_job_result':
+                // Add retry result to campaign history
+                setQueueState(prev => ({
+                  ...prev,
+                  history: prev.history.map(c => {
+                    if (c.id !== update.data.campaign_id) return c;
+                    return { ...c, has_retries: true, last_retry_at: new Date().toISOString() };
+                  })
+                }));
+                break;
+
+              // Appeal scheduler events
+              case 'appeal_scheduler_start':
+                toast.info('Appeal scheduler started');
+                break;
+              case 'appeal_scheduler_complete':
+                toast.success('Appeal scheduler completed');
+                // Auto-refresh scheduler status
+                fetchSchedulerStatus();
                 break;
 
               // Legacy queue events (for backward compatibility during transition)
@@ -758,6 +852,38 @@ function App() {
       setAppealStatuses(map);
     } catch {
       // Silently fail - appeal status is supplementary
+    }
+  };
+
+  const fetchSchedulerStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/appeals/scheduler/status`, { headers: getAuthHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      setSchedulerStatus(data);
+    } catch {
+      // Silently fail
+    }
+  };
+
+  const handleSchedulerRunNow = async () => {
+    setSchedulerRunning(true);
+    try {
+      const res = await fetch(`${API_BASE}/appeals/scheduler/run-now`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json();
+      if (data.status === 'busy') {
+        toast.warning('Appeal batch already running');
+      } else {
+        toast.success('Appeal scheduler run completed');
+        fetchSchedulerStatus();
+      }
+    } catch {
+      toast.error('Failed to run appeal scheduler');
+    } finally {
+      setSchedulerRunning(false);
     }
   };
 
@@ -2106,7 +2232,7 @@ function App() {
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
             <TabsTrigger value="credentials">Credentials</TabsTrigger>
             <TabsTrigger value="proxies">Proxies</TabsTrigger>
-            <TabsTrigger value="analytics" onClick={() => { fetchGeminiObservations(); fetchProfileAnalytics(); }}>
+            <TabsTrigger value="analytics" onClick={() => { fetchGeminiObservations(); fetchProfileAnalytics(); fetchSchedulerStatus(); }}>
               <BarChart3 className="w-4 h-4 mr-1" />
               Analytics
             </TabsTrigger>
@@ -2369,7 +2495,25 @@ function App() {
                                   {formatRelativeTime(campaign.completed_at)}
                                 </span>
                               )}
-                              {campaign.has_retries && (
+                              {campaign.auto_retry?.status === 'scheduled' && (
+                                <span className="ml-2 text-amber-500">
+                                  (retry {(campaign.auto_retry.current_round || 0) + 1}/{campaign.auto_retry.max_rounds}
+                                  {campaign.auto_retry.next_retry_at && (() => {
+                                    const diff = Math.max(0, Math.round((new Date(campaign.auto_retry!.next_retry_at!).getTime() - Date.now()) / 60000));
+                                    return diff > 0 ? ` in ${diff}m` : ' now';
+                                  })()})
+                                </span>
+                              )}
+                              {campaign.auto_retry?.status === 'in_progress' && (
+                                <span className="ml-2 text-blue-500">(retrying round {(campaign.auto_retry.current_round || 0) + 1}/{campaign.auto_retry.max_rounds})</span>
+                              )}
+                              {campaign.auto_retry?.status === 'completed' && campaign.has_retries && (
+                                <span className="ml-2 text-green-500">(auto-retry done)</span>
+                              )}
+                              {campaign.auto_retry?.status === 'exhausted' && (
+                                <span className="ml-2 text-red-400">(retries exhausted)</span>
+                              )}
+                              {!campaign.auto_retry && campaign.has_retries && (
                                 <span className="ml-2 text-blue-500">(retried)</span>
                               )}
                             </div>
@@ -3261,6 +3405,97 @@ function App() {
               </div>
             )}
 
+            {/* Restriction Recovery Card */}
+            <Card>
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Shield className="w-5 h-5" />
+                    Restriction Recovery
+                  </CardTitle>
+                  <div className="flex items-center gap-2">
+                    {schedulerStatus?.enabled && (
+                      <Badge variant="outline" className="bg-green-50 text-green-700 text-xs">Enabled</Badge>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleSchedulerRunNow}
+                      disabled={schedulerRunning}
+                    >
+                      {schedulerRunning ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                      ) : (
+                        <Play className="w-4 h-4 mr-1" />
+                      )}
+                      Run Now
+                    </Button>
+                  </div>
+                </div>
+                <p className="text-sm text-[#666666] mt-2">
+                  Automatically verifies and appeals restricted profiles every {schedulerStatus?.interval_hours || 24}h.
+                </p>
+              </CardHeader>
+              <CardContent className="pt-4">
+                {!schedulerStatus ? (
+                  <div className="text-center py-4 text-[#999999] text-sm">
+                    <p>Loading scheduler status...</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                      <div>
+                        <div className="text-xs text-[#999999]">Last Run</div>
+                        <div className="font-medium">
+                          {schedulerStatus.last_run_at ? formatRelativeTime(schedulerStatus.last_run_at) : 'Never'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-[#999999]">Next Run</div>
+                        <div className="font-medium">
+                          {schedulerStatus.next_run_at ? formatRelativeTime(schedulerStatus.next_run_at) : 'Pending'}
+                        </div>
+                      </div>
+                      {schedulerStatus.last_results?.verify_phase && !schedulerStatus.last_results.verify_phase.error && (
+                        <>
+                          <div>
+                            <div className="text-xs text-[#999999]">Unblocked</div>
+                            <div className="font-medium text-green-600">{schedulerStatus.last_results.verify_phase.unblocked || 0}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-[#999999]">Still Restricted</div>
+                            <div className="font-medium text-red-500">{schedulerStatus.last_results.verify_phase.still_restricted || 0}</div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {schedulerStatus.last_results?.appeal_phase && !schedulerStatus.last_results.appeal_phase.error && (
+                      <div className="text-xs text-[#666666]">
+                        Appeals: {schedulerStatus.last_results.appeal_phase.succeeded || 0} succeeded, {schedulerStatus.last_results.appeal_phase.failed || 0} failed
+                      </div>
+                    )}
+                    {schedulerStatus.last_results?.per_profile && schedulerStatus.last_results.per_profile.length > 0 && (
+                      <details>
+                        <summary className="text-xs text-[#666666] cursor-pointer">
+                          Per-profile details ({schedulerStatus.last_results.per_profile.length})
+                        </summary>
+                        <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                          {schedulerStatus.last_results.per_profile.map((p, i) => (
+                            <div key={i} className="text-xs flex items-center gap-2">
+                              <span className={p.action === 'auto_unblocked' ? 'text-green-600' : p.action === 'confirmed_restricted' ? 'text-red-500' : 'text-[#666666]'}>
+                                {p.name}: {p.action}
+                              </span>
+                              {p.error && <span className="text-red-400">({p.error})</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {/* Profile Usage Table */}
             <Card>
               <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
@@ -3702,6 +3937,53 @@ function App() {
                   </div>
                 );
               })()}
+
+              {/* Auto-Retry Status */}
+              {selectedCampaign.auto_retry && (
+                <div className={`p-3 rounded-lg border text-sm ${
+                  selectedCampaign.auto_retry.status === 'scheduled' ? 'bg-amber-50 border-amber-200' :
+                  selectedCampaign.auto_retry.status === 'in_progress' ? 'bg-blue-50 border-blue-200' :
+                  selectedCampaign.auto_retry.status === 'completed' ? 'bg-green-50 border-green-200' :
+                  'bg-gray-50 border-gray-200'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <RotateCw className={`w-4 h-4 ${selectedCampaign.auto_retry.status === 'in_progress' ? 'animate-spin' : ''}`} />
+                      <span className="font-medium">
+                        Auto-Retry: {selectedCampaign.auto_retry.status === 'scheduled' ? `Round ${(selectedCampaign.auto_retry.current_round || 0) + 1}/${selectedCampaign.auto_retry.max_rounds} scheduled` :
+                          selectedCampaign.auto_retry.status === 'in_progress' ? `Round ${(selectedCampaign.auto_retry.current_round || 0) + 1}/${selectedCampaign.auto_retry.max_rounds} in progress` :
+                          selectedCampaign.auto_retry.status === 'completed' ? 'Complete' :
+                          'Exhausted'}
+                      </span>
+                    </div>
+                    {selectedCampaign.auto_retry.status === 'scheduled' && selectedCampaign.auto_retry.next_retry_at && (
+                      <span className="text-xs text-[#999999]">
+                        Next: {formatRelativeTime(selectedCampaign.auto_retry.next_retry_at)}
+                      </span>
+                    )}
+                  </div>
+                  {selectedCampaign.auto_retry.failed_jobs && selectedCampaign.auto_retry.failed_jobs.length > 0 && (
+                    <details className="mt-2">
+                      <summary className="text-xs text-[#666666] cursor-pointer">
+                        {selectedCampaign.auto_retry.failed_jobs.filter(j => !j.exhausted).length} jobs pending, {selectedCampaign.auto_retry.failed_jobs.filter(j => j.exhausted).length} exhausted
+                      </summary>
+                      <div className="mt-1 space-y-1">
+                        {selectedCampaign.auto_retry.failed_jobs.map(job => (
+                          <div key={job.job_index} className="text-xs flex items-center gap-2">
+                            <span className={job.exhausted ? 'text-red-500' : 'text-[#666666]'}>
+                              Job {job.job_index}: {job.comment.slice(0, 40)}{job.comment.length > 40 ? '...' : ''}
+                            </span>
+                            {job.exhausted && <Badge variant="outline" className="text-[10px] px-1">exhausted</Badge>}
+                            {job.excluded_profiles.length > 0 && (
+                              <span className="text-[#999999]">({job.excluded_profiles.length} excluded)</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
 
               {/* Results by Profile - Consolidated (latest result per job_index) */}
               {selectedCampaign.results && selectedCampaign.results.length > 0 && (

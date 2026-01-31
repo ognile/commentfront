@@ -192,7 +192,8 @@ class QueueProcessor:
         self._current_campaign_cancelled = True
 
     async def _process_loop(self):
-        """Main processing loop - runs continuously."""
+        """Main processing loop - runs continuously.
+        Priority 1: pending campaigns. Priority 2: due auto-retries."""
         while not self._stop_requested:
             try:
                 campaign = self.queue_manager.get_next_pending()
@@ -201,8 +202,12 @@ class QueueProcessor:
                     self._current_campaign_cancelled = False
                     await self._process_campaign(campaign)
                 else:
-                    # No campaigns, wait before checking again
-                    await asyncio.sleep(2)
+                    # Priority 2: due auto-retries (only when no pending campaigns)
+                    retry_campaign = self.queue_manager.get_next_due_retry()
+                    if retry_campaign:
+                        await self._process_auto_retry(retry_campaign)
+                    else:
+                        await asyncio.sleep(2)
 
             except asyncio.CancelledError:
                 self.logger.info("Processor loop cancelled")
@@ -499,10 +504,43 @@ class QueueProcessor:
 
             self.queue_manager.set_completed(campaign_id, success_count, total_count, all_results)
 
+            # Enable auto-retry if there are failures
+            if success_count < total_count:
+                failed_jobs = []
+                # Build failed_jobs from results (jobs that never succeeded)
+                job_has_success = {}
+                for r in all_results:
+                    idx = r.get("job_index", 0)
+                    if r.get("success"):
+                        job_has_success[idx] = True
+                for r in all_results:
+                    idx = r.get("job_index", 0)
+                    if not job_has_success.get(idx):
+                        # Only add once per job_index
+                        if not any(fj["job_index"] == idx for fj in failed_jobs):
+                            failed_jobs.append({
+                                "job_index": idx,
+                                "comment": r.get("comment", comments[idx] if idx < len(comments) else ""),
+                                "last_profile": r.get("profile_name", "")
+                            })
+                if failed_jobs:
+                    self.queue_manager.enable_auto_retry(campaign_id, failed_jobs)
+                    first_retry_at = self.queue_manager.get_campaign_from_history(campaign_id).get("auto_retry", {}).get("next_retry_at")
+                    await broadcast_update("auto_retry_enabled", {
+                        "campaign_id": campaign_id,
+                        "failed_count": len(failed_jobs),
+                        "first_retry_at": first_retry_at
+                    })
+
+            # Include auto_retry in the broadcast so frontend gets it immediately
+            completed_campaign = self.queue_manager.get_campaign_from_history(campaign_id)
+            auto_retry_data = completed_campaign.get("auto_retry") if completed_campaign else None
+
             await broadcast_update("queue_campaign_complete", {
                 "campaign_id": campaign_id,
                 "success": success_count,
-                "total": total_count
+                "total": total_count,
+                "auto_retry": auto_retry_data
             })
 
             await broadcast_update("campaign_complete", {"total": total_count, "success": success_count})
@@ -514,6 +552,196 @@ class QueueProcessor:
                 "campaign_id": campaign_id,
                 "error": str(e)
             })
+
+    async def _process_auto_retry(self, campaign: dict):
+        """Process one round of auto-retry for a campaign."""
+        campaign_id = campaign["id"]
+        ar = campaign.get("auto_retry", {})
+        round_num = ar.get("current_round", 0)
+        url = campaign.get("url", "")
+        filter_tags = campaign.get("filter_tags", [])
+        enable_warmup = campaign.get("enable_warmup", False)
+
+        ar["status"] = "in_progress"
+        self.queue_manager.save()
+
+        self.logger.info(f"Auto-retry round {round_num} for campaign {campaign_id[:8]}...")
+
+        await broadcast_update("auto_retry_round_start", {
+            "campaign_id": campaign_id,
+            "round": round_num,
+            "jobs_remaining": sum(1 for fj in ar.get("failed_jobs", []) if not fj.get("exhausted"))
+        })
+
+        from profile_manager import get_profile_manager
+        profile_manager = get_profile_manager()
+
+        # Get profiles that already succeeded in this campaign
+        succeeded_profiles = {
+            r.get("profile_name")
+            for r in campaign.get("results", [])
+            if r.get("success") and r.get("profile_name")
+        }
+
+        round_succeeded = 0
+        round_failed = 0
+
+        for fj in ar.get("failed_jobs", []):
+            if fj.get("exhausted"):
+                continue
+
+            job_index = fj["job_index"]
+            comment = fj.get("comment", "")
+            excluded = set(fj.get("excluded_profiles", []))
+            exclude_from_selection = list(excluded | succeeded_profiles)
+
+            # Get eligible profiles
+            eligible = profile_manager.get_eligible_profiles(
+                filter_tags=filter_tags if filter_tags else None,
+                count=5,
+                exclude_profiles=exclude_from_selection
+            )
+
+            if not eligible:
+                self.logger.warning(f"Auto-retry: job {job_index} exhausted all profiles")
+                self.queue_manager.mark_retry_job_exhausted(campaign_id, job_index)
+                round_failed += 1
+                continue
+
+            # Profile selection: prefer last_profile if still eligible (transient failure)
+            last_profile = fj.get("last_profile", "")
+            if last_profile and last_profile in eligible and last_profile not in excluded:
+                profile_name = last_profile
+            else:
+                profile_name = eligible[0]
+
+            self.logger.info(f"Auto-retry: job {job_index} with profile {profile_name}")
+
+            try:
+                session = FacebookSession(profile_name)
+                if not session.load():
+                    self.logger.warning(f"Auto-retry: session {profile_name} not found, marking exhausted for job")
+                    fj.setdefault("excluded_profiles", []).append(profile_name)
+                    self.queue_manager.save()
+                    round_failed += 1
+                    continue
+
+                from gemini_vision import set_observation_context
+                set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
+
+                result = await post_comment_verified(
+                    session=session,
+                    url=url,
+                    comment=comment,
+                    proxy=get_effective_proxy(),
+                    enable_warmup=enable_warmup
+                )
+
+                success = result.get("success", False)
+                was_restriction = bool(result.get("throttled"))
+                error = result.get("error")
+
+                # Determine failure type
+                failure_type = None
+                if not success:
+                    if was_restriction or "restricted" in str(error).lower():
+                        failure_type = "restriction"
+                    elif any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
+                        failure_type = "infrastructure"
+                    else:
+                        failure_type = "facebook_error"
+
+                profile_manager.mark_profile_used(
+                    profile_name=profile_name,
+                    campaign_id=campaign_id,
+                    comment=comment,
+                    success=success,
+                    failure_type=failure_type
+                )
+
+                if was_restriction:
+                    profile_manager.mark_profile_restricted(
+                        profile_name=profile_name,
+                        reason=result.get("throttle_reason", "Facebook restriction")
+                    )
+
+                self.queue_manager.record_retry_attempt(
+                    campaign_id=campaign_id,
+                    job_index=job_index,
+                    profile=profile_name,
+                    round_num=round_num,
+                    success=success,
+                    error=error,
+                    was_restriction=was_restriction
+                )
+
+                await broadcast_update("auto_retry_job_result", {
+                    "campaign_id": campaign_id,
+                    "job_index": job_index,
+                    "profile": profile_name,
+                    "success": success,
+                    "error": error,
+                    "round": round_num
+                })
+
+                if success:
+                    round_succeeded += 1
+                    succeeded_profiles.add(profile_name)
+                else:
+                    round_failed += 1
+
+            except Exception as e:
+                self.logger.error(f"Auto-retry: job {job_index} exception: {e}")
+                self.queue_manager.record_retry_attempt(
+                    campaign_id=campaign_id,
+                    job_index=job_index,
+                    profile=profile_name,
+                    round_num=round_num,
+                    success=False,
+                    error=str(e),
+                    was_restriction=False
+                )
+                round_failed += 1
+
+        # Check if all jobs are now succeeded or exhausted
+        campaign = self.queue_manager.get_campaign_from_history(campaign_id)
+        ar = campaign.get("auto_retry", {}) if campaign else {}
+        remaining = [fj for fj in ar.get("failed_jobs", []) if not fj.get("exhausted")]
+
+        # Check which remaining jobs still haven't succeeded
+        job_successes = {}
+        for r in campaign.get("results", []):
+            if r.get("success"):
+                job_successes[r.get("job_index")] = True
+
+        still_failed = [fj for fj in remaining if not job_successes.get(fj["job_index"])]
+
+        if not still_failed:
+            final_status = "completed" if round_succeeded > 0 or not remaining else "exhausted"
+            self.queue_manager.complete_auto_retry(campaign_id, final_status)
+            await broadcast_update("auto_retry_complete", {
+                "campaign_id": campaign_id,
+                "final_status": final_status
+            })
+        else:
+            # Advance to next round
+            self.queue_manager.advance_retry_round(campaign_id)
+            # Re-read to get updated next_retry_at
+            campaign = self.queue_manager.get_campaign_from_history(campaign_id)
+            next_at = campaign.get("auto_retry", {}).get("next_retry_at") if campaign else None
+
+            await broadcast_update("auto_retry_round_complete", {
+                "campaign_id": campaign_id,
+                "round": round_num,
+                "succeeded": round_succeeded,
+                "failed": round_failed,
+                "next_retry_at": next_at
+            })
+
+        self.logger.info(
+            f"Auto-retry round {round_num} done for {campaign_id[:8]}...: "
+            f"{round_succeeded} succeeded, {round_failed} failed, {len(still_failed)} still pending"
+        )
 
 
 # Initialize queue processor
@@ -2216,6 +2444,11 @@ async def bulk_retry_failed_jobs(
     campaign = queue_manager.get_campaign_from_history(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found in history")
+
+    # Disable auto-retry when manual bulk-retry is triggered
+    if campaign.get("auto_retry", {}).get("status") in ("scheduled", "in_progress"):
+        queue_manager.complete_auto_retry(campaign_id, "completed")
+        logger.info(f"Disabled auto-retry for campaign {campaign_id} (manual bulk-retry)")
 
     # Get the campaign URL and settings
     url = campaign.get("url")
@@ -4161,6 +4394,11 @@ async def startup_event():
     # Start queue processor for background campaign processing
     await queue_processor.start()
     logger.info("Queue processor started on startup")
+    # Start appeal scheduler
+    from appeal_scheduler import get_appeal_scheduler
+    scheduler = get_appeal_scheduler()
+    await scheduler.start()
+    logger.info("Appeal scheduler started on startup")
 
 
 @app.on_event("shutdown")
@@ -4168,6 +4406,30 @@ async def shutdown_event():
     """Gracefully stop background tasks on shutdown."""
     await queue_processor.stop()
     logger.info("Queue processor stopped on shutdown")
+    from appeal_scheduler import get_appeal_scheduler
+    scheduler = get_appeal_scheduler()
+    await scheduler.stop()
+    logger.info("Appeal scheduler stopped on shutdown")
+
+
+# =========================================================================
+# Appeal Scheduler Endpoints
+# =========================================================================
+
+@app.get("/appeals/scheduler/status")
+async def get_appeal_scheduler_status(current_user: dict = Depends(get_current_user)):
+    """Get current appeal scheduler state."""
+    from appeal_scheduler import get_appeal_scheduler
+    return get_appeal_scheduler().get_status()
+
+
+@app.post("/appeals/scheduler/run-now")
+async def run_appeal_scheduler_now(current_user: dict = Depends(get_current_user)):
+    """Manually trigger appeal scheduler run."""
+    from appeal_scheduler import get_appeal_scheduler
+    scheduler = get_appeal_scheduler()
+    result = await scheduler.run_now()
+    return result
 
 
 if __name__ == "__main__":

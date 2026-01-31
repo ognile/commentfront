@@ -7,7 +7,7 @@ import os
 import json
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import uuid
 
@@ -279,16 +279,25 @@ class CampaignQueueManager:
         return True
 
     def _move_to_history(self, campaign_id: str):
-        """Move a campaign from active queue to history (FIFO, max 100)."""
+        """Move a campaign from active queue to history (FIFO, max 100).
+        Campaigns with scheduled auto-retries are protected from trimming."""
         if campaign_id not in self.campaigns:
             return
 
         campaign = self.campaigns.pop(campaign_id)
         self.history.insert(0, campaign)
 
-        # Keep only last MAX_HISTORY items
+        # Keep only last MAX_HISTORY items, but protect campaigns with scheduled auto-retries
         if len(self.history) > self.MAX_HISTORY:
-            self.history = self.history[:self.MAX_HISTORY]
+            protected = [c for c in self.history if c.get("auto_retry", {}).get("status") == "scheduled"]
+            unprotected = [c for c in self.history if c.get("auto_retry", {}).get("status") != "scheduled"]
+            # Trim unprotected first, keep all protected
+            unprotected = unprotected[:max(0, self.MAX_HISTORY - len(protected))]
+            self.history = sorted(
+                protected + unprotected,
+                key=lambda c: c.get("completed_at", c.get("created_at", "")),
+                reverse=True
+            )
 
         self.save()
 
@@ -522,3 +531,168 @@ class CampaignQueueManager:
         campaign = self.campaigns[campaign_id]
         results = campaign.get("results", [])
         return {r.get("job_index") for r in results if r.get("job_index") is not None}
+
+    # =========================================================================
+    # Auto-Retry Methods
+    # =========================================================================
+
+    RETRY_SCHEDULE = [300, 1800, 7200, 21600]  # 5min, 30min, 2h, 6h
+    MAX_RETRY_ROUNDS = 4
+
+    def enable_auto_retry(self, campaign_id: str, failed_jobs: List[dict]):
+        """Initialize auto-retry state on a completed campaign with failures.
+        failed_jobs: [{"job_index": int, "comment": str, "last_profile": str}]
+        """
+        campaign = self.get_campaign_from_history(campaign_id)
+        if not campaign:
+            self.logger.warning(f"Cannot enable auto-retry: campaign {campaign_id} not in history")
+            return
+
+        now = datetime.utcnow()
+        campaign["auto_retry"] = {
+            "status": "scheduled",
+            "current_round": 0,
+            "max_rounds": self.MAX_RETRY_ROUNDS,
+            "next_retry_at": (now + timedelta(seconds=self.RETRY_SCHEDULE[0])).isoformat(),
+            "schedule_seconds": self.RETRY_SCHEDULE,
+            "failed_jobs": [
+                {
+                    "job_index": j["job_index"],
+                    "comment": j["comment"],
+                    "excluded_profiles": [],
+                    "last_profile": j.get("last_profile", ""),
+                    "exhausted": False
+                }
+                for j in failed_jobs
+            ]
+        }
+        self.save()
+        self.logger.info(f"Auto-retry enabled for campaign {campaign_id[:8]}...: {len(failed_jobs)} failed jobs, first retry at +{self.RETRY_SCHEDULE[0]}s")
+
+    def get_next_due_retry(self) -> Optional[dict]:
+        """Get campaign with earliest past-due auto-retry. Returns None if none due."""
+        now = datetime.utcnow().isoformat()
+        candidates = []
+        for campaign in self.history:
+            ar = campaign.get("auto_retry")
+            if not ar or ar.get("status") != "scheduled":
+                continue
+            next_at = ar.get("next_retry_at", "")
+            if next_at and next_at <= now:
+                candidates.append(campaign)
+
+        if not candidates:
+            return None
+
+        # Earliest first
+        candidates.sort(key=lambda c: c["auto_retry"]["next_retry_at"])
+        return candidates[0]
+
+    def record_retry_attempt(self, campaign_id: str, job_index: int, profile: str,
+                             round_num: int, success: bool, error: Optional[str],
+                             was_restriction: bool):
+        """Record a single auto-retry attempt result. Saves to disk immediately."""
+        campaign = self.get_campaign_from_history(campaign_id)
+        if not campaign:
+            return
+
+        # Add result to campaign results
+        result = {
+            "profile_name": profile,
+            "comment": "",
+            "success": success,
+            "verified": success,
+            "method": "auto_retry",
+            "error": error,
+            "job_index": job_index,
+            "is_retry": True,
+            "auto_retry_round": round_num,
+            "retried_at": datetime.utcnow().isoformat()
+        }
+
+        # Find comment text from auto_retry.failed_jobs
+        ar = campaign.get("auto_retry", {})
+        for fj in ar.get("failed_jobs", []):
+            if fj["job_index"] == job_index:
+                result["comment"] = fj["comment"]
+                # If restriction → exclude profile from future retries for this job
+                if was_restriction:
+                    if profile not in fj.get("excluded_profiles", []):
+                        fj.setdefault("excluded_profiles", []).append(profile)
+                # Update last_profile
+                fj["last_profile"] = profile
+                break
+
+        if "results" not in campaign:
+            campaign["results"] = []
+        campaign["results"].append(result)
+
+        # Recalculate success_count
+        job_successes = {}
+        original_job_count = 0
+        for r in campaign["results"]:
+            idx = r.get("job_index", 0)
+            if not r.get("is_retry"):
+                original_job_count = max(original_job_count, idx + 1)
+            if r.get("success"):
+                job_successes[idx] = True
+        campaign["success_count"] = len(job_successes)
+        if original_job_count > 0:
+            campaign["total_count"] = original_job_count
+        campaign["has_retries"] = True
+        campaign["last_retry_at"] = datetime.utcnow().isoformat()
+
+        self.save()
+
+    def mark_retry_job_exhausted(self, campaign_id: str, job_index: int):
+        """Mark a specific retry job as exhausted (all eligible profiles tried)."""
+        campaign = self.get_campaign_from_history(campaign_id)
+        if not campaign:
+            return
+        ar = campaign.get("auto_retry", {})
+        for fj in ar.get("failed_jobs", []):
+            if fj["job_index"] == job_index:
+                fj["exhausted"] = True
+                break
+        self.save()
+
+    def advance_retry_round(self, campaign_id: str):
+        """Increment retry round and schedule next retry time."""
+        campaign = self.get_campaign_from_history(campaign_id)
+        if not campaign:
+            return
+        ar = campaign.get("auto_retry")
+        if not ar:
+            return
+
+        ar["current_round"] = ar.get("current_round", 0) + 1
+        round_idx = ar["current_round"]
+
+        if round_idx >= ar.get("max_rounds", self.MAX_RETRY_ROUNDS):
+            self.complete_auto_retry(campaign_id, "exhausted")
+            return
+
+        schedule = ar.get("schedule_seconds", self.RETRY_SCHEDULE)
+        delay = schedule[min(round_idx, len(schedule) - 1)]
+        ar["next_retry_at"] = (datetime.utcnow() + timedelta(seconds=delay)).isoformat()
+        ar["status"] = "scheduled"
+        self.save()
+        self.logger.info(f"Auto-retry round {round_idx} scheduled for campaign {campaign_id[:8]}... in {delay}s")
+
+    def complete_auto_retry(self, campaign_id: str, final_status: str = "completed"):
+        """Mark auto-retry as completed or exhausted."""
+        campaign = self.get_campaign_from_history(campaign_id)
+        if not campaign:
+            return
+        ar = campaign.get("auto_retry")
+        if not ar:
+            return
+        ar["status"] = final_status
+        ar["completed_at"] = datetime.utcnow().isoformat()
+
+        # Update campaign status if all jobs now succeeded
+        if campaign.get("success_count", 0) >= campaign.get("total_count", 0):
+            campaign["status"] = "completed"
+
+        self.save()
+        self.logger.info(f"Auto-retry {final_status} for campaign {campaign_id[:8]}...")
