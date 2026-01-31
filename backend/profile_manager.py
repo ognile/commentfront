@@ -616,6 +616,18 @@ class ProfileManager:
             return "checkpoint"
         if "ended on" in reason:
             return "expired"
+
+        # Check if restriction_expires_at has passed
+        expires_at = profile.get("restriction_expires_at")
+        if expires_at:
+            try:
+                from datetime import datetime, timezone
+                exp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                if exp < datetime.now(timezone.utc):
+                    return "expired"
+            except (ValueError, TypeError):
+                pass
+
         return "comment_restriction"
 
 
