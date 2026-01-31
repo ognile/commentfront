@@ -3991,6 +3991,35 @@ async def appeal_status_endpoint(
     return {"profiles": profiles, "total": len(profiles)}
 
 
+class VerifyProfileRequest(BaseModel):
+    profile_name: str
+
+
+@app.post("/appeals/verify")
+async def verify_single_endpoint(
+    request: VerifyProfileRequest,
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """Verify if a profile's restriction is still active on Facebook. Auto-unblocks if resolved."""
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    from appeal_manager import verify_single_profile
+    return await verify_single_profile(request.profile_name)
+
+
+@app.post("/appeals/verify-all")
+async def verify_all_endpoint(
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """Verify ALL restricted profiles. Auto-unblocks resolved ones."""
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    from appeal_manager import verify_all_restricted
+    return await verify_all_restricted()
+
+
 # ===========================================================================
 # Workflow Endpoints
 # High-level workflows combining multiple capabilities
