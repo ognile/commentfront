@@ -4598,6 +4598,7 @@ class AdaptiveAgentRequest(BaseModel):
     profile_name: str
     task: str
     max_steps: int = 15
+    start_url: str = "https://m.facebook.com"
 
 
 class ProfilePhotoRequest(BaseModel):
@@ -4639,7 +4640,8 @@ async def adaptive_agent_endpoint(
     result = await run_adaptive_task(
         profile_name=request.profile_name,
         task=request.task,
-        max_steps=request.max_steps
+        max_steps=request.max_steps,
+        start_url=request.start_url
     )
 
     return result
