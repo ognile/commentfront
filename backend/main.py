@@ -1394,13 +1394,14 @@ async def get_profile_analytics(
 @app.post("/analytics/profiles/{profile_name}/unblock")
 async def unblock_profile(
     profile_name: str,
+    reset_stats: bool = Query(default=True, description="Reset usage stats to prevent auto-burn re-trigger"),
     current_user: dict = Depends(get_current_user)
 ):
-    """Manually unblock a restricted profile."""
+    """Manually unblock a restricted profile. Resets stats by default to prevent auto-burn."""
     from profile_manager import get_profile_manager
     pm = get_profile_manager()
 
-    pm.unblock_profile(profile_name)
+    pm.unblock_profile(profile_name, reset_stats=reset_stats)
     return {"success": True, "profile_name": profile_name}
 
 
@@ -2753,6 +2754,16 @@ async def retry_all_failed_campaigns(
             detail=f"Proxy is down: {health['error']}. Fix proxy before retrying."
         )
     logger.info(f"Proxy health OK: ip={health['ip']}, {health['response_ms']}ms")
+
+    # Unblock any auto-burned profiles with stats reset so they're available for retries
+    all_profiles = profile_manager.state.get("profiles", {})
+    unblocked_count = 0
+    for pname, pstate in all_profiles.items():
+        if pstate.get("status") == "restricted" and "auto-burned" in (pstate.get("restriction_reason") or ""):
+            profile_manager.unblock_profile(pname, reset_stats=True)
+            unblocked_count += 1
+    if unblocked_count:
+        logger.info(f"Retry-all: unblocked {unblocked_count} auto-burned profiles with stats reset")
 
     # Find all campaigns with failures in the time window
     cutoff = datetime.utcnow() - timedelta(hours=hours_back)

@@ -400,8 +400,9 @@ class ProfileManager:
         logger.warning(f"Restricted profile {normalized} for {hours}h (reason: {reason}, offense #{restriction_count})")
         self._save_state()
 
-    def unblock_profile(self, profile_name: str):
-        """Manually unblock a restricted profile. Resets restriction_count and appeal state."""
+    def unblock_profile(self, profile_name: str, reset_stats: bool = False):
+        """Manually unblock a restricted profile. Resets restriction_count and appeal state.
+        If reset_stats=True, also resets usage_count and daily_stats to prevent auto-burn re-trigger."""
         normalized = self._normalize_name(profile_name)
         if normalized not in self.state["profiles"]:
             return
@@ -416,7 +417,13 @@ class ProfileManager:
         profile["appeal_attempts"] = 0
         profile["appeal_last_error"] = None
 
-        logger.info(f"Unblocked profile: {normalized} (restriction_count + appeal state reset)")
+        if reset_stats:
+            profile["usage_count"] = 0
+            profile["daily_stats"] = {}
+            profile["failure_breakdown"] = {}
+            logger.info(f"Unblocked profile: {normalized} (restriction_count + appeal + usage stats reset)")
+        else:
+            logger.info(f"Unblocked profile: {normalized} (restriction_count + appeal state reset)")
         self._save_state()
 
     def extend_restriction(self, profile_name: str, additional_hours: int):
