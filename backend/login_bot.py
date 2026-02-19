@@ -362,6 +362,7 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     - '2fa_selection' - 2FA method selection screen
     - '2fa_code_input' - 2FA code entry screen
     - 'logged_in' - Successfully logged in
+    - 'captcha' - reCAPTCHA challenge on page
     - 'checkpoint' - Security checkpoint
     - 'unknown' - Unknown state
     """
@@ -371,7 +372,7 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
     # FIRST: Check for logged in state via URL (before any element checks)
     # This handles the homepage redirect case where elements=0 while page loads
     # Must be at the very top because blank page check would return 'loading' otherwise
-    if 'm.facebook.com' in url and '/login' not in url and '/checkpoint' not in url:
+    if 'm.facebook.com' in url and '/login' not in url and '/checkpoint' not in url and '/two_step_verification' not in url:
         return 'logged_in'
 
     # Check for loading state - before any other checks
@@ -567,6 +568,17 @@ async def detect_page_state(page: Page, elements: List[dict]) -> str:
         text = el.get('text', '').lower()
         if any(keyword in text for keyword in checkpoint_keywords):
             return 'checkpoint'
+
+    # Check for reCAPTCHA - look for captcha-related text/elements
+    for el in elements:
+        text = el.get('text', '').lower()
+        aria = el.get('ariaLabel', '').lower()
+        if any(kw in text or kw in aria for kw in ['recaptcha', 'captcha', "i'm not a robot", 'robot verification']):
+            return 'captcha'
+
+    # If URL is /two_step_verification but no code input found, might be captcha-blocked 2FA
+    if '/two_step_verification' in url:
+        return 'captcha'
 
     return 'unknown'
 
@@ -1686,6 +1698,92 @@ async def login_facebook(
                     else:
                         result["error"] = "Failed to click 'I already have an account' button"
                         await broadcast("signup_prompt", "failed", {"error": result["error"]})
+                        break
+
+                elif state == "captcha":
+                    result["step"] = "captcha"
+                    logger.info("reCAPTCHA detected, attempting to solve...")
+                    await broadcast("captcha", "solving")
+
+                    captcha_solved = False
+                    try:
+                        # Look for reCAPTCHA iframe and click the checkbox
+                        recaptcha_frames = page.frames
+                        for frame in recaptcha_frames:
+                            frame_url = frame.url
+                            if 'recaptcha' in frame_url or 'google.com/recaptcha' in frame_url:
+                                logger.info(f"Found reCAPTCHA iframe: {frame_url}")
+                                # Click the checkbox inside the iframe
+                                checkbox = frame.locator('.recaptcha-checkbox-border, #recaptcha-anchor')
+                                if await checkbox.count() > 0:
+                                    await checkbox.first.click()
+                                    logger.info("Clicked reCAPTCHA checkbox")
+                                    await asyncio.sleep(3)
+
+                                    # Check if solved (checkbox gets checked class)
+                                    checked = frame.locator('.recaptcha-checkbox-checked, [aria-checked="true"]')
+                                    if await checked.count() > 0:
+                                        logger.info("reCAPTCHA solved!")
+                                        captcha_solved = True
+                                    else:
+                                        # May need image challenge - wait longer
+                                        logger.info("reCAPTCHA may need image challenge, waiting...")
+                                        await asyncio.sleep(5)
+                                        if await checked.count() > 0:
+                                            captcha_solved = True
+                                            logger.info("reCAPTCHA solved after waiting!")
+                                    break
+
+                        if not captcha_solved:
+                            # Try clicking any visible captcha-like button on the page itself
+                            captcha_selectors = [
+                                'iframe[src*="recaptcha"]',
+                                'iframe[title*="reCAPTCHA"]',
+                                'div.g-recaptcha',
+                            ]
+                            for sel in captcha_selectors:
+                                loc = page.locator(sel)
+                                if await loc.count() > 0:
+                                    bbox = await loc.first.bounding_box()
+                                    if bbox:
+                                        # Click center of captcha widget
+                                        await page.mouse.click(bbox['x'] + bbox['width'] / 2, bbox['y'] + bbox['height'] / 2)
+                                        logger.info(f"Clicked captcha widget via {sel}")
+                                        await asyncio.sleep(5)
+                                        captcha_solved = True
+                                        break
+
+                        if captcha_solved:
+                            # After solving captcha, look for submit/continue button
+                            submit_selectors = [
+                                'button[type="submit"]',
+                                'div[role="button"]:has-text("Continue")',
+                                'div[role="button"]:has-text("Submit")',
+                                'button:has-text("Continue")',
+                                'button:has-text("Submit")',
+                            ]
+                            for sel in submit_selectors:
+                                loc = page.locator(sel)
+                                if await loc.count() > 0 and await loc.first.is_visible():
+                                    await loc.first.click()
+                                    logger.info(f"Clicked submit after captcha: {sel}")
+                                    break
+                            await asyncio.sleep(3)
+                            elements = await dump_interactive_elements(page, "AFTER CAPTCHA SOLVE")
+                            # Continue loop - should advance to next state
+                        else:
+                            result["error"] = "Could not find or solve reCAPTCHA"
+                            result["needs_attention"] = True
+                            await save_debug_screenshot(page, "captcha_unsolved")
+                            await broadcast("captcha", "needs_attention", {"error": result["error"]})
+                            break
+
+                    except Exception as e:
+                        logger.error(f"Captcha handling error: {e}")
+                        result["error"] = f"Captcha solve failed: {e}"
+                        result["needs_attention"] = True
+                        await save_debug_screenshot(page, "captcha_error")
+                        await broadcast("captcha", "failed", {"error": result["error"]})
                         break
 
                 else:
