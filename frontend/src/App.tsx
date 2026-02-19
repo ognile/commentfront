@@ -729,6 +729,28 @@ function App() {
                 fetchSchedulerStatus();
                 break;
 
+              // Bulk retry-all events (parallel background task)
+              case 'bulk_retry_all_start':
+                setIsRetryingAll(true);
+                toast.info(`Retrying ${update.data.total_campaigns} failed campaigns in parallel...`);
+                break;
+              case 'bulk_retry_all_campaign_complete':
+                toast.success(`Campaign ${update.data.campaign_id?.slice(0, 8)}: ${update.data.jobs_succeeded} recovered, ${update.data.jobs_exhausted} exhausted`);
+                fetchQueue();
+                break;
+              case 'bulk_retry_all_complete':
+                setIsRetryingAll(false);
+                if (update.data.error) {
+                  toast.error(`Retry-all failed: ${update.data.error}`);
+                } else {
+                  toast.success(`Retry-all complete: ${update.data.campaigns_succeeded}/${update.data.campaigns_retried} campaigns succeeded, ${update.data.total_jobs_succeeded} jobs recovered`);
+                  if (update.data.total_jobs_exhausted > 0) {
+                    toast.warning(`${update.data.total_jobs_exhausted} jobs ran out of eligible profiles`);
+                  }
+                }
+                fetchQueue();
+                break;
+
               // Legacy queue events (for backward compatibility during transition)
               case 'queue_start':
               case 'queue_complete':
@@ -1309,7 +1331,7 @@ function App() {
   // Retry ALL failed campaigns at once
   const handleRetryAllFailed = async () => {
     setIsRetryingAll(true);
-    toast.info('Checking proxy health and retrying all failed campaigns...');
+    toast.info('Checking proxy health and launching parallel retry...');
 
     try {
       const res = await fetch(`${API_BASE}/queue/retry-all-failed?hours_back=72`, {
@@ -1321,26 +1343,25 @@ function App() {
 
       if (res.status === 503) {
         toast.error(`Proxy is down: ${data.detail}`);
+        setIsRetryingAll(false);
         return;
       }
 
-      if (data.success) {
-        if (data.campaigns_found === 0) {
-          toast.info('No failed campaigns found');
-        } else {
-          toast.success(`Retry complete: ${data.campaigns_succeeded}/${data.campaigns_retried} campaigns fully succeeded, ${data.total_jobs_succeeded} jobs recovered`);
-          if (data.total_jobs_exhausted > 0) {
-            toast.warning(`${data.total_jobs_exhausted} jobs ran out of eligible profiles`);
-          }
-        }
-        // Refresh queue state
-        fetchQueue();
+      if (data.task_started) {
+        toast.success(`Launched: retrying ${data.campaigns_found} campaigns (${data.parallel_limit} parallel). Progress via websocket.`);
+        // isRetryingAll stays true until bulk_retry_all_complete websocket event
+      } else if (data.campaigns_found === 0) {
+        toast.info('No failed campaigns found');
+        setIsRetryingAll(false);
+      } else if (data.progress) {
+        // Already running
+        toast.info(`Retry-all already running: ${data.progress.campaigns_completed}/${data.progress.campaigns_total} done`);
       } else {
-        toast.error(data.detail || 'Retry all failed');
+        toast.error(data.detail || data.message || 'Retry all failed');
+        setIsRetryingAll(false);
       }
     } catch (error) {
       toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
       setIsRetryingAll(false);
     }
   };

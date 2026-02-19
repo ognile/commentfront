@@ -4,11 +4,12 @@ Manages profile rotation state and priority queue for fair profile usage.
 Uses LRU (Least Recently Used) strategy to rotate profiles.
 """
 
+import asyncio
 import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -47,8 +48,29 @@ class ProfileManager:
             os.path.join(os.path.dirname(__file__), "sessions")
         )
         self.state: Dict[str, Dict] = {"profiles": {}}
+        self._reserved_profiles: Set[str] = set()
+        self._reserve_lock = asyncio.Lock()
         self._load_state()
         self._sync_with_sessions()
+
+    async def reserve_profile(self, profile_name: str) -> bool:
+        """Reserve a profile for exclusive browser use. Returns False if already reserved."""
+        normalized = self._normalize_name(profile_name)
+        async with self._reserve_lock:
+            if normalized in self._reserved_profiles:
+                return False
+            self._reserved_profiles.add(normalized)
+            return True
+
+    async def release_profile(self, profile_name: str):
+        """Release a profile after browser closes."""
+        normalized = self._normalize_name(profile_name)
+        async with self._reserve_lock:
+            self._reserved_profiles.discard(normalized)
+
+    def is_reserved(self, profile_name: str) -> bool:
+        """Check if a profile is currently reserved (browser running)."""
+        return self._normalize_name(profile_name) in self._reserved_profiles
 
     def _load_state(self):
         """Load state from disk with automatic recovery from backup."""
@@ -157,7 +179,8 @@ class ProfileManager:
             "tag_mismatch": 0,
             "restricted": 0,
             "auto_burned": 0,
-            "excluded": 0
+            "excluded": 0,
+            "reserved": 0
         }
 
         for session in sessions:
@@ -166,6 +189,11 @@ class ProfileManager:
             # Skip excluded profiles
             if profile_name in exclude_set:
                 skip_reasons["excluded"] += 1
+                continue
+
+            # Skip profiles with an active browser session
+            if self.is_reserved(profile_name):
+                skip_reasons["reserved"] += 1
                 continue
 
             # Must have valid cookies

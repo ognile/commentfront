@@ -196,6 +196,11 @@ class QueueProcessor:
         Priority 1: pending campaigns. Priority 2: due auto-retries."""
         while not self._stop_requested:
             try:
+                # Pause while retry-all is running to avoid profile conflicts
+                if _retry_all_task and not _retry_all_task.done():
+                    await asyncio.sleep(5)
+                    continue
+
                 campaign = self.queue_manager.get_next_pending()
 
                 if campaign:
@@ -746,6 +751,11 @@ class QueueProcessor:
 
 # Initialize queue processor
 queue_processor = QueueProcessor(queue_manager)
+
+# Parallel retry-all infrastructure
+_browser_semaphore = asyncio.Semaphore(MAX_CONCURRENT)  # Limit concurrent browser instances
+_retry_all_task: Optional[asyncio.Task] = None
+_retry_all_progress: Dict = {}
 
 
 # Helper functions for campaign queue
@@ -2731,18 +2741,301 @@ async def proxy_health_endpoint(current_user: dict = Depends(get_current_user)) 
     return await check_proxy_health()
 
 
+async def _retry_single_campaign(
+    campaign: dict,
+    campaign_index: int,
+    total_campaigns: int,
+    profile_manager,
+    browser_semaphore: asyncio.Semaphore,
+) -> Dict:
+    """Retry all failed jobs in a single campaign. Used by _run_retry_all for parallel execution."""
+    campaign_id = campaign.get("id")
+    sc = campaign.get("success_count", 0)
+    tc = campaign.get("total_count", 0)
+    failed_count = tc - sc
+
+    logger.info(f"Retry-all: campaign {campaign_index+1}/{total_campaigns} ({campaign_id[:8]}): {sc}/{tc} success, {failed_count} to retry")
+
+    await broadcast_update("bulk_retry_all_campaign_start", {
+        "campaign_index": campaign_index,
+        "campaign_id": campaign_id,
+        "total_campaigns": total_campaigns,
+        "failed_jobs": failed_count
+    })
+
+    # Disable auto-retry if active
+    if campaign.get("auto_retry", {}).get("status") in ("scheduled", "in_progress"):
+        queue_manager.complete_auto_retry(campaign_id, "completed")
+
+    url = campaign.get("url")
+    if not url:
+        logger.warning(f"Retry-all: campaign {campaign_id[:8]} has no URL, skipping")
+        return {"campaign_id": campaign_id, "jobs_succeeded": 0, "jobs_exhausted": 0, "attempts": 0}
+
+    filter_tags = campaign.get("filter_tags", [])
+    enable_warmup = campaign.get("enable_warmup", False)
+
+    # Get succeeded profiles (prevent duplicates on same post)
+    succeeded_profiles = {
+        r.get("profile_name")
+        for r in campaign.get("results", [])
+        if r.get("success") and r.get("profile_name")
+    }
+
+    # Find jobs that never succeeded
+    job_has_success: Dict[int, bool] = {}
+    job_comment: Dict[int, str] = {}
+    job_original_profile: Dict[int, str] = {}
+
+    for result in campaign.get("results", []):
+        idx = result.get("job_index", 0)
+        if idx not in job_has_success:
+            job_has_success[idx] = False
+            job_comment[idx] = result.get("comment", "")
+            job_original_profile[idx] = result.get("profile_name", "")
+        if result.get("success"):
+            job_has_success[idx] = True
+
+    failed_jobs = [
+        {"job_index": idx, "comment": job_comment.get(idx, ""), "original_profile": job_original_profile.get(idx, "")}
+        for idx, has_success in job_has_success.items()
+        if not has_success
+    ]
+
+    if not failed_jobs:
+        logger.info(f"Retry-all: campaign {campaign_id[:8]} has no failed jobs left")
+        return {"campaign_id": campaign_id, "jobs_succeeded": 0, "jobs_exhausted": 0, "attempts": 0}
+
+    campaign_jobs_succeeded = 0
+    campaign_jobs_exhausted = 0
+    campaign_attempts = 0
+
+    for job in failed_jobs:
+        job_index = job["job_index"]
+        comment = job["comment"]
+        job_succeeded = False
+        job_tried_profiles = set(succeeded_profiles)
+
+        while not job_succeeded:
+            eligible = profile_manager.get_eligible_profiles(
+                filter_tags=filter_tags if filter_tags else None,
+                count=5,
+                exclude_profiles=list(job_tried_profiles)
+            )
+
+            if not eligible:
+                result = {
+                    "profile_name": None, "comment": comment, "success": False,
+                    "verified": False, "method": "exhausted",
+                    "error": "No eligible profiles remaining",
+                    "job_index": job_index, "is_retry": True,
+                    "original_profile": job.get("original_profile"),
+                    "retried_at": datetime.utcnow().isoformat()
+                }
+                queue_manager.add_retry_result(campaign_id, result)
+                campaign_jobs_exhausted += 1
+                break
+
+            profile_name = eligible[0]
+            job_tried_profiles.add(profile_name)
+            campaign_attempts += 1
+
+            try:
+                session = FacebookSession(profile_name)
+                if not session.load() or not session.has_valid_cookies():
+                    continue
+
+                # Reserve profile to prevent parallel browser conflicts
+                reserved = await profile_manager.reserve_profile(profile_name)
+                if not reserved:
+                    logger.debug(f"Retry-all: {profile_name} reserved by another campaign, skipping")
+                    continue
+
+                try:
+                    async with browser_semaphore:
+                        post_result = await post_comment_verified(
+                            session=session, url=url, comment=comment,
+                            proxy=get_effective_proxy(), enable_warmup=enable_warmup
+                        )
+                finally:
+                    await profile_manager.release_profile(profile_name)
+
+                failure_type = None
+                if not post_result.get("success", False):
+                    error = post_result.get("error", "")
+                    if any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
+                        failure_type = "infrastructure"
+                    elif post_result.get("throttled") or "restricted" in str(error).lower():
+                        failure_type = "restriction"
+                    else:
+                        failure_type = "facebook_error"
+
+                profile_manager.mark_profile_used(
+                    profile_name=profile_name, campaign_id=campaign_id,
+                    comment=comment, success=post_result.get("success", False),
+                    failure_type=failure_type
+                )
+
+                if post_result.get("throttled"):
+                    profile_manager.mark_profile_restricted(
+                        profile_name=profile_name,
+                        reason=post_result.get("throttle_reason", "Facebook restriction")
+                    )
+
+                result = {
+                    "profile_name": profile_name, "comment": comment,
+                    "success": post_result.get("success", False),
+                    "verified": post_result.get("verified", False),
+                    "method": post_result.get("method", "unknown"),
+                    "error": post_result.get("error"),
+                    "job_index": job_index, "is_retry": True,
+                    "original_profile": job.get("original_profile"),
+                    "retried_at": datetime.utcnow().isoformat(),
+                    "warmup": post_result.get("warmup")
+                }
+                queue_manager.add_retry_result(campaign_id, result)
+
+                if post_result.get("success"):
+                    job_succeeded = True
+                    campaign_jobs_succeeded += 1
+                    succeeded_profiles.add(profile_name)
+            except Exception as e:
+                logger.error(f"Retry-all: exception with {profile_name}: {e}")
+                profile_manager.mark_profile_used(
+                    profile_name=profile_name, campaign_id=campaign_id,
+                    comment=comment, success=False, failure_type="facebook_error"
+                )
+                result = {
+                    "profile_name": profile_name, "comment": comment,
+                    "success": False, "verified": False, "method": "error",
+                    "error": str(e), "job_index": job_index, "is_retry": True,
+                    "original_profile": job.get("original_profile"),
+                    "retried_at": datetime.utcnow().isoformat()
+                }
+                queue_manager.add_retry_result(campaign_id, result)
+
+    # Check if campaign is now fully successful
+    updated = queue_manager.get_campaign_from_history(campaign_id)
+    campaign_result = {
+        "campaign_id": campaign_id,
+        "jobs_succeeded": campaign_jobs_succeeded,
+        "jobs_exhausted": campaign_jobs_exhausted,
+        "attempts": campaign_attempts
+    }
+
+    await broadcast_update("bulk_retry_all_campaign_complete", {
+        "campaign_index": campaign_index,
+        "campaign_id": campaign_id,
+        "jobs_succeeded": campaign_jobs_succeeded,
+        "jobs_exhausted": campaign_jobs_exhausted,
+        "campaign": updated
+    })
+
+    logger.info(f"Retry-all: campaign {campaign_id[:8]} done: {campaign_jobs_succeeded} succeeded, {campaign_jobs_exhausted} exhausted")
+    return campaign_result
+
+
+MAX_PARALLEL_CAMPAIGNS = 3
+
+
+async def _run_retry_all(failed_campaigns: list, profile_manager, proxy_ip: str):
+    """Background coroutine: retry all failed campaigns in parallel batches."""
+    global _retry_all_progress
+
+    _retry_all_progress = {
+        "active": True,
+        "campaigns_total": len(failed_campaigns),
+        "campaigns_completed": 0,
+        "campaigns_succeeded": 0,
+        "jobs_succeeded": 0,
+        "jobs_exhausted": 0,
+        "total_attempts": 0,
+        "campaign_results": []
+    }
+
+    try:
+        await broadcast_update("bulk_retry_all_start", {
+            "total_campaigns": len(failed_campaigns),
+            "proxy_ip": proxy_ip
+        })
+
+        # Process in parallel batches
+        for batch_start in range(0, len(failed_campaigns), MAX_PARALLEL_CAMPAIGNS):
+            batch = failed_campaigns[batch_start:batch_start + MAX_PARALLEL_CAMPAIGNS]
+            batch_tasks = [
+                _retry_single_campaign(
+                    campaign=campaign,
+                    campaign_index=batch_start + j,
+                    total_campaigns=len(failed_campaigns),
+                    profile_manager=profile_manager,
+                    browser_semaphore=_browser_semaphore,
+                )
+                for j, campaign in enumerate(batch)
+            ]
+
+            logger.info(f"Retry-all: starting batch {batch_start//MAX_PARALLEL_CAMPAIGNS + 1} ({len(batch)} campaigns in parallel)")
+            results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.error(f"Retry-all: campaign failed with exception: {r}")
+                    _retry_all_progress["campaigns_completed"] += 1
+                    continue
+                _retry_all_progress["campaigns_completed"] += 1
+                _retry_all_progress["jobs_succeeded"] += r.get("jobs_succeeded", 0)
+                _retry_all_progress["jobs_exhausted"] += r.get("jobs_exhausted", 0)
+                _retry_all_progress["total_attempts"] += r.get("attempts", 0)
+                _retry_all_progress["campaign_results"].append(r)
+
+                # Check if campaign fully succeeded
+                updated = queue_manager.get_campaign_from_history(r.get("campaign_id"))
+                if updated and updated.get("success_count", 0) >= updated.get("total_count", 0):
+                    _retry_all_progress["campaigns_succeeded"] += 1
+
+        summary = {
+            "success": True,
+            "campaigns_found": _retry_all_progress["campaigns_total"],
+            "campaigns_retried": _retry_all_progress["campaigns_completed"],
+            "campaigns_succeeded": _retry_all_progress["campaigns_succeeded"],
+            "total_jobs_succeeded": _retry_all_progress["jobs_succeeded"],
+            "total_jobs_exhausted": _retry_all_progress["jobs_exhausted"],
+            "total_attempts": _retry_all_progress["total_attempts"],
+            "campaign_results": _retry_all_progress["campaign_results"]
+        }
+
+        await broadcast_update("bulk_retry_all_complete", summary)
+        logger.info(
+            f"Retry-all complete: {summary['campaigns_retried']} campaigns, "
+            f"{summary['campaigns_succeeded']} fully succeeded, "
+            f"{summary['total_jobs_succeeded']} jobs recovered, "
+            f"{summary['total_jobs_exhausted']} exhausted"
+        )
+    except Exception as e:
+        logger.error(f"Retry-all background task crashed: {e}")
+        await broadcast_update("bulk_retry_all_complete", {"error": str(e)})
+    finally:
+        _retry_all_progress["active"] = False
+
+
 @app.post("/queue/retry-all-failed")
 async def retry_all_failed_campaigns(
     hours_back: int = Query(default=72, description="Only retry campaigns from the last N hours"),
     current_user: dict = Depends(get_current_user)
 ) -> Dict:
     """
-    Retry ALL failed campaigns in history at once.
-
-    - Checks proxy health first (won't burn profiles on dead proxy)
-    - For each failed campaign: runs existing bulk-retry logic
-    - Respects each campaign's own filter_tags, warmup, url
+    Launch parallel retry of ALL failed campaigns as a background task.
+    Returns immediately. Monitor via GET /queue/retry-all-failed/status or websocket.
     """
+    global _retry_all_task
+
+    # Prevent double-trigger
+    if _retry_all_task and not _retry_all_task.done():
+        return {
+            "success": False,
+            "message": "Retry-all already running",
+            "progress": _retry_all_progress
+        }
+
     from profile_manager import get_profile_manager
     profile_manager = get_profile_manager()
 
@@ -2755,7 +3048,7 @@ async def retry_all_failed_campaigns(
         )
     logger.info(f"Proxy health OK: ip={health['ip']}, {health['response_ms']}ms")
 
-    # Unblock any auto-burned profiles with stats reset so they're available for retries
+    # Unblock any auto-burned profiles with stats reset
     all_profiles = profile_manager.state.get("profiles", {})
     unblocked_count = 0
     for pname, pstate in all_profiles.items():
@@ -2777,7 +3070,6 @@ async def retry_all_failed_campaigns(
             continue
         if sc >= tc:
             continue
-        # Check time window
         completed_at = campaign.get("completed_at")
         if completed_at:
             try:
@@ -2790,208 +3082,32 @@ async def retry_all_failed_campaigns(
     if not failed_campaigns:
         return {"success": True, "message": "No failed campaigns found", "campaigns_found": 0}
 
-    logger.info(f"Retry-all: found {len(failed_campaigns)} failed campaigns in last {hours_back}h")
+    logger.info(f"Retry-all: launching background task for {len(failed_campaigns)} failed campaigns ({MAX_PARALLEL_CAMPAIGNS} parallel)")
 
-    await broadcast_update("bulk_retry_all_start", {
-        "total_campaigns": len(failed_campaigns),
-        "proxy_ip": health["ip"]
-    })
+    # Launch as background task — returns immediately
+    _retry_all_task = asyncio.create_task(
+        _run_retry_all(failed_campaigns, profile_manager, health["ip"])
+    )
 
-    # Process each failed campaign using existing bulk-retry logic
-    summary = {
+    return {
+        "success": True,
+        "task_started": True,
         "campaigns_found": len(failed_campaigns),
-        "campaigns_retried": 0,
-        "campaigns_succeeded": 0,
-        "total_jobs_succeeded": 0,
-        "total_jobs_exhausted": 0,
-        "total_attempts": 0,
-        "campaign_results": []
+        "parallel_limit": MAX_PARALLEL_CAMPAIGNS,
+        "unblocked_profiles": unblocked_count,
+        "message": f"Retrying {len(failed_campaigns)} campaigns in parallel (max {MAX_PARALLEL_CAMPAIGNS} at a time)"
     }
 
-    for i, campaign in enumerate(failed_campaigns):
-        campaign_id = campaign.get("id")
-        sc = campaign.get("success_count", 0)
-        tc = campaign.get("total_count", 0)
-        failed_count = tc - sc
 
-        logger.info(f"Retry-all: campaign {i+1}/{len(failed_campaigns)} ({campaign_id[:8]}): {sc}/{tc} success, {failed_count} to retry")
-
-        await broadcast_update("bulk_retry_all_campaign_start", {
-            "campaign_index": i,
-            "campaign_id": campaign_id,
-            "total_campaigns": len(failed_campaigns),
-            "failed_jobs": failed_count
-        })
-
-        # Disable auto-retry if active
-        if campaign.get("auto_retry", {}).get("status") in ("scheduled", "in_progress"):
-            queue_manager.complete_auto_retry(campaign_id, "completed")
-
-        url = campaign.get("url")
-        if not url:
-            logger.warning(f"Retry-all: campaign {campaign_id[:8]} has no URL, skipping")
-            continue
-
-        filter_tags = campaign.get("filter_tags", [])
-        enable_warmup = campaign.get("enable_warmup", False)
-
-        # Get succeeded profiles (prevent duplicates)
-        succeeded_profiles = {
-            r.get("profile_name")
-            for r in campaign.get("results", [])
-            if r.get("success") and r.get("profile_name")
-        }
-
-        # Find jobs that never succeeded
-        job_has_success: Dict[int, bool] = {}
-        job_comment: Dict[int, str] = {}
-        job_original_profile: Dict[int, str] = {}
-
-        for result in campaign.get("results", []):
-            idx = result.get("job_index", 0)
-            if idx not in job_has_success:
-                job_has_success[idx] = False
-                job_comment[idx] = result.get("comment", "")
-                job_original_profile[idx] = result.get("profile_name", "")
-            if result.get("success"):
-                job_has_success[idx] = True
-
-        failed_jobs = [
-            {"job_index": idx, "comment": job_comment.get(idx, ""), "original_profile": job_original_profile.get(idx, "")}
-            for idx, has_success in job_has_success.items()
-            if not has_success
-        ]
-
-        if not failed_jobs:
-            logger.info(f"Retry-all: campaign {campaign_id[:8]} has no failed jobs left")
-            continue
-
-        summary["campaigns_retried"] += 1
-        campaign_jobs_succeeded = 0
-        campaign_jobs_exhausted = 0
-        campaign_attempts = 0
-
-        for job in failed_jobs:
-            job_index = job["job_index"]
-            comment = job["comment"]
-            job_succeeded = False
-            job_tried_profiles = set(succeeded_profiles)
-
-            while not job_succeeded:
-                eligible = profile_manager.get_eligible_profiles(
-                    filter_tags=filter_tags if filter_tags else None,
-                    count=5,
-                    exclude_profiles=list(job_tried_profiles)
-                )
-
-                if not eligible:
-                    result = {
-                        "profile_name": None, "comment": comment, "success": False,
-                        "verified": False, "method": "exhausted",
-                        "error": f"No eligible profiles remaining",
-                        "job_index": job_index, "is_retry": True,
-                        "original_profile": job.get("original_profile"),
-                        "retried_at": datetime.utcnow().isoformat()
-                    }
-                    queue_manager.add_retry_result(campaign_id, result)
-                    campaign_jobs_exhausted += 1
-                    break
-
-                profile_name = eligible[0]
-                job_tried_profiles.add(profile_name)
-                campaign_attempts += 1
-
-                try:
-                    session = FacebookSession(profile_name)
-                    if not session.load() or not session.has_valid_cookies():
-                        continue
-
-                    post_result = await post_comment_verified(
-                        session=session, url=url, comment=comment,
-                        proxy=get_effective_proxy(), enable_warmup=enable_warmup
-                    )
-
-                    failure_type = None
-                    if not post_result.get("success", False):
-                        error = post_result.get("error", "")
-                        if any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
-                            failure_type = "infrastructure"
-                        elif post_result.get("throttled") or "restricted" in str(error).lower():
-                            failure_type = "restriction"
-                        else:
-                            failure_type = "facebook_error"
-
-                    profile_manager.mark_profile_used(
-                        profile_name=profile_name, campaign_id=campaign_id,
-                        comment=comment, success=post_result.get("success", False),
-                        failure_type=failure_type
-                    )
-
-                    if post_result.get("throttled"):
-                        profile_manager.mark_profile_restricted(
-                            profile_name=profile_name,
-                            reason=post_result.get("throttle_reason", "Facebook restriction")
-                        )
-
-                    result = {
-                        "profile_name": profile_name, "comment": comment,
-                        "success": post_result.get("success", False),
-                        "verified": post_result.get("verified", False),
-                        "method": post_result.get("method", "unknown"),
-                        "error": post_result.get("error"),
-                        "job_index": job_index, "is_retry": True,
-                        "original_profile": job.get("original_profile"),
-                        "retried_at": datetime.utcnow().isoformat(),
-                        "warmup": post_result.get("warmup")
-                    }
-                    queue_manager.add_retry_result(campaign_id, result)
-
-                    if post_result.get("success"):
-                        job_succeeded = True
-                        campaign_jobs_succeeded += 1
-                        succeeded_profiles.add(profile_name)
-                except Exception as e:
-                    logger.error(f"Retry-all: exception with {profile_name}: {e}")
-                    profile_manager.mark_profile_used(
-                        profile_name=profile_name, campaign_id=campaign_id,
-                        comment=comment, success=False, failure_type="facebook_error"
-                    )
-                    result = {
-                        "profile_name": profile_name, "comment": comment,
-                        "success": False, "verified": False, "method": "error",
-                        "error": str(e), "job_index": job_index, "is_retry": True,
-                        "original_profile": job.get("original_profile"),
-                        "retried_at": datetime.utcnow().isoformat()
-                    }
-                    queue_manager.add_retry_result(campaign_id, result)
-
-        # Check if campaign is now fully successful
-        updated = queue_manager.get_campaign_from_history(campaign_id)
-        if updated and updated.get("success_count", 0) >= updated.get("total_count", 0):
-            summary["campaigns_succeeded"] += 1
-
-        summary["total_jobs_succeeded"] += campaign_jobs_succeeded
-        summary["total_jobs_exhausted"] += campaign_jobs_exhausted
-        summary["total_attempts"] += campaign_attempts
-        summary["campaign_results"].append({
-            "campaign_id": campaign_id,
-            "jobs_succeeded": campaign_jobs_succeeded,
-            "jobs_exhausted": campaign_jobs_exhausted,
-            "attempts": campaign_attempts
-        })
-
-        await broadcast_update("bulk_retry_all_campaign_complete", {
-            "campaign_index": i,
-            "campaign_id": campaign_id,
-            "jobs_succeeded": campaign_jobs_succeeded,
-            "jobs_exhausted": campaign_jobs_exhausted,
-            "campaign": updated
-        })
-
-    await broadcast_update("bulk_retry_all_complete", summary)
-
-    logger.info(f"Retry-all complete: {summary['campaigns_retried']} campaigns, {summary['total_jobs_succeeded']} jobs succeeded, {summary['total_jobs_exhausted']} exhausted")
-    return {"success": True, **summary}
+@app.get("/queue/retry-all-failed/status")
+async def retry_all_status(current_user: dict = Depends(get_current_user)) -> Dict:
+    """Get the current status of the retry-all background task."""
+    if not _retry_all_task:
+        return {"active": False, "message": "No retry-all task has been started"}
+    return {
+        "active": not _retry_all_task.done(),
+        **_retry_all_progress
+    }
 
 
 @app.get("/config")
