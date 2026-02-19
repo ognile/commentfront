@@ -141,6 +141,7 @@ COMMENT = {
         'div[aria-label*="Write a comment"]',    # Partial match
         'div[contenteditable="true"]',
         'div[role="textbox"]',
+        'textarea[role="combobox"]',             # Some posts render textarea instead of div
         'textarea[name="comment_text"]',
         'input[placeholder*="Write a comment"]',
         'div[data-placeholder*="comment"]',
