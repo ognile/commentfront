@@ -738,7 +738,8 @@ async def post_comment(
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
         session_proxy = session.get_proxy()
-        active_proxy = session_proxy if session_proxy else proxy
+        # System proxy (from env/proxy manager) takes priority over stale session proxy
+        active_proxy = proxy if proxy else session_proxy
 
         # Get device fingerprint for this session (timezone, locale)
         device_fingerprint = session.get_device_fingerprint()
@@ -894,7 +895,8 @@ async def post_comment_verified(
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
         session_proxy = session.get_proxy()
-        active_proxy = session_proxy if session_proxy else proxy
+        # System proxy (from env/proxy manager) takes priority over stale session proxy
+        active_proxy = proxy if proxy else session_proxy
 
         # Get device fingerprint for this session (timezone, locale)
         device_fingerprint = session.get_device_fingerprint()
@@ -1130,7 +1132,8 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
 
     async with async_playwright() as p:
         session_proxy = session.get_proxy()
-        active_proxy = session_proxy if session_proxy else proxy
+        # System proxy (from env/proxy manager) takes priority over stale session proxy
+        active_proxy = proxy if proxy else session_proxy
 
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
