@@ -5,6 +5,7 @@ Handles extraction, persistence, and validation of Facebook sessions.
 Sessions are saved as JSON files containing cookies, user agent, viewport, and proxy info.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -244,7 +245,7 @@ class FacebookSession:
         user_id = self.get_user_id()
         if user_id:
             # Use user ID hash to deterministically select timezone
-            timezone_index = hash(user_id) % len(USA_TIMEZONES)
+            timezone_index = int(hashlib.md5(user_id.encode()).hexdigest(), 16) % len(USA_TIMEZONES)
             return {
                 "timezone": USA_TIMEZONES[timezone_index],
                 "locale": "en-US"

@@ -342,6 +342,9 @@ function App() {
   // Bulk retry state (simplified - no strategy selection needed)
   const [isBulkRetrying, setIsBulkRetrying] = useState(false);
   const [isRetryingAll, setIsRetryingAll] = useState(false);
+  const [historyDisplayCount, setHistoryDisplayCount] = useState(20);
+  const [sessionsPage, setSessionsPage] = useState(0);
+  const SESSIONS_PER_PAGE = 50;
 
   const [newUid, setNewUid] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -2553,7 +2556,7 @@ function App() {
                 </CardHeader>
                 <CardContent className="p-0 max-h-64 overflow-y-auto">
                   <div className="divide-y divide-[rgba(0,0,0,0.1)]">
-                    {queueState.history.slice(0, 10).map((campaign) => (
+                    {queueState.history.slice(0, historyDisplayCount).map((campaign) => (
                       <div
                         key={campaign.id}
                         className="p-3 flex items-center justify-between hover:bg-white text-sm cursor-pointer transition-colors"
@@ -2605,6 +2608,14 @@ function App() {
                         <ChevronRight className="w-4 h-4 text-[#999999] shrink-0" />
                       </div>
                     ))}
+                    {queueState.history.length > historyDisplayCount && (
+                      <button
+                        onClick={() => setHistoryDisplayCount(prev => prev + 20)}
+                        className="w-full p-2 text-xs text-[#666666] hover:text-[#333333] hover:bg-gray-50 transition-colors"
+                      >
+                        Show more ({queueState.history.length - historyDisplayCount} remaining)
+                      </button>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -2918,7 +2929,7 @@ function App() {
                   </div>
                 ) : (
                   <div className="divide-y divide-[rgba(0,0,0,0.1)]">
-                    {filteredSessions.map((session, index) => (
+                    {filteredSessions.slice(sessionsPage * SESSIONS_PER_PAGE, (sessionsPage + 1) * SESSIONS_PER_PAGE).map((session, index) => (
                       <div
                         key={session.file}
                         className={`px-4 py-3 flex items-center gap-4 hover:bg-white transition-colors ${
@@ -3046,6 +3057,29 @@ function App() {
                         </div>
                       </div>
                     ))}
+                    {filteredSessions.length > SESSIONS_PER_PAGE && (
+                      <div className="flex items-center justify-between px-4 py-2 bg-gray-50 text-xs text-[#666666]">
+                        <span>
+                          Showing {sessionsPage * SESSIONS_PER_PAGE + 1}-{Math.min((sessionsPage + 1) * SESSIONS_PER_PAGE, filteredSessions.length)} of {filteredSessions.length}
+                        </span>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setSessionsPage(p => Math.max(0, p - 1))}
+                            disabled={sessionsPage === 0}
+                            className="px-2 py-1 rounded border border-gray-300 disabled:opacity-30 hover:bg-white transition-colors"
+                          >
+                            Prev
+                          </button>
+                          <button
+                            onClick={() => setSessionsPage(p => Math.min(Math.ceil(filteredSessions.length / SESSIONS_PER_PAGE) - 1, p + 1))}
+                            disabled={(sessionsPage + 1) * SESSIONS_PER_PAGE >= filteredSessions.length}
+                            className="px-2 py-1 rounded border border-gray-300 disabled:opacity-30 hover:bg-white transition-colors"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </CardContent>

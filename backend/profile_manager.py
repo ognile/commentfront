@@ -233,18 +233,23 @@ class ProfileManager:
                     continue
 
             # Auto-restrict profiles with very low success rates
+            # Exclude infrastructure failures (proxy/timeout) from calculation — those aren't the profile's fault
             total_attempts = state.get("usage_count", 0)
             if total_attempts >= 10:
                 daily_stats = state.get("daily_stats", {})
                 total_success = sum(d.get("success", 0) for d in daily_stats.values())
-                success_rate = total_success / total_attempts
-                if success_rate < 0.10:
-                    self.mark_profile_restricted(
-                        profile_name,
-                        reason=f"auto-burned: {total_success}/{total_attempts} success rate ({success_rate:.0%})"
-                    )
-                    skip_reasons["auto_burned"] += 1
-                    continue
+                infra_failures = state.get("failure_breakdown", {}).get("infrastructure", 0)
+                effective_attempts = total_attempts - infra_failures
+
+                if effective_attempts >= 10:  # need 10+ non-infra attempts to judge
+                    success_rate = total_success / effective_attempts
+                    if success_rate < 0.10:
+                        self.mark_profile_restricted(
+                            profile_name,
+                            reason=f"auto-burned: {total_success}/{effective_attempts} success rate ({success_rate:.0%}) [excl {infra_failures} infra failures]"
+                        )
+                        skip_reasons["auto_burned"] += 1
+                        continue
 
             eligible.append({
                 "profile_name": profile_name,

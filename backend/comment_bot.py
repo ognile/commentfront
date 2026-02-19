@@ -1098,7 +1098,18 @@ async def post_comment_verified(
                 error_screenshot = await save_debug_screenshot(page, "error_state")
 
                 # Check for restriction/throttling when there's a failure
-                if vision and error_screenshot:
+                # Layer 1: Skip vision check if error is clearly infrastructure (proxy/timeout/network)
+                # Blank/error screenshots make Gemini hallucinate "RESTRICTED" → false positive
+                error_str = str(e).lower()
+                is_infra_error = any(kw in error_str for kw in [
+                    "timeout", "proxy", "connection", "network", "net::err", "tunnel",
+                    "err_tunnel", "err_connection", "err_proxy", "econnrefused", "econnreset"
+                ])
+
+                if is_infra_error:
+                    result["throttled"] = False
+                    logger.info(f"Skipping restriction check — infrastructure error: {str(e)[:100]}")
+                elif vision and error_screenshot:
                     try:
                         restriction_check = await vision.check_restriction(error_screenshot)
                         if restriction_check.get("restricted"):

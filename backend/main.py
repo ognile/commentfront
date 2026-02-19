@@ -231,6 +231,19 @@ class QueueProcessor:
         enable_warmup = campaign.get("enable_warmup", False)
 
         try:
+            # Pre-campaign proxy health check — fail fast instead of burning through profiles
+            health = await check_proxy_health()
+            if not health["healthy"]:
+                error_msg = f"Proxy down: {health.get('error', 'unknown')}. Campaign paused, will auto-retry."
+                self.logger.error(f"Campaign {campaign_id[:8]}: {error_msg}")
+                await broadcast_update("queue_campaign_failed", {
+                    "campaign_id": campaign_id,
+                    "error": error_msg,
+                    "proxy_error": True
+                })
+                # Keep campaign as pending — QueueProcessor will naturally retry after sleep
+                return
+
             # Mark as processing
             self.queue_manager.set_processing(campaign_id)
             await broadcast_update("queue_campaign_start", {
@@ -363,26 +376,40 @@ class QueueProcessor:
                     "comment": comment[:50]
                 })
 
-                session = FacebookSession(profile_name)
-
-                if not session.load():
-                    await broadcast_update("job_error", {
-                        "campaign_id": campaign_id,
-                        "job_index": original_job_idx,
-                        "error": "Session not found"
-                    })
+                # Reserve profile to prevent concurrent browser sessions
+                reserved = await profile_manager.reserve_profile(profile_name)
+                if not reserved:
+                    self.logger.warning(f"Profile {profile_name} reserved by another task, skipping job {original_job_idx}")
                     job_result = {
                         "profile_name": profile_name,
                         "success": False,
-                        "error": "Session not found",
+                        "error": "Profile busy (reserved by another task)",
                         "job_index": original_job_idx
                     }
                     results.append(job_result)
-                    # DEPLOYMENT RESILIENCE: Save immediately to disk
                     self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
                     continue
 
                 try:
+                    session = FacebookSession(profile_name)
+
+                    if not session.load():
+                        await broadcast_update("job_error", {
+                            "campaign_id": campaign_id,
+                            "job_index": original_job_idx,
+                            "error": "Session not found"
+                        })
+                        job_result = {
+                            "profile_name": profile_name,
+                            "success": False,
+                            "error": "Session not found",
+                            "job_index": original_job_idx
+                        }
+                        results.append(job_result)
+                        # DEPLOYMENT RESILIENCE: Save immediately to disk
+                        self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
+                        continue
+
                     # Set Gemini observation context for debugging
                     from gemini_vision import set_observation_context
                     set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
@@ -429,13 +456,15 @@ class QueueProcessor:
                     self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
 
                     # Determine failure type for analytics granularity
+                    # Check infrastructure FIRST — proxy/timeout errors must not be classified as restriction
                     failure_type = None
                     if not result["success"]:
                         error = result.get("error", "")
-                        if result.get("throttled") or "restricted" in str(error).lower() or "ban" in str(error).lower():
-                            failure_type = "restriction"
-                        elif any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
+                        error_lower = str(error).lower()
+                        if any(x in error_lower for x in ["timeout", "proxy", "connection", "network", "tunnel", "net::err"]):
                             failure_type = "infrastructure"
+                        elif result.get("throttled") or "restricted" in error_lower or "ban" in error_lower:
+                            failure_type = "restriction"
                         else:
                             failure_type = "facebook_error"
 
@@ -449,7 +478,8 @@ class QueueProcessor:
                     )
 
                     # Check for throttling/restriction detection
-                    if result.get("throttled"):
+                    # Layer 3: Don't restrict profiles on infrastructure errors even if throttled=True leaked through
+                    if result.get("throttled") and failure_type != "infrastructure":
                         throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
                         self.logger.warning(f"Profile {profile_name} throttled: {throttle_reason}")
 
@@ -466,6 +496,8 @@ class QueueProcessor:
                             "campaign_id": campaign_id,
                             "job_index": original_job_idx
                         })
+                    elif result.get("throttled") and failure_type == "infrastructure":
+                        self.logger.info(f"Skipping restriction for {profile_name} — infrastructure error, not real restriction")
 
                 except Exception as e:
                     self.logger.error(f"Error processing job {original_job_idx} in campaign {campaign_id}: {e}")
@@ -498,6 +530,9 @@ class QueueProcessor:
                         success=False,
                         failure_type=exc_failure_type
                     )
+                finally:
+                    # Always release profile reservation after browser closes
+                    await profile_manager.release_profile(profile_name)
 
             # Campaign completed - get ALL results (including from previous runs before deployment)
             current_campaign = self.queue_manager.get_campaign(campaign_id)
@@ -2909,11 +2944,14 @@ async def _retry_single_campaign(
                     failure_type=failure_type
                 )
 
-                if post_result.get("throttled"):
+                # Layer 3: Don't restrict profiles on infrastructure errors
+                if post_result.get("throttled") and failure_type != "infrastructure":
                     profile_manager.mark_profile_restricted(
                         profile_name=profile_name,
                         reason=post_result.get("throttle_reason", "Facebook restriction")
                     )
+                elif post_result.get("throttled") and failure_type == "infrastructure":
+                    logger.info(f"Retry-all: skipping restriction for {profile_name} — infrastructure error, not real restriction")
 
                 result = {
                     "profile_name": profile_name, "comment": comment,
