@@ -4571,6 +4571,7 @@ IMPORTANT: Coordinates must be within 0-393 for x and 0-873 for y."""
 from adaptive_agent import run_adaptive_task
 from workflows import (
     update_profile_photo,
+    batch_update_profile_photos,
     regenerate_profile_photo_with_pose,
     batch_regenerate_imported_photos
 )
@@ -4594,6 +4595,11 @@ class RegeneratePhotoRequest(BaseModel):
     """Request model for profile photo regeneration with pose."""
     profile_name: str
     pose_name: Optional[str] = None  # If None, picks random pose
+
+
+class BatchPhotoRequest(BaseModel):
+    """Request model for batch profile photo generation."""
+    profiles: List[Dict[str, str]]  # [{"profile_name": "...", "persona_description": "..."}]
 
 
 @app.post("/adaptive-agent")
@@ -4851,6 +4857,23 @@ async def workflow_regenerate_all_imported_photos(
 
     result = await batch_regenerate_imported_photos()
 
+    return result
+
+
+@app.post("/workflow/batch-generate-photos")
+async def workflow_batch_generate_photos(
+    request: BatchPhotoRequest,
+    api_key: str = Header(None, alias="X-API-Key")
+) -> Dict:
+    """
+    Batch generate AI profile photos and upload to Facebook.
+    Processes sequentially. Each entry needs profile_name + persona_description.
+    """
+    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    logger.info(f"[WORKFLOW] Starting batch photo generation for {len(request.profiles)} profiles")
+    result = await batch_update_profile_photos(request.profiles)
     return result
 
 

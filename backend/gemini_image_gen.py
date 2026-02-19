@@ -86,11 +86,12 @@ ANTI-AI TELLS TO AVOID:
 - No unnatural eye reflections
 - No blurred or melted ears/jewelry
 - No extra fingers or distorted hands
-- No text or watermarks
+- No text, watermarks, UI elements, captions, or overlays of any kind
 - No uncanny valley expressions
+- No borders, frames, or phone screen mockups
 
 ASPECT RATIO: 1:1 square (for profile picture use)
-STYLE: Raw, unedited, authentic social media selfie
+STYLE: Raw, unedited, authentic social media selfie. Just the photo, nothing else.
 
 {extra_details}"""
 
