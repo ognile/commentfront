@@ -216,8 +216,10 @@ async def generate_profile_photo_for_persona(persona_description: str, profile_n
     else:
         age_range = "30-40"  # Default
 
-    # Detect ethnicity
-    if any(w in desc_lower for w in ["black", "african"]):
+    # Detect ethnicity (check caucasian/white FIRST — "caucasian" contains "asian" as substring)
+    if any(w in desc_lower for w in ["white", "caucasian"]):
+        ethnicity = "caucasian"
+    elif any(w in desc_lower for w in ["black", "african"]):
         ethnicity = "african american"
     elif any(w in desc_lower for w in ["asian", "chinese", "japanese", "korean"]):
         ethnicity = "asian"
