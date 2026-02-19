@@ -1616,6 +1616,21 @@ async def update_session_tags_endpoint(
     return {"success": True, "tags": request.tags}
 
 
+@app.put("/sessions/{profile_name}/display-name")
+async def update_session_display_name(
+    profile_name: str,
+    request: Dict,
+    current_user: dict = Depends(get_current_user)
+) -> Dict:
+    """Update display_name for a session."""
+    session = FacebookSession(profile_name)
+    if not session.load():
+        raise HTTPException(status_code=404, detail=f"Session not found: {profile_name}")
+    session.data["display_name"] = request.get("display_name", profile_name)
+    session.save()
+    return {"success": True, "display_name": session.data["display_name"]}
+
+
 @app.post("/comment")
 async def post_comment_endpoint(request: CommentRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """Post a comment using a saved session."""
