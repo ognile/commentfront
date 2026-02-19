@@ -2991,7 +2991,7 @@ MAX_PARALLEL_CAMPAIGNS = 3
 
 
 async def _run_retry_all(failed_campaigns: list, profile_manager, proxy_ip: str):
-    """Background coroutine: retry all failed campaigns in parallel batches."""
+    """Background coroutine: retry all failed campaigns with worker pool (not batched)."""
     global _retry_all_progress
 
     _retry_all_progress = {
@@ -3011,38 +3011,40 @@ async def _run_retry_all(failed_campaigns: list, profile_manager, proxy_ip: str)
             "proxy_ip": proxy_ip
         })
 
-        # Process in parallel batches
-        for batch_start in range(0, len(failed_campaigns), MAX_PARALLEL_CAMPAIGNS):
-            batch = failed_campaigns[batch_start:batch_start + MAX_PARALLEL_CAMPAIGNS]
-            batch_tasks = [
-                _retry_single_campaign(
+        # Worker pool: all campaigns launch immediately, semaphore limits concurrency
+        campaign_semaphore = asyncio.Semaphore(MAX_PARALLEL_CAMPAIGNS)
+
+        async def _run_with_limit(campaign, index):
+            async with campaign_semaphore:
+                return await _retry_single_campaign(
                     campaign=campaign,
-                    campaign_index=batch_start + j,
+                    campaign_index=index,
                     total_campaigns=len(failed_campaigns),
                     profile_manager=profile_manager,
                     browser_semaphore=_browser_semaphore,
                 )
-                for j, campaign in enumerate(batch)
-            ]
 
-            logger.info(f"Retry-all: starting batch {batch_start//MAX_PARALLEL_CAMPAIGNS + 1} ({len(batch)} campaigns in parallel)")
-            results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-
-            for r in results:
-                if isinstance(r, Exception):
-                    logger.error(f"Retry-all: campaign failed with exception: {r}")
-                    _retry_all_progress["campaigns_completed"] += 1
-                    continue
+        async def _run_and_track(campaign, index):
+            try:
+                r = await _run_with_limit(campaign, index)
                 _retry_all_progress["campaigns_completed"] += 1
                 _retry_all_progress["jobs_succeeded"] += r.get("jobs_succeeded", 0)
                 _retry_all_progress["jobs_exhausted"] += r.get("jobs_exhausted", 0)
                 _retry_all_progress["total_attempts"] += r.get("attempts", 0)
                 _retry_all_progress["campaign_results"].append(r)
 
-                # Check if campaign fully succeeded
                 updated = queue_manager.get_campaign_from_history(r.get("campaign_id"))
                 if updated and updated.get("success_count", 0) >= updated.get("total_count", 0):
                     _retry_all_progress["campaigns_succeeded"] += 1
+            except Exception as e:
+                logger.error(f"Retry-all: campaign {index} failed with exception: {e}")
+                _retry_all_progress["campaigns_completed"] += 1
+
+        logger.info(f"Retry-all: launching {len(failed_campaigns)} campaigns (max {MAX_PARALLEL_CAMPAIGNS} concurrent)")
+        await asyncio.gather(
+            *[_run_and_track(c, i) for i, c in enumerate(failed_campaigns)],
+            return_exceptions=True
+        )
 
         summary = {
             "success": True,
