@@ -341,6 +341,7 @@ function App() {
 
   // Bulk retry state (simplified - no strategy selection needed)
   const [isBulkRetrying, setIsBulkRetrying] = useState(false);
+  const [isRetryingAll, setIsRetryingAll] = useState(false);
 
   const [newUid, setNewUid] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -1302,6 +1303,45 @@ function App() {
       toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsBulkRetrying(false);
+    }
+  };
+
+  // Retry ALL failed campaigns at once
+  const handleRetryAllFailed = async () => {
+    setIsRetryingAll(true);
+    toast.info('Checking proxy health and retrying all failed campaigns...');
+
+    try {
+      const res = await fetch(`${API_BASE}/queue/retry-all-failed?hours_back=72`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders() }
+      });
+
+      const data = await res.json();
+
+      if (res.status === 503) {
+        toast.error(`Proxy is down: ${data.detail}`);
+        return;
+      }
+
+      if (data.success) {
+        if (data.campaigns_found === 0) {
+          toast.info('No failed campaigns found');
+        } else {
+          toast.success(`Retry complete: ${data.campaigns_succeeded}/${data.campaigns_retried} campaigns fully succeeded, ${data.total_jobs_succeeded} jobs recovered`);
+          if (data.total_jobs_exhausted > 0) {
+            toast.warning(`${data.total_jobs_exhausted} jobs ran out of eligible profiles`);
+          }
+        }
+        // Refresh queue state
+        fetchQueue();
+      } else {
+        toast.error(data.detail || 'Retry all failed');
+      }
+    } catch (error) {
+      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsRetryingAll(false);
     }
   };
 
@@ -2464,9 +2504,31 @@ function App() {
             {queueState.history.length > 0 && (
               <Card className="">
                 <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
-                  <CardTitle className="text-lg">
-                    Recent History ({queueState.history.length})
-                  </CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-lg">
+                      Recent History ({queueState.history.length})
+                    </CardTitle>
+                    {queueState.history.some((c: any) => c.success_count !== undefined && c.total_count !== undefined && c.success_count < c.total_count) && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={handleRetryAllFailed}
+                        disabled={isRetryingAll}
+                      >
+                        {isRetryingAll ? (
+                          <>
+                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            Retrying All...
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="h-3 w-3 mr-1" />
+                            Retry All Failed
+                          </>
+                        )}
+                      </Button>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent className="p-0 max-h-64 overflow-y-auto">
                   <div className="divide-y divide-[rgba(0,0,0,0.1)]">
