@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import tempfile
 from pathlib import Path
 from playwright.async_api import async_playwright, Page
 # Stealth mode is MANDATORY for anti-detection
@@ -141,6 +142,34 @@ def _build_target_navigation_candidates(
             continue
 
     return candidates
+
+
+def _prepare_reply_image_for_upload(image_path: str) -> str:
+    """
+    Convert WEBP to a temporary JPEG for upload compatibility when needed.
+    Returns original path on failure or when conversion is not needed.
+    """
+    if Path(image_path).suffix.lower() != ".webp":
+        return image_path
+
+    tmp_path = ""
+    try:
+        from PIL import Image
+
+        fd, tmp_path = tempfile.mkstemp(prefix="fb_reply_", suffix=".jpg")
+        os.close(fd)
+        with Image.open(image_path) as src:
+            src.convert("RGB").save(tmp_path, format="JPEG", quality=95)
+        logger.info(f"Prepared JPEG fallback for WEBP reply image: {tmp_path}")
+        return tmp_path
+    except Exception as e:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        logger.warning(f"WEBP->JPEG reply image conversion failed, using original: {e}")
+        return image_path
 
 
 def _escape_css_attr_value(value: str) -> str:
@@ -308,136 +337,146 @@ async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
     if not image_path or not Path(image_path).exists():
         logger.warning(f"Image path missing for attachment: {image_path}")
         return False
+    upload_image_path = _prepare_reply_image_for_upload(image_path)
+    cleanup_upload_path = upload_image_path if upload_image_path != image_path else None
+    logger.info(f"Reply image attach source: {upload_image_path}")
 
-    # Trigger attachment UI if present, using discovered selectors first.
-    discovered_attach = []
     try:
-        elements = await dump_interactive_elements(page, "REPLY ATTACH SELECTOR DISCOVERY")
-        discovered_attach = _selector_candidates_from_dump(elements, "reply_attach")
-    except Exception:
+        # Trigger attachment UI if present, using discovered selectors first.
         discovered_attach = []
-
-    attach_pool = discovered_attach + fb_selectors.REPLY["reply_attach_button"]
-
-    # First try native file-chooser flow from attach icon click.
-    try:
-        async with page.expect_file_chooser(timeout=3000) as chooser_info:
-            await smart_click(page, attach_pool, "Reply attach image")
-        file_chooser = await chooser_info.value
-        await file_chooser.set_files(image_path)
-        await asyncio.sleep(1.5)
-    except Exception:
-        # Fallback to direct input assignment.
-        await smart_click(page, attach_pool, "Reply attach image")
-        await asyncio.sleep(0.4)
-
-    file_input_selectors = [
-        'input[type="file"]',
-        'input[accept*="image"]',
-        'input[name*="photo"]',
-    ]
-
-    async def _read_upload_state() -> Dict[str, Any]:
-        return await page.evaluate(
-            """() => {
-                const norm = (s) => (s || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-                const bodyText = norm(document.body ? document.body.innerText : '');
-
-                const interactiveText = Array.from(
-                    document.querySelectorAll('button, [role="button"], h1, h2, h3, span, div')
-                )
-                    .map((el) => norm(el.innerText || el.textContent))
-                    .filter(Boolean);
-
-                const hasUploadPhotoButton = interactiveText.some((t) => t === 'upload photo' || t.includes('upload photo'));
-                const hasPreviewHeader = interactiveText.some((t) => t === 'preview');
-                const hasProcessingText = bodyText.includes('processing') || bodyText.includes('%');
-
-                const hasReplyComposer = !!document.querySelector(
-                    'textarea, input[placeholder*="reply" i], textarea[placeholder*="reply" i], [contenteditable="true"][role="textbox"], [aria-label*="reply" i]'
-                );
-                const hasReplyHeader = interactiveText.some((t) => t === 'replies' || t.includes('write a reply'));
-
-                const hasImageThumb = !!document.querySelector(
-                    'img[src^="blob:"], img[data-imgperflogname], [data-visualcompletion="media-vc-image"], [aria-label*="Remove photo" i], [aria-label*="remove" i]'
-                );
-
-                return {
-                    href: window.location.href,
-                    hasUploadPhotoButton,
-                    hasPreviewHeader,
-                    hasProcessingText,
-                    hasReplyComposer,
-                    hasReplyHeader,
-                    hasImageThumb,
-                };
-            }"""
-        )
-
-    for selector in file_input_selectors:
         try:
-            locator = page.locator(selector).first
-            if await locator.count() == 0:
-                continue
-            await locator.set_input_files(image_path)
-            await asyncio.sleep(1.8)
+            elements = await dump_interactive_elements(page, "REPLY ATTACH SELECTOR DISCOVERY")
+            discovered_attach = _selector_candidates_from_dump(elements, "reply_attach")
+        except Exception:
+            discovered_attach = []
 
-            attached = await page.evaluate(
+        attach_pool = discovered_attach + fb_selectors.REPLY["reply_attach_button"]
+
+        # First try native file-chooser flow from attach icon click.
+        try:
+            async with page.expect_file_chooser(timeout=3000) as chooser_info:
+                await smart_click(page, attach_pool, "Reply attach image")
+            file_chooser = await chooser_info.value
+            await file_chooser.set_files(upload_image_path)
+            await asyncio.sleep(1.5)
+        except Exception:
+            # Fallback to direct input assignment.
+            await smart_click(page, attach_pool, "Reply attach image")
+            await asyncio.sleep(0.4)
+
+        file_input_selectors = [
+            'input[type="file"]',
+            'input[accept*="image"]',
+            'input[name*="photo"]',
+        ]
+
+        async def _read_upload_state() -> Dict[str, Any]:
+            return await page.evaluate(
                 """() => {
-                    const preview = document.querySelector(
-                        'img[src^="blob:"], img[data-imgperflogname], [aria-label*="Remove"], [aria-label*="remove"], [data-visualcompletion="media-vc-image"]'
+                    const norm = (s) => (s || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                    const bodyText = norm(document.body ? document.body.innerText : '');
+
+                    const interactiveText = Array.from(
+                        document.querySelectorAll('button, [role="button"], h1, h2, h3, span, div')
+                    )
+                        .map((el) => norm(el.innerText || el.textContent))
+                        .filter(Boolean);
+
+                    const hasUploadPhotoButton = interactiveText.some((t) => t === 'upload photo' || t.includes('upload photo'));
+                    const hasPreviewHeader = interactiveText.some((t) => t === 'preview');
+                    const hasProcessingText = bodyText.includes('processing') || bodyText.includes('%');
+
+                    const hasReplyComposer = !!document.querySelector(
+                        'textarea, input[placeholder*="reply" i], textarea[placeholder*="reply" i], [contenteditable="true"][role="textbox"], [aria-label*="reply" i]'
                     );
-                    if (preview) return true;
-                    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
-                    return inputs.some((el) => el.files && el.files.length > 0);
+                    const hasReplyHeader = interactiveText.some((t) => t === 'replies' || t.includes('write a reply'));
+
+                    const hasImageThumb = !!document.querySelector(
+                        'img[src^="blob:"], img[data-imgperflogname], [data-visualcompletion="media-vc-image"], [aria-label*="Remove photo" i], [aria-label*="remove" i]'
+                    );
+
+                    return {
+                        href: window.location.href,
+                        hasUploadPhotoButton,
+                        hasPreviewHeader,
+                        hasProcessingText,
+                        hasReplyComposer,
+                        hasReplyHeader,
+                        hasImageThumb,
+                    };
                 }"""
             )
-            if attached:
-                # Some FB flows require explicit "Upload photo" confirmation.
-                upload_selectors = [
-                    'button:has-text("Upload photo")',
-                    'div[role="button"]:has-text("Upload photo")',
-                    'button:has-text("Upload")',
-                    'div[role="button"]:has-text("Upload")',
-                ]
 
-                # Kick off upload if we are on preview flow.
-                state = await _read_upload_state()
-                if state.get("hasUploadPhotoButton") or state.get("hasPreviewHeader"):
-                    await smart_click(page, upload_selectors, "Upload photo confirm")
-                    await asyncio.sleep(2.0)
+        for selector in file_input_selectors:
+            try:
+                locator = page.locator(selector).first
+                if await locator.count() == 0:
+                    continue
+                await locator.set_input_files(upload_image_path)
+                await asyncio.sleep(1.8)
 
-                # Wait for preview/upload state to fully resolve.
-                upload_completed = False
-                last_state: Dict[str, Any] = {}
-                for i in range(120):
+                attached = await page.evaluate(
+                    """() => {
+                        const preview = document.querySelector(
+                            'img[src^="blob:"], img[data-imgperflogname], [aria-label*="Remove"], [aria-label*="remove"], [data-visualcompletion="media-vc-image"]'
+                        );
+                        if (preview) return true;
+                        const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+                        return inputs.some((el) => el.files && el.files.length > 0);
+                    }"""
+                )
+                if attached:
+                    # Some FB flows require explicit "Upload photo" confirmation.
+                    upload_selectors = [
+                        'button:has-text("Upload photo")',
+                        'div[role="button"]:has-text("Upload photo")',
+                        'button:has-text("Upload")',
+                        'div[role="button"]:has-text("Upload")',
+                    ]
+
+                    # Kick off upload if we are on preview flow.
                     state = await _read_upload_state()
-                    last_state = state
-
-                    # Success = back on replies UI with composer and no preview/upload processing blockers.
-                    if (
-                        (state.get("hasReplyComposer") or state.get("hasReplyHeader"))
-                        and not state.get("hasPreviewHeader")
-                        and not state.get("hasUploadPhotoButton")
-                        and not state.get("hasProcessingText")
-                    ):
-                        upload_completed = True
-                        break
-
-                    # If still on preview/upload screen, periodically tap Upload again.
-                    if (state.get("hasUploadPhotoButton") or state.get("hasPreviewHeader")) and i % 10 == 0:
+                    if state.get("hasUploadPhotoButton") or state.get("hasPreviewHeader"):
                         await smart_click(page, upload_selectors, "Upload photo confirm")
-                    await asyncio.sleep(1.0)
+                        await asyncio.sleep(2.0)
 
-                if not upload_completed:
-                    await save_debug_screenshot(page, "reply_upload_wait_timeout")
-                    logger.warning(f"Image upload did not complete in preview flow: {last_state}")
-                    return False
-                await save_debug_screenshot(page, "reply_image_attached")
-                logger.info("Image attachment confirmed in composer")
-                return True
-        except Exception as e:
-            logger.debug(f"Attach attempt failed for selector {selector}: {e}")
+                    # Wait for preview/upload state to fully resolve.
+                    upload_completed = False
+                    last_state: Dict[str, Any] = {}
+                    for i in range(120):
+                        state = await _read_upload_state()
+                        last_state = state
+
+                        # Success = back on replies UI with composer and no preview/upload processing blockers.
+                        if (
+                            (state.get("hasReplyComposer") or state.get("hasReplyHeader"))
+                            and not state.get("hasPreviewHeader")
+                            and not state.get("hasUploadPhotoButton")
+                            and not state.get("hasProcessingText")
+                        ):
+                            upload_completed = True
+                            break
+
+                        # If still on preview/upload screen, periodically tap Upload again.
+                        if (state.get("hasUploadPhotoButton") or state.get("hasPreviewHeader")) and i % 10 == 0:
+                            await smart_click(page, upload_selectors, "Upload photo confirm")
+                        await asyncio.sleep(1.0)
+
+                    if not upload_completed:
+                        await save_debug_screenshot(page, "reply_upload_wait_timeout")
+                        logger.warning(f"Image upload did not complete in preview flow: {last_state}")
+                        return False
+                    await save_debug_screenshot(page, "reply_image_attached")
+                    logger.info("Image attachment confirmed in composer")
+                    return True
+            except Exception as e:
+                logger.debug(f"Attach attempt failed for selector {selector}: {e}")
+    finally:
+        if cleanup_upload_path and os.path.exists(cleanup_upload_path):
+            try:
+                os.remove(cleanup_upload_path)
+            except Exception as cleanup_error:
+                logger.debug(f"Failed to clean up temp upload file {cleanup_upload_path}: {cleanup_error}")
 
     logger.warning("Failed to attach image to reply")
     return False
