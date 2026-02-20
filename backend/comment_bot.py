@@ -337,6 +337,43 @@ async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
         'input[name*="photo"]',
     ]
 
+    async def _read_upload_state() -> Dict[str, Any]:
+        return await page.evaluate(
+            """() => {
+                const norm = (s) => (s || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const bodyText = norm(document.body ? document.body.innerText : '');
+
+                const interactiveText = Array.from(
+                    document.querySelectorAll('button, [role="button"], h1, h2, h3, span, div')
+                )
+                    .map((el) => norm(el.innerText || el.textContent))
+                    .filter(Boolean);
+
+                const hasUploadPhotoButton = interactiveText.some((t) => t === 'upload photo' || t.includes('upload photo'));
+                const hasPreviewHeader = interactiveText.some((t) => t === 'preview');
+                const hasProcessingText = bodyText.includes('processing') || bodyText.includes('%');
+
+                const hasReplyComposer = !!document.querySelector(
+                    'textarea, input[placeholder*="reply" i], textarea[placeholder*="reply" i], [contenteditable="true"][role="textbox"], [aria-label*="reply" i]'
+                );
+                const hasReplyHeader = interactiveText.some((t) => t === 'replies' || t.includes('write a reply'));
+
+                const hasImageThumb = !!document.querySelector(
+                    'img[src^="blob:"], img[data-imgperflogname], [data-visualcompletion="media-vc-image"], [aria-label*="Remove photo" i], [aria-label*="remove" i]'
+                );
+
+                return {
+                    href: window.location.href,
+                    hasUploadPhotoButton,
+                    hasPreviewHeader,
+                    hasProcessingText,
+                    hasReplyComposer,
+                    hasReplyHeader,
+                    hasImageThumb,
+                };
+            }"""
+        )
+
     for selector in file_input_selectors:
         try:
             locator = page.locator(selector).first
@@ -363,8 +400,39 @@ async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
                     'button:has-text("Upload")',
                     'div[role="button"]:has-text("Upload")',
                 ]
-                await smart_click(page, upload_selectors, "Upload photo confirm")
-                await asyncio.sleep(2.0)
+
+                # Kick off upload if we are on preview flow.
+                state = await _read_upload_state()
+                if state.get("hasUploadPhotoButton") or state.get("hasPreviewHeader"):
+                    await smart_click(page, upload_selectors, "Upload photo confirm")
+                    await asyncio.sleep(2.0)
+
+                # Wait for preview/upload state to fully resolve.
+                upload_completed = False
+                last_state: Dict[str, Any] = {}
+                for i in range(120):
+                    state = await _read_upload_state()
+                    last_state = state
+
+                    # Success = back on replies UI with composer and no preview/upload processing blockers.
+                    if (
+                        (state.get("hasReplyComposer") or state.get("hasReplyHeader"))
+                        and not state.get("hasPreviewHeader")
+                        and not state.get("hasUploadPhotoButton")
+                        and not state.get("hasProcessingText")
+                    ):
+                        upload_completed = True
+                        break
+
+                    # If still on preview/upload screen, periodically tap Upload again.
+                    if (state.get("hasUploadPhotoButton") or state.get("hasPreviewHeader")) and i % 10 == 0:
+                        await smart_click(page, upload_selectors, "Upload photo confirm")
+                    await asyncio.sleep(1.0)
+
+                if not upload_completed:
+                    await save_debug_screenshot(page, "reply_upload_wait_timeout")
+                    logger.warning(f"Image upload did not complete in preview flow: {last_state}")
+                    return False
                 await save_debug_screenshot(page, "reply_image_attached")
                 logger.info("Image attachment confirmed in composer")
                 return True
@@ -1652,22 +1720,49 @@ async def reply_to_comment_verified(
             await asyncio.sleep(3.0)
             await save_debug_screenshot(page, "reply_post_submit")
 
-            # Reload once so newly posted reply thread is visible before verification.
-            try:
-                await page.reload(wait_until="domcontentloaded", timeout=45000)
-                await asyncio.sleep(2.0)
-            except Exception:
-                pass
             result["steps_completed"].append("reply_submitted")
 
-            verify_shot = await save_debug_screenshot(page, "reply_verify")
-            posted = await vision.verify_state(
-                verify_shot,
-                "comment_posted",
-                expected_text=normalized_reply[-100:],
+            # Verify through target permalink candidates (avoid feed-only reload verification).
+            posted = None
+            verify_error = "verification did not run"
+            verify_candidates = _build_target_navigation_candidates(
+                target_comment_url=target_comment_url,
+                current_url=page.url,
+                target_comment_id=target_comment_id,
             )
-            if not posted.success:
-                raise Exception(f"Reply post verification failed: {posted.message}")
+
+            for idx, candidate in enumerate(verify_candidates):
+                try:
+                    if candidate != page.url:
+                        await page.goto(candidate, wait_until="domcontentloaded", timeout=45000)
+                    if not await wait_for_post_visible(page, vision, max_attempts=3):
+                        continue
+                    await click_with_healing(
+                        page=page,
+                        vision=vision,
+                        selectors=fb_selectors.COMMENT["comment_button"],
+                        description=f"Comment button (verify pass {idx + 1})",
+                        max_attempts=2,
+                    )
+                    await asyncio.sleep(1.0)
+                    await _click_reply_button_for_target(page, target_comment_id)
+                    await asyncio.sleep(1.0)
+
+                    verify_shot = await save_debug_screenshot(page, f"reply_verify_{idx + 1}")
+                    posted = await vision.verify_state(
+                        verify_shot,
+                        "comment_posted",
+                        expected_text=normalized_reply[-100:],
+                    )
+                    verify_error = posted.message
+                    if posted.success:
+                        break
+                except Exception as verify_exc:
+                    verify_error = str(verify_exc)
+                    continue
+
+            if not posted or not posted.success:
+                raise Exception(f"Reply post verification failed: {verify_error}")
             result["steps_completed"].append("reply_verified")
 
             result["success"] = True
