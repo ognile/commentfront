@@ -1585,11 +1585,13 @@ async def reply_to_comment_verified(
                 # Fallback to semantic comment input finder.
                 focused = await find_comment_input(page)
             if not focused:
-                raise Exception("Could not focus reply input")
+                await dump_interactive_elements(page, "REPLY INPUT FOCUS FAILED - selector discovery dump")
+                logger.warning("Could not explicitly focus reply input; attempting direct typing with visual verification")
             await asyncio.sleep(0.5)
-            result["steps_completed"].append("reply_input_focused")
+            if focused:
+                result["steps_completed"].append("reply_input_focused")
 
-            # Type lowercase reply text and verify typed state.
+            # Type lowercase reply text and verify typed state (source of truth).
             await page.keyboard.type(normalized_reply, delay=40)
             await asyncio.sleep(0.8)
             typed_shot = await save_debug_screenshot(page, "reply_typed")
@@ -1600,6 +1602,8 @@ async def reply_to_comment_verified(
             )
             if not typed_verification.success:
                 raise Exception(f"Reply text not visible after typing: {typed_verification.message}")
+            if not focused:
+                result["steps_completed"].append("reply_input_inferred_from_typed_text")
             result["steps_completed"].append("reply_text_typed")
 
             # Attach image (strict requirement: fail if attach fails).
