@@ -981,6 +981,46 @@ def _model_to_dict(value) -> dict:
     return dict(value)
 
 
+def _build_duplicate_guard_history() -> List[dict]:
+    """
+    Build duplicate-check corpus from:
+    - Completed history (last N days filtered downstream)
+    - Active pending/processing campaigns (prevents immediate resubmit duplicates)
+    """
+    combined: List[dict] = list(queue_manager.get_history(limit=100))
+    full_state = queue_manager.get_full_state()
+    active_campaigns = full_state.get("pending", [])
+
+    for campaign in active_campaigns:
+        jobs = campaign.get("jobs")
+        if not jobs:
+            try:
+                jobs = canonicalize_campaign_jobs(comments=campaign.get("comments") or [], jobs=None)
+            except Exception:
+                jobs = []
+
+        pseudo_results = []
+        for idx, job in enumerate(jobs):
+            text = str(job.get("text") or job.get("comment") or "").strip()
+            if not text:
+                continue
+            pseudo_results.append({
+                "job_index": idx,
+                "text": text,
+                "comment": text,
+                "success": False,
+            })
+
+        combined.append({
+            "id": campaign.get("id"),
+            "created_at": campaign.get("created_at"),
+            "completed_at": campaign.get("completed_at"),
+            "results": pseudo_results,
+        })
+
+    return combined
+
+
 def _validate_queue_jobs(
     url: str,
     jobs: List[dict],
@@ -1032,7 +1072,7 @@ def _validate_queue_jobs(
 
     duplicate_conflicts = []
     if include_duplicate_guard and not errors:
-        history = queue_manager.get_history(limit=100)
+        history = _build_duplicate_guard_history()
         duplicate_conflicts = find_duplicate_text_conflicts(
             candidate_jobs=jobs,
             history=history,

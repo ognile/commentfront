@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from datetime import datetime, timedelta
 
-from main import _build_queue_jobs, _validate_queue_jobs, media_index
+from main import _build_queue_jobs, _validate_queue_jobs, media_index, queue_manager
 
 COMMENT_URL = (
     "https://www.facebook.com/permalink.php?"
@@ -31,6 +31,7 @@ def _register_media(tmp_path, image_id: str = "img_test") -> str:
 
 def setup_function():
     media_index.clear()
+    queue_manager.campaigns = {}
 
 
 def test_reply_job_validation_positive(tmp_path):
@@ -83,3 +84,46 @@ def test_reply_job_validation_requires_comment_id(tmp_path):
 
     assert validation["valid"] is False
     assert any("comment_id" in err for err in validation["errors"])
+
+
+def test_duplicate_guard_rejects_text_already_in_active_campaign(tmp_path):
+    image_id = _register_media(tmp_path, image_id="img_dup")
+
+    queue_manager.campaigns = {
+        "active_campaign_1": {
+            "id": "active_campaign_1",
+            "status": "processing",
+            "created_at": datetime.utcnow().isoformat(),
+            "jobs": [
+                {
+                    "type": "reply_comment",
+                    "text": "unique lowercase reply e2e check 4418405568392620",
+                    "target_comment_url": COMMENT_URL,
+                    "image_id": image_id,
+                }
+            ],
+            "comments": ["unique lowercase reply e2e check 4418405568392620"],
+            "results": [],
+        }
+    }
+
+    jobs = _build_queue_jobs(
+        comments=None,
+        jobs=[
+            {
+                "type": "reply_comment",
+                "text": "unique lowercase reply e2e check 4418405568392620",
+                "target_comment_url": COMMENT_URL,
+                "image_id": image_id,
+            }
+        ],
+    )
+
+    validation = _validate_queue_jobs(
+        url=COMMENT_URL,
+        jobs=jobs,
+        include_duplicate_guard=True,
+    )
+
+    assert validation["valid"] is False
+    assert any("duplicate_text_guard" in err for err in validation["errors"])
