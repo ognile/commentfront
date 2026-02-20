@@ -104,9 +104,17 @@ def _build_target_navigation_candidates(
         candidates.append(norm)
 
     add(target_comment_url)
-    add(current_url)
 
-    for base in [target_comment_url, current_url]:
+    # Include current URL only when it is still a post/permalink style URL.
+    current_url_l = str(current_url or "").lower()
+    if "facebook.com" in current_url_l and ("story.php" in current_url_l or "permalink.php" in current_url_l):
+        add(current_url)
+
+    bases = [target_comment_url]
+    if current_url and current_url in candidates:
+        bases.append(current_url)
+
+    for base in bases:
         if not base:
             continue
         add(_set_query_param(base, "comment_id", target_comment_id))
@@ -1509,6 +1517,8 @@ async def reply_to_comment_verified(
 
             # Always navigate to target comment permalink for strict context.
             await page.goto(target_comment_url, wait_until="domcontentloaded", timeout=45000)
+            result["landing_url"] = page.url
+            await save_debug_screenshot(page, "reply_target_initial")
             if not await wait_for_post_visible(page, vision, max_attempts=6):
                 raise Exception("Target page not visible")
             result["steps_completed"].append("target_page_visible")
