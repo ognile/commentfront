@@ -1332,6 +1332,84 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
         return result
 
 
+async def refresh_session_picture(profile_name: str) -> Dict[str, Any]:
+    """
+    Refresh the profile picture for an existing session by visiting the FB profile.
+
+    Args:
+        profile_name: Session file identifier (e.g., "elvis_rand")
+
+    Returns:
+        Dict with success, profile_name, thumbnail_size
+    """
+    result = {"success": False, "profile_name": profile_name, "thumbnail_size": 0, "error": None}
+
+    try:
+        session = FacebookSession(profile_name)
+        if not session.load():
+            result["error"] = f"Session not found: {profile_name}"
+            return result
+
+        user_id = session.get_user_id()
+        user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
+        viewport = session.get_viewport() or MOBILE_VIEWPORT
+        from proxy_manager import get_system_proxy
+        proxy_url = get_system_proxy()
+        if not proxy_url:
+            result["error"] = "No proxy available"
+            return result
+
+        device_fingerprint = session.get_device_fingerprint()
+
+        context_options = {
+            "user_agent": user_agent,
+            "viewport": viewport,
+            "ignore_https_errors": True,
+            "device_scale_factor": 1,
+            "timezone_id": device_fingerprint["timezone"],
+            "locale": device_fingerprint["locale"],
+        }
+        context_options["proxy"] = _build_playwright_proxy(proxy_url)
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
+            context = await browser.new_context(**context_options)
+            await Stealth().apply_stealth_async(context)
+            page = await context.new_page()
+
+            if not await apply_session_to_context(context, session):
+                await browser.close()
+                result["error"] = "Failed to apply session cookies"
+                return result
+
+            # Navigate to profile page
+            profile_url = f"https://m.facebook.com/profile.php?id={user_id}" if user_id else "https://m.facebook.com/me"
+            await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)  # Let profile pic load
+
+            # Extract picture
+            profile_picture = await extract_profile_picture(page)
+            await browser.close()
+
+            if not profile_picture:
+                result["error"] = "Could not extract profile picture"
+                return result
+
+            # Save to session
+            session.data["profile_picture"] = profile_picture
+            session.save()
+
+            result["success"] = True
+            result["thumbnail_size"] = len(profile_picture)
+            logger.info(f"Refreshed profile picture for {profile_name} ({len(profile_picture)} chars base64)")
+
+    except Exception as e:
+        logger.error(f"Error refreshing profile picture for {profile_name}: {e}")
+        result["error"] = str(e)
+
+    return result
+
+
 async def login_facebook(
     uid: str,
     password: str,

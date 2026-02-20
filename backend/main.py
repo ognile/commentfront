@@ -35,7 +35,7 @@ from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
 from queue_manager import CampaignQueueManager
-from login_bot import create_session_from_credentials, refresh_session_profile_name, fetch_profile_data_from_cookies
+from login_bot import create_session_from_credentials, refresh_session_profile_name, refresh_session_picture, fetch_profile_data_from_cookies
 from browser_manager import get_browser_manager, UPLOAD_DIR
 
 # Setup Logging - JSON structured logs for production, readable logs for dev
@@ -3939,6 +3939,46 @@ async def refresh_profile_name(profile_name: str, current_user: dict = Depends(g
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to refresh profile name"))
 
     return result
+
+
+@app.post("/sessions/{profile_name}/refresh-picture")
+async def refresh_profile_picture(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Refresh the profile picture for a session by visiting Facebook and extracting the current photo."""
+    result = await refresh_session_picture(profile_name)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to refresh profile picture"))
+    return result
+
+
+class BatchRefreshPicturesRequest(BaseModel):
+    profile_names: List[str]
+
+
+@app.post("/sessions/batch-refresh-pictures")
+async def batch_refresh_pictures(request: BatchRefreshPicturesRequest, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Batch refresh profile pictures for multiple sessions. Runs 3 at a time."""
+    semaphore = asyncio.Semaphore(3)
+    results = {"total": len(request.profile_names), "success_count": 0, "failure_count": 0, "results": []}
+
+    async def refresh_one(name: str):
+        async with semaphore:
+            return await refresh_session_picture(name)
+
+    tasks = [refresh_one(name) for name in request.profile_names]
+    completed = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for r in completed:
+        if isinstance(r, Exception):
+            results["failure_count"] += 1
+            results["results"].append({"success": False, "error": str(r)})
+        elif r.get("success"):
+            results["success_count"] += 1
+            results["results"].append(r)
+        else:
+            results["failure_count"] += 1
+            results["results"].append(r)
+
+    return results
 
 
 @app.post("/sessions/fix-display-names")

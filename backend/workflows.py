@@ -154,6 +154,23 @@ IMPORTANT:
         result["profile_upload"] = {"error": str(e), "final_status": "error"}
 
     # =========================================================================
+    # Step 3: Update session thumbnail with the generated image
+    # =========================================================================
+    if result["success"]:
+        try:
+            import base64
+            with open(image_path, "rb") as f:
+                new_base64 = base64.b64encode(f.read()).decode("utf-8")
+            session = FacebookSession(profile_name)
+            if session.load():
+                session.data["profile_picture"] = new_base64
+                session.save()
+                result["session_updated"] = True
+                logger.info(f"[WORKFLOW] Session thumbnail updated for {profile_name}")
+        except Exception as e:
+            logger.warning(f"[WORKFLOW] Failed to update session thumbnail: {e}")
+
+    # =========================================================================
     # Cleanup: Remove temporary image file
     # =========================================================================
     try:
