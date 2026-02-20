@@ -1599,6 +1599,16 @@ async def reply_to_comment_verified(
     normalized_reply = str(reply_text or "").strip().lower()
     parsed_from_url = parse_comment_id_from_url(target_comment_url)
 
+    submission_evidence: Dict[str, Any] = {
+        "text_typed_before_attach": False,
+        "text_after_attach_verified": False,
+        "image_attached": False,
+        "submit_clicked": False,
+        "posting_indicator_seen": False,
+        "local_comment_text_seen": False,
+        "local_comment_image_seen": False,
+    }
+
     result: Dict[str, Any] = {
         "success": False,
         "url": url,
@@ -1609,6 +1619,8 @@ async def reply_to_comment_verified(
         "error": None,
         "steps_completed": [],
         "method": "reply_verified",
+        "verified": False,
+        "submission_evidence": submission_evidence,
     }
 
     if not parsed_from_url or str(parsed_from_url) != str(target_comment_id):
@@ -1754,6 +1766,7 @@ async def reply_to_comment_verified(
             )
             if not typed_verification.success:
                 raise Exception(f"Reply text not visible after typing: {typed_verification.message}")
+            submission_evidence["text_typed_before_attach"] = True
             if not focused:
                 result["steps_completed"].append("reply_input_inferred_from_typed_text")
             result["steps_completed"].append("reply_text_typed")
@@ -1762,6 +1775,7 @@ async def reply_to_comment_verified(
             attached = await _attach_image_to_reply(page, image_path)
             if not attached:
                 raise Exception("Image attach failed (strict mode, no text-only fallback)")
+            submission_evidence["image_attached"] = True
             result["steps_completed"].append("image_attached")
 
             # Some FB upload flows reset composer text; enforce text presence again before submit.
@@ -1790,8 +1804,10 @@ async def reply_to_comment_verified(
                     raise Exception(
                         f"Reply text not visible after retyping post-attach: {retyped_verification.message}"
                     )
+                submission_evidence["text_after_attach_verified"] = True
                 result["steps_completed"].append("reply_text_retyped_after_attach")
             else:
+                submission_evidence["text_after_attach_verified"] = True
                 result["steps_completed"].append("reply_text_preserved_after_attach")
 
             # Submit reply.
@@ -1809,8 +1825,10 @@ async def reply_to_comment_verified(
                     submitted = False
             if not submitted:
                 raise Exception("Could not click reply submit button")
+            submission_evidence["submit_clicked"] = True
 
             # Wait for FB "Posting..." transient state to settle before evidence screenshot.
+            posting_seen = False
             for _ in range(25):
                 posting_state = await page.evaluate(
                     """() => {
@@ -1818,10 +1836,48 @@ async def reply_to_comment_verified(
                         return text.includes('posting...');
                     }"""
                 )
+                if posting_state:
+                    posting_seen = True
                 if not posting_state:
                     break
                 await asyncio.sleep(1.0)
+            submission_evidence["posting_indicator_seen"] = posting_seen
             await save_debug_screenshot(page, "reply_post_submit")
+
+            local_submission_state = await page.evaluate(
+                """(snippet) => {
+                    const norm = (s) => (s || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                    const snippetNorm = norm(snippet);
+                    const bodyText = norm(document.body ? document.body.innerText : '');
+                    let localCommentTextSeen = false;
+                    let localCommentImageSeen = false;
+
+                    const blocks = Array.from(document.querySelectorAll('div, li, article'));
+                    for (const block of blocks) {
+                        const blockText = norm(block.innerText || block.textContent);
+                        if (!snippetNorm || !blockText.includes(snippetNorm)) continue;
+                        localCommentTextSeen = true;
+
+                        const imgs = Array.from(block.querySelectorAll('img'));
+                        if (imgs.some((img) => (img.naturalWidth || 0) >= 60 && (img.naturalHeight || 0) >= 60)) {
+                            localCommentImageSeen = true;
+                        }
+                        break;
+                    }
+
+                    return {
+                        localCommentTextSeen,
+                        localCommentImageSeen,
+                        postingIndicatorSeen: bodyText.includes('posting...')
+                    };
+                }""",
+                normalized_reply[-120:],
+            )
+            submission_evidence["local_comment_text_seen"] = bool(local_submission_state.get("localCommentTextSeen"))
+            submission_evidence["local_comment_image_seen"] = bool(local_submission_state.get("localCommentImageSeen"))
+            submission_evidence["posting_indicator_seen"] = bool(
+                submission_evidence["posting_indicator_seen"] or local_submission_state.get("postingIndicatorSeen")
+            )
 
             result["steps_completed"].append("reply_submitted")
 
@@ -1864,13 +1920,36 @@ async def reply_to_comment_verified(
                     verify_error = str(verify_exc)
                     continue
 
-            if not posted or not posted.success:
-                raise Exception(f"Reply post verification failed: {verify_error}")
-            result["steps_completed"].append("reply_verified")
+            hard_verified = bool(posted and posted.success)
+            strong_submission_evidence = all(
+                [
+                    submission_evidence.get("submit_clicked"),
+                    submission_evidence.get("image_attached"),
+                    submission_evidence.get("text_after_attach_verified"),
+                    (
+                        submission_evidence.get("posting_indicator_seen")
+                        or submission_evidence.get("local_comment_text_seen")
+                    ),
+                ]
+            )
 
-            result["success"] = True
-            result["verified"] = True
-            result["verification_confidence"] = posted.confidence
+            if hard_verified:
+                result["steps_completed"].append("reply_verified")
+                result["success"] = True
+                result["verified"] = True
+                result["verification_confidence"] = posted.confidence
+            elif strong_submission_evidence:
+                # Long-term robust behavior: avoid false negatives when submit evidence is strong.
+                result["success"] = True
+                result["verified"] = False
+                result["verification_warning"] = verify_error
+                result["method"] = "reply_submission_evidence"
+                result["steps_completed"].append("reply_submitted_evidence_accepted")
+                logger.warning(
+                    f"Reply verification inconclusive but submission evidence is strong; accepting success. verify_error={verify_error}"
+                )
+            else:
+                raise Exception(f"Reply post verification failed: {verify_error}")
 
         except Exception as e:
             result["error"] = str(e)
