@@ -112,28 +112,7 @@ async def broadcast_update(update_type: str, data: dict):
 PROXY_URL = os.getenv("PROXY_URL", "")
 
 
-def get_effective_proxy() -> Optional[str]:
-    """
-    Get the effective system proxy.
-
-    Resolution order:
-    1. User-set default proxy (from proxies.json with is_default=True)
-    2. PROXY_URL environment variable (fallback)
-
-    Returns:
-        Proxy URL string or None if no proxy configured
-    """
-    # Check for user-set default proxy first (proxy_manager initialized below)
-    try:
-        default_proxy = proxy_manager.get_default_proxy()
-        if default_proxy:
-            return default_proxy.get("url")
-    except NameError:
-        # proxy_manager not yet initialized during startup
-        pass
-
-    # Fall back to environment variable
-    return PROXY_URL if PROXY_URL else None
+from proxy_manager import get_system_proxy
 
 # Initialize credential manager
 credential_manager = CredentialManager()
@@ -426,7 +405,7 @@ class QueueProcessor:
                         session=session,
                         url=url,
                         comment=comment,
-                        proxy=get_effective_proxy(),
+                        proxy=get_system_proxy(),
                         enable_warmup=enable_warmup
                     )
 
@@ -673,7 +652,7 @@ class QueueProcessor:
                     session=session,
                     url=url,
                     comment=comment,
-                    proxy=get_effective_proxy(),
+                    proxy=get_system_proxy(),
                     enable_warmup=enable_warmup
                 )
 
@@ -1610,7 +1589,7 @@ async def sync_all_sessions_to_env_proxy(current_user: dict = Depends(get_curren
 async def test_session_endpoint(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Test if a session is valid."""
     session = FacebookSession(profile_name)
-    result = await test_session(session, get_effective_proxy())
+    result = await test_session(session, get_system_proxy())
     return result
 
 
@@ -1684,7 +1663,7 @@ async def post_comment_endpoint(request: CommentRequest, current_user: dict = De
         session=session,
         url=request.url,
         comment=request.comment,
-        proxy=get_effective_proxy()
+        proxy=get_system_proxy()
     )
     
     if not result["success"]:
@@ -1733,7 +1712,7 @@ async def run_campaign(request: CampaignRequest, current_user: dict = Depends(ge
                 session=session,
                 url=request.url,
                 comment=comment,
-                proxy=get_effective_proxy()
+                proxy=get_system_proxy()
             )
 
             await broadcast_update("job_complete", {
@@ -1916,7 +1895,7 @@ async def run_campaign_queue(request: CampaignQueueRequest, current_user: dict =
                     session=session,
                     url=campaign.url,
                     comment=comment,
-                    proxy=get_effective_proxy()
+                    proxy=get_system_proxy()
                 )
 
                 await broadcast_update("job_complete", {
@@ -2107,7 +2086,7 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
                 session=session,
                 url=request.url,
                 comment=comment,
-                proxy=get_effective_proxy(),
+                proxy=get_system_proxy(),
                 enable_warmup=request.enable_warmup
             )
 
@@ -2360,7 +2339,7 @@ async def retry_campaign_job(
             session=session,
             url=url,
             comment=request.comment,
-            proxy=get_effective_proxy(),
+            proxy=get_system_proxy(),
             enable_warmup=enable_warmup  # RESPECT original campaign's warmup setting
         )
 
@@ -2634,7 +2613,7 @@ async def bulk_retry_failed_jobs(
                     session=session,
                     url=url,
                     comment=comment,
-                    proxy=get_effective_proxy(),
+                    proxy=get_system_proxy(),
                     enable_warmup=enable_warmup
                 )
 
@@ -2761,7 +2740,7 @@ async def bulk_retry_failed_jobs(
 async def check_proxy_health() -> Dict:
     """Quick proxy health check via ipify.org. Returns {healthy, ip, response_ms, error}."""
     import aiohttp
-    proxy_url = get_effective_proxy()
+    proxy_url = get_system_proxy()
     if not proxy_url:
         return {"healthy": False, "ip": None, "response_ms": None, "error": "No proxy configured"}
 
@@ -2923,7 +2902,7 @@ async def _retry_single_campaign(
                     async with browser_semaphore:
                         post_result = await post_comment_verified(
                             session=session, url=url, comment=comment,
-                            proxy=get_effective_proxy(), enable_warmup=enable_warmup
+                            proxy=get_system_proxy(), enable_warmup=enable_warmup
                         )
                 finally:
                     await profile_manager.release_profile(profile_name)
@@ -3772,7 +3751,7 @@ async def create_session(request: SessionCreateRequest, current_user: dict = Dep
     credential_uid = request.credential_uid
 
     # Get proxy URL - use effective proxy (user default > env var), allow override from proxy_id
-    proxy_url = get_effective_proxy()  # Start with effective proxy (respects user default)
+    proxy_url = get_system_proxy()  # Start with effective proxy (respects user default)
     if request.proxy_id:
         proxy = proxy_manager.get_proxy(request.proxy_id)
         if proxy:
@@ -3835,7 +3814,7 @@ async def create_sessions_batch(request: BatchSessionCreateRequest, current_user
         raise HTTPException(status_code=400, detail="No credentials provided")
 
     # Get proxy URL - use effective proxy (user default > env var), allow override from proxy_id
-    proxy_url = get_effective_proxy()
+    proxy_url = get_system_proxy()
     if request.proxy_id:
         proxy = proxy_manager.get_proxy(request.proxy_id)
         if proxy:
@@ -4424,16 +4403,17 @@ async def test_dialog_navigation(
             "locale": fingerprint["locale"],
         }
 
-        # Add proxy if session has one
-        proxy = session.get_proxy()
-        if proxy:
-            context_options["proxy"] = _build_playwright_proxy(proxy)
-            logger.info(f"[DIALOG-TEST] Using proxy: {proxy[:30]}...")
+        # Add system proxy (mandatory)
+        proxy = get_system_proxy()
+        if not proxy:
+            raise Exception("No proxy available — cannot launch browser without proxy")
+        context_options["proxy"] = _build_playwright_proxy(proxy)
+        logger.info(f"[DIALOG-TEST] Using proxy: {proxy[:30]}...")
 
         # Launch browser
         browser = await p.chromium.launch(
             headless=True,
-            args=["--disable-notifications", "--disable-gpu"]
+            args=["--disable-notifications", "--disable-geolocation"]
         )
         context = await browser.new_context(**context_options)
 

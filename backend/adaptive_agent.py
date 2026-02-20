@@ -475,17 +475,18 @@ REASONING: Comment was submitted"""
                 "is_mobile": True,
             }
 
-            # Add proxy - prefer system PROXY_URL over stale session proxy
-            system_proxy = os.getenv("PROXY_URL", "")
-            proxy = system_proxy if system_proxy else self.session.get_proxy()
-            if proxy:
-                context_options["proxy"] = _build_playwright_proxy(proxy)
-                logger.info(f"{self.log_prefix} Using proxy: {proxy[:30]}...")
+            # System proxy only — single source of truth
+            from proxy_manager import get_system_proxy
+            proxy = get_system_proxy()
+            if not proxy:
+                raise Exception("No proxy available — cannot launch browser without proxy")
+            context_options["proxy"] = _build_playwright_proxy(proxy)
+            logger.info(f"{self.log_prefix} Using proxy: {proxy[:30]}...")
 
             # Launch browser
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--disable-notifications", "--disable-gpu"]
+                args=["--disable-notifications", "--disable-geolocation"]
             )
             context = await browser.new_context(**context_options)
 

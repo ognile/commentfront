@@ -124,7 +124,10 @@ class PersistentBrowserManager:
                 # Get fingerprint data
                 user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
                 viewport = session.get_viewport() or MOBILE_VIEWPORT
-                proxy_url = session.get_proxy()
+                from proxy_manager import get_system_proxy
+                proxy_url = get_system_proxy()
+                if not proxy_url:
+                    return {"success": False, "error": "No proxy available. Configure PROXY_URL or add a default proxy."}
                 device_fingerprint = session.get_device_fingerprint()
                 logger.info(f"[TIMING] Session loaded in {time.time()-t0:.2f}s")
 
@@ -138,8 +141,8 @@ class PersistentBrowserManager:
                     "locale": device_fingerprint["locale"],
                 }
 
-                if proxy_url:
-                    context_options["proxy"] = _build_playwright_proxy(proxy_url)
+                context_options["proxy"] = _build_playwright_proxy(proxy_url)
+                logger.info(f"Using proxy: {proxy_url[:30]}...")
 
                 # Launch playwright
                 await self.broadcast_progress("launching_browser")

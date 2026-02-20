@@ -1221,7 +1221,10 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
         # Get session data (matching comment_bot.py gold standard)
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
-        proxy_url = session.get_proxy()
+        from proxy_manager import get_system_proxy
+        proxy_url = get_system_proxy()
+        if not proxy_url:
+            raise Exception("No proxy available — cannot launch browser without proxy")
         device_fingerprint = session.get_device_fingerprint()
 
         logger.info(f"Refreshing profile with fingerprint: timezone={device_fingerprint['timezone']}, locale={device_fingerprint['locale']}")
@@ -1236,9 +1239,8 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
             "locale": device_fingerprint["locale"],
         }
 
-        if proxy_url:
-            context_options["proxy"] = _build_playwright_proxy(proxy_url)
-            logger.info(f"Using session proxy for refresh")
+        context_options["proxy"] = _build_playwright_proxy(proxy_url)
+        logger.info(f"Using system proxy for refresh: {proxy_url[:30]}...")
 
         # Launch browser with session
         async with async_playwright() as p:
@@ -1405,9 +1407,13 @@ async def login_facebook(
             "locale": login_device_fingerprint["locale"],
         }
 
-        if proxy:
-            context_options["proxy"] = _build_playwright_proxy(proxy)
-            logger.info(f"Using proxy: {proxy[:30]}...")
+        if not proxy:
+            from proxy_manager import get_system_proxy
+            proxy = get_system_proxy()
+        if not proxy:
+            raise Exception("No proxy available — cannot launch browser without proxy")
+        context_options["proxy"] = _build_playwright_proxy(proxy)
+        logger.info(f"Using proxy: {proxy[:30]}...")
 
         context = await browser.new_context(**context_options)
 
@@ -1938,38 +1944,36 @@ async def fetch_profile_data_from_cookies(
 
     try:
         async with async_playwright() as p:
-            # Build browser args
-            browser_args = [
-                '--disable-blink-features=AutomationControlled',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-site-isolation-trials',
-            ]
+            # Resolve proxy — system proxy is the single source of truth
+            from proxy_manager import get_system_proxy
+            active_proxy = proxy or get_system_proxy()
+            if not active_proxy:
+                raise Exception("No proxy available — cannot launch browser without proxy")
 
-            # Build proxy config if provided
-            proxy_config = None
-            if proxy:
-                from urllib.parse import urlparse
-                parsed = urlparse(proxy)
-                proxy_config = {
-                    "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
-                }
-                if parsed.username:
-                    proxy_config["username"] = parsed.username
-                    proxy_config["password"] = parsed.password or ""
+            # Generate deterministic timezone from user_id (same as fb_session.get_device_fingerprint)
+            import hashlib
+            timezone_index = int(hashlib.md5(user_id.encode()).hexdigest(), 16) % len(USA_TIMEZONES)
+            timezone_id = USA_TIMEZONES[timezone_index]
 
-            # Launch browser
+            # Build context options (matching comment_bot.py gold standard)
+            context_options = {
+                "user_agent": user_agent,
+                "viewport": MOBILE_VIEWPORT,
+                "ignore_https_errors": True,
+                "device_scale_factor": 1,
+                "timezone_id": timezone_id,
+                "locale": "en-US",
+            }
+            context_options["proxy"] = _build_playwright_proxy(active_proxy)
+            logger.info(f"Using proxy for cookie import: {active_proxy[:30]}...")
+
+            # Launch browser (matching gold standard args)
             browser = await p.chromium.launch(
                 headless=True,
-                args=browser_args
+                args=["--disable-notifications", "--disable-geolocation"]
             )
 
-            # Create context with the provided user agent
-            context = await browser.new_context(
-                viewport=MOBILE_VIEWPORT,
-                user_agent=user_agent,
-                locale="en-US",
-                proxy=proxy_config,
-            )
+            context = await browser.new_context(**context_options)
 
             # Apply stealth (MANDATORY for anti-detection)
             await Stealth().apply_stealth_async(context)

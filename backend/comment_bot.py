@@ -737,9 +737,10 @@ async def post_comment(
     async with async_playwright() as p:
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
-        session_proxy = session.get_proxy()
-        # System proxy (from env/proxy manager) takes priority over stale session proxy
-        active_proxy = proxy if proxy else session_proxy
+        # System proxy only — no session proxy fallback
+        active_proxy = proxy
+        if not active_proxy:
+            raise Exception("No proxy available — cannot launch browser without proxy")
 
         # Get device fingerprint for this session (timezone, locale)
         device_fingerprint = session.get_device_fingerprint()
@@ -753,9 +754,8 @@ async def post_comment(
             "timezone_id": device_fingerprint["timezone"],
             "locale": device_fingerprint["locale"],
         }
-        if active_proxy:
-            context_options["proxy"] = _build_playwright_proxy(active_proxy)
-            logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
+        context_options["proxy"] = _build_playwright_proxy(active_proxy)
+        logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
 
         browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
         context = await browser.new_context(**context_options)
@@ -894,9 +894,10 @@ async def post_comment_verified(
     async with async_playwright() as p:
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
-        session_proxy = session.get_proxy()
-        # System proxy (from env/proxy manager) takes priority over stale session proxy
-        active_proxy = proxy if proxy else session_proxy
+        # System proxy only — no session proxy fallback
+        active_proxy = proxy
+        if not active_proxy:
+            raise Exception("No proxy available — cannot launch browser without proxy")
 
         # Get device fingerprint for this session (timezone, locale)
         device_fingerprint = session.get_device_fingerprint()
@@ -910,9 +911,8 @@ async def post_comment_verified(
             "timezone_id": device_fingerprint["timezone"],
             "locale": device_fingerprint["locale"],
         }
-        if active_proxy:
-            context_options["proxy"] = _build_playwright_proxy(active_proxy)
-            logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
+        context_options["proxy"] = _build_playwright_proxy(active_proxy)
+        logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
 
         browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
         context = await browser.new_context(**context_options)
@@ -1142,9 +1142,10 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
         return result
 
     async with async_playwright() as p:
-        session_proxy = session.get_proxy()
-        # System proxy (from env/proxy manager) takes priority over stale session proxy
-        active_proxy = proxy if proxy else session_proxy
+        # System proxy only — no session proxy fallback
+        active_proxy = proxy
+        if not active_proxy:
+            raise Exception("No proxy available — cannot launch browser without proxy")
 
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT

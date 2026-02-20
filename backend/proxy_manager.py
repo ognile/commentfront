@@ -383,3 +383,31 @@ class ProxyManager:
         """
         default = self.get_default_proxy()
         return default.get("url") if default else None
+
+
+# Module-level singleton for get_system_proxy()
+_proxy_manager_instance: Optional[ProxyManager] = None
+
+
+def get_system_proxy() -> Optional[str]:
+    """
+    Single source of truth for proxy resolution.
+
+    Resolution order:
+    1. Proxy pool default (proxies.json with is_default=True)
+    2. PROXY_URL environment variable
+    3. None (caller must handle — no proxy = fail)
+
+    Every browser launch point must use this function.
+    """
+    global _proxy_manager_instance
+    try:
+        if _proxy_manager_instance is None:
+            _proxy_manager_instance = ProxyManager()
+        default = _proxy_manager_instance.get_default_proxy()
+        if default and default.get("url"):
+            return default["url"]
+    except Exception:
+        pass
+    url = os.getenv("PROXY_URL", "")
+    return url if url else None

@@ -44,7 +44,7 @@ async def create_browser_context(
     user_agent: Optional[str] = None,
     viewport: Optional[Dict] = None,
     proxy_url: Optional[str] = None,
-    timezone_id: Optional[str] = None,
+    timezone_id: str = "",
     locale: str = "en-US",
     headless: bool = True,
 ) -> tuple[Browser, BrowserContext]:
@@ -55,7 +55,7 @@ async def create_browser_context(
         user_agent: Override user agent (defaults to DEFAULT_USER_AGENT)
         viewport: Override viewport (defaults to MOBILE_VIEWPORT)
         proxy_url: Optional proxy URL
-        timezone_id: Timezone for fingerprinting
+        timezone_id: Timezone for fingerprinting (REQUIRED — must not be empty)
         locale: Locale string
         headless: Whether to run headless
 
@@ -64,16 +64,17 @@ async def create_browser_context(
     """
     browser = await playwright.chromium.launch(headless=headless, args=BROWSER_ARGS)
 
+    if not timezone_id:
+        raise ValueError("timezone_id is required — every browser context must have a consistent timezone")
+
     context_options = {
         "user_agent": user_agent or DEFAULT_USER_AGENT,
         "viewport": viewport or MOBILE_VIEWPORT,
         "ignore_https_errors": True,
         "device_scale_factor": 1,
         "locale": locale,
+        "timezone_id": timezone_id,
     }
-
-    if timezone_id:
-        context_options["timezone_id"] = timezone_id
 
     if proxy_url:
         proxy_config = build_playwright_proxy(proxy_url)
