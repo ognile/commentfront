@@ -199,4 +199,3 @@ else
 fi
 
 log "Runbook complete"
-SH && chmod +x backend/scripts/e2e_backend_reply_image_dedupe.sh
