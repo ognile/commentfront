@@ -1573,6 +1573,24 @@ async def login_facebook(
                         result["step"] = "extract"
                         await broadcast("extract", "in_progress")
 
+                        # Handle name collisions: if session file exists with different user_id, append suffix
+                        candidate_name = result["profile_name"]
+                        suffix = 1
+                        while True:
+                            existing_session = FacebookSession(candidate_name)
+                            if existing_session.load():
+                                existing_uid = existing_session.get_user_id()
+                                current_uid = uid
+                                if existing_uid and existing_uid != current_uid:
+                                    suffix += 1
+                                    candidate_name = f"{result['profile_name']}_{suffix}"
+                                    logger.info(f"Name collision: {result['profile_name']} already has UID {existing_uid}, trying {candidate_name}")
+                                    continue
+                            break
+                        if candidate_name != result["profile_name"]:
+                            logger.info(f"Resolved name collision: {result['profile_name']} -> {candidate_name}")
+                            result["profile_name"] = candidate_name
+
                         # Extract session with the (potentially updated) profile name
                         session = FacebookSession(result["profile_name"])
                         await session.extract_from_page(page, proxy=proxy)
