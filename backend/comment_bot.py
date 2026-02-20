@@ -172,6 +172,21 @@ def _prepare_reply_image_for_upload(image_path: str) -> str:
         return image_path
 
 
+def _has_strong_reply_submission_evidence(evidence: Dict[str, Any]) -> bool:
+    """
+    Treat submit flow as successful when we have strong local evidence even if
+    remote verify navigation is flaky.
+    """
+    return all(
+        [
+            bool(evidence.get("submit_clicked")),
+            bool(evidence.get("image_attached")),
+            bool(evidence.get("text_after_attach_verified")),
+            bool(evidence.get("posting_indicator_seen") or evidence.get("local_comment_text_seen")),
+        ]
+    )
+
+
 def _escape_css_attr_value(value: str) -> str:
     """Escape quotes/backslashes for safe CSS attribute selectors."""
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
@@ -1921,17 +1936,7 @@ async def reply_to_comment_verified(
                     continue
 
             hard_verified = bool(posted and posted.success)
-            strong_submission_evidence = all(
-                [
-                    submission_evidence.get("submit_clicked"),
-                    submission_evidence.get("image_attached"),
-                    submission_evidence.get("text_after_attach_verified"),
-                    (
-                        submission_evidence.get("posting_indicator_seen")
-                        or submission_evidence.get("local_comment_text_seen")
-                    ),
-                ]
-            )
+            strong_submission_evidence = _has_strong_reply_submission_evidence(submission_evidence)
 
             if hard_verified:
                 result["steps_completed"].append("reply_verified")
