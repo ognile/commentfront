@@ -1809,7 +1809,18 @@ async def reply_to_comment_verified(
                     submitted = False
             if not submitted:
                 raise Exception("Could not click reply submit button")
-            await asyncio.sleep(3.0)
+
+            # Wait for FB "Posting..." transient state to settle before evidence screenshot.
+            for _ in range(25):
+                posting_state = await page.evaluate(
+                    """() => {
+                        const text = (document.body && document.body.innerText ? document.body.innerText : '').toLowerCase();
+                        return text.includes('posting...');
+                    }"""
+                )
+                if not posting_state:
+                    break
+                await asyncio.sleep(1.0)
             await save_debug_screenshot(page, "reply_post_submit")
 
             result["steps_completed"].append("reply_submitted")
