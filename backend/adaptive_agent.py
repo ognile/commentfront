@@ -475,8 +475,9 @@ REASONING: Comment was submitted"""
                 "is_mobile": True,
             }
 
-            # Add proxy if session has one
-            proxy = self.session.get_proxy()
+            # Add proxy - prefer system PROXY_URL over stale session proxy
+            system_proxy = os.getenv("PROXY_URL", "")
+            proxy = system_proxy if system_proxy else self.session.get_proxy()
             if proxy:
                 context_options["proxy"] = _build_playwright_proxy(proxy)
                 logger.info(f"{self.log_prefix} Using proxy: {proxy[:30]}...")
