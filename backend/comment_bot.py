@@ -356,6 +356,15 @@ async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
                 }"""
             )
             if attached:
+                # Some FB flows require explicit "Upload photo" confirmation.
+                upload_selectors = [
+                    'button:has-text("Upload photo")',
+                    'div[role="button"]:has-text("Upload photo")',
+                    'button:has-text("Upload")',
+                    'div[role="button"]:has-text("Upload")',
+                ]
+                await smart_click(page, upload_selectors, "Upload photo confirm")
+                await asyncio.sleep(2.0)
                 await save_debug_screenshot(page, "reply_image_attached")
                 logger.info("Image attachment confirmed in composer")
                 return True
@@ -1626,9 +1635,20 @@ async def reply_to_comment_verified(
             result["steps_completed"].append("image_attached")
 
             # Submit reply.
-            if not await smart_click(page, fb_selectors.REPLY["reply_submit"], "Reply submit"):
-                if not await smart_click(page, fb_selectors.COMMENT["comment_submit"], "Send button"):
-                    raise Exception("Could not click reply submit button")
+            submitted = False
+            if await smart_click(page, fb_selectors.REPLY["reply_submit"], "Reply submit"):
+                submitted = True
+            elif await smart_click(page, fb_selectors.COMMENT["comment_submit"], "Send button"):
+                submitted = True
+            else:
+                # Composer UIs often submit on Enter even when send icon has no selector.
+                try:
+                    await page.keyboard.press("Enter")
+                    submitted = True
+                except Exception:
+                    submitted = False
+            if not submitted:
+                raise Exception("Could not click reply submit button")
             await asyncio.sleep(3.0)
             await save_debug_screenshot(page, "reply_post_submit")
 
