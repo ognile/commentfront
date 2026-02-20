@@ -267,6 +267,7 @@ class CampaignQueueManager:
         jobs: Optional[List[dict]] = None,
         filter_tags: Optional[List[str]] = None,
         enable_warmup: bool = True,
+        profile_name: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> dict:
         """
@@ -280,6 +281,7 @@ class CampaignQueueManager:
             username: User who created the campaign
             filter_tags: Optional tags to filter sessions (AND logic)
             enable_warmup: If True, profiles will browse feed before commenting
+            profile_name: Optional forced profile for all jobs in campaign
             idempotency_key: Optional idempotency key for external clients
 
         Returns:
@@ -307,6 +309,7 @@ class CampaignQueueManager:
             "duration_minutes": duration_minutes,
             "filter_tags": filter_tags or [],
             "enable_warmup": enable_warmup,
+            "profile_name": profile_name,
             "idempotency_key": idempotency_key,
             "status": "pending",
             "created_at": datetime.utcnow().isoformat(),

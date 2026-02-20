@@ -246,6 +246,7 @@ class QueueProcessor:
         duration_minutes = campaign["duration_minutes"]
         filter_tags = campaign.get("filter_tags", [])
         enable_warmup = campaign.get("enable_warmup", False)
+        forced_profile_name = campaign.get("profile_name")
 
         try:
             # Pre-campaign proxy health check — fail fast instead of burning through profiles
@@ -274,10 +275,28 @@ class QueueProcessor:
             from profile_manager import get_profile_manager
             profile_manager = get_profile_manager()
 
-            assigned_profiles = profile_manager.get_eligible_profiles(
-                filter_tags=filter_tags if filter_tags else None,
-                count=len(jobs)
-            )
+            if forced_profile_name:
+                eligible_for_filters = profile_manager.get_eligible_profiles(
+                    filter_tags=filter_tags if filter_tags else None,
+                    count=500,
+                )
+                if forced_profile_name not in eligible_for_filters:
+                    error_msg = (
+                        f"Forced profile not eligible: {forced_profile_name} "
+                        f"(filters={filter_tags})"
+                    )
+                    self.queue_manager.set_failed(campaign_id, error_msg)
+                    await broadcast_update("queue_campaign_failed", {
+                        "campaign_id": campaign_id,
+                        "error": error_msg
+                    })
+                    return
+                assigned_profiles = [forced_profile_name for _ in range(len(jobs))]
+            else:
+                assigned_profiles = profile_manager.get_eligible_profiles(
+                    filter_tags=filter_tags if filter_tags else None,
+                    count=len(jobs)
+                )
 
             if not assigned_profiles:
                 error_msg = f"No eligible profiles match tags: {filter_tags}" if filter_tags else "No eligible profiles available"
@@ -288,7 +307,9 @@ class QueueProcessor:
                 })
                 return
 
-            self.logger.info(f"Profile selection (LRU by success): {assigned_profiles}")
+            self.logger.info(
+                f"Profile selection (forced={forced_profile_name if forced_profile_name else 'none'}): {assigned_profiles}"
+            )
 
             if len(assigned_profiles) < len(jobs):
                 self.logger.warning(f"Only {len(assigned_profiles)} profiles available for {len(jobs)} jobs")
@@ -323,10 +344,13 @@ class QueueProcessor:
                 return
 
             # Get profiles ONLY for pending jobs (not all jobs)
-            pending_profiles = profile_manager.get_eligible_profiles(
-                filter_tags=filter_tags if filter_tags else None,
-                count=len(pending_jobs)
-            )
+            if forced_profile_name:
+                pending_profiles = [forced_profile_name for _ in range(len(pending_jobs))]
+            else:
+                pending_profiles = profile_manager.get_eligible_profiles(
+                    filter_tags=filter_tags if filter_tags else None,
+                    count=len(pending_jobs)
+                )
 
             if not pending_profiles:
                 error_msg = f"No eligible profiles for {len(pending_jobs)} remaining jobs"
@@ -2259,6 +2283,7 @@ class AddToQueueRequest(BaseModel):
     duration_minutes: int = 30
     filter_tags: Optional[List[str]] = None
     enable_warmup: bool = True  # Warmup enabled by default for new campaigns
+    profile_name: Optional[str] = None  # Optional forced profile for all jobs
 
 
 class DebugQueueValidateRequest(BaseModel):
@@ -2559,6 +2584,7 @@ async def add_to_queue(
             username=current_user["username"],
             filter_tags=request.filter_tags,
             enable_warmup=request.enable_warmup,
+            profile_name=request.profile_name,
             idempotency_key=x_idempotency_key,
         )
         if x_idempotency_key:
