@@ -1191,6 +1191,34 @@ async def verify_logged_in(page: Page, extract_picture: bool = False, user_id: O
         return False, None, None
 
 
+def resolve_profile_name_collision(base_name: str, current_uid: Optional[str]) -> str:
+    """
+    Resolve session filename collisions using UID-aware safety.
+
+    If a session file already exists for another UID, append _2, _3, ...
+    until a free or UID-compatible name is found.
+    """
+    candidate_name = base_name
+    suffix = 1
+
+    while True:
+        existing_session = FacebookSession(candidate_name)
+        if not existing_session.load():
+            return candidate_name
+
+        existing_uid = existing_session.get_user_id()
+        if existing_uid and current_uid and existing_uid != current_uid:
+            suffix += 1
+            candidate_name = f"{base_name}_{suffix}"
+            logger.info(
+                f"Name collision: {base_name} already linked to UID {existing_uid}, trying {candidate_name}"
+            )
+            continue
+
+        # Same UID (or unknown UID): treat as safe reuse.
+        return candidate_name
+
+
 async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
     """
     Refresh the profile name for an existing session by navigating to /me/.
@@ -1275,9 +1303,15 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
 
             # Update session file with new name and/or picture
             needs_update = extracted_name != profile_name or profile_picture
+            final_name = profile_name
             if needs_update:
-                # Use extracted name if different, otherwise keep current
-                final_name = extracted_name if extracted_name != profile_name else profile_name
+                # Use extracted name if different, with UID-aware collision handling.
+                if extracted_name != profile_name:
+                    final_name = resolve_profile_name_collision(extracted_name, user_id)
+                    if final_name != extracted_name:
+                        logger.info(f"Resolved refresh collision: {extracted_name} -> {final_name}")
+                else:
+                    final_name = profile_name
 
                 # Create new/updated session, preserving tags and other metadata
                 new_session = FacebookSession(final_name)
@@ -1312,16 +1346,16 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
                 if old_filename != new_filename and session.session_file.exists():
                     os.remove(session.session_file)
                     logger.info(f"Removed old session file: {session.session_file}")
-                    logger.info(f"Renamed session from {profile_name} to {extracted_name}")
+                    logger.info(f"Renamed session from {profile_name} to {final_name}")
 
             result["success"] = True
-            result["new_profile_name"] = extracted_name
+            result["new_profile_name"] = final_name
             result["user_id"] = user_id
             result["profile_picture"] = profile_picture is not None
 
             # Update credential profile_name as well
             cred_manager = CredentialManager()
-            if user_id and cred_manager.update_profile_name(user_id, extracted_name):
+            if user_id and cred_manager.update_profile_name(user_id, final_name):
                 logger.info(f"Updated credential profile_name for {user_id}")
 
             return result
@@ -1657,23 +1691,10 @@ async def login_facebook(
                         result["step"] = "extract"
                         await broadcast("extract", "in_progress")
 
-                        # Handle name collisions: if session file exists with different user_id, append suffix
-                        candidate_name = result["profile_name"]
-                        suffix = 1
-                        while True:
-                            existing_session = FacebookSession(candidate_name)
-                            if existing_session.load():
-                                existing_uid = existing_session.get_user_id()
-                                current_uid = uid
-                                if existing_uid and existing_uid != current_uid:
-                                    suffix += 1
-                                    candidate_name = f"{result['profile_name']}_{suffix}"
-                                    logger.info(f"Name collision: {result['profile_name']} already has UID {existing_uid}, trying {candidate_name}")
-                                    continue
-                            break
-                        if candidate_name != result["profile_name"]:
-                            logger.info(f"Resolved name collision: {result['profile_name']} -> {candidate_name}")
-                            result["profile_name"] = candidate_name
+                        resolved_name = resolve_profile_name_collision(result["profile_name"], uid)
+                        if resolved_name != result["profile_name"]:
+                            logger.info(f"Resolved name collision: {result['profile_name']} -> {resolved_name}")
+                            result["profile_name"] = resolved_name
 
                         # Extract session with the (potentially updated) profile name
                         session = FacebookSession(result["profile_name"])

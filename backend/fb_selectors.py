@@ -160,6 +160,38 @@ COMMENT = {
     ],
 }
 
+# Reply-to-comment selectors (reply_comment jobs)
+REPLY = {
+    "reply_button": [
+        'div[role="button"][aria-label*="Reply" i]',
+        'button[aria-label*="Reply" i]',
+        'a[role="button"][aria-label*="Reply" i]',
+        'div[role="button"]:has-text("Reply")',
+        'button:has-text("Reply")',
+    ],
+    "reply_input": [
+        'div[aria-label*="Write a reply" i]',
+        'div[role="textbox"][aria-label*="reply" i]',
+        'div[contenteditable="true"][aria-label*="reply" i]',
+        'div[contenteditable="true"]',
+        'div[role="textbox"]',
+    ],
+    "reply_attach_button": [
+        'div[role="button"][aria-label*="Photo" i]',
+        'div[role="button"][aria-label*="Image" i]',
+        'button[aria-label*="Photo" i]',
+        'button[aria-label*="Image" i]',
+        'div[role="button"][aria-label*="Attach" i]',
+    ],
+    "reply_submit": [
+        'div[role="button"][aria-label*="Post a comment" i]',
+        'div[role="button"][aria-label*="Post" i]',
+        'div[role="button"][aria-label*="Send" i]',
+        'button[aria-label*="Post" i]',
+        'button[aria-label*="Send" i]',
+    ],
+}
+
 # Notifications
 NOTIFICATIONS = {
     "bell_icon": [
@@ -219,6 +251,7 @@ def get_selectors(category: str) -> dict:
         "feed": FEED,
         "reels": REELS,
         "comment": COMMENT,
+        "reply": REPLY,
         "notifications": NOTIFICATIONS,
         "nav": NAV,
         "page_state": PAGE_STATE,

@@ -10,6 +10,170 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import uuid
+import re
+from difflib import SequenceMatcher
+
+
+LOOKBACK_DAYS_DEFAULT = 30
+NEAR_DUPLICATE_THRESHOLD = 0.92
+
+
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    """Parse ISO datetime with optional Z suffix."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def normalize_text_for_dedup(text: str) -> str:
+    """Normalize text for strict duplicate and near-duplicate checks."""
+    if not text:
+        return ""
+    lowered = str(text).strip().lower()
+    tokens = re.findall(r"[a-z0-9]+", lowered)
+    return " ".join(tokens)
+
+
+def near_duplicate_ratio(a: str, b: str) -> float:
+    """Return similarity ratio in [0, 1] for normalized texts."""
+    na = normalize_text_for_dedup(a)
+    nb = normalize_text_for_dedup(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    return SequenceMatcher(None, na, nb).ratio()
+
+
+def is_near_duplicate_text(a: str, b: str, threshold: float = NEAR_DUPLICATE_THRESHOLD) -> bool:
+    """True when texts are exact or near-duplicate by ratio threshold."""
+    return near_duplicate_ratio(a, b) >= threshold
+
+
+def canonicalize_campaign_jobs(
+    comments: Optional[List[str]] = None,
+    jobs: Optional[List[dict]] = None
+) -> List[dict]:
+    """Normalize incoming comments/jobs payloads to canonical jobs[] list."""
+    canonical_jobs: List[dict] = []
+
+    if jobs:
+        for idx, raw_job in enumerate(jobs):
+            if not isinstance(raw_job, dict):
+                raise ValueError(f"jobs[{idx}] must be an object")
+
+            job_type = str(raw_job.get("type", "post_comment")).strip().lower()
+            if job_type not in ("post_comment", "reply_comment"):
+                raise ValueError(f"jobs[{idx}].type must be 'post_comment' or 'reply_comment'")
+
+            text = str(raw_job.get("text", "")).strip()
+            if not text:
+                raise ValueError(f"jobs[{idx}].text is required")
+
+            if job_type == "reply_comment":
+                # Required behavior: replies are normalized to lowercase.
+                text = text.lower()
+
+            job = {
+                "type": job_type,
+                "text": text,
+            }
+
+            target_comment_url = raw_job.get("target_comment_url")
+            if target_comment_url is not None:
+                job["target_comment_url"] = str(target_comment_url).strip()
+
+            image_id = raw_job.get("image_id")
+            if image_id is not None:
+                job["image_id"] = str(image_id).strip()
+
+            canonical_jobs.append(job)
+
+    elif comments:
+        for idx, raw_comment in enumerate(comments):
+            text = str(raw_comment).strip()
+            if not text:
+                raise ValueError(f"comments[{idx}] is empty")
+            canonical_jobs.append({
+                "type": "post_comment",
+                "text": text,
+            })
+
+    if not canonical_jobs:
+        raise ValueError("Provide non-empty comments[] or jobs[]")
+
+    return canonical_jobs
+
+
+def find_duplicate_text_conflicts(
+    candidate_jobs: List[dict],
+    history: List[dict],
+    now: Optional[datetime] = None,
+    lookback_days: int = LOOKBACK_DAYS_DEFAULT,
+    threshold: float = NEAR_DUPLICATE_THRESHOLD,
+) -> List[dict]:
+    """
+    Find strict duplicate and near-duplicate text conflicts.
+    Checks:
+    - Within current candidate jobs
+    - Against queue history in the last N days
+    """
+    current_time = now or datetime.utcnow()
+    cutoff = current_time - timedelta(days=lookback_days)
+    conflicts: List[dict] = []
+
+    # 1) Intra-request checks
+    for i, left in enumerate(candidate_jobs):
+        left_text = str(left.get("text", ""))
+        for j in range(i + 1, len(candidate_jobs)):
+            right = candidate_jobs[j]
+            right_text = str(right.get("text", ""))
+            ratio = near_duplicate_ratio(left_text, right_text)
+            if ratio >= threshold:
+                conflicts.append({
+                    "scope": "current_campaign",
+                    "left_index": i,
+                    "right_index": j,
+                    "left_text": left_text,
+                    "right_text": right_text,
+                    "ratio": round(ratio, 4),
+                })
+
+    # 2) History checks (last N days)
+    for campaign in history:
+        campaign_at = (
+            parse_iso_datetime(campaign.get("completed_at"))
+            or parse_iso_datetime(campaign.get("created_at"))
+        )
+        if campaign_at and campaign_at < cutoff:
+            continue
+
+        for result in campaign.get("results", []):
+            historical_text = str(result.get("text") or result.get("comment") or "").strip()
+            if not historical_text:
+                continue
+
+            for idx, candidate in enumerate(candidate_jobs):
+                candidate_text = str(candidate.get("text", "")).strip()
+                if not candidate_text:
+                    continue
+                ratio = near_duplicate_ratio(candidate_text, historical_text)
+                if ratio >= threshold:
+                    conflicts.append({
+                        "scope": "history_30d",
+                        "candidate_index": idx,
+                        "candidate_text": candidate_text,
+                        "history_campaign_id": campaign.get("id"),
+                        "history_job_index": result.get("job_index"),
+                        "history_text": historical_text,
+                        "history_timestamp": campaign_at.isoformat() if campaign_at else None,
+                        "ratio": round(ratio, 4),
+                    })
+
+    return conflicts
 
 
 class CampaignQueueManager:
@@ -97,22 +261,26 @@ class CampaignQueueManager:
     def add_campaign(
         self,
         url: str,
-        comments: List[str],
+        comments: Optional[List[str]],
         duration_minutes: int,
         username: str,
+        jobs: Optional[List[dict]] = None,
         filter_tags: Optional[List[str]] = None,
-        enable_warmup: bool = True
+        enable_warmup: bool = True,
+        idempotency_key: Optional[str] = None,
     ) -> dict:
         """
         Add a new campaign to the queue.
 
         Args:
             url: Facebook post URL
-            comments: List of comment texts
+            comments: Legacy list of comment texts
+            jobs: Canonical jobs list
             duration_minutes: Duration to spread comments over
             username: User who created the campaign
             filter_tags: Optional tags to filter sessions (AND logic)
             enable_warmup: If True, profiles will browse feed before commenting
+            idempotency_key: Optional idempotency key for external clients
 
         Returns:
             The created campaign object
@@ -127,13 +295,19 @@ class CampaignQueueManager:
 
         campaign_id = str(uuid.uuid4())
 
+        canonical_jobs = canonicalize_campaign_jobs(comments=comments, jobs=jobs)
+        legacy_comments = [str(job.get("text", "")) for job in canonical_jobs]
+
         campaign = {
             "id": campaign_id,
             "url": url,
-            "comments": comments,
+            # Keep comments[] for backward compatibility in existing UI/analytics.
+            "comments": legacy_comments,
+            "jobs": canonical_jobs,
             "duration_minutes": duration_minutes,
             "filter_tags": filter_tags or [],
             "enable_warmup": enable_warmup,
+            "idempotency_key": idempotency_key,
             "status": "pending",
             "created_at": datetime.utcnow().isoformat(),
             "created_by": username,
@@ -147,7 +321,7 @@ class CampaignQueueManager:
 
         self.campaigns[campaign_id] = campaign
         self.save()
-        self.logger.info(f"Added campaign {campaign_id} with {len(comments)} comments")
+        self.logger.info(f"Added campaign {campaign_id} with {len(canonical_jobs)} jobs")
 
         return campaign
 

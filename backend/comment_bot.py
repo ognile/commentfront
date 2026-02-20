@@ -2,12 +2,13 @@ import asyncio
 import logging
 import os
 import re
+from pathlib import Path
 from playwright.async_api import async_playwright, Page
 # Stealth mode is MANDATORY for anti-detection
 from playwright_stealth import Stealth
 
 from typing import Optional, Dict, Any, List
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 from fb_session import FacebookSession, apply_session_to_context
 import fb_selectors
@@ -54,6 +55,142 @@ def cleanup_old_screenshots(max_keep: int = 100):
             logger.debug(f"Cleaned up {removed} old screenshots, keeping {len(files)}")
     except Exception as e:
         logger.error(f"Failed to cleanup screenshots: {e}")
+
+
+def parse_comment_id_from_url(target_comment_url: str) -> Optional[str]:
+    """Extract comment_id from Facebook URL query string."""
+    if not target_comment_url:
+        return None
+    try:
+        parsed = urlparse(str(target_comment_url).strip())
+        query = parse_qs(parsed.query)
+        comment_id = query.get("comment_id", [None])[0]
+        if comment_id:
+            return str(comment_id).strip()
+    except Exception:
+        return None
+    return None
+
+
+async def _is_target_comment_context_present(page: Page, target_comment_id: str) -> bool:
+    """
+    Strict target-id gate:
+    The page must contain context that references the exact comment_id.
+    """
+    if not target_comment_id:
+        return False
+    try:
+        return await page.evaluate(
+            """(commentId) => {
+                const q = `[href*="comment_id=${commentId}"], [data-ft*="${commentId}"], [id*="${commentId}"]`;
+                if (document.querySelector(q)) return true;
+                const all = document.querySelectorAll("a[href], div, span");
+                for (const el of all) {
+                    const href = el.getAttribute && el.getAttribute("href");
+                    if (href && href.includes(`comment_id=${commentId}`)) return true;
+                    const text = (el.textContent || "").slice(0, 400);
+                    if (text.includes(commentId)) return true;
+                }
+                return false;
+            }""",
+            target_comment_id,
+        )
+    except Exception as e:
+        logger.warning(f"Failed strict target comment context check: {e}")
+        return False
+
+
+async def _click_reply_button_for_target(page: Page, target_comment_id: str) -> bool:
+    """Try to click the reply action nearest to the target comment context."""
+    if not target_comment_id:
+        return False
+
+    # 1) Target-aware DOM lookup by comment link context.
+    try:
+        clicked = await page.evaluate(
+            """(commentId) => {
+                const links = Array.from(document.querySelectorAll('a[href*="comment_id="]'));
+                let target = links.find((a) => (a.getAttribute("href") || "").includes(`comment_id=${commentId}`));
+                if (!target) {
+                    const all = Array.from(document.querySelectorAll("[id], [data-ft]"));
+                    target = all.find((el) => {
+                        const id = el.getAttribute("id") || "";
+                        const ft = el.getAttribute("data-ft") || "";
+                        return id.includes(commentId) || ft.includes(commentId);
+                    });
+                }
+                if (!target) return false;
+
+                let scope = target.closest('[role="article"], li, div') || target.parentElement;
+                let depth = 0;
+                while (scope && depth < 5) {
+                    const candidates = Array.from(scope.querySelectorAll('[aria-label], [role="button"], button, a'));
+                    const replyButton = candidates.find((el) => {
+                        const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+                        const text = (el.textContent || "").toLowerCase();
+                        return aria.includes("reply") || text.trim() === "reply";
+                    });
+                    if (replyButton) {
+                        replyButton.click();
+                        return true;
+                    }
+                    scope = scope.parentElement;
+                    depth += 1;
+                }
+                return false;
+            }""",
+            target_comment_id,
+        )
+        if clicked:
+            logger.info(f"Clicked reply button near target comment_id={target_comment_id}")
+            return True
+    except Exception as e:
+        logger.debug(f"Target-aware reply click failed: {e}")
+
+    # 2) Fallback generic selectors.
+    return await smart_click(page, fb_selectors.REPLY["reply_button"], "Reply button")
+
+
+async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
+    """Attach image to reply composer. Returns False if image wasn't attached."""
+    if not image_path or not Path(image_path).exists():
+        logger.warning(f"Image path missing for attachment: {image_path}")
+        return False
+
+    # Trigger attachment UI if present.
+    await smart_click(page, fb_selectors.REPLY["reply_attach_button"], "Reply attach image")
+    await asyncio.sleep(0.4)
+
+    file_input_selectors = [
+        'input[type="file"]',
+        'input[accept*="image"]',
+        'input[name*="photo"]',
+    ]
+
+    for selector in file_input_selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            await locator.set_input_files(image_path)
+            await asyncio.sleep(1.8)
+
+            attached = await page.evaluate(
+                """() => {
+                    const input = document.querySelector('input[type="file"]');
+                    if (input && input.files && input.files.length > 0) return true;
+                    const preview = document.querySelector('img[src^="blob:"], img[data-imgperflogname], [aria-label*="Remove"]');
+                    return !!preview;
+                }"""
+            )
+            if attached:
+                logger.info("Image attachment confirmed in composer")
+                return True
+        except Exception as e:
+            logger.debug(f"Attach attempt failed for selector {selector}: {e}")
+
+    logger.warning("Failed to attach image to reply")
+    return False
 
 def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
     """Wrapper for backward compatibility — delegates to browser_factory."""
@@ -1126,6 +1263,177 @@ async def post_comment_verified(
     # Cleanup old screenshots after each run (keep last 100)
     cleanup_old_screenshots(max_keep=100)
 
+    return result
+
+
+async def reply_to_comment_verified(
+    session: FacebookSession,
+    url: str,
+    target_comment_url: str,
+    target_comment_id: str,
+    reply_text: str,
+    image_path: str,
+    proxy: Optional[str] = None,
+    enable_warmup: bool = False,
+) -> Dict[str, Any]:
+    """
+    Reply to a specific target comment and attach an image.
+
+    Critical rules:
+    - Requires parseable target comment id
+    - Strict gate: if exact target context isn't found, fail without posting
+    - Reply text is lowercased before typing
+    - If image attach fails, fail job (no text-only fallback)
+    """
+    normalized_reply = str(reply_text or "").strip().lower()
+    parsed_from_url = parse_comment_id_from_url(target_comment_url)
+
+    result: Dict[str, Any] = {
+        "success": False,
+        "url": url,
+        "target_comment_url": target_comment_url,
+        "target_comment_id": target_comment_id,
+        "reply_text": normalized_reply,
+        "image_path": image_path,
+        "error": None,
+        "steps_completed": [],
+        "method": "reply_verified",
+    }
+
+    if not parsed_from_url or str(parsed_from_url) != str(target_comment_id):
+        result["error"] = "target_comment_url does not contain matching parseable comment_id"
+        return result
+
+    if not normalized_reply:
+        result["error"] = "reply_text is empty"
+        return result
+
+    if not image_path or not Path(image_path).exists():
+        result["error"] = f"Image file not found: {image_path}"
+        return result
+
+    vision = get_vision_client() if VISION_AVAILABLE else None
+    if not vision:
+        result["error"] = "Vision client not available - required for verified mode"
+        return result
+
+    async with async_playwright() as p:
+        user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
+        viewport = session.get_viewport() or MOBILE_VIEWPORT
+        active_proxy = proxy
+        if not active_proxy:
+            raise Exception("No proxy available — cannot launch browser without proxy")
+
+        device_fingerprint = session.get_device_fingerprint()
+        context_options = {
+            "user_agent": user_agent,
+            "viewport": viewport,
+            "ignore_https_errors": True,
+            "device_scale_factor": 1,
+            "timezone_id": device_fingerprint["timezone"],
+            "locale": device_fingerprint["locale"],
+            "proxy": _build_playwright_proxy(active_proxy),
+        }
+        logger.info(f"Using proxy: {context_options['proxy'].get('server')}")
+
+        browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
+        context = await browser.new_context(**context_options)
+        await Stealth().apply_stealth_async(context)
+
+        try:
+            page = await context.new_page()
+            if not await apply_session_to_context(context, session):
+                raise Exception("Failed to apply cookies")
+
+            if enable_warmup:
+                from warmup_bot import perform_warmup
+                warmup_result = await perform_warmup(page)
+                result["warmup"] = {
+                    "success": warmup_result.success,
+                    "scrolls": warmup_result.scroll_count,
+                    "likes": warmup_result.likes_count,
+                    "duration": warmup_result.duration_seconds,
+                    "error": warmup_result.error,
+                }
+
+            # Always navigate to target comment permalink for strict context.
+            await page.goto(target_comment_url, wait_until="domcontentloaded", timeout=45000)
+            if not await wait_for_post_visible(page, vision, max_attempts=6):
+                raise Exception("Target page not visible")
+            result["steps_completed"].append("target_page_visible")
+
+            # Strict target-id gate.
+            if not await _is_target_comment_context_present(page, target_comment_id):
+                raise Exception(
+                    f"Strict target gate failed: target comment_id={target_comment_id} context not found"
+                )
+            result["steps_completed"].append("target_comment_gate_passed")
+
+            # Open reply composer for the target comment.
+            if not await _click_reply_button_for_target(page, target_comment_id):
+                raise Exception("Could not open reply composer for target comment")
+            await asyncio.sleep(0.9)
+            result["steps_completed"].append("reply_clicked")
+
+            # Focus reply input.
+            focused = await smart_focus(page, fb_selectors.REPLY["reply_input"], "Reply input")
+            if not focused:
+                # Fallback to semantic comment input finder.
+                focused = await find_comment_input(page)
+            if not focused:
+                raise Exception("Could not focus reply input")
+            await asyncio.sleep(0.5)
+            result["steps_completed"].append("reply_input_focused")
+
+            # Type lowercase reply text and verify typed state.
+            await page.keyboard.type(normalized_reply, delay=40)
+            await asyncio.sleep(0.8)
+            typed_shot = await save_debug_screenshot(page, "reply_typed")
+            typed_verification = await vision.verify_state(
+                typed_shot,
+                "text_typed",
+                expected_text=normalized_reply[-100:],
+            )
+            if not typed_verification.success:
+                raise Exception(f"Reply text not visible after typing: {typed_verification.message}")
+            result["steps_completed"].append("reply_text_typed")
+
+            # Attach image (strict requirement: fail if attach fails).
+            attached = await _attach_image_to_reply(page, image_path)
+            if not attached:
+                raise Exception("Image attach failed (strict mode, no text-only fallback)")
+            result["steps_completed"].append("image_attached")
+
+            # Submit reply.
+            if not await smart_click(page, fb_selectors.REPLY["reply_submit"], "Reply submit"):
+                if not await smart_click(page, fb_selectors.COMMENT["comment_submit"], "Send button"):
+                    raise Exception("Could not click reply submit button")
+            await asyncio.sleep(4.0)
+            result["steps_completed"].append("reply_submitted")
+
+            verify_shot = await save_debug_screenshot(page, "reply_verify")
+            posted = await vision.verify_state(
+                verify_shot,
+                "comment_posted",
+                expected_text=normalized_reply[-100:],
+            )
+            if not posted.success:
+                raise Exception(f"Reply post verification failed: {posted.message}")
+            result["steps_completed"].append("reply_verified")
+
+            result["success"] = True
+            result["verified"] = True
+            result["verification_confidence"] = posted.confidence
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"reply_to_comment_verified failed: {e}")
+            if "page" in locals():
+                await save_debug_screenshot(page, "reply_error")
+        finally:
+            await browser.close()
+
+    cleanup_old_screenshots(max_keep=100)
     return result
 
 

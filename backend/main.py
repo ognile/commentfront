@@ -6,8 +6,9 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Literal
 
 # Authentication imports
 from auth import create_access_token, create_refresh_token, decode_token, verify_password
@@ -25,18 +26,36 @@ import asyncio
 import json
 import random
 from datetime import datetime, timedelta
+from pathlib import Path
+import uuid
+from urllib.parse import urlparse, parse_qs
 import nest_asyncio
 
 # Patch asyncio to allow nested event loops (crucial for Playwright in FastAPI)
 nest_asyncio.apply()
 
-from comment_bot import post_comment, post_comment_verified, test_session, MOBILE_VIEWPORT, DEFAULT_USER_AGENT
+from comment_bot import (
+    post_comment,
+    post_comment_verified,
+    reply_to_comment_verified,
+    parse_comment_id_from_url,
+    test_session,
+    MOBILE_VIEWPORT,
+    DEFAULT_USER_AGENT,
+)
 from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
-from queue_manager import CampaignQueueManager
+from queue_manager import (
+    CampaignQueueManager,
+    canonicalize_campaign_jobs,
+    find_duplicate_text_conflicts,
+    LOOKBACK_DAYS_DEFAULT,
+    NEAR_DUPLICATE_THRESHOLD,
+)
 from login_bot import create_session_from_credentials, refresh_session_profile_name, refresh_session_picture, fetch_profile_data_from_cookies
 from browser_manager import get_browser_manager, UPLOAD_DIR
+from name_dedupe_workflow import build_dedupe_plan, apply_dedupe_plan
 
 # Setup Logging - JSON structured logs for production, readable logs for dev
 class JSONFormatter(logging.Formatter):
@@ -123,6 +142,22 @@ proxy_manager = ProxyManager()
 # Initialize campaign queue manager
 queue_manager = CampaignQueueManager()
 
+# =========================================================================
+# Media Store (ephemeral file-backed storage for queue jobs)
+# =========================================================================
+
+MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/tmp/commentbot_media"))
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+MEDIA_TTL_HOURS = int(os.getenv("MEDIA_TTL_HOURS", "24"))
+MEDIA_MAX_SIZE = 10 * 1024 * 1024  # 10MB
+MEDIA_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+# In-memory metadata index for uploaded media
+media_index: Dict[str, Dict] = {}
+
+# Idempotency cache for /queue submissions
+queue_idempotency_index: Dict[str, str] = {}
+
 
 # =========================================================================
 # Queue Processor - Background task for processing campaign queue
@@ -204,7 +239,10 @@ class QueueProcessor:
         """Process a single campaign."""
         campaign_id = campaign["id"]
         url = campaign["url"]
-        comments = campaign["comments"]
+        jobs = campaign.get("jobs")
+        if not jobs:
+            # Backward compatibility for legacy campaigns stored as comments[] only.
+            jobs = canonicalize_campaign_jobs(comments=campaign.get("comments") or [], jobs=None)
         duration_minutes = campaign["duration_minutes"]
         filter_tags = campaign.get("filter_tags", [])
         enable_warmup = campaign.get("enable_warmup", False)
@@ -228,7 +266,8 @@ class QueueProcessor:
             await broadcast_update("queue_campaign_start", {
                 "campaign_id": campaign_id,
                 "url": url,
-                "total_comments": len(comments)
+                "total_comments": len(jobs),
+                "total_jobs": len(jobs),
             })
 
             # Use UNIFIED profile selection (handles cookies, tags, restrictions, LRU)
@@ -237,7 +276,7 @@ class QueueProcessor:
 
             assigned_profiles = profile_manager.get_eligible_profiles(
                 filter_tags=filter_tags if filter_tags else None,
-                count=len(comments)
+                count=len(jobs)
             )
 
             if not assigned_profiles:
@@ -251,11 +290,11 @@ class QueueProcessor:
 
             self.logger.info(f"Profile selection (LRU by success): {assigned_profiles}")
 
-            if len(assigned_profiles) < len(comments):
-                self.logger.warning(f"Only {len(assigned_profiles)} profiles available for {len(comments)} comments")
+            if len(assigned_profiles) < len(jobs):
+                self.logger.warning(f"Only {len(assigned_profiles)} profiles available for {len(jobs)} jobs")
 
             # Calculate total jobs based on available profiles
-            total_jobs = min(len(comments), len(assigned_profiles))
+            total_jobs = min(len(jobs), len(assigned_profiles))
             duration_seconds = duration_minutes * 60
 
             # DEPLOYMENT RESILIENCE: Get already-attempted job indexes
@@ -263,9 +302,9 @@ class QueueProcessor:
 
             # Build list of PENDING jobs with their ORIGINAL indexes preserved
             pending_jobs = []
-            for original_idx, comment in enumerate(comments[:total_jobs]):
+            for original_idx, job in enumerate(jobs[:total_jobs]):
                 if original_idx not in attempted_indexes:
-                    pending_jobs.append((original_idx, comment))
+                    pending_jobs.append((original_idx, job))
 
             if attempted_indexes:
                 self.logger.info(f"Campaign {campaign_id}: RESUMING - {len(attempted_indexes)} jobs already attempted, {len(pending_jobs)} remaining")
@@ -274,11 +313,11 @@ class QueueProcessor:
                 # All jobs already attempted - mark complete with existing results
                 existing_results = self.queue_manager.get_campaign(campaign_id).get("results", [])
                 success_count = sum(1 for r in existing_results if r.get("success"))
-                self.queue_manager.set_completed(campaign_id, success_count, len(existing_results), existing_results)
+                self.queue_manager.set_completed(campaign_id, success_count, total_jobs, existing_results)
                 await broadcast_update("queue_campaign_complete", {
                     "campaign_id": campaign_id,
                     "success": success_count,
-                    "total": len(existing_results)
+                    "total": total_jobs
                 })
                 self.logger.info(f"Campaign {campaign_id}: All jobs already completed, marking done")
                 return
@@ -310,7 +349,14 @@ class QueueProcessor:
             # Process jobs - results list for this run only
             results = []
 
-            for pending_idx, (original_job_idx, comment) in enumerate(pending_jobs):
+            for pending_idx, (original_job_idx, job_payload) in enumerate(pending_jobs):
+                job = job_payload
+                job_type = str(job.get("type", "post_comment")).strip().lower()
+                text = str(job.get("text", ""))
+                if job_type == "reply_comment":
+                    text = text.lower()
+                    job["text"] = text
+
                 # Get profile for this pending job
                 profile_name = pending_profiles[pending_idx] if pending_idx < len(pending_profiles) else None
                 if not profile_name:
@@ -352,7 +398,8 @@ class QueueProcessor:
                     "job_index": original_job_idx,
                     "total_jobs": total_jobs,
                     "profile_name": profile_name,
-                    "comment": comment[:50]
+                    "comment": text[:50],
+                    "job_type": job_type,
                 })
 
                 # Reserve profile to prevent concurrent browser sessions
@@ -404,10 +451,46 @@ class QueueProcessor:
                     result = await post_comment_verified(
                         session=session,
                         url=url,
-                        comment=comment,
+                        comment=text,
                         proxy=get_system_proxy(),
                         enable_warmup=enable_warmup
-                    )
+                    ) if job_type != "reply_comment" else None
+
+                    target_comment_url = str(job.get("target_comment_url") or "").strip()
+                    target_comment_id = parse_comment_id_from_url(target_comment_url) if target_comment_url else None
+                    image_id = str(job.get("image_id") or "").strip()
+
+                    if job_type == "reply_comment":
+                        media_item = _get_media_or_none(image_id)
+                        if not media_item:
+                            result = {
+                                "success": False,
+                                "verified": False,
+                                "method": "validation",
+                                "error": f"image_id not found or expired: {image_id}",
+                            }
+                        elif not target_comment_id:
+                            result = {
+                                "success": False,
+                                "verified": False,
+                                "method": "validation",
+                                "error": f"target_comment_url missing parseable comment_id: {target_comment_url}",
+                            }
+                        else:
+                            result = await reply_to_comment_verified(
+                                session=session,
+                                url=url,
+                                target_comment_url=target_comment_url,
+                                target_comment_id=target_comment_id,
+                                reply_text=text,
+                                image_path=media_item["path"],
+                                proxy=get_system_proxy(),
+                                enable_warmup=enable_warmup,
+                            )
+                    else:
+                        target_comment_url = None
+                        target_comment_id = None
+                        image_id = None
 
                     await broadcast_update("job_complete", {
                         "campaign_id": campaign_id,
@@ -417,12 +500,19 @@ class QueueProcessor:
                         "verified": result.get("verified", False),
                         "method": result.get("method", "unknown"),
                         "error": result.get("error"),
-                        "warmup": result.get("warmup")
+                        "warmup": result.get("warmup"),
+                        "job_type": job_type,
+                        "target_comment_id": target_comment_id,
                     })
 
                     job_result = {
                         "profile_name": profile_name,
-                        "comment": comment,
+                        "comment": text,
+                        "text": text,
+                        "job_type": job_type,
+                        "target_comment_url": target_comment_url,
+                        "target_comment_id": target_comment_id,
+                        "image_id": image_id,
                         "success": result["success"],
                         "verified": result.get("verified", False),
                         "method": result.get("method", "unknown"),
@@ -451,7 +541,7 @@ class QueueProcessor:
                     profile_manager.mark_profile_used(
                         profile_name=profile_name,
                         campaign_id=campaign_id,
-                        comment=comment,
+                        comment=text,
                         success=result["success"],
                         failure_type=failure_type
                     )
@@ -505,7 +595,7 @@ class QueueProcessor:
                     profile_manager.mark_profile_used(
                         profile_name=profile_name,
                         campaign_id=campaign_id,
-                        comment=comment,
+                        comment=text,
                         success=False,
                         failure_type=exc_failure_type
                     )
@@ -517,8 +607,8 @@ class QueueProcessor:
             current_campaign = self.queue_manager.get_campaign(campaign_id)
             all_results = current_campaign.get("results", []) if current_campaign else results
 
-            # Total count should be original number of comments
-            total_count = len(comments[:total_jobs])
+            # Total count should be original number of jobs
+            total_count = len(jobs[:total_jobs])
             success_count = sum(1 for r in all_results if r.get("success"))
 
             self.queue_manager.set_completed(campaign_id, success_count, total_count, all_results)
@@ -535,11 +625,17 @@ class QueueProcessor:
                 for r in all_results:
                     idx = r.get("job_index", 0)
                     if not job_has_success.get(idx):
+                        inferred_job_type = r.get("job_type")
+                        if not inferred_job_type and idx < len(jobs):
+                            inferred_job_type = jobs[idx].get("type", "post_comment")
+                        # Auto-retry currently supports text post comments only.
+                        if inferred_job_type != "post_comment":
+                            continue
                         # Only add once per job_index
                         if not any(fj["job_index"] == idx for fj in failed_jobs):
                             failed_jobs.append({
                                 "job_index": idx,
-                                "comment": r.get("comment", comments[idx] if idx < len(comments) else ""),
+                                "comment": r.get("text", r.get("comment", jobs[idx].get("text", "") if idx < len(jobs) else "")),
                                 "last_profile": r.get("profile_name", "")
                             })
                 if failed_jobs:
@@ -773,9 +869,6 @@ _retry_all_progress: Dict = {}
 
 
 # Helper functions for campaign queue
-import re
-from urllib.parse import urlparse
-
 def normalize_url(url: str) -> str:
     """Extract canonical post identifier from Facebook URL."""
     try:
@@ -803,6 +896,164 @@ def assign_profiles_for_url(count: int, sessions: List[Dict]) -> List[str]:
     valid = [s["profile_name"] for s in sessions if s.get("has_valid_cookies", False)]
     random.shuffle(valid)  # Randomize who comments first
     return valid[:count]
+
+
+def _is_debug_mode_enabled() -> bool:
+    """Debug endpoints are disabled in production unless explicitly allowed."""
+    if os.getenv("ENABLE_DEBUG_ENDPOINTS") == "1":
+        return True
+    return os.getenv("RAILWAY_ENVIRONMENT") is None
+
+
+def _parse_job_target_comment_id(job: dict) -> Optional[str]:
+    """Extract target comment id from a reply job target URL."""
+    target_url = str(job.get("target_comment_url") or "").strip()
+    if not target_url:
+        return None
+    return parse_comment_id_from_url(target_url)
+
+
+def _ensure_full_url(value: str) -> bool:
+    """Require absolute URL with scheme + host."""
+    try:
+        parsed = urlparse(value)
+        return bool(parsed.scheme and parsed.netloc)
+    except Exception:
+        return False
+
+
+def _cleanup_expired_media() -> None:
+    """Evict expired media files from in-memory index and disk."""
+    now = datetime.utcnow()
+    expired_ids = []
+    for image_id, item in media_index.items():
+        expires_at = item.get("expires_at")
+        if not expires_at:
+            continue
+        try:
+            expiry = datetime.fromisoformat(str(expires_at))
+            if now >= expiry:
+                expired_ids.append(image_id)
+        except Exception:
+            expired_ids.append(image_id)
+
+    for image_id in expired_ids:
+        item = media_index.pop(image_id, None)
+        if not item:
+            continue
+        try:
+            path = Path(item["path"])
+            path.unlink(missing_ok=True)
+        except Exception as cleanup_err:
+            logger.warning(f"Failed to cleanup media {image_id}: {cleanup_err}")
+
+
+def _get_media_or_none(image_id: str) -> Optional[Dict]:
+    """Resolve media metadata and ensure it is not expired."""
+    _cleanup_expired_media()
+    item = media_index.get(image_id)
+    if not item:
+        return None
+    if not Path(item["path"]).exists():
+        media_index.pop(image_id, None)
+        return None
+    return item
+
+
+def _build_queue_jobs(
+    comments: Optional[List[str]],
+    jobs: Optional[List[dict]],
+) -> List[dict]:
+    """Build canonical jobs payload and enforce lowercase on reply jobs."""
+    canonical_jobs = canonicalize_campaign_jobs(comments=comments, jobs=jobs)
+    for job in canonical_jobs:
+        if job.get("type") == "reply_comment":
+            job["text"] = str(job.get("text", "")).lower()
+    return canonical_jobs
+
+
+def _model_to_dict(value) -> dict:
+    """Pydantic v1/v2 compatibility helper."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return dict(value)
+
+
+def _validate_queue_jobs(
+    url: str,
+    jobs: List[dict],
+    include_duplicate_guard: bool = True,
+) -> Dict:
+    """
+    Validate canonical queue jobs.
+    Returns a structured result consumed by both /queue and /debug/queue/validate.
+    """
+    errors: List[str] = []
+    parsed_targets: List[Dict] = []
+
+    if not _ensure_full_url(url):
+        errors.append("url must be a full absolute URL")
+
+    for idx, job in enumerate(jobs):
+        job_type = str(job.get("type", "")).strip().lower()
+        text = str(job.get("text", "")).strip()
+        if not text:
+            errors.append(f"jobs[{idx}].text is required")
+            continue
+
+        if job_type == "reply_comment":
+            target_comment_url = str(job.get("target_comment_url") or "").strip()
+            if not target_comment_url:
+                errors.append(f"jobs[{idx}].target_comment_url is required for reply_comment")
+                continue
+            if not _ensure_full_url(target_comment_url):
+                errors.append(f"jobs[{idx}].target_comment_url must be a full URL")
+                continue
+
+            parsed_comment_id = parse_comment_id_from_url(target_comment_url)
+            if not parsed_comment_id:
+                errors.append(f"jobs[{idx}].target_comment_url must contain parseable comment_id")
+                continue
+
+            parsed_targets.append({
+                "job_index": idx,
+                "target_comment_url": target_comment_url,
+                "target_comment_id": parsed_comment_id,
+            })
+
+            image_id = str(job.get("image_id") or "").strip()
+            if not image_id:
+                errors.append(f"jobs[{idx}].image_id is required for reply_comment")
+                continue
+            if not _get_media_or_none(image_id):
+                errors.append(f"jobs[{idx}].image_id not found or expired: {image_id}")
+
+    duplicate_conflicts = []
+    if include_duplicate_guard and not errors:
+        history = queue_manager.get_history(limit=100)
+        duplicate_conflicts = find_duplicate_text_conflicts(
+            candidate_jobs=jobs,
+            history=history,
+            lookback_days=LOOKBACK_DAYS_DEFAULT,
+            threshold=NEAR_DUPLICATE_THRESHOLD,
+        )
+        if duplicate_conflicts:
+            errors.append(
+                f"duplicate_text_guard triggered ({len(duplicate_conflicts)} conflict(s) in current campaign or last {LOOKBACK_DAYS_DEFAULT} days)"
+            )
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "jobs": jobs,
+        "target_comment_matches": parsed_targets,
+        "target_comment_id": parsed_targets[0]["target_comment_id"] if parsed_targets else None,
+        "duplicate_conflicts": duplicate_conflicts,
+        "dedupe_window_days": LOOKBACK_DAYS_DEFAULT,
+        "near_duplicate_threshold": NEAR_DUPLICATE_THRESHOLD,
+    }
 
 
 # Models
@@ -1954,12 +2205,26 @@ async def run_campaign_queue(request: CampaignQueueRequest, current_user: dict =
 # Persistent Queue API Endpoints
 # =========================================================================
 
+class QueueJob(BaseModel):
+    type: Literal["post_comment", "reply_comment"] = "post_comment"
+    text: str
+    target_comment_url: Optional[str] = None
+    image_id: Optional[str] = None
+
+
 class AddToQueueRequest(BaseModel):
     url: str
-    comments: List[str]
+    comments: Optional[List[str]] = None  # Backward-compatible legacy field
+    jobs: Optional[List[QueueJob]] = None  # Canonical queue field
     duration_minutes: int = 30
     filter_tags: Optional[List[str]] = None
     enable_warmup: bool = True  # Warmup enabled by default for new campaigns
+
+
+class DebugQueueValidateRequest(BaseModel):
+    url: str
+    comments: Optional[List[str]] = None
+    jobs: Optional[List[QueueJob]] = None
 
 
 class RetryJobRequest(BaseModel):
@@ -1968,6 +2233,21 @@ class RetryJobRequest(BaseModel):
     profile_name: str
     comment: str
     original_profile: Optional[str] = None  # Track which profile originally failed
+
+
+class MediaUploadResponse(BaseModel):
+    success: bool
+    image_id: Optional[str] = None
+    filename: Optional[str] = None
+    size: Optional[int] = None
+    content_type: Optional[str] = None
+    expires_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+class DedupeWorkflowRequest(BaseModel):
+    mode: Literal["dry_run", "apply"]
+    plan_id: Optional[str] = None
 
 
 # NOTE: BulkRetryRequest removed - bulk retry endpoint now takes no parameters
@@ -2195,25 +2475,197 @@ async def get_queue(current_user: dict = Depends(get_current_user)) -> Dict:
 
 
 @app.post("/queue")
-async def add_to_queue(request: AddToQueueRequest, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Add a new campaign to the persistent queue."""
+async def add_to_queue(
+    request: AddToQueueRequest,
+    current_user: dict = Depends(get_current_user),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+) -> Dict:
+    """Add a new campaign to the persistent queue with jobs[] + comments[] compatibility."""
     try:
+        # Idempotent replay
+        if x_idempotency_key:
+            existing_campaign_id = queue_idempotency_index.get(x_idempotency_key)
+            if existing_campaign_id:
+                existing = queue_manager.get_campaign(existing_campaign_id)
+                if existing:
+                    replayed = dict(existing)
+                    replayed["idempotent_replay"] = True
+                    return replayed
+
+        jobs_payload = [_model_to_dict(j) for j in request.jobs] if request.jobs else None
+        canonical_jobs = _build_queue_jobs(comments=request.comments, jobs=jobs_payload)
+        validation = _validate_queue_jobs(
+            url=request.url,
+            jobs=canonical_jobs,
+            include_duplicate_guard=True,
+        )
+        if not validation["valid"]:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Queue validation failed",
+                    "errors": validation["errors"],
+                    "target_comment_matches": validation["target_comment_matches"],
+                    "duplicate_conflicts": validation["duplicate_conflicts"],
+                },
+            )
+
+        legacy_comments = [str(job.get("text", "")) for job in canonical_jobs]
         campaign = queue_manager.add_campaign(
             url=request.url,
-            comments=request.comments,
+            comments=legacy_comments,
+            jobs=canonical_jobs,
             duration_minutes=request.duration_minutes,
             username=current_user["username"],
             filter_tags=request.filter_tags,
-            enable_warmup=request.enable_warmup
+            enable_warmup=request.enable_warmup,
+            idempotency_key=x_idempotency_key,
         )
+        if x_idempotency_key:
+            queue_idempotency_index[x_idempotency_key] = campaign["id"]
 
         # Broadcast to all connected clients
         await broadcast_update("queue_campaign_added", campaign)
 
         return campaign
 
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/debug/queue/validate")
+async def debug_validate_queue_payload(
+    request: DebugQueueValidateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """
+    Debug-only payload validator for queue jobs.
+    Disabled in production unless ENABLE_DEBUG_ENDPOINTS=1.
+    """
+    if not _is_debug_mode_enabled():
+        raise HTTPException(status_code=404, detail="Debug endpoint disabled")
+
+    try:
+        jobs_payload = [_model_to_dict(j) for j in request.jobs] if request.jobs else None
+        jobs = _build_queue_jobs(comments=request.comments, jobs=jobs_payload)
+    except ValueError as exc:
+        return {
+            "valid": False,
+            "errors": [str(exc)],
+            "jobs": [],
+            "target_comment_matches": [],
+            "target_comment_id": None,
+            "duplicate_conflicts": [],
+            "dedupe_window_days": LOOKBACK_DAYS_DEFAULT,
+            "near_duplicate_threshold": NEAR_DUPLICATE_THRESHOLD,
+        }
+
+    return _validate_queue_jobs(url=request.url, jobs=jobs, include_duplicate_guard=True)
+
+
+@app.post("/media/upload", response_model=MediaUploadResponse)
+async def upload_media(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+) -> MediaUploadResponse:
+    """Upload media for queue jobs (reply_comment with image attachment)."""
+    _cleanup_expired_media()
+
+    suffix = Path(file.filename or "").suffix.lower()
+    ext_to_mime = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }
+    resolved_content_type = file.content_type
+
+    # Accept either explicit MIME type or trusted image extension.
+    if resolved_content_type not in MEDIA_ALLOWED_TYPES:
+        if suffix in ext_to_mime:
+            resolved_content_type = ext_to_mime[suffix]
+        else:
+            return MediaUploadResponse(
+                success=False,
+                error=f"Invalid file type. Allowed: {', '.join(sorted(MEDIA_ALLOWED_TYPES))}",
+            )
+
+    content = await file.read()
+    if len(content) > MEDIA_MAX_SIZE:
+        return MediaUploadResponse(
+            success=False,
+            error=f"File too large. Max size: {MEDIA_MAX_SIZE // (1024 * 1024)}MB",
+        )
+
+    if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
+        if resolved_content_type == "image/png":
+            suffix = ".png"
+        elif resolved_content_type == "image/webp":
+            suffix = ".webp"
+        else:
+            suffix = ".jpg"
+
+    image_id = uuid.uuid4().hex[:12]
+    path = MEDIA_DIR / f"{image_id}{suffix}"
+    path.write_bytes(content)
+
+    expires_at = datetime.utcnow() + timedelta(hours=MEDIA_TTL_HOURS)
+    media_index[image_id] = {
+        "image_id": image_id,
+        "path": str(path),
+        "filename": file.filename or path.name,
+        "size": len(content),
+        "content_type": resolved_content_type,
+        "uploaded_at": datetime.utcnow().isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "uploaded_by": current_user.get("username"),
+    }
+
+    return MediaUploadResponse(
+        success=True,
+        image_id=image_id,
+        filename=file.filename or path.name,
+        size=len(content),
+        content_type=resolved_content_type,
+        expires_at=expires_at.isoformat(),
+    )
+
+
+@app.get("/media/{image_id}")
+async def get_media(
+    image_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Download uploaded media by image_id."""
+    item = _get_media_or_none(image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Media not found or expired")
+
+    return FileResponse(
+        path=item["path"],
+        media_type=item.get("content_type") or "application/octet-stream",
+        filename=item.get("filename") or Path(item["path"]).name,
+    )
+
+
+@app.delete("/media/{image_id}")
+async def delete_media(
+    image_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Delete uploaded media by image_id."""
+    item = media_index.pop(image_id, None)
+    if not item:
+        return {"success": False, "error": "Media not found"}
+
+    try:
+        Path(item["path"]).unlink(missing_ok=True)
+    except Exception as exc:
+        logger.warning(f"Failed deleting media {image_id}: {exc}")
+
+    return {"success": True, "image_id": image_id}
 
 
 @app.delete("/queue/{campaign_id}")
@@ -4056,6 +4508,45 @@ async def refresh_all_profile_names(current_user: dict = Depends(get_current_use
             })
 
     return results
+
+
+@app.post("/workflow/dedupe-profile-names")
+async def workflow_dedupe_profile_names(
+    request: DedupeWorkflowRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """
+    Build/apply duplicate display-name remediation workflow.
+
+    - dry_run: returns deterministic plan with keep/rename split
+    - apply: executes sequentially, retries failed profile jobs up to 2 times
+    """
+    sessions = list_saved_sessions()
+    plan = build_dedupe_plan(sessions)
+
+    if request.mode == "dry_run":
+        return {
+            "success": True,
+            "mode": "dry_run",
+            **plan,
+        }
+
+    if request.plan_id and request.plan_id != plan.get("plan_id"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "plan_id mismatch",
+                "provided_plan_id": request.plan_id,
+                "current_plan_id": plan.get("plan_id"),
+            },
+        )
+
+    apply_result = await apply_dedupe_plan(plan)
+    return {
+        "success": True,
+        "mode": "apply",
+        **apply_result,
+    }
 
 
 # ============================================================================
