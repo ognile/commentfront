@@ -8,7 +8,7 @@ from playwright.async_api import async_playwright, Page
 from playwright_stealth import Stealth
 
 from typing import Optional, Dict, Any, List
-from urllib.parse import urlparse, unquote, parse_qs
+from urllib.parse import urlparse, unquote, parse_qs, urlencode, urlunparse
 
 from fb_session import FacebookSession, apply_session_to_context
 import fb_selectors
@@ -70,6 +70,69 @@ def parse_comment_id_from_url(target_comment_url: str) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+def _set_query_param(url: str, key: str, value: str) -> Optional[str]:
+    """Return URL with key=value set in query string."""
+    try:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query[key] = [value]
+        return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+    except Exception:
+        return None
+
+
+def _build_target_navigation_candidates(
+    target_comment_url: str,
+    current_url: str,
+    target_comment_id: str,
+) -> List[str]:
+    """
+    Build deterministic fallback URLs that preserve comment_id after FB redirect.
+    """
+    candidates: List[str] = []
+    seen = set()
+
+    def add(url: Optional[str]) -> None:
+        if not url:
+            return
+        norm = str(url).strip()
+        if not norm or norm in seen:
+            return
+        seen.add(norm)
+        candidates.append(norm)
+
+    add(target_comment_url)
+    add(current_url)
+
+    for base in [target_comment_url, current_url]:
+        if not base:
+            continue
+        add(_set_query_param(base, "comment_id", target_comment_id))
+
+        try:
+            parsed = urlparse(base)
+            query = parse_qs(parsed.query)
+            story_fbid = (query.get("story_fbid") or [None])[0]
+            page_id = (query.get("id") or [None])[0]
+            if not story_fbid or not page_id:
+                continue
+
+            for host in ["www.facebook.com", "m.facebook.com"]:
+                story_query = urlencode(
+                    {
+                        "story_fbid": story_fbid,
+                        "id": page_id,
+                        "comment_id": target_comment_id,
+                    }
+                )
+                add(f"https://{host}/story.php?{story_query}")
+                add(f"https://{host}/permalink.php?{story_query}")
+        except Exception:
+            continue
+
+    return candidates
 
 
 async def _is_target_comment_context_present(page: Page, target_comment_id: str) -> bool:
@@ -1386,9 +1449,27 @@ async def reply_to_comment_verified(
                 raise Exception("Target page not visible")
             result["steps_completed"].append("target_page_visible")
 
-            # If target context is not visible yet, first open comments/replies area.
-            if not await _is_target_comment_context_present(page, target_comment_id):
-                logger.info("Target context not visible yet; attempting to open comments section")
+            context_found = False
+            navigation_candidates = _build_target_navigation_candidates(
+                target_comment_url=target_comment_url,
+                current_url=page.url,
+                target_comment_id=target_comment_id,
+            )
+
+            for candidate in navigation_candidates:
+                if candidate != page.url:
+                    try:
+                        await page.goto(candidate, wait_until="domcontentloaded", timeout=45000)
+                        if not await wait_for_post_visible(page, vision, max_attempts=3):
+                            continue
+                    except Exception:
+                        continue
+
+                if await _is_target_comment_context_present(page, target_comment_id):
+                    context_found = True
+                    break
+
+                logger.info("Target context not visible; opening comments for strict gate")
                 await click_with_healing(
                     page=page,
                     vision=vision,
@@ -1399,8 +1480,12 @@ async def reply_to_comment_verified(
                 await asyncio.sleep(1.2)
                 result["steps_completed"].append("comments_open_attempted")
 
+                if await _is_target_comment_context_present(page, target_comment_id):
+                    context_found = True
+                    break
+
             # Strict target-id gate.
-            if not await _is_target_comment_context_present(page, target_comment_id):
+            if not context_found:
                 raise Exception(
                     f"Strict target gate failed: target comment_id={target_comment_id} context not found (page_url={page.url})"
                 )
