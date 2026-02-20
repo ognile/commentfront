@@ -1120,6 +1120,12 @@ async def wait_for_post_visible(page: Page, vision, max_attempts: int = 4) -> bo
             logger.error(f"Landed on Reels page: {page.url}")
             return False
 
+        # Deterministic fallback: accept known post/permalink indicators.
+        if await verify_post_loaded(page):
+            logger.info(f"Post visible via deterministic fallback on attempt {attempt + 1}")
+            await dump_interactive_elements(page, "PAGE LOADED - deterministic post fallback")
+            return True
+
         screenshot = await save_debug_screenshot(page, f"wait_attempt_{attempt}")
         verification = await vision.verify_state(screenshot, "post_visible")
 
@@ -1133,6 +1139,12 @@ async def wait_for_post_visible(page: Page, vision, max_attempts: int = 4) -> bo
         wait_time = base_wait * (2 ** attempt)
         logger.info(f"Post not visible yet, waiting {wait_time:.1f}s... (attempt {attempt + 1}/{max_attempts})")
         await asyncio.sleep(wait_time)
+
+    # Final non-vision fallback before hard fail.
+    if await verify_post_loaded(page):
+        logger.info("Post visible via deterministic fallback after vision retries exhausted")
+        await dump_interactive_elements(page, "PAGE LOADED - deterministic fallback after retries")
+        return True
 
     logger.error(f"Post not visible after {max_attempts} attempts")
     return False
