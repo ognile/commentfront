@@ -1741,6 +1741,36 @@ async def reply_to_comment_verified(
                 raise Exception("Image attach failed (strict mode, no text-only fallback)")
             result["steps_completed"].append("image_attached")
 
+            # Some FB upload flows reset composer text; enforce text presence again before submit.
+            post_attach_shot = await save_debug_screenshot(page, "reply_after_attach")
+            post_attach_typed = await vision.verify_state(
+                post_attach_shot,
+                "text_typed",
+                expected_text=normalized_reply[-100:],
+            )
+            if not post_attach_typed.success:
+                focused_after_attach = await smart_focus(page, fb_selectors.REPLY["reply_input"], "Reply input after attach")
+                if not focused_after_attach:
+                    focused_after_attach = await find_comment_input(page)
+                if not focused_after_attach:
+                    raise Exception("Could not focus reply input after image attach")
+                await page.keyboard.type(normalized_reply, delay=40)
+                await asyncio.sleep(0.8)
+
+                retyped_shot = await save_debug_screenshot(page, "reply_retyped_after_attach")
+                retyped_verification = await vision.verify_state(
+                    retyped_shot,
+                    "text_typed",
+                    expected_text=normalized_reply[-100:],
+                )
+                if not retyped_verification.success:
+                    raise Exception(
+                        f"Reply text not visible after retyping post-attach: {retyped_verification.message}"
+                    )
+                result["steps_completed"].append("reply_text_retyped_after_attach")
+            else:
+                result["steps_completed"].append("reply_text_preserved_after_attach")
+
             # Submit reply.
             submitted = False
             if await smart_click(page, fb_selectors.REPLY["reply_submit"], "Reply submit"):
