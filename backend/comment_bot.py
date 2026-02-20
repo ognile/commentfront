@@ -135,6 +135,55 @@ def _build_target_navigation_candidates(
     return candidates
 
 
+def _escape_css_attr_value(value: str) -> str:
+    """Escape quotes/backslashes for safe CSS attribute selectors."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _selector_candidates_from_dump(elements: List[dict], intent: str) -> List[str]:
+    """
+    Derive selector candidates from live element dump, so we adapt to real UI attrs.
+    """
+    intent_keywords = {
+        "reply_button": ["reply"],
+        "reply_attach": ["photo", "image", "attach", "camera", "gallery"],
+    }
+    keywords = intent_keywords.get(intent, [])
+    if not keywords:
+        return []
+
+    selectors: List[str] = []
+    seen = set()
+
+    def add(selector: str) -> None:
+        if selector and selector not in seen:
+            seen.add(selector)
+            selectors.append(selector)
+
+    for el in elements:
+        aria_label = str(el.get("ariaLabel") or "").strip()
+        text = str(el.get("text") or "").strip()
+        role = str(el.get("role") or "").strip()
+        sigil = str(el.get("sigil") or "").strip()
+        haystack = f"{aria_label} {text}".lower()
+
+        if not any(keyword in haystack for keyword in keywords):
+            continue
+
+        if aria_label:
+            esc_aria = _escape_css_attr_value(aria_label)
+            add(f'[aria-label="{esc_aria}"]')
+            add(f'button[aria-label="{esc_aria}"]')
+            if role:
+                esc_role = _escape_css_attr_value(role)
+                add(f'[role="{esc_role}"][aria-label="{esc_aria}"]')
+        if sigil:
+            esc_sigil = _escape_css_attr_value(sigil)
+            add(f'[data-sigil="{esc_sigil}"]')
+
+    return selectors
+
+
 async def _is_target_comment_context_present(page: Page, target_comment_id: str) -> bool:
     """
     Strict target-id gate:
@@ -234,8 +283,16 @@ async def _click_reply_button_for_target(page: Page, target_comment_id: str) -> 
     except Exception as e:
         logger.debug(f"Target-aware reply click failed: {e}")
 
-    # 2) Fallback generic selectors.
-    return await smart_click(page, fb_selectors.REPLY["reply_button"], "Reply button")
+    # 2) Fallback selectors discovered from live dump + static selector set.
+    discovered = []
+    try:
+        elements = await dump_interactive_elements(page, "REPLY BUTTON SELECTOR DISCOVERY")
+        discovered = _selector_candidates_from_dump(elements, "reply_button")
+    except Exception:
+        discovered = []
+
+    selector_pool = discovered + fb_selectors.REPLY["reply_button"]
+    return await smart_click(page, selector_pool, "Reply button")
 
 
 async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
@@ -244,8 +301,16 @@ async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
         logger.warning(f"Image path missing for attachment: {image_path}")
         return False
 
-    # Trigger attachment UI if present.
-    await smart_click(page, fb_selectors.REPLY["reply_attach_button"], "Reply attach image")
+    # Trigger attachment UI if present, using discovered selectors first.
+    discovered_attach = []
+    try:
+        elements = await dump_interactive_elements(page, "REPLY ATTACH SELECTOR DISCOVERY")
+        discovered_attach = _selector_candidates_from_dump(elements, "reply_attach")
+    except Exception:
+        discovered_attach = []
+
+    attach_pool = discovered_attach + fb_selectors.REPLY["reply_attach_button"]
+    await smart_click(page, attach_pool, "Reply attach image")
     await asyncio.sleep(0.4)
 
     file_input_selectors = [
@@ -1483,6 +1548,29 @@ async def reply_to_comment_verified(
                 if await _is_target_comment_context_present(page, target_comment_id):
                     context_found = True
                     break
+
+            # Visual fallback gate:
+            # Some FB surfaces hide comment_id in DOM even when target thread is visible.
+            if not context_found:
+                gate_shot = await save_debug_screenshot(page, "reply_target_gate")
+                gate_visual = await vision.verify_state(gate_shot, "comments_opened")
+                has_reply_controls = await page.evaluate(
+                    """() => {
+                        const candidates = document.querySelectorAll('[aria-label], [role="button"], button, a');
+                        for (const el of candidates) {
+                            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                            const text = (el.textContent || '').toLowerCase().trim();
+                            if (aria.includes('reply') || text === 'reply') return true;
+                        }
+                        return false;
+                    }"""
+                )
+                if gate_visual.success and has_reply_controls:
+                    logger.warning(
+                        "Target comment_id not detectable in DOM; proceeding with visual gate on provided target URL format"
+                    )
+                    context_found = True
+                    result["steps_completed"].append("target_comment_gate_visual_fallback")
 
             # Strict target-id gate.
             if not context_found:
