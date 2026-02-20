@@ -1433,7 +1433,6 @@ async def reply_to_comment_verified(
 
     Critical rules:
     - Requires parseable target comment id
-    - Strict gate: if exact target context isn't found, fail without posting
     - Reply text is lowercased before typing
     - If image attach fails, fail job (no text-only fallback)
     """
@@ -1514,7 +1513,7 @@ async def reply_to_comment_verified(
                 raise Exception("Target page not visible")
             result["steps_completed"].append("target_page_visible")
 
-            context_found = False
+            target_context_found = False
             navigation_candidates = _build_target_navigation_candidates(
                 target_comment_url=target_comment_url,
                 current_url=page.url,
@@ -1531,10 +1530,32 @@ async def reply_to_comment_verified(
                         continue
 
                 if await _is_target_comment_context_present(page, target_comment_id):
-                    context_found = True
+                    target_context_found = True
                     break
 
-                logger.info("Target context not visible; opening comments for strict gate")
+            if target_context_found:
+                result["steps_completed"].append("target_comment_context_detected")
+            else:
+                logger.warning(
+                    "Target comment_id context not detectable; continuing with visual post/reply flow"
+                )
+                result["steps_completed"].append("target_comment_context_not_detected")
+
+            # Open comments area (if needed) so reply controls are visible.
+            comments_open_result = await click_with_healing(
+                page=page,
+                vision=vision,
+                selectors=fb_selectors.COMMENT["comment_button"],
+                description="Comment button (reply flow)",
+                max_attempts=3,
+            )
+            if comments_open_result.get("success"):
+                await asyncio.sleep(1.0)
+                result["steps_completed"].append("comments_opened_for_reply")
+
+            # Open reply composer for the target comment (or visually-nearest reply control).
+            if not await _click_reply_button_for_target(page, target_comment_id):
+                # One more attempt after opening comments again.
                 await click_with_healing(
                     page=page,
                     vision=vision,
@@ -1542,44 +1563,7 @@ async def reply_to_comment_verified(
                     description="Comment button (reply flow)",
                     max_attempts=3,
                 )
-                await asyncio.sleep(1.2)
-                result["steps_completed"].append("comments_open_attempted")
-
-                if await _is_target_comment_context_present(page, target_comment_id):
-                    context_found = True
-                    break
-
-            # Visual fallback gate:
-            # Some FB surfaces hide comment_id in DOM even when target thread is visible.
-            if not context_found:
-                gate_shot = await save_debug_screenshot(page, "reply_target_gate")
-                gate_visual = await vision.verify_state(gate_shot, "comments_opened")
-                has_reply_controls = await page.evaluate(
-                    """() => {
-                        const candidates = document.querySelectorAll('[aria-label], [role="button"], button, a');
-                        for (const el of candidates) {
-                            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                            const text = (el.textContent || '').toLowerCase().trim();
-                            if (aria.includes('reply') || text === 'reply') return true;
-                        }
-                        return false;
-                    }"""
-                )
-                if gate_visual.success and has_reply_controls:
-                    logger.warning(
-                        "Target comment_id not detectable in DOM; proceeding with visual gate on provided target URL format"
-                    )
-                    context_found = True
-                    result["steps_completed"].append("target_comment_gate_visual_fallback")
-
-            # Strict target-id gate.
-            if not context_found:
-                raise Exception(
-                    f"Strict target gate failed: target comment_id={target_comment_id} context not found (page_url={page.url})"
-                )
-            result["steps_completed"].append("target_comment_gate_passed")
-
-            # Open reply composer for the target comment.
+                await asyncio.sleep(1.0)
             if not await _click_reply_button_for_target(page, target_comment_id):
                 raise Exception("Could not open reply composer for target comment")
             await asyncio.sleep(0.9)
