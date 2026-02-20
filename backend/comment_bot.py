@@ -318,8 +318,18 @@ async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
         discovered_attach = []
 
     attach_pool = discovered_attach + fb_selectors.REPLY["reply_attach_button"]
-    await smart_click(page, attach_pool, "Reply attach image")
-    await asyncio.sleep(0.4)
+
+    # First try native file-chooser flow from attach icon click.
+    try:
+        async with page.expect_file_chooser(timeout=3000) as chooser_info:
+            await smart_click(page, attach_pool, "Reply attach image")
+        file_chooser = await chooser_info.value
+        await file_chooser.set_files(image_path)
+        await asyncio.sleep(1.5)
+    except Exception:
+        # Fallback to direct input assignment.
+        await smart_click(page, attach_pool, "Reply attach image")
+        await asyncio.sleep(0.4)
 
     file_input_selectors = [
         'input[type="file"]',
@@ -337,13 +347,16 @@ async def _attach_image_to_reply(page: Page, image_path: str) -> bool:
 
             attached = await page.evaluate(
                 """() => {
-                    const input = document.querySelector('input[type="file"]');
-                    if (input && input.files && input.files.length > 0) return true;
-                    const preview = document.querySelector('img[src^="blob:"], img[data-imgperflogname], [aria-label*="Remove"]');
-                    return !!preview;
+                    const preview = document.querySelector(
+                        'img[src^="blob:"], img[data-imgperflogname], [aria-label*="Remove"], [aria-label*="remove"], [data-visualcompletion="media-vc-image"]'
+                    );
+                    if (preview) return true;
+                    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+                    return inputs.some((el) => el.files && el.files.length > 0);
                 }"""
             )
             if attached:
+                await save_debug_screenshot(page, "reply_image_attached")
                 logger.info("Image attachment confirmed in composer")
                 return True
         except Exception as e:
@@ -1616,7 +1629,15 @@ async def reply_to_comment_verified(
             if not await smart_click(page, fb_selectors.REPLY["reply_submit"], "Reply submit"):
                 if not await smart_click(page, fb_selectors.COMMENT["comment_submit"], "Send button"):
                     raise Exception("Could not click reply submit button")
-            await asyncio.sleep(4.0)
+            await asyncio.sleep(3.0)
+            await save_debug_screenshot(page, "reply_post_submit")
+
+            # Reload once so newly posted reply thread is visible before verification.
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=45000)
+                await asyncio.sleep(2.0)
+            except Exception:
+                pass
             result["steps_completed"].append("reply_submitted")
 
             verify_shot = await save_debug_screenshot(page, "reply_verify")
