@@ -1096,6 +1096,17 @@ async def verify_post_loaded(page: Page) -> bool:
         if await page.locator('[data-sigil="m-feed-voice-subtitle"]').count() > 0:
             return True
 
+        # 4. Accept visible comment UI as post context (reaction row may be off-screen).
+        comment_ui_selectors = [
+            'textarea[aria-label*="comment" i]',
+            'textarea[placeholder*="comment" i]',
+            '[aria-label*="post a comment" i]',
+            '[aria-label*="comments" i]',
+        ]
+        for selector in comment_ui_selectors:
+            if await page.locator(selector).count() > 0:
+                return True
+
         await save_debug_screenshot(page, "verification_failed")
         return False # Return False if we can't confirm, but caller might proceed anyway
     except Exception as e:
