@@ -82,12 +82,28 @@ async def _is_target_comment_context_present(page: Page, target_comment_id: str)
     try:
         return await page.evaluate(
             """(commentId) => {
-                const q = `[href*="comment_id=${commentId}"], [data-ft*="${commentId}"], [id*="${commentId}"]`;
-                if (document.querySelector(q)) return true;
+                const directNeedle = `comment_id=${commentId}`;
+                const encodedNeedle = `comment_id%3D${encodeURIComponent(commentId)}`;
+                const doubleEncodedNeedle = `comment_id%253D${encodeURIComponent(commentId)}`;
+                const hrefNeedles = [directNeedle, encodedNeedle, doubleEncodedNeedle];
+
+                const currentHref = window.location && window.location.href ? window.location.href : "";
+                if (hrefNeedles.some((needle) => currentHref.includes(needle))) return true;
+
+                const selectorParts = [
+                    `[href*="${directNeedle}"]`,
+                    `[href*="${encodedNeedle}"]`,
+                    `[href*="${doubleEncodedNeedle}"]`,
+                    `[data-ft*="${commentId}"]`,
+                    `[id*="${commentId}"]`,
+                ];
+                if (document.querySelector(selectorParts.join(", "))) return true;
+
                 const all = document.querySelectorAll("a[href], div, span");
                 for (const el of all) {
                     const href = el.getAttribute && el.getAttribute("href");
-                    if (href && href.includes(`comment_id=${commentId}`)) return true;
+                    if (href && hrefNeedles.some((needle) => href.includes(needle))) return true;
+                    if (href && href.includes(commentId)) return true;
                     const text = (el.textContent || "").slice(0, 400);
                     if (text.includes(commentId)) return true;
                 }
@@ -109,8 +125,16 @@ async def _click_reply_button_for_target(page: Page, target_comment_id: str) -> 
     try:
         clicked = await page.evaluate(
             """(commentId) => {
-                const links = Array.from(document.querySelectorAll('a[href*="comment_id="]'));
-                let target = links.find((a) => (a.getAttribute("href") || "").includes(`comment_id=${commentId}`));
+                const directNeedle = `comment_id=${commentId}`;
+                const encodedNeedle = `comment_id%3D${encodeURIComponent(commentId)}`;
+                const doubleEncodedNeedle = `comment_id%253D${encodeURIComponent(commentId)}`;
+                const needles = [directNeedle, encodedNeedle, doubleEncodedNeedle];
+
+                const links = Array.from(document.querySelectorAll('a[href]'));
+                let target = links.find((a) => {
+                    const href = a.getAttribute("href") || "";
+                    return needles.some((needle) => href.includes(needle)) || href.includes(commentId);
+                });
                 if (!target) {
                     const all = Array.from(document.querySelectorAll("[id], [data-ft]"));
                     target = all.find((el) => {
