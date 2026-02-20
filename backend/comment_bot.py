@@ -1386,10 +1386,23 @@ async def reply_to_comment_verified(
                 raise Exception("Target page not visible")
             result["steps_completed"].append("target_page_visible")
 
+            # If target context is not visible yet, first open comments/replies area.
+            if not await _is_target_comment_context_present(page, target_comment_id):
+                logger.info("Target context not visible yet; attempting to open comments section")
+                await click_with_healing(
+                    page=page,
+                    vision=vision,
+                    selectors=fb_selectors.COMMENT["comment_button"],
+                    description="Comment button (reply flow)",
+                    max_attempts=3,
+                )
+                await asyncio.sleep(1.2)
+                result["steps_completed"].append("comments_open_attempted")
+
             # Strict target-id gate.
             if not await _is_target_comment_context_present(page, target_comment_id):
                 raise Exception(
-                    f"Strict target gate failed: target comment_id={target_comment_id} context not found"
+                    f"Strict target gate failed: target comment_id={target_comment_id} context not found (page_url={page.url})"
                 )
             result["steps_completed"].append("target_comment_gate_passed")
 
