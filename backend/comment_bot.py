@@ -8,7 +8,7 @@ from playwright.async_api import async_playwright, Page
 # Stealth mode is MANDATORY for anti-detection
 from playwright_stealth import Stealth
 
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable, Awaitable
 from urllib.parse import urlparse, unquote, parse_qs, urlencode, urlunparse
 
 from fb_session import FacebookSession, apply_session_to_context
@@ -1328,7 +1328,8 @@ async def post_comment_verified(
     url: str,
     comment: str,
     proxy: Optional[str] = None,
-    enable_warmup: bool = False
+    enable_warmup: bool = False,
+    phase_callback: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """
     Post a comment with AI vision VERIFICATION at every step.
@@ -1518,6 +1519,12 @@ async def post_comment_verified(
                 error_msg = step5_result.get("error", "Unknown error")
                 raise Exception(f"Step 5 FAILED - {error_msg}")
 
+            if phase_callback:
+                await phase_callback(
+                    "submit_clicked",
+                    {"source": "post_comment_verified", "step": "comment_submit_clicked"},
+                )
+
             # Wait for comment to post (5s for long comments to render)
             await asyncio.sleep(5)
 
@@ -1525,6 +1532,8 @@ async def post_comment_verified(
             await dump_interactive_elements(page, "AFTER SEND CLICK - checking for comment")
 
             # Verify comment was posted
+            if phase_callback:
+                await phase_callback("verifying", {"source": "post_comment_verified"})
             verify_screenshot = await save_debug_screenshot(page, "step5_verify")
             verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
 
@@ -1602,6 +1611,7 @@ async def reply_to_comment_verified(
     image_path: str,
     proxy: Optional[str] = None,
     enable_warmup: bool = False,
+    phase_callback: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """
     Reply to a specific target comment and attach an image.
@@ -1841,6 +1851,11 @@ async def reply_to_comment_verified(
             if not submitted:
                 raise Exception("Could not click reply submit button")
             submission_evidence["submit_clicked"] = True
+            if phase_callback:
+                await phase_callback(
+                    "submit_clicked",
+                    {"source": "reply_to_comment_verified", "step": "reply_submit_clicked"},
+                )
 
             # Wait for FB "Posting..." transient state to settle before evidence screenshot.
             posting_seen = False
@@ -1899,6 +1914,8 @@ async def reply_to_comment_verified(
             # Verify through target permalink candidates (avoid feed-only reload verification).
             posted = None
             verify_error = "verification did not run"
+            if phase_callback:
+                await phase_callback("verifying", {"source": "reply_to_comment_verified"})
             verify_candidates = _build_target_navigation_candidates(
                 target_comment_url=target_comment_url,
                 current_url=page.url,
@@ -1966,6 +1983,98 @@ async def reply_to_comment_verified(
 
     cleanup_old_screenshots(max_keep=100)
     return result
+
+
+async def reconcile_comment_submission(
+    session: FacebookSession,
+    url: str,
+    comment_text: str,
+    proxy: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Best-effort read-only reconciliation for an inflight submission.
+
+    Returns:
+        {
+          "found": True|False|None,   # None means inconclusive
+          "confidence": float,
+          "reason": str,
+        }
+    """
+    if not comment_text:
+        return {"found": None, "confidence": 0.0, "reason": "empty comment text"}
+
+    vision = get_vision_client() if VISION_AVAILABLE else None
+    if not vision:
+        return {"found": None, "confidence": 0.0, "reason": "vision unavailable"}
+
+    user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
+    viewport = session.get_viewport() or MOBILE_VIEWPORT
+    active_proxy = proxy
+    if not active_proxy:
+        return {"found": None, "confidence": 0.0, "reason": "proxy unavailable"}
+
+    try:
+        async with async_playwright() as p:
+            device_fingerprint = session.get_device_fingerprint()
+            context_options = {
+                "user_agent": user_agent,
+                "viewport": viewport,
+                "ignore_https_errors": True,
+                "device_scale_factor": 1,
+                "timezone_id": device_fingerprint["timezone"],
+                "locale": device_fingerprint["locale"],
+                "proxy": _build_playwright_proxy(active_proxy),
+            }
+            browser = await p.chromium.launch(headless=True, args=["--disable-notifications", "--disable-geolocation"])
+            context = await browser.new_context(**context_options)
+            await Stealth().apply_stealth_async(context)
+            try:
+                page = await context.new_page()
+                if not await apply_session_to_context(context, session):
+                    return {"found": None, "confidence": 0.0, "reason": "session cookies unavailable"}
+
+                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                if not await wait_for_post_visible(page, vision, max_attempts=3):
+                    return {"found": None, "confidence": 0.0, "reason": "post not visible during reconciliation"}
+
+                # Open comments section if possible to increase detection reliability.
+                await click_with_healing(
+                    page=page,
+                    vision=vision,
+                    selectors=fb_selectors.COMMENT["comment_button"],
+                    description="Comment button (reconciliation)",
+                    max_attempts=2,
+                )
+                await asyncio.sleep(1.0)
+
+                shot = await save_debug_screenshot(page, "reconcile_verify")
+                verification = await vision.verify_state(shot, "comment_posted", expected_text=comment_text[-100:])
+                if verification.success:
+                    return {
+                        "found": True,
+                        "confidence": float(verification.confidence or 0.0),
+                        "reason": "comment text verified on page",
+                    }
+
+                status = str(getattr(verification, "status", "") or "").lower()
+                if status == "not_verified":
+                    return {
+                        "found": False,
+                        "confidence": float(verification.confidence or 0.0),
+                        "reason": verification.message or "comment text not visible",
+                    }
+
+                return {
+                    "found": None,
+                    "confidence": float(verification.confidence or 0.0),
+                    "reason": verification.message or "verification inconclusive",
+                }
+            finally:
+                await browser.close()
+    except Exception as exc:
+        logger.warning(f"Reconciliation check failed: {exc}")
+        return {"found": None, "confidence": 0.0, "reason": str(exc)}
 
 
 # Re-export other functions needed by main.py

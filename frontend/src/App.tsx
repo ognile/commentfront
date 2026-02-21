@@ -104,6 +104,27 @@ interface QueueState {
   history: QueuedCampaign[];
 }
 
+interface QueueWarning {
+  code: string;
+  message: string;
+  errors?: string[];
+  duplicate_conflicts?: Array<Record<string, unknown>>;
+}
+
+interface CampaignDraft {
+  id: string;
+  url: string;
+  comments: string[];
+  jobs?: Array<Record<string, unknown>>;
+  duration_minutes: number;
+  filter_tags?: string[];
+  enable_warmup?: boolean;
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+  updated_by: string;
+}
+
 interface LiveStatus {
   connected: boolean;
   currentStep: string;
@@ -274,28 +295,6 @@ const getConsolidatedResults = (results: CampaignResult[]): CampaignResult[] => 
   return Object.values(byJobIndex).sort((a, b) => a.job_index - b.job_index);
 };
 
-// Normalize Facebook URL to extract unique post identifier
-const normalizeUrl = (url: string): string => {
-  try {
-    // Try to extract post ID from various FB URL formats
-    const patterns = [
-      /posts\/(\d+)/,
-      /story_fbid=(\d+)/,
-      /permalink\/(\d+)/,
-      /photos\/[^/]+\/(\d+)/,
-      /\/(\d+)\/?$/
-    ];
-    for (const pattern of patterns) {
-      const match = url.match(pattern);
-      if (match) return match[1];
-    }
-    // Fallback: use the full URL lowercased
-    return url.toLowerCase().trim();
-  } catch {
-    return url.toLowerCase().trim();
-  }
-};
-
 function App() {
   // Auth state - must be first hook
   const { user, isAuthenticated, isLoading: authLoading, logout } = useAuth();
@@ -332,6 +331,15 @@ function App() {
   });
   const [queueLoading, setQueueLoading] = useState(true);
   const [addingToQueue, setAddingToQueue] = useState(false);
+  const [drafts, setDrafts] = useState<CampaignDraft[]>([]);
+  const [draftsLoading, setDraftsLoading] = useState(true);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [publishingDraftId, setPublishingDraftId] = useState<string | null>(null);
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null);
+  const [draftSaveStatus, setDraftSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const draftAutosaveTimerRef = useRef<number | null>(null);
+  const loadingDraftIntoFormRef = useRef(false);
 
   // Campaign details modal state
   const [selectedCampaign, setSelectedCampaign] = useState<QueuedCampaign | null>(null);
@@ -410,7 +418,7 @@ function App() {
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [remoteConnecting, setRemoteConnecting] = useState(false);
   const [remoteProgress, setRemoteProgress] = useState<string | null>(null);
-  const [_remoteUrl, setRemoteUrl] = useState('');
+  const [, setRemoteUrl] = useState('');
   const [remoteUrlInput, setRemoteUrlInput] = useState('');
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
@@ -519,6 +527,34 @@ function App() {
                 // Full state sync on connect or reconnect
                 setQueueState(update.data);
                 setQueueLoading(false);
+                break;
+
+              case 'drafts_state_sync':
+                setDrafts(update.data?.drafts || []);
+                setDraftsLoading(false);
+                break;
+
+              case 'draft_created':
+                setDrafts(prev => {
+                  const without = prev.filter(d => d.id !== update.data.id);
+                  return [update.data, ...without];
+                });
+                break;
+
+              case 'draft_updated':
+                setDrafts(prev => prev.map(d => (d.id === update.data.id ? update.data : d)));
+                break;
+
+              case 'draft_deleted':
+                setDrafts(prev => prev.filter(d => d.id !== update.data.draft_id));
+                setActiveDraftId(prev => (prev === update.data.draft_id ? null : prev));
+                setDraftSaveStatus(prev => (prev === 'saving' ? prev : 'idle'));
+                break;
+
+              case 'draft_published':
+                setDrafts(prev => prev.filter(d => d.id !== update.data.draft_id));
+                setActiveDraftId(prev => (prev === update.data.draft_id ? null : prev));
+                setDraftSaveStatus(prev => (prev === 'saving' ? prev : 'idle'));
                 break;
 
               case 'queue_campaign_added':
@@ -851,6 +887,46 @@ function App() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
+  const normalizeErrorMessage = (value: unknown, fallback: string): string => {
+    if (typeof value === 'string' && value.trim()) return value;
+    if (Array.isArray(value)) {
+      const joined = value.map(v => normalizeErrorMessage(v, '')).filter(Boolean).join('; ');
+      return joined || fallback;
+    }
+
+    if (value && typeof value === 'object') {
+      const asRecord = value as Record<string, unknown>;
+      if (typeof asRecord.message === 'string' && asRecord.message.trim()) return asRecord.message;
+      if (typeof asRecord.detail === 'string' && asRecord.detail.trim()) return asRecord.detail;
+      if (Array.isArray(asRecord.errors) && asRecord.errors.length > 0) {
+        const joined = asRecord.errors.map(e => String(e)).join('; ');
+        if (joined.trim()) return joined;
+      }
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return fallback;
+      }
+    }
+
+    if (value instanceof Error && value.message) return value.message;
+    return fallback;
+  };
+
+  const parseApiError = async (res: Response, fallback: string): Promise<string> => {
+    try {
+      const body = await res.json();
+      return normalizeErrorMessage(body?.detail ?? body, fallback);
+    } catch {
+      return fallback;
+    }
+  };
+
+  const parseCommentsInput = (raw: string): string[] => raw
+    .split('\n')
+    .map(c => c.trim())
+    .filter(Boolean);
+
   const fetchSessions = async () => {
     try {
       setSessionsLoading(true);
@@ -984,6 +1060,20 @@ function App() {
     }
   };
 
+  const fetchDrafts = async () => {
+    try {
+      setDraftsLoading(true);
+      const res = await fetch(`${API_BASE}/drafts`, { headers: getAuthHeaders() });
+      if (!res.ok) throw new Error(await parseApiError(res, 'Failed to fetch drafts'));
+      const data = await res.json();
+      setDrafts(data.drafts || []);
+    } catch (error) {
+      console.error('Failed to fetch drafts:', error);
+    } finally {
+      setDraftsLoading(false);
+    }
+  };
+
   const fetchGeminiObservations = async () => {
     try {
       setLoadingObservations(true);
@@ -1009,7 +1099,7 @@ function App() {
       const data = await res.json();
       toast.success(`Cleared ${data.cleared} observations`);
       setGeminiObservations([]);
-    } catch (error) {
+    } catch {
       toast.error('Failed to clear observations');
     }
   };
@@ -1047,7 +1137,7 @@ function App() {
       if (!res.ok) throw new Error('Failed to unblock profile');
       toast.success(`Unblocked ${profileName}`);
       fetchProfileAnalytics();
-    } catch (error) {
+    } catch {
       toast.error('Failed to unblock profile');
     }
   };
@@ -1061,7 +1151,7 @@ function App() {
       if (!res.ok) throw new Error('Failed to restrict profile');
       toast.success(`Restricted ${profileName} for ${hours}h`);
       fetchProfileAnalytics();
-    } catch (error) {
+    } catch {
       toast.error('Failed to restrict profile');
     }
   };
@@ -1072,6 +1162,7 @@ function App() {
     fetchTags();
     fetchAppealStatuses();
     fetchQueue();
+    fetchDrafts();
   }, []);
 
   // Tier 2: Background loading - load after critical data, during idle time
@@ -1083,6 +1174,45 @@ function App() {
       scheduleIdle(() => fetchProxies());
     }
   }, [sessionsLoading]);
+
+  useEffect(() => {
+    if (!activeDraftId) {
+      if (draftAutosaveTimerRef.current !== null) {
+        window.clearTimeout(draftAutosaveTimerRef.current);
+        draftAutosaveTimerRef.current = null;
+      }
+      return;
+    }
+    if (loadingDraftIntoFormRef.current) return;
+
+    if (draftAutosaveTimerRef.current !== null) {
+      window.clearTimeout(draftAutosaveTimerRef.current);
+    }
+
+    setDraftSaveStatus('saving');
+    draftAutosaveTimerRef.current = window.setTimeout(async () => {
+      const saved = await saveDraftFromComposer({ silent: true, forceDraftId: activeDraftId });
+      if (!saved) {
+        setDraftSaveStatus('error');
+      }
+      draftAutosaveTimerRef.current = null;
+    }, 800);
+
+    return () => {
+      if (draftAutosaveTimerRef.current !== null) {
+        window.clearTimeout(draftAutosaveTimerRef.current);
+        draftAutosaveTimerRef.current = null;
+      }
+    };
+  }, [activeDraftId, url, comments, campaignDuration, campaignFilterTags]);
+
+  useEffect(() => {
+    return () => {
+      if (draftAutosaveTimerRef.current !== null) {
+        window.clearTimeout(draftAutosaveTimerRef.current);
+      }
+    };
+  }, []);
 
   // Filter sessions by search query, status, and selected tags (AND logic)
   const filteredSessions = useMemo(() => {
@@ -1128,87 +1258,209 @@ function App() {
     return result;
   }, [sessions, sessionSearchQuery, sessionStatusFilters, sessionFilterTags, appealStatuses]);
 
-  // Add campaign to queue (API call)
-  const addToQueue = async () => {
-    if (!url || !comments) {
+  const buildComposerPayload = () => ({
+    url: url.trim(),
+    comments: parseCommentsInput(comments),
+    duration_minutes: campaignDuration,
+    filter_tags: campaignFilterTags.length > 0 ? campaignFilterTags : null,
+    enable_warmup: enableWarmup
+  });
+
+  const showQueueWarnings = (warnings?: QueueWarning[]) => {
+    if (!warnings || warnings.length === 0) return;
+    warnings.forEach((warning) => {
+      const conflictCount = warning.duplicate_conflicts?.length || 0;
+      const baseMessage = warning.message || warning.code || 'Campaign warning';
+      toast.warning(conflictCount > 0 ? `${baseMessage} (${conflictCount} conflict${conflictCount === 1 ? '' : 's'})` : baseMessage);
+    });
+  };
+
+  const saveDraftFromComposer = async (
+    options: { silent?: boolean; forceDraftId?: string | null } = {}
+  ): Promise<CampaignDraft | null> => {
+    const { silent = false, forceDraftId } = options;
+    const payload = buildComposerPayload();
+    const targetDraftId = forceDraftId ?? activeDraftId;
+    const endpoint = targetDraftId ? `${API_BASE}/drafts/${targetDraftId}` : `${API_BASE}/drafts`;
+    const method = targetDraftId ? 'PUT' : 'POST';
+
+    setSavingDraft(true);
+    try {
+      const res = await fetch(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to save draft'));
+      }
+      const draft = await res.json();
+      setActiveDraftId(draft.id);
+      setDraftSaveStatus('saved');
+      if (!silent) {
+        toast.success(targetDraftId ? 'Draft updated' : 'Draft saved');
+      }
+      return draft;
+    } catch (error) {
+      setDraftSaveStatus('error');
+      if (!silent) {
+        toast.error(normalizeErrorMessage(error, 'Failed to save draft'));
+      }
+      return null;
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const saveDraftNow = async () => {
+    const payload = buildComposerPayload();
+    if (!payload.url && payload.comments.length === 0) {
+      toast.error('Enter a URL or comments before saving draft');
+      return;
+    }
+    await saveDraftFromComposer({ silent: false });
+  };
+
+  const publishDraftCampaign = async (draftId: string, clearComposer: boolean = false): Promise<boolean> => {
+    if (queueState.pending_count >= queueState.max_pending) {
+      toast.error(`Queue is full (${queueState.pending_count}/${queueState.max_pending}). Wait for campaigns to complete.`);
+      return false;
+    }
+
+    setPublishingDraftId(draftId);
+    try {
+      if (activeDraftId === draftId) {
+        if (draftAutosaveTimerRef.current !== null) {
+          window.clearTimeout(draftAutosaveTimerRef.current);
+          draftAutosaveTimerRef.current = null;
+        }
+        const synced = await saveDraftFromComposer({ silent: true, forceDraftId: draftId });
+        if (!synced) {
+          throw new Error('Failed to sync draft before publish');
+        }
+      }
+
+      const res = await fetch(`${API_BASE}/drafts/${draftId}/publish`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to publish draft'));
+      }
+
+      const data = await res.json();
+      showQueueWarnings(data.warnings);
+      toast.success('Draft published to queue');
+
+      if (clearComposer) {
+        setActiveDraftId(null);
+        setDraftSaveStatus('idle');
+        setUrl('');
+        setComments('');
+      }
+
+      return true;
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to publish draft'));
+      return false;
+    } finally {
+      setPublishingDraftId(null);
+    }
+  };
+
+  const publishNow = async () => {
+    const payload = buildComposerPayload();
+    if (!payload.url || payload.comments.length === 0) {
       toast.error('Please enter a URL and comments');
       return;
     }
 
-    const commentList = comments.split('\n').filter(c => c.trim());
-    if (commentList.length === 0) {
-      toast.error('Please enter at least one comment');
-      return;
-    }
-
-    // Check queue limit
     if (queueState.pending_count >= queueState.max_pending) {
       toast.error(`Queue is full (${queueState.pending_count}/${queueState.max_pending}). Wait for campaigns to complete.`);
       return;
     }
 
-    // Calculate available profiles based on tag filter
-    const availableProfiles = sessions.filter(s => {
-      if (!s.valid) return false;
-      if (campaignFilterTags.length === 0) return true;
-      return campaignFilterTags.every(tag => (s.tags || []).includes(tag));
-    }).length;
-
-    if (availableProfiles === 0) {
-      toast.error(campaignFilterTags.length > 0
-        ? 'No valid sessions match the selected tags!'
-        : 'No valid sessions available!');
-      return;
-    }
-
-    const normalizedUrl = normalizeUrl(url);
-
-    // Count existing comments for this URL in pending queue
-    const existingForUrl = queueState.pending
-      .filter(c => normalizeUrl(c.url) === normalizedUrl)
-      .reduce((sum, c) => sum + c.comments.length, 0);
-
-    const totalForUrl = existingForUrl + commentList.length;
-
-    // Per-URL validation: total comments for this URL must not exceed available profiles
-    if (totalForUrl > availableProfiles) {
-      if (existingForUrl > 0) {
-        toast.error(`This URL already has ${existingForUrl} comments queued. Adding ${commentList.length} more would total ${totalForUrl}, exceeding ${availableProfiles} available profiles.`);
-      } else {
-        toast.error(`You have ${commentList.length} comments but only ${availableProfiles} active sessions. Please reduce to ${availableProfiles} or fewer.`);
-      }
-      return;
-    }
-
     setAddingToQueue(true);
-
     try {
-      const res = await fetch(`${API_BASE}/queue`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({
-          url,
-          comments: commentList,
-          duration_minutes: campaignDuration,
-          filter_tags: campaignFilterTags.length > 0 ? campaignFilterTags : null,
-          enable_warmup: enableWarmup
-        })
-      });
+      if (activeDraftId) {
+        if (draftAutosaveTimerRef.current !== null) {
+          window.clearTimeout(draftAutosaveTimerRef.current);
+          draftAutosaveTimerRef.current = null;
+        }
+        const saved = await saveDraftFromComposer({ silent: true, forceDraftId: activeDraftId });
+        if (!saved) {
+          throw new Error('Failed to sync draft before publish');
+        }
+        const published = await publishDraftCampaign(activeDraftId, true);
+        if (!published) return;
+      } else {
+        const res = await fetch(`${API_BASE}/queue`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          throw new Error(await parseApiError(res, 'Failed to add campaign to queue'));
+        }
 
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.detail || 'Failed to add to queue');
+        const data = await res.json();
+        showQueueWarnings(data.warnings);
+        setUrl('');
+        setComments('');
+        toast.success(
+          `Added campaign with ${payload.comments.length} comments to queue${campaignFilterTags.length > 0 ? ` (filtered by: ${campaignFilterTags.join(', ')})` : ''}`
+        );
       }
-
-      // Clear form - state update comes via WebSocket
-      setUrl('');
-      setComments('');
-
-      toast.success(`Added campaign with ${commentList.length} comments to queue${campaignFilterTags.length > 0 ? ` (filtered by: ${campaignFilterTags.join(', ')})` : ''}`);
-    } catch (error: unknown) {
-      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to publish campaign'));
     } finally {
       setAddingToQueue(false);
+    }
+  };
+
+  const openDraftInComposer = (draft: CampaignDraft) => {
+    loadingDraftIntoFormRef.current = true;
+    setActiveDraftId(draft.id);
+    setUrl(draft.url || '');
+
+    const lines = draft.comments && draft.comments.length > 0
+      ? draft.comments
+      : Array.isArray(draft.jobs)
+        ? draft.jobs
+            .map((job) => String((job as Record<string, unknown>).text || '').trim())
+            .filter(Boolean)
+        : [];
+    setComments(lines.join('\n'));
+    setCampaignDuration(Math.max(10, Math.min(1440, Number(draft.duration_minutes) || 30)));
+    setCampaignFilterTags(Array.isArray(draft.filter_tags) ? draft.filter_tags : []);
+    setDraftSaveStatus('saved');
+
+    window.setTimeout(() => {
+      loadingDraftIntoFormRef.current = false;
+    }, 0);
+  };
+
+  const deleteDraftItem = async (draftId: string) => {
+    if (!confirm('Delete this shared draft?')) return;
+
+    setDeletingDraftId(draftId);
+    try {
+      const res = await fetch(`${API_BASE}/drafts/${draftId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to delete draft'));
+      }
+      if (activeDraftId === draftId) {
+        setActiveDraftId(null);
+        setDraftSaveStatus('idle');
+      }
+      toast.success('Draft deleted');
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to delete draft'));
+    } finally {
+      setDeletingDraftId(null);
     }
   };
 
@@ -1221,13 +1473,12 @@ function App() {
       });
 
       if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.detail || 'Failed to remove from queue');
+        throw new Error(await parseApiError(res, 'Failed to remove from queue'));
       }
 
       toast.success('Campaign removed from queue');
     } catch (error: unknown) {
-      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      toast.error(normalizeErrorMessage(error, 'Failed to remove from queue'));
     }
   };
 
@@ -1242,13 +1493,12 @@ function App() {
       });
 
       if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.detail || 'Failed to cancel campaign');
+        throw new Error(await parseApiError(res, 'Failed to cancel campaign'));
       }
 
       toast.success('Campaign cancelled');
     } catch (error: unknown) {
-      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      toast.error(normalizeErrorMessage(error, 'Failed to cancel campaign'));
     }
   };
 
@@ -1269,8 +1519,7 @@ function App() {
       });
 
       if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.detail || 'Failed to retry job');
+        throw new Error(await parseApiError(res, 'Failed to retry job'));
       }
 
       const result = await res.json();
@@ -1290,7 +1539,7 @@ function App() {
       setRetryProfile('');
 
     } catch (error: unknown) {
-      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      toast.error(normalizeErrorMessage(error, 'Failed to retry job'));
     } finally {
       setIsRetrying(false);
     }
@@ -1322,10 +1571,10 @@ function App() {
           setSelectedCampaign(data.campaign);
         }
       } else {
-        toast.error(data.detail || 'Bulk retry failed');
+        toast.error(normalizeErrorMessage(data, 'Bulk retry failed'));
       }
     } catch (error) {
-      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      toast.error(normalizeErrorMessage(error, 'Bulk retry failed'));
     } finally {
       setIsBulkRetrying(false);
     }
@@ -1364,7 +1613,7 @@ function App() {
         setIsRetryingAll(false);
       }
     } catch (error) {
-      toast.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      toast.error(normalizeErrorMessage(error, 'Retry all failed'));
       setIsRetryingAll(false);
     }
   };
@@ -2391,17 +2640,115 @@ function App() {
                   </p>
                 </div>
 
-                <Button
-                  onClick={addToQueue}
-                  disabled={!url || !comments || addingToQueue || queueState.pending_count >= queueState.max_pending}
-                >
-                  {addingToQueue ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  ) : (
-                    <Plus className="w-4 h-4 mr-2" />
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    onClick={publishNow}
+                    disabled={!url || !comments || addingToQueue || queueState.pending_count >= queueState.max_pending}
+                  >
+                    {addingToQueue ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Play className="w-4 h-4 mr-2" />
+                    )}
+                    {addingToQueue ? 'Publishing...' : 'Publish Now'}
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    onClick={saveDraftNow}
+                    disabled={savingDraft}
+                  >
+                    {savingDraft ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Plus className="w-4 h-4 mr-2" />
+                    )}
+                    {activeDraftId ? 'Save Draft' : 'Save as Draft'}
+                  </Button>
+
+                  {activeDraftId && (
+                    <Badge variant="secondary" className="text-xs">
+                      Editing shared draft
+                    </Badge>
                   )}
-                  {addingToQueue ? 'Adding...' : 'Add to Queue'}
-                </Button>
+
+                  {activeDraftId && (
+                    <span className="text-xs text-[#999999]">
+                      {draftSaveStatus === 'saving' ? 'saving...' : draftSaveStatus === 'saved' ? 'saved' : draftSaveStatus === 'error' ? 'save failed' : ''}
+                    </span>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
+                <CardTitle className="text-lg flex items-center justify-between">
+                  <span>Shared Drafts</span>
+                  <Badge variant="outline" className="font-normal">
+                    {drafts.length}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                {draftsLoading ? (
+                  <div className="p-6 text-center text-[#999999]">
+                    <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin opacity-50" />
+                    <p>Loading drafts...</p>
+                  </div>
+                ) : drafts.length === 0 ? (
+                  <div className="p-6 text-center text-[#999999]">
+                    <p>No shared drafts yet.</p>
+                    <p className="text-xs mt-1">Use Save Draft while composing a campaign.</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-[rgba(0,0,0,0.1)]">
+                    {drafts.map((draft) => (
+                      <div key={draft.id} className="p-4 flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm text-[#111111] truncate">{draft.url || '(no url yet)'}</p>
+                          <p className="text-xs text-[#999999]">
+                            {draft.comments?.length || 0} comments | updated by {draft.updated_by} {formatRelativeTime(draft.updated_at)}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openDraftInComposer(draft)}
+                          >
+                            Open
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => publishDraftCampaign(draft.id, activeDraftId === draft.id)}
+                            disabled={publishingDraftId === draft.id || queueState.pending_count >= queueState.max_pending}
+                          >
+                            {publishingDraftId === draft.id ? (
+                              <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                            ) : (
+                              <Play className="w-3 h-3 mr-1" />
+                            )}
+                            Publish
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => deleteDraftItem(draft.id)}
+                            disabled={deletingDraftId === draft.id}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            {deletingDraftId === draft.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -2532,7 +2879,7 @@ function App() {
                     <CardTitle className="text-lg">
                       Recent History ({queueState.history.length})
                     </CardTitle>
-                    {queueState.history.some((c: any) => c.success_count !== undefined && c.total_count !== undefined && c.success_count < c.total_count) && (
+                    {queueState.history.some((c: QueuedCampaign) => c.success_count !== undefined && c.total_count !== undefined && c.success_count < c.total_count) && (
                       <Button
                         variant="destructive"
                         size="sm"

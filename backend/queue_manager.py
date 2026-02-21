@@ -186,10 +186,7 @@ class CampaignQueueManager:
     MAX_HISTORY = 100  # Maximum number of completed campaigns to keep
 
     def __init__(self, file_path: str = None):
-        self.file_path = file_path or os.getenv(
-            "CAMPAIGN_QUEUE_PATH",
-            os.path.join(os.path.dirname(__file__), "campaign_queue.json")
-        )
+        self.file_path = file_path or self._default_path()
         self.campaigns: Dict[str, dict] = {}  # Active queue (pending/processing)
         self.history: List[dict] = []  # Completed/failed campaigns (FIFO)
         self.processor_state = {
@@ -200,6 +197,19 @@ class CampaignQueueManager:
         self._lock = asyncio.Lock()
         self.logger = logging.getLogger("CampaignQueueManager")
         self.load()
+
+    def _default_path(self) -> str:
+        configured = os.getenv("CAMPAIGN_QUEUE_PATH")
+        if configured:
+            return configured
+
+        data_dir = os.getenv("DATA_DIR", "/data")
+        preferred = os.path.join(data_dir, "campaign_queue.json")
+        try:
+            os.makedirs(os.path.dirname(preferred), exist_ok=True)
+            return preferred
+        except Exception:
+            return os.path.join(os.path.dirname(__file__), "campaign_queue.json")
 
     def load(self):
         """Load queue from JSON file with recovery for interrupted campaigns."""
@@ -319,7 +329,8 @@ class CampaignQueueManager:
             "success_count": None,
             "total_count": None,
             "error": None,
-            "results": []
+            "results": [],
+            "inflight_job": None,
         }
 
         self.campaigns[campaign_id] = campaign
@@ -413,6 +424,7 @@ class CampaignQueueManager:
         campaign["success_count"] = success_count
         campaign["total_count"] = total_count
         campaign["results"] = results
+        campaign["inflight_job"] = None
 
         self._move_to_history(campaign_id)
         self._clear_processor_state()
@@ -429,6 +441,7 @@ class CampaignQueueManager:
         campaign["status"] = "failed"
         campaign["completed_at"] = datetime.utcnow().isoformat()
         campaign["error"] = error
+        campaign["inflight_job"] = None
 
         self._move_to_history(campaign_id)
         self._clear_processor_state()
@@ -446,6 +459,7 @@ class CampaignQueueManager:
 
         campaign["status"] = "cancelled"
         campaign["completed_at"] = datetime.utcnow().isoformat()
+        campaign["inflight_job"] = None
 
         self._move_to_history(campaign_id)
 
@@ -691,6 +705,10 @@ class CampaignQueueManager:
             return False
 
         campaign["results"].append(result_with_index)
+        # Result persisted => this job is no longer inflight.
+        inflight = campaign.get("inflight_job")
+        if isinstance(inflight, dict) and inflight.get("job_index") == job_index:
+            campaign["inflight_job"] = None
 
         # Save immediately to disk
         self.save()
@@ -708,6 +726,80 @@ class CampaignQueueManager:
         campaign = self.campaigns[campaign_id]
         results = campaign.get("results", [])
         return {r.get("job_index") for r in results if r.get("job_index") is not None}
+
+    def set_inflight_job(
+        self,
+        campaign_id: str,
+        *,
+        job_index: int,
+        profile_name: str,
+        comment_hash: str,
+        phase: str,
+        attempt_id: str,
+        metadata: Optional[dict] = None,
+    ) -> bool:
+        """Persist inflight execution checkpoint for one job attempt."""
+        campaign = self.campaigns.get(campaign_id)
+        if not campaign:
+            return False
+
+        campaign["inflight_job"] = {
+            "job_index": job_index,
+            "profile_name": profile_name,
+            "comment_hash": comment_hash,
+            "phase": phase,
+            "attempt_id": attempt_id,
+            "updated_at": datetime.utcnow().isoformat(),
+            "metadata": metadata or {},
+        }
+        self.save()
+        return True
+
+    def update_inflight_phase(
+        self,
+        campaign_id: str,
+        *,
+        phase: str,
+        attempt_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> bool:
+        """Update phase for an existing inflight checkpoint."""
+        campaign = self.campaigns.get(campaign_id)
+        if not campaign:
+            return False
+        inflight = campaign.get("inflight_job")
+        if not isinstance(inflight, dict):
+            return False
+
+        if attempt_id and inflight.get("attempt_id") != attempt_id:
+            return False
+
+        inflight["phase"] = phase
+        inflight["updated_at"] = datetime.utcnow().isoformat()
+        if metadata:
+            inflight.setdefault("metadata", {}).update(metadata)
+        self.save()
+        return True
+
+    def get_inflight_job(self, campaign_id: str) -> Optional[dict]:
+        campaign = self.campaigns.get(campaign_id)
+        if not campaign:
+            return None
+        inflight = campaign.get("inflight_job")
+        return inflight if isinstance(inflight, dict) else None
+
+    def clear_inflight_job(self, campaign_id: str, attempt_id: Optional[str] = None) -> bool:
+        campaign = self.campaigns.get(campaign_id)
+        if not campaign:
+            return False
+        inflight = campaign.get("inflight_job")
+        if inflight is None:
+            return True
+        if attempt_id and isinstance(inflight, dict) and inflight.get("attempt_id") != attempt_id:
+            return False
+        campaign["inflight_job"] = None
+        self.save()
+        return True
 
     # =========================================================================
     # Auto-Retry Methods

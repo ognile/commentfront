@@ -19,6 +19,28 @@ export function setLogoutCallback(callback: () => void) {
   logoutCallback = callback;
 }
 
+function normalizeApiError(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const joined = value.map((v) => normalizeApiError(v, '')).filter(Boolean).join('; ');
+    return joined || fallback;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (typeof record.message === 'string' && record.message.trim()) return record.message;
+    if (typeof record.detail === 'string' && record.detail.trim()) return record.detail;
+    if (Array.isArray(record.errors) && record.errors.length > 0) {
+      return normalizeApiError(record.errors, fallback);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 /**
  * Refresh access token using refresh token
  */
@@ -110,7 +132,7 @@ export async function apiFetch<T>(
   // Handle other errors
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Request failed: ${response.status}`);
+    throw new Error(normalizeApiError(errorData?.detail ?? errorData, `Request failed: ${response.status}`));
   }
 
   // Return empty object for 204 No Content
@@ -135,7 +157,7 @@ export async function login(username: string, password: string): Promise<{ acces
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || 'Login failed');
+    throw new Error(normalizeApiError(errorData?.detail ?? errorData, 'Login failed'));
   }
 
   const data = await response.json();

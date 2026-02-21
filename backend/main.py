@@ -18,6 +18,7 @@ from users import user_manager
 MAX_CONCURRENT = 5
 import logging
 import os
+import hashlib
 
 # API Key for programmatic access (Claude testing, CI/CD, etc.)
 # Set via CLAUDE_API_KEY environment variable
@@ -38,6 +39,7 @@ from comment_bot import (
     post_comment,
     post_comment_verified,
     reply_to_comment_verified,
+    reconcile_comment_submission,
     parse_comment_id_from_url,
     test_session,
     MOBILE_VIEWPORT,
@@ -46,6 +48,7 @@ from comment_bot import (
 from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
+from draft_manager import DraftManager
 from queue_manager import (
     CampaignQueueManager,
     canonicalize_campaign_jobs,
@@ -142,6 +145,9 @@ proxy_manager = ProxyManager()
 # Initialize campaign queue manager
 queue_manager = CampaignQueueManager()
 
+# Initialize shared draft manager
+draft_manager = DraftManager()
+
 # =========================================================================
 # Media Store (ephemeral file-backed storage for queue jobs)
 # =========================================================================
@@ -204,6 +210,150 @@ class QueueProcessor:
     def cancel_current_campaign(self):
         """Signal that the current campaign should be cancelled."""
         self._current_campaign_cancelled = True
+
+    @staticmethod
+    def _comment_hash(text: str) -> str:
+        normalized = " ".join(str(text or "").strip().lower().split())
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    async def _recover_inflight_checkpoint(
+        self,
+        *,
+        campaign: dict,
+        jobs: List[dict],
+        url: str,
+        profile_manager,
+    ) -> None:
+        """
+        Recover an unfinished inflight checkpoint after restart/redeploy.
+
+        Policy: prefer no duplicates.
+        - If post was likely submitted, reconcile read-only.
+        - If found -> success.
+        - If missing/inconclusive -> mark uncertain_no_repost failure.
+        """
+        campaign_id = campaign["id"]
+        inflight = self.queue_manager.get_inflight_job(campaign_id)
+        if not inflight:
+            return
+
+        try:
+            job_index = int(inflight.get("job_index"))
+        except Exception:
+            self.logger.warning(f"Campaign {campaign_id[:8]} inflight checkpoint has invalid job_index, clearing")
+            self.queue_manager.clear_inflight_job(campaign_id)
+            return
+
+        if job_index < 0 or job_index >= len(jobs):
+            self.logger.warning(f"Campaign {campaign_id[:8]} inflight checkpoint out of range (job {job_index}), clearing")
+            self.queue_manager.clear_inflight_job(campaign_id)
+            return
+
+        completed_indexes = self.queue_manager.get_completed_job_indexes(campaign_id)
+        if job_index in completed_indexes:
+            self.queue_manager.clear_inflight_job(campaign_id)
+            return
+
+        phase = str(inflight.get("phase") or "")
+        if phase in ("starting", "finalized"):
+            self.logger.info(f"Campaign {campaign_id[:8]} clearing inflight checkpoint phase={phase}")
+            self.queue_manager.clear_inflight_job(campaign_id)
+            return
+
+        if phase not in ("submit_clicked", "verifying"):
+            self.logger.info(f"Campaign {campaign_id[:8]} clearing unknown inflight phase={phase}")
+            self.queue_manager.clear_inflight_job(campaign_id)
+            return
+
+        profile_name = str(inflight.get("profile_name") or "").strip()
+        job = jobs[job_index]
+        comment_text = str(job.get("text") or "")
+        job_type = str(job.get("type", "post_comment")).strip().lower()
+
+        self.logger.warning(
+            f"Campaign {campaign_id[:8]} recovering inflight job {job_index} (phase={phase}, profile={profile_name or 'unknown'})"
+        )
+
+        reconciliation = {"found": None, "confidence": 0.0, "reason": "profile unavailable for reconciliation"}
+        if profile_name:
+            session = FacebookSession(profile_name)
+            if session.load():
+                reconciliation = await reconcile_comment_submission(
+                    session=session,
+                    url=url,
+                    comment_text=comment_text,
+                    proxy=get_system_proxy(),
+                )
+            else:
+                reconciliation = {"found": None, "confidence": 0.0, "reason": "session missing during reconciliation"}
+
+        if reconciliation.get("found") is True:
+            recovered_result = {
+                "profile_name": profile_name,
+                "comment": comment_text,
+                "text": comment_text,
+                "job_type": job_type,
+                "target_comment_url": job.get("target_comment_url"),
+                "target_comment_id": parse_comment_id_from_url(str(job.get("target_comment_url") or "")),
+                "image_id": job.get("image_id"),
+                "success": True,
+                "verified": True,
+                "method": "reconciled_existing_comment",
+                "error": None,
+                "job_index": job_index,
+                "recovered_from_inflight": True,
+                "inflight_phase": phase,
+                "reconciliation_confidence": reconciliation.get("confidence", 0.0),
+            }
+            failure_type = None
+        else:
+            recovered_result = {
+                "profile_name": profile_name,
+                "comment": comment_text,
+                "text": comment_text,
+                "job_type": job_type,
+                "target_comment_url": job.get("target_comment_url"),
+                "target_comment_id": parse_comment_id_from_url(str(job.get("target_comment_url") or "")),
+                "image_id": job.get("image_id"),
+                "success": False,
+                "verified": False,
+                "method": "uncertain_no_repost",
+                "error": f"uncertain_no_repost: {reconciliation.get('reason', 'verification inconclusive')}",
+                "job_index": job_index,
+                "recovered_from_inflight": True,
+                "inflight_phase": phase,
+                "reconciliation_confidence": reconciliation.get("confidence", 0.0),
+            }
+            # Treat uncertain reconciliation as infrastructure class to avoid accidental restrictions.
+            failure_type = "infrastructure"
+
+        saved = self.queue_manager.save_job_result(campaign_id, job_index, recovered_result)
+        self.queue_manager.clear_inflight_job(campaign_id)
+
+        if saved and profile_name:
+            profile_manager.mark_profile_used(
+                profile_name=profile_name,
+                campaign_id=campaign_id,
+                comment=comment_text,
+                success=bool(recovered_result["success"]),
+                failure_type=failure_type,
+            )
+
+        if saved:
+            await broadcast_update(
+                "job_complete",
+                {
+                    "campaign_id": campaign_id,
+                    "job_index": job_index,
+                    "total_jobs": len(jobs),
+                    "profile_name": profile_name,
+                    "success": recovered_result["success"],
+                    "verified": recovered_result["verified"],
+                    "method": recovered_result["method"],
+                    "error": recovered_result["error"],
+                    "recovered_from_inflight": True,
+                },
+            )
 
     async def _process_loop(self):
         """Main processing loop - runs continuously.
@@ -317,6 +467,14 @@ class QueueProcessor:
             # Calculate total jobs based on available profiles
             total_jobs = min(len(jobs), len(assigned_profiles))
             duration_seconds = duration_minutes * 60
+
+            # Recover unfinished inflight checkpoint from previous deployment/restart.
+            await self._recover_inflight_checkpoint(
+                campaign=campaign,
+                jobs=jobs[:total_jobs],
+                url=url,
+                profile_manager=profile_manager,
+            )
 
             # DEPLOYMENT RESILIENCE: Get already-attempted job indexes
             attempted_indexes = self.queue_manager.get_completed_job_indexes(campaign_id)
@@ -440,10 +598,36 @@ class QueueProcessor:
                     self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
                     continue
 
+                attempt_id: Optional[str] = None
                 try:
                     session = FacebookSession(profile_name)
+                    attempt_id = str(uuid.uuid4())
+                    comment_hash = self._comment_hash(text)
+                    self.queue_manager.set_inflight_job(
+                        campaign_id,
+                        job_index=original_job_idx,
+                        profile_name=profile_name,
+                        comment_hash=comment_hash,
+                        phase="starting",
+                        attempt_id=attempt_id,
+                        metadata={"job_type": job_type},
+                    )
+
+                    async def phase_callback(phase: str, metadata: Dict[str, str]):
+                        self.queue_manager.update_inflight_phase(
+                            campaign_id,
+                            phase=phase,
+                            attempt_id=attempt_id,
+                            metadata=metadata,
+                        )
 
                     if not session.load():
+                        self.queue_manager.update_inflight_phase(
+                            campaign_id,
+                            phase="finalized",
+                            attempt_id=attempt_id,
+                            metadata={"error": "Session not found"},
+                        )
                         await broadcast_update("job_error", {
                             "campaign_id": campaign_id,
                             "job_index": original_job_idx,
@@ -477,7 +661,8 @@ class QueueProcessor:
                         url=url,
                         comment=text,
                         proxy=get_system_proxy(),
-                        enable_warmup=enable_warmup
+                        enable_warmup=enable_warmup,
+                        phase_callback=phase_callback,
                     ) if job_type != "reply_comment" else None
 
                     target_comment_url = str(job.get("target_comment_url") or "").strip()
@@ -510,12 +695,19 @@ class QueueProcessor:
                                 image_path=media_item["path"],
                                 proxy=get_system_proxy(),
                                 enable_warmup=enable_warmup,
+                                phase_callback=phase_callback,
                             )
                     else:
                         target_comment_url = None
                         target_comment_id = None
                         image_id = None
 
+                    self.queue_manager.update_inflight_phase(
+                        campaign_id,
+                        phase="finalized",
+                        attempt_id=attempt_id,
+                        metadata={"success": str(bool(result.get("success")))},
+                    )
                     await broadcast_update("job_complete", {
                         "campaign_id": campaign_id,
                         "job_index": original_job_idx,
@@ -594,6 +786,12 @@ class QueueProcessor:
 
                 except Exception as e:
                     self.logger.error(f"Error processing job {original_job_idx} in campaign {campaign_id}: {e}")
+                    self.queue_manager.update_inflight_phase(
+                        campaign_id,
+                        phase="finalized",
+                        attempt_id=attempt_id,
+                        metadata={"error": str(e)},
+                    )
                     await broadcast_update("job_error", {
                         "campaign_id": campaign_id,
                         "job_index": original_job_idx,
@@ -625,6 +823,7 @@ class QueueProcessor:
                     )
                 finally:
                     # Always release profile reservation after browser closes
+                    self.queue_manager.clear_inflight_job(campaign_id, attempt_id=attempt_id)
                     await profile_manager.release_profile(profile_name)
 
             # Campaign completed - get ALL results (including from previous runs before deployment)
@@ -1095,6 +1294,7 @@ def _validate_queue_jobs(
                 errors.append(f"jobs[{idx}].image_id not found or expired: {image_id}")
 
     duplicate_conflicts = []
+    duplicate_warning: Optional[str] = None
     if include_duplicate_guard and not errors:
         history = _build_duplicate_guard_history()
         duplicate_conflicts = find_duplicate_text_conflicts(
@@ -1104,7 +1304,7 @@ def _validate_queue_jobs(
             threshold=NEAR_DUPLICATE_THRESHOLD,
         )
         if duplicate_conflicts:
-            errors.append(
+            duplicate_warning = (
                 f"duplicate_text_guard triggered ({len(duplicate_conflicts)} conflict(s) in current campaign or last {LOOKBACK_DAYS_DEFAULT} days)"
             )
 
@@ -1115,6 +1315,7 @@ def _validate_queue_jobs(
         "target_comment_matches": parsed_targets,
         "target_comment_id": parsed_targets[0]["target_comment_id"] if parsed_targets else None,
         "duplicate_conflicts": duplicate_conflicts,
+        "duplicate_warning": duplicate_warning,
         "dedupe_window_days": LOOKBACK_DAYS_DEFAULT,
         "near_duplicate_threshold": NEAR_DUPLICATE_THRESHOLD,
     }
@@ -1790,6 +1991,11 @@ async def websocket_live(websocket: WebSocket, token: str = Query(None)):
             "data": queue_state,
             "timestamp": datetime.now().isoformat()
         }))
+        await websocket.send_text(json.dumps({
+            "type": "drafts_state_sync",
+            "data": {"drafts": draft_manager.list_drafts()},
+            "timestamp": datetime.now().isoformat()
+        }))
     except Exception as e:
         logger.warning(f"Failed to send queue state on connect: {e}")
 
@@ -2286,6 +2492,15 @@ class AddToQueueRequest(BaseModel):
     profile_name: Optional[str] = None  # Optional forced profile for all jobs
 
 
+class DraftRequest(BaseModel):
+    url: str
+    comments: Optional[List[str]] = None
+    jobs: Optional[List[QueueJob]] = None
+    duration_minutes: int = 30
+    filter_tags: Optional[List[str]] = None
+    enable_warmup: bool = True
+
+
 class DebugQueueValidateRequest(BaseModel):
     url: str
     comments: Optional[List[str]] = None
@@ -2592,13 +2807,173 @@ async def add_to_queue(
 
         # Broadcast to all connected clients
         await broadcast_update("queue_campaign_added", campaign)
-
-        return campaign
+        response_payload = dict(campaign)
+        if validation.get("duplicate_conflicts"):
+            response_payload["warnings"] = [
+                {
+                    "code": "duplicate_text_guard",
+                    "message": "duplicate-like comments detected",
+                    "errors": [validation.get("duplicate_warning")],
+                    "duplicate_conflicts": validation["duplicate_conflicts"],
+                }
+            ]
+        return response_payload
 
     except HTTPException:
         raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/drafts")
+async def get_drafts(current_user: dict = Depends(get_current_user)) -> Dict:
+    """List shared campaign drafts."""
+    return {"drafts": draft_manager.list_drafts()}
+
+
+@app.post("/drafts")
+async def create_draft(request: DraftRequest, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Create a shared campaign draft."""
+    jobs_payload = [_model_to_dict(j) for j in request.jobs] if request.jobs else []
+    comments_payload = [str(c).strip() for c in (request.comments or []) if str(c).strip()]
+    try:
+        draft = draft_manager.create_draft(
+            url=request.url,
+            comments=comments_payload,
+            jobs=jobs_payload,
+            duration_minutes=request.duration_minutes,
+            filter_tags=request.filter_tags,
+            enable_warmup=request.enable_warmup,
+            username=current_user["username"],
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Draft validation failed",
+                "errors": [str(exc)],
+            },
+        ) from exc
+    await broadcast_update("draft_created", draft)
+    return draft
+
+
+@app.put("/drafts/{draft_id}")
+async def update_draft(draft_id: str, request: DraftRequest, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Update a shared campaign draft."""
+    jobs_payload = [_model_to_dict(j) for j in request.jobs] if request.jobs else []
+    comments_payload = [str(c).strip() for c in (request.comments or []) if str(c).strip()]
+    try:
+        updated = draft_manager.update_draft(
+            draft_id,
+            url=request.url,
+            comments=comments_payload,
+            jobs=jobs_payload,
+            duration_minutes=request.duration_minutes,
+            filter_tags=request.filter_tags,
+            enable_warmup=request.enable_warmup,
+            username=current_user["username"],
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Draft validation failed",
+                "errors": [str(exc)],
+            },
+        ) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    await broadcast_update("draft_updated", updated)
+    return updated
+
+
+@app.delete("/drafts/{draft_id}")
+async def delete_draft(draft_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Delete a shared campaign draft."""
+    deleted = draft_manager.delete_draft(draft_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    await broadcast_update("draft_deleted", {"draft_id": draft_id})
+    return {"success": True, "draft_id": draft_id}
+
+
+@app.post("/drafts/{draft_id}/publish")
+async def publish_draft(draft_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Publish draft into live queue and remove draft."""
+    draft = draft_manager.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    try:
+        canonical_jobs = _build_queue_jobs(
+            comments=draft.get("comments") or [],
+            jobs=draft.get("jobs"),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Queue validation failed",
+                "errors": [str(exc)],
+                "target_comment_matches": [],
+                "duplicate_conflicts": [],
+            },
+        ) from exc
+    validation = _validate_queue_jobs(
+        url=draft.get("url", ""),
+        jobs=canonical_jobs,
+        include_duplicate_guard=True,
+    )
+    if not validation["valid"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Queue validation failed",
+                "errors": validation["errors"],
+                "target_comment_matches": validation["target_comment_matches"],
+                "duplicate_conflicts": validation["duplicate_conflicts"],
+            },
+        )
+
+    legacy_comments = [str(job.get("text", "")) for job in canonical_jobs]
+    campaign = queue_manager.add_campaign(
+        url=draft["url"],
+        comments=legacy_comments,
+        jobs=canonical_jobs,
+        duration_minutes=int(draft.get("duration_minutes") or 30),
+        username=current_user["username"],
+        filter_tags=draft.get("filter_tags"),
+        enable_warmup=bool(draft.get("enable_warmup", True)),
+        profile_name=None,
+        idempotency_key=None,
+    )
+    await broadcast_update("queue_campaign_added", campaign)
+
+    draft_manager.delete_draft(draft_id)
+    response_payload = {
+        "campaign": campaign,
+        "draft_id": draft_id,
+        "success": True,
+    }
+    if validation.get("duplicate_conflicts"):
+        response_payload["warnings"] = [
+            {
+                "code": "duplicate_text_guard",
+                "message": "duplicate-like comments detected",
+                "errors": [validation.get("duplicate_warning")],
+                "duplicate_conflicts": validation["duplicate_conflicts"],
+            }
+        ]
+    await broadcast_update(
+        "draft_published",
+        {
+            "draft_id": draft_id,
+            "campaign": campaign,
+            "warnings": response_payload.get("warnings", []),
+        },
+    )
+    return response_payload
 
 
 @app.post("/debug/queue/validate")

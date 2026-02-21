@@ -86,7 +86,7 @@ def test_reply_job_validation_requires_comment_id(tmp_path):
     assert any("comment_id" in err for err in validation["errors"])
 
 
-def test_duplicate_guard_rejects_text_already_in_active_campaign(tmp_path):
+def test_duplicate_guard_flags_text_already_in_active_campaign_without_blocking(tmp_path):
     image_id = _register_media(tmp_path, image_id="img_dup")
 
     queue_manager.campaigns = {
@@ -125,5 +125,7 @@ def test_duplicate_guard_rejects_text_already_in_active_campaign(tmp_path):
         include_duplicate_guard=True,
     )
 
-    assert validation["valid"] is False
-    assert any("duplicate_text_guard" in err for err in validation["errors"])
+    assert validation["valid"] is True
+    assert validation["errors"] == []
+    assert validation["duplicate_conflicts"]
+    assert validation["duplicate_warning"]
