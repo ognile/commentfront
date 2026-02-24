@@ -324,6 +324,7 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
             const posts = [];
 
             const articleNodes = Array.from(document.querySelectorAll("article, div[role='article'], div[data-ft]"));
+            let fallback_container_hits = 0;
             const extractAuthor = (node) => {
                 const candidates = Array.from(
                     node.querySelectorAll("h3, h4, strong, a[role='link'], span[dir='auto'], div[dir='auto']")
@@ -377,6 +378,56 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                     if (seen.has(key)) continue;
                     seen.add(key);
                     posts.push({ permalink: href || null, text: text.slice(0, 800), author: author || null });
+                    fallback_container_hits += 1;
+                    if (posts.length >= 25) break;
+                }
+            }
+
+            if (posts.length < 5) {
+                const hasEngagementControls = (node) => {
+                    const controls = Array.from(
+                        node.querySelectorAll("div[role='button'], a[role='button'], a[role='link'], span")
+                    ).slice(0, 160);
+                    let hasLike = false;
+                    let hasComment = false;
+                    let hasShare = false;
+                    for (const control of controls) {
+                        const text = normalize(control.innerText).toLowerCase();
+                        const aria = normalize(control.getAttribute("aria-label")).toLowerCase();
+                        if (text === "like" || aria.startsWith("like")) hasLike = true;
+                        if (text === "comment" || aria.includes("comment")) hasComment = true;
+                        if (text === "share" || aria.includes("share")) hasShare = true;
+                        if ((hasLike && hasComment) || (hasComment && hasShare) || (hasLike && hasShare)) return true;
+                    }
+                    return false;
+                };
+
+                const authorSeeds = Array.from(document.querySelectorAll("a, strong, h3, h4, span, div"))
+                    .filter((el) => {
+                        const text = normalize(el.innerText);
+                        if (!text || text.length < 3 || text.length > 120) return false;
+                        return hasExpectedAuthor(text, text);
+                    })
+                    .slice(0, 120);
+
+                for (const seed of authorSeeds) {
+                    let node = seed;
+                    for (let depth = 0; depth < 10; depth++) {
+                        node = node ? node.parentElement : null;
+                        if (!node) break;
+                        const text = normalize(node.innerText || "");
+                        if (!text || text.length < 40 || text.length > 2200) continue;
+                        if (!hasEngagementControls(node) && !/\\blike\\b.*\\bcomment\\b/i.test(text)) continue;
+                        const author = extractAuthor(node);
+                        if (!hasExpectedAuthor(text, author)) continue;
+                        const permalink = extractPermalink(node);
+                        const key = `${permalink || "no_link"}::${text.slice(0, 160)}`;
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        posts.push({ permalink: permalink || null, text: text.slice(0, 800), author: author || null });
+                        fallback_container_hits += 1;
+                        break;
+                    }
                     if (posts.length >= 25) break;
                 }
             }
@@ -402,6 +453,9 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                 profile_surface_detected,
                 go_to_profile_visible,
                 profile_tab_hits: profileTabHits,
+                article_nodes_count: articleNodes.length,
+                anchor_candidates_count: anchors.length,
+                fallback_container_hits,
                 candidate_names: profileNameCandidates.slice(0, 30),
                 current_url: window.location.href || "",
                 title: normalize(document.title || ""),
@@ -714,6 +768,9 @@ async def run_feed_safety_precheck(
                 "passed": duplicate_passed,
                 "posts": posts,
                 "profile_tab_hits": int(snapshot.get("profile_tab_hits") or 0),
+                "article_nodes_count": int(snapshot.get("article_nodes_count") or 0),
+                "anchor_candidates_count": int(snapshot.get("anchor_candidates_count") or 0),
+                "fallback_container_hits": int(snapshot.get("fallback_container_hits") or 0),
             }
 
             return {
