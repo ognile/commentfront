@@ -87,6 +87,64 @@ class PremiumOrchestrator:
             },
         )
 
+    @staticmethod
+    def _contains_tunnel_connection_error(payload: Any) -> bool:
+        if payload is None:
+            return False
+        if isinstance(payload, str):
+            return "ERR_TUNNEL_CONNECTION_FAILED" in payload
+        if isinstance(payload, dict):
+            return any(PremiumOrchestrator._contains_tunnel_connection_error(v) for v in payload.values())
+        if isinstance(payload, (list, tuple, set)):
+            return any(PremiumOrchestrator._contains_tunnel_connection_error(v) for v in payload)
+        return False
+
+    async def _run_action_with_tunnel_retries(
+        self,
+        *,
+        run_id: str,
+        cycle_index: int,
+        action_key: str,
+        execute_action: Callable[[], Any],
+        max_retries: int,
+    ) -> Dict:
+        attempt = 0
+        while True:
+            result = await execute_action()
+            if not self._contains_tunnel_connection_error(result):
+                return result
+            if attempt >= max_retries:
+                return result
+            attempt += 1
+            reason = f"transient tunnel error during {action_key}; retry {attempt}/{max_retries}"
+            self.store.append_event(
+                run_id,
+                "action_retry_scheduled",
+                {
+                    "cycle_index": cycle_index,
+                    "action": action_key,
+                    "attempt": attempt,
+                    "max_retries": max_retries,
+                    "reason": reason,
+                },
+            )
+            await self._emit(
+                "premium_step_result",
+                {
+                    "run_id": run_id,
+                    "cycle_index": cycle_index,
+                    "action": action_key,
+                    "success": False,
+                    "completed_count": 0,
+                    "expected_count": 0,
+                    "error": reason,
+                    "retry_scheduled": True,
+                    "attempt": attempt,
+                    "max_retries": max_retries,
+                },
+            )
+            await asyncio.sleep(1.5)
+
     async def _record_action(
         self,
         *,
@@ -211,6 +269,7 @@ class PremiumOrchestrator:
         if not bool(execution_policy.get("enabled", True)):
             await self._fail_run(run_id=run_id, cycle_index=cycle_index, reason=f"premium execution disabled for {profile_name}")
             return
+        max_action_retries = int(execution_policy.get("max_retries", 1))
 
         rules_snapshot = self.store.get_rules_snapshot()
         if not rules_snapshot:
@@ -257,12 +316,18 @@ class PremiumOrchestrator:
         image_path = bundle.get("image_path")
 
         # 1) feed post
-        feed_result = await self.actions.publish_feed_post(
+        feed_result = await self._run_action_with_tunnel_retries(
             run_id=run_id,
             cycle_index=cycle_index,
-            profile_name=profile_name,
-            caption=caption,
-            image_path=None,
+            action_key="feed_posts",
+            max_retries=max_action_retries,
+            execute_action=lambda: self.actions.publish_feed_post(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                profile_name=profile_name,
+                caption=caption,
+                image_path=None,
+            ),
         )
         feed_record = await self._record_action(
             run_id=run_id,
@@ -288,20 +353,30 @@ class PremiumOrchestrator:
             return
         if not feed_result.get("success"):
             self.content.cleanup_generated_image(image_path)
-            await self._fail_run(run_id=run_id, cycle_index=cycle_index, reason=feed_result.get("error") or "feed post failed")
+            await self._fail_run(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                reason=feed_result.get("error") or "feed post failed",
+            )
             return
 
         # 2) group post
         group_cfg = run_spec.get("group_discovery", {})
-        group_result = await self.actions.discover_group_and_publish(
+        group_result = await self._run_action_with_tunnel_retries(
             run_id=run_id,
             cycle_index=cycle_index,
-            profile_name=profile_name,
-            topic_seed=str(group_cfg.get("topic_seed", "menopause groups")),
-            allow_join_new=bool(group_cfg.get("allow_join_new", True)),
-            join_pending_policy=str(group_cfg.get("join_pending_policy", "try_next_group")),
-            group_post_text=caption,
-            image_path=None,
+            action_key="group_posts",
+            max_retries=max_action_retries,
+            execute_action=lambda: self.actions.discover_group_and_publish(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                profile_name=profile_name,
+                topic_seed=str(group_cfg.get("topic_seed", "menopause groups")),
+                allow_join_new=bool(group_cfg.get("allow_join_new", True)),
+                join_pending_policy=str(group_cfg.get("join_pending_policy", "try_next_group")),
+                group_post_text=caption,
+                image_path=None,
+            ),
         )
         group_record = await self._record_action(
             run_id=run_id,
@@ -326,7 +401,11 @@ class PremiumOrchestrator:
             return
         if not group_result.get("success"):
             self.content.cleanup_generated_image(image_path)
-            await self._fail_run(run_id=run_id, cycle_index=cycle_index, reason=group_result.get("error") or "group post failed")
+            await self._fail_run(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                reason=group_result.get("error") or "group post failed",
+            )
             return
 
         engagement = run_spec.get("engagement_recipe", {})
@@ -334,11 +413,17 @@ class PremiumOrchestrator:
         # 3) likes
         likes_target = int(engagement.get("likes_per_cycle", 0))
         if likes_target > 0:
-            likes_result = await self.actions.perform_likes(
+            likes_result = await self._run_action_with_tunnel_retries(
                 run_id=run_id,
                 cycle_index=cycle_index,
-                profile_name=profile_name,
-                likes_count=likes_target,
+                action_key="likes",
+                max_retries=max_action_retries,
+                execute_action=lambda: self.actions.perform_likes(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    profile_name=profile_name,
+                    likes_count=likes_target,
+                ),
             )
             likes_record = await self._record_action(
                 run_id=run_id,
@@ -359,18 +444,28 @@ class PremiumOrchestrator:
                 return
             if not likes_result.get("success"):
                 self.content.cleanup_generated_image(image_path)
-                await self._fail_run(run_id=run_id, cycle_index=cycle_index, reason=likes_result.get("error") or "likes action failed")
+                await self._fail_run(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    reason=likes_result.get("error") or "likes action failed",
+                )
                 return
 
         # 4) shares
         shares_target = int(engagement.get("shares_per_cycle", 0))
         if shares_target > 0:
-            shares_result = await self.actions.perform_shares(
+            shares_result = await self._run_action_with_tunnel_retries(
                 run_id=run_id,
                 cycle_index=cycle_index,
-                profile_name=profile_name,
-                shares_count=shares_target,
-                share_target=str(engagement.get("share_target", "own_feed")),
+                action_key="shares",
+                max_retries=max_action_retries,
+                execute_action=lambda: self.actions.perform_shares(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    profile_name=profile_name,
+                    shares_count=shares_target,
+                    share_target=str(engagement.get("share_target", "own_feed")),
+                ),
             )
             shares_record = await self._record_action(
                 run_id=run_id,
@@ -391,7 +486,11 @@ class PremiumOrchestrator:
                 return
             if not shares_result.get("success"):
                 self.content.cleanup_generated_image(image_path)
-                await self._fail_run(run_id=run_id, cycle_index=cycle_index, reason=shares_result.get("error") or "shares action failed")
+                await self._fail_run(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    reason=shares_result.get("error") or "shares action failed",
+                )
                 return
 
         # 5) comment replies
@@ -400,12 +499,18 @@ class PremiumOrchestrator:
         replies_result = {"success": True, "completed_count": 0, "expected_count": 0, "error": None}
         replies_record = {"ok": True, "validation": {"ok": True, "missing": [], "errors": []}}
         if replies_target > 0:
-            replies_result = await self.actions.perform_comment_replies(
+            replies_result = await self._run_action_with_tunnel_retries(
                 run_id=run_id,
                 cycle_index=cycle_index,
-                profile_name=profile_name,
-                replies_count=replies_target,
-                reply_text=reply_text,
+                action_key="comment_replies",
+                max_retries=max_action_retries,
+                execute_action=lambda: self.actions.perform_comment_replies(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    profile_name=profile_name,
+                    replies_count=replies_target,
+                    reply_text=reply_text,
+                ),
             )
             replies_record = await self._record_action(
                 run_id=run_id,
@@ -427,7 +532,11 @@ class PremiumOrchestrator:
         self.content.cleanup_generated_image(image_path)
 
         if not replies_result.get("success"):
-            await self._fail_run(run_id=run_id, cycle_index=cycle_index, reason=replies_result.get("error") or "replies action failed")
+            await self._fail_run(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                reason=replies_result.get("error") or "replies action failed",
+            )
             return
 
         self.store.set_cycle_status(run_id=run_id, cycle_index=cycle_index, status="success")

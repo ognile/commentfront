@@ -158,6 +158,30 @@ class MissingEvidenceActions(StrictSuccessActions):
         return result
 
 
+class TunnelRetryGroupActions(StrictSuccessActions):
+    def __init__(self):
+        super().__init__()
+        self.group_calls = 0
+
+    async def discover_group_and_publish(self, **kwargs):
+        self.group_calls += 1
+        if self.group_calls == 1:
+            return {
+                "success": False,
+                "completed_count": 0,
+                "expected_count": 1,
+                "error": "Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://m.facebook.com/groups",
+                "result": {
+                    "final_status": "error",
+                    "errors": [
+                        "Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://m.facebook.com/groups"
+                    ],
+                },
+                "evidence": {},
+            }
+        return await super().discover_group_and_publish(**kwargs)
+
+
 def _run_spec_single_cycle():
     return {
         "profile_name": "Vanessa Hines",
@@ -280,6 +304,30 @@ def test_orchestrator_fails_when_evidence_is_incomplete(tmp_path):
     updated_run = store.get_run(run["id"])
     assert updated_run["status"] == "failed"
     assert "evidence contract failed" in str(updated_run.get("error", "")).lower()
+
+
+def test_orchestrator_retries_group_action_on_tunnel_error(tmp_path):
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    store.state["runs"][run["id"]]["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    store.save()
+
+    actions = TunnelRetryGroupActions()
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=actions,
+        content_module=FakeContentModule,
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "completed"
+    assert updated_run["pass_matrix"]["group_posts"] == "1/1"
+    assert actions.group_calls == 2
+    assert any(evt.get("type") == "action_retry_scheduled" for evt in updated_run.get("events", []))
 
 
 def test_orchestrator_full_pilot_hits_strict_pass_matrix(tmp_path):
