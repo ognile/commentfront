@@ -67,12 +67,15 @@ async def find_element_by_description(description: str, elements: list, log_pref
             logger.info(f"{log_prefix} Matched by exact aria-label: {el.get('ariaLabel')}")
             return el
 
-    # Priority 2: Partial aria-label match
+    # Priority 2: Partial aria-label match (ignore empty/very short aria labels).
     for el in visible_elements:
-        if desc_lower in el.get('ariaLabel', '').lower():
+        aria_label = el.get('ariaLabel', '').strip().lower()
+        if not aria_label:
+            continue
+        if desc_lower in aria_label:
             logger.info(f"{log_prefix} Matched by partial aria-label (desc in aria): {el.get('ariaLabel')}")
             return el
-        if el.get('ariaLabel', '').lower() in desc_lower:
+        if len(aria_label) >= 3 and aria_label in desc_lower:
             logger.info(f"{log_prefix} Matched by partial aria-label (aria in desc): {el.get('ariaLabel')}")
             return el
 
