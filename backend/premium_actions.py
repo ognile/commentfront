@@ -302,6 +302,9 @@ async def discover_group_and_publish(
     group_post_text: str,
     image_path: Optional[str],
 ) -> Dict:
+    topic_seed_text = str(topic_seed or "").strip()
+    direct_group_url = topic_seed_text if topic_seed_text.startswith("http://") or topic_seed_text.startswith("https://") else None
+
     join_instruction = (
         "You may join relevant groups if needed."
         if allow_join_new
@@ -324,19 +327,34 @@ Rules:
 - Do NOT click "ok" unless a visible button with text exactly "OK" exists.
 """.strip()
 
-    discovery_result = await _execute_task(
-        run_id=run_id,
-        cycle_index=cycle_index,
-        step_id=f"cycle_{cycle_index}_group_discovery",
-        profile_name=profile_name,
-        action_type="group_discovery",
-        task=discovery_task,
-        start_url="https://m.facebook.com/groups",
-        upload_file_path=None,
-        expected_count=1,
-        confirmation_keyword="group",
-        max_steps=35,
-    )
+    if direct_group_url:
+        discovery_result = {
+            "success": True,
+            "completed_count": 1,
+            "expected_count": 1,
+            "result": {
+                "final_status": "task_completed",
+                "final_url": direct_group_url,
+                "steps": [],
+                "errors": [],
+            },
+            "evidence": {},
+            "error": None,
+        }
+    else:
+        discovery_result = await _execute_task(
+            run_id=run_id,
+            cycle_index=cycle_index,
+            step_id=f"cycle_{cycle_index}_group_discovery",
+            profile_name=profile_name,
+            action_type="group_discovery",
+            task=discovery_task,
+            start_url="https://m.facebook.com/groups",
+            upload_file_path=None,
+            expected_count=1,
+            confirmation_keyword="group",
+            max_steps=35,
+        )
 
     # Normalize failed discovery into a group_post action result so downstream verification remains consistent.
     if not discovery_result.get("success"):
