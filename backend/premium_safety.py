@@ -117,6 +117,32 @@ def _to_public_screenshot_url(path: Optional[str]) -> Optional[str]:
     return f"/screenshots/{name}"
 
 
+def _dedupe_extracted_posts(posts: List[Dict], similarity_threshold: float = 0.96) -> List[Dict]:
+    unique: List[Dict] = []
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        text = str(post.get("text") or "").strip()
+        if len(text) < 20:
+            continue
+        is_duplicate = False
+        for existing in unique:
+            existing_text = str(existing.get("text") or "")
+            if near_duplicate_ratio(text, existing_text) >= float(similarity_threshold):
+                is_duplicate = True
+                break
+        if is_duplicate:
+            continue
+        unique.append(
+            {
+                "permalink": post.get("permalink"),
+                "text": text[:800],
+                "author": post.get("author"),
+            }
+        )
+    return unique
+
+
 def _session_user_id(session: FacebookSession) -> Optional[str]:
     data = session.data or {}
     user_id = data.get("user_id")
@@ -417,6 +443,8 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                         if (!node) break;
                         const text = normalize(node.innerText || "");
                         if (!text || text.length < 40 || text.length > 2200) continue;
+                        const rect = node.getBoundingClientRect();
+                        if (!rect || rect.height <= 0 || rect.height > (window.innerHeight * 0.82)) continue;
                         if (!hasEngagementControls(node) && !/\\blike\\b.*\\bcomment\\b/i.test(text)) continue;
                         const author = extractAuthor(node);
                         if (!hasExpectedAuthor(text, author)) continue;
@@ -718,7 +746,7 @@ async def run_feed_safety_precheck(
             seen_avatar_ref = _canonical_avatar_ref(profile_avatar_seen)
 
             user_id = _session_user_id(session)
-            posts = list(snapshot.get("posts") or [])
+            posts = _dedupe_extracted_posts(list(snapshot.get("posts") or []))
             strict_name_match = _name_matches(profile_name, profile_name_seen)
             token_name_match = _name_tokens_present(profile_name, body_text)
             profile_surface_detected = bool(snapshot.get("profile_surface_detected"))
@@ -742,7 +770,8 @@ async def run_feed_safety_precheck(
 
             duplicate_block = top_similarity >= float(threshold)
             insufficient_posts = len(posts) < required_posts
-            duplicate_passed = (not duplicate_block) and (not insufficient_posts)
+            no_posts = len(posts) == 0
+            duplicate_passed = (not duplicate_block) and (not no_posts)
 
             identity_check = {
                 "profile_name_expected": profile_name,
@@ -765,6 +794,7 @@ async def run_feed_safety_precheck(
                 "matched_post_permalink": matched_permalink if duplicate_block else None,
                 "required_posts": required_posts,
                 "insufficient_posts": insufficient_posts,
+                "history_limited": bool(insufficient_posts and (not no_posts)),
                 "passed": duplicate_passed,
                 "posts": posts,
                 "profile_tab_hits": int(snapshot.get("profile_tab_hits") or 0),
@@ -789,7 +819,7 @@ async def run_feed_safety_precheck(
                 else (
                     "identity_verification_failed"
                     if not identity_passed
-                    else ("duplicate_precheck_insufficient_posts" if insufficient_posts else "duplicate_precheck_failed")
+                    else ("duplicate_precheck_no_posts" if no_posts else "duplicate_precheck_failed")
                 ),
                 "checked_at": _utc_iso(),
             }
