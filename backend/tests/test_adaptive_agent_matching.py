@@ -62,3 +62,31 @@ def test_find_element_visit_falls_back_when_no_view_group():
     matched = asyncio.run(find_element_by_description("Visit", elements))
     assert matched is not None
     assert matched.get("ariaLabel") == "Group visit button"
+
+
+def test_find_element_write_something_prefers_precise_target():
+    elements = [
+        {
+            "tag": "DIV",
+            "ariaLabel": "",
+            "text": "Write something... 󳈼 Photo 󲀌",
+            "bounds": {"x": 0, "y": 440, "w": 360, "h": 111},
+        },
+        {
+            "tag": "DIV",
+            "ariaLabel": "",
+            "text": "Write something...",
+            "bounds": {"x": 60, "y": 452, "w": 244, "h": 38},
+        },
+        {
+            "tag": "SPAN",
+            "ariaLabel": "",
+            "text": "Write something...",
+            "bounds": {"x": 78, "y": 462, "w": 127, "h": 19},
+        },
+    ]
+
+    matched = asyncio.run(find_element_by_description("Write something...", elements))
+    assert matched is not None
+    assert matched.get("tag") == "SPAN"
+    assert matched.get("bounds", {}).get("y") == 462

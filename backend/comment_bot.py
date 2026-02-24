@@ -583,6 +583,24 @@ async def dump_interactive_elements(page: Page, context: str = "") -> List[dict]
                 if (!composerPattern.test(text)) return;
                 addElement(el);
             });
+
+            // Group-card hints can be rendered as plain text containers.
+            // Include compact candidates so adaptive discovery can click them.
+            document.querySelectorAll('a[href], div, span').forEach((el) => {
+                const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                if (!text || text.length > 140) return;
+                const lowered = text.toLowerCase();
+                const mentionsGroup = lowered.includes('group');
+                const hasGroupSignals =
+                    lowered.includes('member') ||
+                    lowered.includes('join') ||
+                    lowered.includes('view group') ||
+                    lowered.includes('public group') ||
+                    lowered.includes('private group') ||
+                    lowered.includes('your group');
+                if (!mentionsGroup || !hasGroupSignals) return;
+                addElement(el);
+            });
             return elements;
         }''')
 

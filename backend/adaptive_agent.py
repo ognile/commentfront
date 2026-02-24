@@ -64,6 +64,43 @@ async def find_element_by_description(description: str, elements: list, log_pref
                 logger.info(f"{log_prefix} Remapped '{description}' to 'View group' to enter group feed")
                 return el
 
+    # Composer disambiguation:
+    # "Write something..." often appears as a wide non-clickable container plus
+    # smaller, truly interactive inner nodes. Prefer the most precise match.
+    composer_terms = (
+        "write something",
+        "create public post",
+        "what's on your mind",
+        "share something",
+        "discuss something",
+    )
+    if any(term in desc_trimmed for term in composer_terms):
+        composer_candidates = []
+        for el in visible_elements:
+            aria = (el.get("ariaLabel", "") or "").strip().lower()
+            text = (el.get("text", "") or "").strip().lower()
+            if any(term in aria for term in composer_terms) or any(term in text for term in composer_terms):
+                composer_candidates.append(el)
+
+        if composer_candidates:
+            def _composer_rank(candidate: dict) -> tuple:
+                bounds = candidate.get("bounds", {}) or {}
+                area = max(1, int(bounds.get("w", 0)) * int(bounds.get("h", 0)))
+                aria = (candidate.get("ariaLabel", "") or "").strip().lower()
+                text = (candidate.get("text", "") or "").strip().lower()
+                exact = 0 if (text == desc_trimmed or aria == desc_trimmed) else 1
+                no_aria_penalty = 1 if not aria else 0
+                return (exact, no_aria_penalty, area)
+
+            preferred = sorted(composer_candidates, key=_composer_rank)[0]
+            pref_bounds = preferred.get("bounds", {}) or {}
+            logger.info(
+                f"{log_prefix} Composer match preferred for '{description}': "
+                f"{preferred.get('tag')} at ({pref_bounds.get('x')},{pref_bounds.get('y')}) "
+                f"{pref_bounds.get('w')}x{pref_bounds.get('h')}"
+            )
+            return preferred
+
     # Check if description is an icon character (non-ASCII single char or short string with special chars)
     is_icon_search = len(description) <= 3 and any(ord(c) > 127 for c in description)
     if is_icon_search:
@@ -561,6 +598,13 @@ REASONING: Comment was submitted"""
                     "elements_found": len(initial_elements)
                 })
 
+                # Guardrail: do not allow model calls to block a run indefinitely.
+                gemini_timeout_seconds = float(os.getenv("ADAPTIVE_GEMINI_TIMEOUT_SECONDS", "40"))
+                gemini_timeout_seconds = max(5.0, gemini_timeout_seconds)
+                logger.info(
+                    f"{self.log_prefix} Gemini decision timeout: {gemini_timeout_seconds:.0f}s"
+                )
+
                 # Adaptive loop
                 for step_num in range(1, self.max_steps + 1):
                     logger.info(f"{self.log_prefix} Step {step_num}/{self.max_steps}")
@@ -604,21 +648,27 @@ REASONING: Comment was submitted"""
                     ]
 
                     try:
-                        response = await asyncio.to_thread(
-                            self.vision.client.models.generate_content,
-                            model=self.vision.model,
-                            contents=[prompt, image_part],
-                            config=types.GenerateContentConfig(safety_settings=safety_settings)
+                        response = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.vision.client.models.generate_content,
+                                model=self.vision.model,
+                                contents=[prompt, image_part],
+                                config=types.GenerateContentConfig(safety_settings=safety_settings),
+                            ),
+                            timeout=gemini_timeout_seconds,
                         )
 
                         result_text = response.text
                         if not result_text:
                             logger.warning(f"{self.log_prefix} Gemini empty response, retrying...")
                             await asyncio.sleep(3)
-                            response = await asyncio.to_thread(
-                                self.vision.client.models.generate_content,
-                                model=self.vision.model,
-                                contents=[prompt, image_part]
+                            response = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self.vision.client.models.generate_content,
+                                    model=self.vision.model,
+                                    contents=[prompt, image_part],
+                                ),
+                                timeout=gemini_timeout_seconds,
                             )
                             result_text = response.text
 
@@ -653,6 +703,14 @@ REASONING: Comment was submitted"""
                         result_text = result_text.strip()
                         logger.info(f"{self.log_prefix} Gemini response:\n{result_text}")
 
+                    except asyncio.TimeoutError:
+                        logger.error(
+                            f"{self.log_prefix} Gemini decision timed out after {gemini_timeout_seconds:.0f}s"
+                        )
+                        self.results["errors"].append(
+                            f"Step {step_num}: Gemini decision timeout after {gemini_timeout_seconds:.0f}s"
+                        )
+                        continue
                     except Exception as e:
                         logger.error(f"{self.log_prefix} Gemini API error: {e}")
                         self.results["errors"].append(f"Step {step_num}: Gemini API error - {e}")

@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 from adaptive_agent import run_adaptive_task
 
@@ -461,6 +461,7 @@ Rules:
 - If you see a banner saying "The link you followed may be broken", close it using the X button.
 - {join_instruction}
 - {pending_instruction}
+- Start from group-search results for "{topic_seed}". If result cards are not interactable, tap Search and run the topic query again.
 - Prefer groups labeled "Your group" in INTERACTIVE ELEMENTS when available.
 - If both "Visit" and "View group" appear, always click "View group" to enter the actual group feed.
 - If "View group" appears after joining, click it immediately before any other action.
@@ -478,6 +479,7 @@ Rules:
         selected_attempt = 0
         result = None
         max_combined_attempts = 3
+        search_start_url = f"https://m.facebook.com/search/groups/?q={quote_plus(topic_seed or 'groups')}"
 
         for attempt in range(1, max_combined_attempts + 1):
             avoid_clause = ""
@@ -498,13 +500,13 @@ Rules:
                 profile_name=profile_name,
                 action_type="group_post",
                 task=attempt_task,
-                start_url="https://m.facebook.com/groups",
+                start_url=search_start_url,
                 upload_file_path=None,
                 expected_count=1,
                 confirmation_keyword="post",
                 max_steps=20,
-                retry_fallback_url="https://m.facebook.com/",
-                retry_task_prefix="If Groups page fails to open due proxy tunnel issues, start from Facebook home then navigate into relevant groups and continue.",
+                retry_fallback_url="https://m.facebook.com/groups",
+                retry_task_prefix="If direct group-search URL fails due proxy tunnel issues, open Groups, tap Search, run the topic query, then continue.",
             )
 
             selected_attempt = attempt
