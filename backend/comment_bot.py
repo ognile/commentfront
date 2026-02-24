@@ -536,16 +536,28 @@ async def dump_interactive_elements(page: Page, context: str = "") -> List[dict]
     try:
         elements = await page.evaluate('''() => {
             const elements = [];
-            document.querySelectorAll(
-                'button, [role="button"], a[href], input, textarea, ' +
-                '[contenteditable="true"], [data-sigil], [aria-label]'
-            ).forEach((el, i) => {
+            const seen = new Set();
+
+            const addElement = (el) => {
                 const rect = el.getBoundingClientRect();
                 // Only include visible elements in viewport
                 if (rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight && rect.top > -100) {
+                    const textValue = (el.innerText || '').slice(0, 30).replace(/\\n/g, ' ');
+                    const key = [
+                        Math.round(rect.x),
+                        Math.round(rect.y),
+                        Math.round(rect.width),
+                        Math.round(rect.height),
+                        (el.getAttribute('aria-label') || '').slice(0, 40),
+                        textValue.slice(0, 40),
+                    ].join('|');
+                    if (seen.has(key)) {
+                        return;
+                    }
+                    seen.add(key);
                     elements.push({
                         tag: el.tagName,
-                        text: (el.innerText || '').slice(0, 30).replace(/\\n/g, ' '),
+                        text: textValue,
                         ariaLabel: el.getAttribute('aria-label') || '',
                         role: el.getAttribute('role') || '',
                         sigil: el.getAttribute('data-sigil') || '',
@@ -554,6 +566,23 @@ async def dump_interactive_elements(page: Page, context: str = "") -> List[dict]
                         bounds: {x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height)}
                     });
                 }
+                }
+            };
+
+            // Core interactive candidates.
+            document.querySelectorAll(
+                'button, [role="button"], a[href], input, textarea, ' +
+                '[contenteditable="true"], [data-sigil], [aria-label]'
+            ).forEach((el) => addElement(el));
+
+            // Composer hints can be visible text nodes without explicit interactive attributes.
+            // Include these so adaptive matching can legally target them.
+            const composerPattern = /^(write something|create public post|what's on your mind\\??|share something|discuss something)/i;
+            document.querySelectorAll('div, span').forEach((el) => {
+                const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                if (!text || text.length > 80) return;
+                if (!composerPattern.test(text)) return;
+                addElement(el);
             });
             return elements;
         }''')
