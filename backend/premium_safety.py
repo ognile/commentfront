@@ -50,6 +50,15 @@ def _name_matches(expected: str, seen: str) -> bool:
     return bool(expected_tokens) and all(token in seen_norm for token in expected_tokens)
 
 
+def _name_tokens_present(expected: str, body_text: str) -> bool:
+    expected_norm = _normalize_name(expected)
+    body_norm = _normalize_name(body_text)
+    if not expected_norm or not body_norm:
+        return False
+    expected_tokens = [t for t in expected_norm.split(" ") if t]
+    return bool(expected_tokens) and all(token in body_norm for token in expected_tokens)
+
+
 def _canonical_avatar_ref(value: Optional[str]) -> Optional[str]:
     text = str(value or "").strip()
     if not text:
@@ -145,8 +154,18 @@ async def _extract_profile_snapshot(page) -> Dict:
             const h2 = document.querySelector("h2");
             if (h2 && h2.innerText) profileNameCandidates.push(normalize(h2.innerText));
             if (document.title) profileNameCandidates.push(normalize(document.title));
+            const topStrong = Array.from(document.querySelectorAll("strong, span, div"))
+                .map((el) => normalize(el.innerText))
+                .filter((txt) => txt && txt.length >= 3 && txt.length <= 120)
+                .slice(0, 50);
+            profileNameCandidates.push(...topStrong);
 
-            const profile_name_seen = profileNameCandidates.find((item) => item.length >= 3) || "";
+            const blocked = ["this browser is not supported", "facebook"];
+            const profile_name_seen = profileNameCandidates.find((item) => {
+                if (!item || item.length < 3) return false;
+                const lower = item.toLowerCase();
+                return !blocked.some((bad) => lower.includes(bad));
+            }) || "";
 
             let profile_avatar_seen = "";
             const imgs = Array.from(document.querySelectorAll("img"));
@@ -194,6 +213,7 @@ async def _extract_profile_snapshot(page) -> Dict:
             return {
                 profile_name_seen,
                 profile_avatar_seen,
+                body_text: normalize(document.body ? document.body.innerText : "").slice(0, 5000),
                 posts,
             };
         }"""
@@ -288,26 +308,55 @@ async def run_feed_safety_precheck(
             page = await context.new_page()
             await apply_session_to_context(context, session)
 
+            required_posts = max(1, int(lookback_posts))
             await page.goto(profile_page_url, wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(3)
+            await page.mouse.wheel(0, 600)
+            await asyncio.sleep(1)
 
             before_screenshot = await save_debug_screenshot(page, "premium_precheck_before")
             snapshot = await _extract_profile_snapshot(page)
+
+            primary_body_text = str(snapshot.get("body_text") or "")
+            primary_posts = list(snapshot.get("posts") or [])
+            primary_name_seen = str(snapshot.get("profile_name_seen") or "").strip()
+            primary_name_match = _name_matches(profile_name, primary_name_seen) or _name_tokens_present(profile_name, primary_body_text)
+
+            if (not primary_name_match) or (len(primary_posts) < required_posts):
+                try:
+                    await page.goto("https://m.facebook.com/me", wait_until="domcontentloaded", timeout=60000)
+                    await asyncio.sleep(3)
+                    await page.mouse.wheel(0, 600)
+                    await asyncio.sleep(1)
+                    alt_snapshot = await _extract_profile_snapshot(page)
+                    alt_body_text = str(alt_snapshot.get("body_text") or "")
+                    alt_posts = list(alt_snapshot.get("posts") or [])
+                    alt_name_seen = str(alt_snapshot.get("profile_name_seen") or "").strip()
+                    alt_name_match = _name_matches(profile_name, alt_name_seen) or _name_tokens_present(profile_name, alt_body_text)
+                    if alt_name_match or len(alt_posts) > len(primary_posts):
+                        snapshot = alt_snapshot
+                        profile_page_url = "https://m.facebook.com/me"
+                except Exception as nav_exc:
+                    logger.warning(f"fallback /me navigation failed for {profile_name}: {nav_exc}")
+
             await asyncio.sleep(0.5)
             after_screenshot = await save_debug_screenshot(page, "premium_precheck_after")
 
             profile_name_seen = str(snapshot.get("profile_name_seen") or "").strip()
             profile_avatar_seen = str(snapshot.get("profile_avatar_seen") or "").strip()
+            body_text = str(snapshot.get("body_text") or "")
             expected_avatar = str((session.data or {}).get("profile_picture") or "").strip()
             expected_avatar_ref = _canonical_avatar_ref(expected_avatar)
             seen_avatar_ref = _canonical_avatar_ref(profile_avatar_seen)
 
-            name_match = _name_matches(profile_name, profile_name_seen)
+            name_match = _name_matches(profile_name, profile_name_seen) or _name_tokens_present(profile_name, body_text)
+            if not profile_name_seen and name_match:
+                profile_name_seen = profile_name
             avatar_similarity = _avatar_similarity(expected_avatar, profile_avatar_seen)
             avatar_required = bool(expected_avatar_ref and seen_avatar_ref)
             avatar_passed = avatar_similarity is not None and avatar_similarity >= 0.60
             identity_passed = bool(name_match and (avatar_passed or not avatar_required))
-            posts = list(snapshot.get("posts") or [])[: max(1, int(lookback_posts))]
+            posts = list(snapshot.get("posts") or [])[:required_posts]
 
             top_similarity = 0.0
             matched_permalink = None
@@ -317,7 +366,6 @@ async def run_feed_safety_precheck(
                     top_similarity = ratio
                     matched_permalink = post.get("permalink")
 
-            required_posts = max(1, int(lookback_posts))
             duplicate_block = top_similarity >= float(threshold)
             insufficient_posts = len(posts) < required_posts
             duplicate_passed = (not duplicate_block) and (not insufficient_posts)
