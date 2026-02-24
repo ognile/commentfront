@@ -374,7 +374,15 @@ async def run_feed_safety_precheck(
             await apply_session_to_context(context, session)
 
             required_posts = max(1, int(lookback_posts))
-            await page.goto(profile_page_url, wait_until="domcontentloaded", timeout=60000)
+            try:
+                await page.goto(profile_page_url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as nav_exc:
+                if "ERR_TUNNEL_CONNECTION_FAILED" in str(nav_exc):
+                    logger.warning(f"precheck primary goto tunnel error for {profile_name}; fallback to home")
+                    await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=60000)
+                    profile_page_url = "https://m.facebook.com/"
+                else:
+                    raise
             await asyncio.sleep(3)
             if await _has_broken_link_banner(page):
                 logger.warning(f"precheck detected broken-link banner for {profile_name}; switching to /me")
@@ -397,7 +405,15 @@ async def run_feed_safety_precheck(
 
             if (not primary_name_match) or (len(primary_posts) < required_posts):
                 try:
-                    await page.goto("https://m.facebook.com/me", wait_until="domcontentloaded", timeout=60000)
+                    try:
+                        await page.goto("https://m.facebook.com/me", wait_until="domcontentloaded", timeout=60000)
+                        profile_page_url = "https://m.facebook.com/me"
+                    except Exception as alt_nav_exc:
+                        if "ERR_TUNNEL_CONNECTION_FAILED" in str(alt_nav_exc):
+                            await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=60000)
+                            profile_page_url = "https://m.facebook.com/"
+                        else:
+                            raise
                     await asyncio.sleep(3)
                     if await _has_broken_link_banner(page):
                         await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=60000)
