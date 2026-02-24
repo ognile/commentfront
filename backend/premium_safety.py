@@ -55,6 +55,13 @@ def _canonical_avatar_ref(value: Optional[str]) -> Optional[str]:
     if not text:
         return None
 
+    def _looks_base64_blob(candidate: str) -> bool:
+        if len(candidate) < 128:
+            return False
+        if len(candidate) % 4 != 0:
+            return False
+        return bool(re.fullmatch(r"[A-Za-z0-9+/=]+", candidate))
+
     if text.startswith("data:image"):
         try:
             _, payload = text.split(",", 1)
@@ -65,10 +72,19 @@ def _canonical_avatar_ref(value: Optional[str]) -> Optional[str]:
 
     if text.startswith("http://") or text.startswith("https://"):
         parsed = urlparse(text)
+        if parsed.netloc.lower().endswith("fbcdn.net") and (parsed.path or "").startswith("/rsrc.php"):
+            return None
         path = parsed.path or ""
         if not path:
             return None
         return f"url:{parsed.netloc.lower()}{path}"
+
+    if _looks_base64_blob(text):
+        try:
+            blob = base64.b64decode(text)
+            return "data:" + hashlib.sha256(blob).hexdigest()
+        except Exception:
+            return None
 
     return text.lower()
 
@@ -92,9 +108,26 @@ def _to_public_screenshot_url(path: Optional[str]) -> Optional[str]:
     return f"/screenshots/{name}"
 
 
-def _profile_url(session: FacebookSession, profile_name: str) -> str:
+def _session_user_id(session: FacebookSession) -> Optional[str]:
     data = session.data or {}
     user_id = data.get("user_id")
+    if user_id:
+        return str(user_id)
+    cookies = data.get("cookies") or []
+    if isinstance(cookies, list):
+        for item in cookies:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "").strip() != "c_user":
+                continue
+            val = str(item.get("value") or "").strip()
+            if val:
+                return val
+    return None
+
+
+def _profile_url(session: FacebookSession, profile_name: str) -> str:
+    user_id = _session_user_id(session)
     if user_id:
         return f"https://m.facebook.com/profile.php?id={user_id}"
     normalized = str(profile_name or "").strip().replace(" ", ".")
@@ -197,6 +230,8 @@ async def run_feed_safety_precheck(
                 "threshold": float(threshold),
                 "top_similarity": 0.0,
                 "matched_post_permalink": None,
+                "required_posts": max(1, int(lookback_posts)),
+                "insufficient_posts": True,
                 "passed": False,
             },
         }
@@ -223,6 +258,8 @@ async def run_feed_safety_precheck(
                 "threshold": float(threshold),
                 "top_similarity": 0.0,
                 "matched_post_permalink": None,
+                "required_posts": max(1, int(lookback_posts)),
+                "insufficient_posts": True,
                 "passed": False,
             },
         }
@@ -267,8 +304,9 @@ async def run_feed_safety_precheck(
 
             name_match = _name_matches(profile_name, profile_name_seen)
             avatar_similarity = _avatar_similarity(expected_avatar, profile_avatar_seen)
+            avatar_required = bool(expected_avatar_ref and seen_avatar_ref)
             avatar_passed = avatar_similarity is not None and avatar_similarity >= 0.60
-            identity_passed = bool(name_match and avatar_passed)
+            identity_passed = bool(name_match and (avatar_passed or not avatar_required))
             posts = list(snapshot.get("posts") or [])[: max(1, int(lookback_posts))]
 
             top_similarity = 0.0
@@ -279,7 +317,10 @@ async def run_feed_safety_precheck(
                     top_similarity = ratio
                     matched_permalink = post.get("permalink")
 
+            required_posts = max(1, int(lookback_posts))
             duplicate_block = top_similarity >= float(threshold)
+            insufficient_posts = len(posts) < required_posts
+            duplicate_passed = (not duplicate_block) and (not insufficient_posts)
 
             identity_check = {
                 "profile_name_expected": profile_name,
@@ -296,12 +337,14 @@ async def run_feed_safety_precheck(
                 "threshold": float(threshold),
                 "top_similarity": round(float(top_similarity), 4),
                 "matched_post_permalink": matched_permalink if duplicate_block else None,
-                "passed": not duplicate_block,
+                "required_posts": required_posts,
+                "insufficient_posts": insufficient_posts,
+                "passed": duplicate_passed,
                 "posts": posts,
             }
 
             return {
-                "success": bool(identity_passed and not duplicate_block),
+                "success": bool(identity_passed and duplicate_passed),
                 "identity_check": identity_check,
                 "duplicate_precheck": duplicate_precheck,
                 "profile_url": profile_page_url,
@@ -312,11 +355,11 @@ async def run_feed_safety_precheck(
                     "after": _to_public_screenshot_url(after_screenshot),
                 },
                 "error": None
-                if (identity_passed and not duplicate_block)
+                if (identity_passed and duplicate_passed)
                 else (
                     "identity_verification_failed"
                     if not identity_passed
-                    else "duplicate_precheck_failed"
+                    else ("duplicate_precheck_insufficient_posts" if insufficient_posts else "duplicate_precheck_failed")
                 ),
                 "checked_at": _utc_iso(),
             }
@@ -339,6 +382,8 @@ async def run_feed_safety_precheck(
                     "threshold": float(threshold),
                     "top_similarity": 0.0,
                     "matched_post_permalink": None,
+                    "required_posts": max(1, int(lookback_posts)),
+                    "insufficient_posts": True,
                     "passed": False,
                 },
                 "profile_url": profile_page_url,
