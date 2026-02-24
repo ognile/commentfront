@@ -248,12 +248,14 @@ async def publish_feed_post(
 Post to your own Facebook feed as this profile.
 
 Required actions:
-1. Open the create post flow.
+1. If you see a banner saying "The link you followed may be broken", close it using the X button.
+2. Open the create post flow by tapping "What's on your mind?".
 2. Write this exact text as the main post body:
 {caption}
 3. Attach image if upload is available.
 4. Submit/publish the feed post.
-5. Finish with DONE only after submission is completed.
+5. Do NOT click "ok" unless a visible button with text exactly "OK" exists.
+6. Finish with DONE only after submission is completed and the post is visible on feed or permalink opens.
 """.strip()
 
     result = await _execute_task(
@@ -263,7 +265,7 @@ Required actions:
         profile_name=profile_name,
         action_type="feed_post",
         task=task,
-        start_url="https://m.facebook.com/me",
+        start_url="https://m.facebook.com/",
         upload_file_path=image_path,
         expected_count=1,
         confirmation_keyword="post",
@@ -315,11 +317,13 @@ async def discover_group_and_publish(
 Find an actionable Facebook group related to "{topic_seed}" and publish one post in that group.
 
 Rules:
+- If you see a banner saying "The link you followed may be broken", close it using the X button.
 - {join_instruction}
 - {pending_instruction}
 - Use this exact text for the group post:
 {group_post_text}
 - Attach image if upload is available.
+- Do NOT click "ok" unless a visible button with text exactly "OK" exists.
 - End with DONE only after one group post is submitted.
 """.strip()
 
