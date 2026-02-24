@@ -452,7 +452,7 @@ Rules:
         discovery_meta["url"] = group_url
         discovery_meta["steps_count"] = len((discovery_result.get("result") or {}).get("steps", []))
     else:
-        combined_task = f"""
+        combined_task_base = f"""
 Find an actionable Facebook group related to "{topic_seed}" and publish one group post in that group.
 
 Rules:
@@ -468,31 +468,74 @@ Rules:
 - Do NOT click "ok" unless a visible button with text exactly "OK" exists.
 """.strip()
 
-        result = await _execute_task(
-            run_id=run_id,
-            cycle_index=cycle_index,
-            step_id=f"cycle_{cycle_index}_group_post",
-            profile_name=profile_name,
-            action_type="group_post",
-            task=combined_task,
-            start_url="https://m.facebook.com/groups",
-            upload_file_path=None,
-            expected_count=1,
-            confirmation_keyword="post",
-            max_steps=55,
-            retry_fallback_url="https://m.facebook.com/",
-            retry_task_prefix="If Groups page fails to open due proxy tunnel issues, start from Facebook home then navigate into relevant groups and continue.",
-        )
-        combined_result = result.get("result") or {}
+        tried_group_urls: list[str] = []
+        selected_attempt = 0
+        result = None
+        max_combined_attempts = 3
+
+        for attempt in range(1, max_combined_attempts + 1):
+            avoid_clause = ""
+            if tried_group_urls:
+                avoid_clause = "- Do not revisit these previously attempted groups: " + ", ".join(tried_group_urls)
+
+            attempt_task = (
+                f"{combined_task_base}\n"
+                f"{avoid_clause}\n"
+                f"- Attempt {attempt} of {max_combined_attempts}: "
+                "if no posting composer appears in INTERACTIVE ELEMENTS after a few interactions, switch to another group."
+            ).strip()
+
+            candidate = await _execute_task(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                step_id=f"cycle_{cycle_index}_group_post_attempt_{attempt}",
+                profile_name=profile_name,
+                action_type="group_post",
+                task=attempt_task,
+                start_url="https://m.facebook.com/groups",
+                upload_file_path=None,
+                expected_count=1,
+                confirmation_keyword="post",
+                max_steps=20,
+                retry_fallback_url="https://m.facebook.com/",
+                retry_task_prefix="If Groups page fails to open due proxy tunnel issues, start from Facebook home then navigate into relevant groups and continue.",
+            )
+
+            selected_attempt = attempt
+            result = candidate
+
+            candidate_url = str((candidate.get("result") or {}).get("final_url") or "")
+            if "/groups/" in candidate_url and candidate_url not in tried_group_urls:
+                tried_group_urls.append(candidate_url)
+
+            if candidate.get("success"):
+                break
+
+        combined_result = (result or {}).get("result") or {}
         discovery_meta["final_status"] = "combined_discovery_publish"
         discovery_meta["url"] = combined_result.get("final_url")
         discovery_meta["steps_count"] = len(combined_result.get("steps", []))
+        discovery_meta["attempt"] = selected_attempt
+        discovery_meta["tried_group_urls"] = tried_group_urls
+
+        if result is None:
+            result = {
+                "success": False,
+                "completed_count": 0,
+                "expected_count": 1,
+                "result": {"final_status": "error", "steps": [], "errors": ["combined group attempts did not execute"]},
+                "evidence": {},
+                "error": "combined group attempts did not execute",
+            }
 
     # Attach discovery metadata for auditability.
     result.setdefault("evidence", {}).setdefault("action_method", {})
     result["evidence"]["action_method"]["discovery_final_status"] = discovery_meta.get("final_status")
     result["evidence"]["action_method"]["discovery_url"] = discovery_meta.get("url")
     result["evidence"]["action_method"]["discovery_steps_count"] = int(discovery_meta.get("steps_count") or 0)
+    if "attempt" in discovery_meta:
+        result["evidence"]["action_method"]["group_attempt"] = discovery_meta.get("attempt")
+        result["evidence"]["action_method"]["tried_group_urls"] = discovery_meta.get("tried_group_urls", [])
 
     adaptive_result = result.get("result") or {}
     blob = _step_blob(adaptive_result)
