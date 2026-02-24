@@ -220,6 +220,18 @@ async def _extract_profile_snapshot(page) -> Dict:
     )
 
 
+async def _has_broken_link_banner(page) -> bool:
+    try:
+        return await page.evaluate(
+            """() => {
+                const text = (document.body && document.body.innerText) ? document.body.innerText : "";
+                return text.includes("The link you followed may be broken");
+            }"""
+        )
+    except Exception:
+        return False
+
+
 async def run_feed_safety_precheck(
     *,
     profile_name: str,
@@ -311,6 +323,11 @@ async def run_feed_safety_precheck(
             required_posts = max(1, int(lookback_posts))
             await page.goto(profile_page_url, wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(3)
+            if await _has_broken_link_banner(page):
+                logger.warning(f"precheck detected broken-link banner for {profile_name}; switching to /me")
+                await page.goto("https://m.facebook.com/me", wait_until="domcontentloaded", timeout=60000)
+                profile_page_url = "https://m.facebook.com/me"
+                await asyncio.sleep(3)
             await page.mouse.wheel(0, 600)
             await asyncio.sleep(1)
 
@@ -326,6 +343,9 @@ async def run_feed_safety_precheck(
                 try:
                     await page.goto("https://m.facebook.com/me", wait_until="domcontentloaded", timeout=60000)
                     await asyncio.sleep(3)
+                    if await _has_broken_link_banner(page):
+                        await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=60000)
+                        await asyncio.sleep(2)
                     await page.mouse.wheel(0, 600)
                     await asyncio.sleep(1)
                     alt_snapshot = await _extract_profile_snapshot(page)
