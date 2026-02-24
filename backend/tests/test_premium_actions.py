@@ -98,3 +98,57 @@ def test_group_publish_retries_from_groups_home_on_tunnel_error(monkeypatch):
     assert calls[1]["start_url"] == "https://m.facebook.com/groups"
     assert result["evidence"]["action_method"]["retry_used"] is True
     assert result["evidence"]["action_method"]["retry_from_start_url"] == direct_url
+
+
+def test_group_publish_retries_to_home_after_groups_tunnel_error(monkeypatch):
+    calls = []
+    direct_url = "https://m.facebook.com/groups/1037210351792668/"
+
+    async def fake_run_adaptive_task(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 3:
+            return {
+                "final_status": "error",
+                "final_url": None,
+                "screenshots": [],
+                "steps": [],
+                "errors": [
+                    "Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://m.facebook.com/groups/1037210351792668/"
+                ],
+            }
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/groups/1037210351792668/posts/67890?story_fbid=67890",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {
+                    "action_taken": "group post submitted",
+                    "gemini_response": "DONE: posted in group",
+                    "reasoning": "completed",
+                    "matched_element": {"tag": "DIV", "ariaLabel": "Post", "text": "Post"},
+                }
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.discover_group_and_publish(
+            run_id="run_3",
+            cycle_index=2,
+            profile_name="Vanessa Hines",
+            topic_seed=direct_url,
+            allow_join_new=True,
+            join_pending_policy="try_next_group",
+            group_post_text="supportive post",
+            image_path=None,
+        )
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 3
+    assert calls[0]["start_url"] == direct_url
+    assert calls[1]["start_url"] == "https://m.facebook.com/groups"
+    assert calls[2]["start_url"] == "https://m.facebook.com/"
+    assert result["evidence"]["action_method"]["retry_attempts"] == 2

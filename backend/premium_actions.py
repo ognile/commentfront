@@ -126,6 +126,7 @@ def _build_evidence(
             "retry_used": bool(((adaptive_result.get("meta") or {}).get("retry_used"))),
             "retry_from_start_url": (adaptive_result.get("meta") or {}).get("retry_from_start_url"),
             "retry_start_url": (adaptive_result.get("meta") or {}).get("retry_start_url"),
+            "retry_attempts": (adaptive_result.get("meta") or {}).get("retry_attempts"),
         },
         "result_state": {
             "success": adaptive_result.get("final_status") == "task_completed",
@@ -212,32 +213,40 @@ async def _execute_task(
         start_url=start_url,
         upload_file_path=upload_file_path,
     )
-    if (
-        retry_fallback_url
-        and retry_fallback_url != start_url
-        and _has_tunnel_connection_error(adaptive_result)
-    ):
-        fallback_task = task
-        if retry_task_prefix:
-            fallback_task = f"{retry_task_prefix.strip()}\n\n{task}".strip()
-        retry_result = await run_adaptive_task(
-            profile_name=profile_name,
-            task=fallback_task,
-            max_steps=max_steps,
-            start_url=retry_fallback_url,
-            upload_file_path=upload_file_path,
-        )
-        combined_errors = []
-        combined_errors.extend(adaptive_result.get("errors", []) or [])
-        combined_errors.extend(retry_result.get("errors", []) or [])
-        retry_result["errors"] = combined_errors
-        retry_result["meta"] = {
-            **(retry_result.get("meta") or {}),
-            "retry_used": True,
-            "retry_from_start_url": start_url,
-            "retry_start_url": retry_fallback_url,
-        }
-        adaptive_result = retry_result
+    if _has_tunnel_connection_error(adaptive_result):
+        fallback_chain = []
+        if retry_fallback_url and retry_fallback_url != start_url:
+            fallback_chain.append(retry_fallback_url)
+        if "https://m.facebook.com/" not in fallback_chain and start_url != "https://m.facebook.com/":
+            fallback_chain.append("https://m.facebook.com/")
+
+        tunnel_persisted = True
+        for retry_index, fallback_url in enumerate(fallback_chain, start=1):
+            if not tunnel_persisted:
+                break
+            fallback_task = task
+            if retry_task_prefix:
+                fallback_task = f"{retry_task_prefix.strip()}\n\n{task}".strip()
+            retry_result = await run_adaptive_task(
+                profile_name=profile_name,
+                task=fallback_task,
+                max_steps=max_steps,
+                start_url=fallback_url,
+                upload_file_path=upload_file_path,
+            )
+            tunnel_persisted = _has_tunnel_connection_error(retry_result)
+            combined_errors = []
+            combined_errors.extend(adaptive_result.get("errors", []) or [])
+            combined_errors.extend(retry_result.get("errors", []) or [])
+            retry_result["errors"] = combined_errors
+            retry_result["meta"] = {
+                **(retry_result.get("meta") or {}),
+                "retry_used": True,
+                "retry_from_start_url": start_url,
+                "retry_start_url": fallback_url,
+                "retry_attempts": retry_index,
+            }
+            adaptive_result = retry_result
 
     blob = _step_blob(adaptive_result)
     status_ok = adaptive_result.get("final_status") == "task_completed"
@@ -471,6 +480,8 @@ Rules:
             expected_count=1,
             confirmation_keyword="post",
             max_steps=55,
+            retry_fallback_url="https://m.facebook.com/",
+            retry_task_prefix="If Groups page fails to open due proxy tunnel issues, start from Facebook home then navigate into relevant groups and continue.",
         )
         combined_result = result.get("result") or {}
         discovery_meta["final_status"] = "combined_discovery_publish"
