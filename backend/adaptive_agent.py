@@ -210,6 +210,8 @@ AVAILABLE ACTIONS:
 IMPORTANT RULES:
 - For CLICK: describe the element by its TEXT or LABEL, not coordinates
 - Example: CLICK element="Comment" or CLICK element="Back" or CLICK element="See why"
+- Treat the INTERACTIVE ELEMENTS list as the source of truth for clickable targets.
+- If text appears in the screenshot but no matching element exists in INTERACTIVE ELEMENTS, do not repeat that click.
 - If you see a "We removed your comment" notification, click "Back" or the back arrow to dismiss
 - To comment on a post, first CLICK the post or its Comment button, then TYPE your comment
 - Make comments contextual to the post content (not generic)

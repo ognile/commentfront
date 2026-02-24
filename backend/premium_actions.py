@@ -459,7 +459,7 @@ Rules:
 - If you see a banner saying "The link you followed may be broken", close it using the X button.
 - {join_instruction}
 - {pending_instruction}
-- A group is actionable only if a posting composer is available (for example: "Write something...", "Create public post", "What's on your mind?", "Share something", or "Discuss something").
+- A group is actionable only if a posting composer is available in the INTERACTIVE ELEMENTS list (for example: "Write something...", "Create public post", "What's on your mind?", "Share something", or "Discuss something").
 - If a group has no posting composer, skip it and move to another relevant group.
 - Use this exact text for the group post:
 {group_post_text}
