@@ -260,6 +260,31 @@ async def _has_broken_link_banner(page) -> bool:
         return False
 
 
+async def _open_posts_tab_if_available(page) -> bool:
+    try:
+        clicked = await page.evaluate(
+            """() => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const candidates = Array.from(document.querySelectorAll('a, div[role="tab"], div[role="button"], span'));
+                for (const el of candidates) {
+                    const text = normalize(el.innerText);
+                    if (text !== "posts") continue;
+                    const target =
+                        el.closest('a, div[role="tab"], div[role="button"]') ||
+                        el;
+                    if (target && typeof target.click === "function") {
+                        target.click();
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+        return bool(clicked)
+    except Exception:
+        return False
+
+
 async def run_feed_safety_precheck(
     *,
     profile_name: str,
@@ -356,6 +381,9 @@ async def run_feed_safety_precheck(
                 await page.goto("https://m.facebook.com/me", wait_until="domcontentloaded", timeout=60000)
                 profile_page_url = "https://m.facebook.com/me"
                 await asyncio.sleep(3)
+            posts_tab_clicked = await _open_posts_tab_if_available(page)
+            if posts_tab_clicked:
+                await asyncio.sleep(2)
             await page.mouse.wheel(0, 600)
             await asyncio.sleep(1)
 
@@ -373,6 +401,9 @@ async def run_feed_safety_precheck(
                     await asyncio.sleep(3)
                     if await _has_broken_link_banner(page):
                         await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=60000)
+                        await asyncio.sleep(2)
+                    alt_posts_tab_clicked = await _open_posts_tab_if_available(page)
+                    if alt_posts_tab_clicked:
                         await asyncio.sleep(2)
                     await page.mouse.wheel(0, 600)
                     await asyncio.sleep(1)
