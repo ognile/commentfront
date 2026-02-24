@@ -143,10 +143,16 @@ def _profile_url(session: FacebookSession, profile_name: str) -> str:
     return f"https://m.facebook.com/{normalized}"
 
 
-async def _extract_profile_snapshot(page) -> Dict:
+async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
     return await page.evaluate(
-        """() => {
+        """(expectedProfileName) => {
             const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+            const expectedTokens = normalize(expectedProfileName).toLowerCase().split(" ").filter(Boolean);
+            const hasExpectedAuthor = (text) => {
+                if (!expectedTokens.length) return true;
+                const lower = normalize(text).toLowerCase();
+                return expectedTokens.every((token) => lower.includes(token));
+            };
 
             const profileNameCandidates = [];
             const h1 = document.querySelector("h1");
@@ -186,7 +192,7 @@ async def _extract_profile_snapshot(page) -> Dict:
             }
 
             const anchors = Array.from(
-                document.querySelectorAll('a[href*="story_fbid="], a[href*="/posts/"], a[href*="permalink.php"]')
+                document.querySelectorAll('a[href*="story_fbid="], a[href*="/posts/"], a[href*=\"permalink.php\"], a[href*=\"story.php\"], a[href*=\"/videos/\"]')
             );
             const seen = new Set();
             const posts = [];
@@ -203,11 +209,32 @@ async def _extract_profile_snapshot(page) -> Dict:
                     anchor.parentElement;
                 const text = normalize(container ? container.innerText : "");
                 if (!text || text.length < 12) continue;
+                if (!hasExpectedAuthor(text)) continue;
                 const key = `${href}::${text.slice(0, 160)}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
                 posts.push({ permalink: href, text: text.slice(0, 800) });
                 if (posts.length >= 25) break;
+            }
+
+            if (posts.length < 5) {
+                const articleNodes = Array.from(document.querySelectorAll("article, div[role='article'], div[data-ft]"));
+                for (const node of articleNodes) {
+                    const text = normalize(node.innerText || "");
+                    if (!text || text.length < 24) continue;
+                    if (!hasExpectedAuthor(text)) continue;
+                    let href = "";
+                    const anchor = node.querySelector('a[href*="story_fbid="], a[href*="/posts/"], a[href*="permalink.php"], a[href*="story.php"], a[href*="/videos/"]');
+                    if (anchor) {
+                        href = anchor.getAttribute("href") || "";
+                    }
+                    if (href.startsWith("/")) href = "https://m.facebook.com" + href;
+                    const key = `${href || "no_link"}::${text.slice(0, 160)}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    posts.push({ permalink: href || null, text: text.slice(0, 800) });
+                    if (posts.length >= 25) break;
+                }
             }
 
             return {
@@ -216,7 +243,8 @@ async def _extract_profile_snapshot(page) -> Dict:
                 body_text: normalize(document.body ? document.body.innerText : "").slice(0, 5000),
                 posts,
             };
-        }"""
+        }""",
+        expected_profile_name,
     )
 
 
@@ -332,7 +360,7 @@ async def run_feed_safety_precheck(
             await asyncio.sleep(1)
 
             before_screenshot = await save_debug_screenshot(page, "premium_precheck_before")
-            snapshot = await _extract_profile_snapshot(page)
+            snapshot = await _extract_profile_snapshot(page, profile_name)
 
             primary_body_text = str(snapshot.get("body_text") or "")
             primary_posts = list(snapshot.get("posts") or [])
@@ -348,7 +376,7 @@ async def run_feed_safety_precheck(
                         await asyncio.sleep(2)
                     await page.mouse.wheel(0, 600)
                     await asyncio.sleep(1)
-                    alt_snapshot = await _extract_profile_snapshot(page)
+                    alt_snapshot = await _extract_profile_snapshot(page, profile_name)
                     alt_body_text = str(alt_snapshot.get("body_text") or "")
                     alt_posts = list(alt_snapshot.get("posts") or [])
                     alt_name_seen = str(alt_snapshot.get("profile_name_seen") or "").strip()
