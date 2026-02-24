@@ -322,7 +322,7 @@ Rules:
 - {pending_instruction}
 - Use this exact text for the group post:
 {group_post_text}
-- Attach image if upload is available.
+- Image is optional. If image upload interrupts flow, skip image and submit text-only post.
 - Do NOT click "ok" unless a visible button with text exactly "OK" exists.
 - End with DONE only after one group post is submitted.
 """.strip()

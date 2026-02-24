@@ -301,7 +301,7 @@ class PremiumOrchestrator:
             allow_join_new=bool(group_cfg.get("allow_join_new", True)),
             join_pending_policy=str(group_cfg.get("join_pending_policy", "try_next_group")),
             group_post_text=caption,
-            image_path=image_path,
+            image_path=None,
         )
         group_record = await self._record_action(
             run_id=run_id,
