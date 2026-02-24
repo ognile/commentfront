@@ -282,7 +282,14 @@ Required actions:
     if not permalink_or_visible:
         permalink_or_visible = _contains_any(
             blob,
-            ["published", "post submitted", "post complete", "visible on the feed", "most recent post"],
+            [
+                "published",
+                "post submitted",
+                "post complete",
+                "visible on the feed",
+                "visible on the facebook feed",
+                "most recent post",
+            ],
         )
 
     result.setdefault("evidence", {}).setdefault("confirmation", {})
