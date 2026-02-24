@@ -504,7 +504,7 @@ Rules:
                 upload_file_path=None,
                 expected_count=1,
                 confirmation_keyword="post",
-                max_steps=20,
+                max_steps=28,
                 retry_fallback_url="https://m.facebook.com/groups",
                 retry_task_prefix="If direct group-search URL fails due proxy tunnel issues, open Groups, tap Search, run the topic query, then continue.",
             )

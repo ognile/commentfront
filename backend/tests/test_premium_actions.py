@@ -8,10 +8,11 @@ import premium_actions
 
 
 def test_group_discovery_prompt_enforces_try_next_group_policy(monkeypatch):
-    captured = {"tasks": []}
+    captured = {"tasks": [], "calls": []}
 
     async def fake_run_adaptive_task(**kwargs):
         captured["tasks"].append(kwargs.get("task", ""))
+        captured["calls"].append(kwargs)
         return {
             "final_status": "task_completed",
             "final_url": "https://m.facebook.com/groups/123/posts/456?story_fbid=456",
@@ -44,6 +45,7 @@ def test_group_discovery_prompt_enforces_try_next_group_policy(monkeypatch):
 
     assert result["success"] is True
     assert any("skip to the next actionable group immediately" in task for task in captured["tasks"])
+    assert captured["calls"][0]["max_steps"] == 28
 
 
 def test_group_publish_retries_from_groups_home_on_tunnel_error(monkeypatch):
