@@ -65,6 +65,9 @@ class StrictSuccessActions:
     def __init__(self):
         self.sequence = []
         self.group_kwargs = {}
+        self.likes_kwargs = {}
+        self.shares_kwargs = {}
+        self.replies_kwargs = {}
 
     async def publish_feed_post(self, **kwargs):
         self.sequence.append("feed")
@@ -99,6 +102,7 @@ class StrictSuccessActions:
 
     async def perform_likes(self, **kwargs):
         self.sequence.append("likes")
+        self.likes_kwargs = kwargs
         likes_count = int(kwargs.get("likes_count", 0))
         return {
             "success": True,
@@ -115,6 +119,7 @@ class StrictSuccessActions:
 
     async def perform_shares(self, **kwargs):
         self.sequence.append("shares")
+        self.shares_kwargs = kwargs
         shares_count = int(kwargs.get("shares_count", 0))
         return {
             "success": True,
@@ -135,6 +140,7 @@ class StrictSuccessActions:
 
     async def perform_comment_replies(self, **kwargs):
         self.sequence.append("replies")
+        self.replies_kwargs = kwargs
         replies_count = int(kwargs.get("replies_count", 0))
         return {
             "success": True,
@@ -360,3 +366,26 @@ def test_orchestrator_full_pilot_hits_strict_pass_matrix(tmp_path):
     assert updated_run["pass_matrix"]["comment_replies"] == "4/4"
     assert updated_run["pass_matrix"]["character_posts"] == "3/3"
     assert updated_run["pass_matrix"]["ambient_posts"] == "1/1"
+
+
+def test_orchestrator_passes_group_context_url_to_engagement_actions(tmp_path):
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    store.state["runs"][run["id"]]["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    store.save()
+
+    actions = StrictSuccessActions()
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=actions,
+        content_module=FakeContentModule,
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    group_target = "https://m.facebook.com/groups/123/posts/456"
+    assert actions.likes_kwargs.get("start_url") == group_target
+    assert actions.shares_kwargs.get("start_url") == group_target
+    assert actions.replies_kwargs.get("start_url") == group_target

@@ -582,6 +582,7 @@ async def perform_likes(
     cycle_index: int,
     profile_name: str,
     likes_count: int,
+    start_url: Optional[str] = None,
 ) -> Dict:
     task = f"""
 Inside the current group context, like exactly {likes_count} posts.
@@ -595,7 +596,7 @@ Then finish with DONE.
         profile_name=profile_name,
         action_type="likes",
         task=task,
-        start_url="https://m.facebook.com/groups",
+        start_url=start_url or "https://m.facebook.com/groups",
         expected_count=likes_count,
         confirmation_keyword="like",
         max_steps=30,
@@ -618,6 +619,7 @@ async def perform_shares(
     profile_name: str,
     shares_count: int,
     share_target: str,
+    start_url: Optional[str] = None,
 ) -> Dict:
     destination_text = {
         "own_feed": "share to your own feed",
@@ -637,7 +639,7 @@ End with DONE only after all required shares are completed.
         profile_name=profile_name,
         action_type="shares",
         task=task,
-        start_url="https://m.facebook.com/groups",
+        start_url=start_url or "https://m.facebook.com/groups",
         expected_count=shares_count,
         confirmation_keyword="share",
         max_steps=35,
@@ -678,6 +680,7 @@ async def perform_comment_replies(
     profile_name: str,
     replies_count: int,
     reply_text: str,
+    start_url: Optional[str] = None,
 ) -> Dict:
     task = f"""
 Reply supportively to exactly {replies_count} group comment(s).
@@ -693,7 +696,7 @@ Finish with DONE only after replies are sent.
         profile_name=profile_name,
         action_type="comment_replies",
         task=task,
-        start_url="https://m.facebook.com/groups",
+        start_url=start_url or "https://m.facebook.com/groups",
         expected_count=replies_count,
         confirmation_keyword=None,
         max_steps=35,

@@ -409,6 +409,11 @@ class PremiumOrchestrator:
             return
 
         engagement = run_spec.get("engagement_recipe", {})
+        group_context_url = str(
+            ((group_result.get("result") or {}).get("final_url"))
+            or ((group_result.get("evidence") or {}).get("target_url"))
+            or "https://m.facebook.com/groups"
+        )
 
         # 3) likes
         likes_target = int(engagement.get("likes_per_cycle", 0))
@@ -423,6 +428,7 @@ class PremiumOrchestrator:
                     cycle_index=cycle_index,
                     profile_name=profile_name,
                     likes_count=likes_target,
+                    start_url=group_context_url,
                 ),
             )
             likes_record = await self._record_action(
@@ -465,6 +471,7 @@ class PremiumOrchestrator:
                     profile_name=profile_name,
                     shares_count=shares_target,
                     share_target=str(engagement.get("share_target", "own_feed")),
+                    start_url=group_context_url,
                 ),
             )
             shares_record = await self._record_action(
@@ -510,6 +517,7 @@ class PremiumOrchestrator:
                     profile_name=profile_name,
                     replies_count=replies_target,
                     reply_text=reply_text,
+                    start_url=group_context_url,
                 ),
             )
             replies_record = await self._record_action(
