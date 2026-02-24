@@ -47,6 +47,23 @@ async def find_element_by_description(description: str, elements: list, log_pref
     visible_elements = [el for el in elements if is_element_visible(el)]
     logger.info(f"{log_prefix} Matching '{description}' against {len(visible_elements)} visible elements (filtered from {len(elements)} total)")
 
+    # Facebook group overlay disambiguation:
+    # "Visit" often targets an inline card action that keeps the sheet open, while
+    # "View group" navigates into the actual group feed where posting can occur.
+    desc_trimmed = desc_lower.strip()
+    wants_visit = (
+        desc_trimmed == "visit"
+        or desc_trimmed == "view"
+        or "group visit" in desc_trimmed
+    )
+    if wants_visit:
+        for el in visible_elements:
+            aria = (el.get("ariaLabel", "") or "").strip().lower()
+            text = (el.get("text", "") or "").strip().lower()
+            if aria == "view group" or text == "view group":
+                logger.info(f"{log_prefix} Remapped '{description}' to 'View group' to enter group feed")
+                return el
+
     # Check if description is an icon character (non-ASCII single char or short string with special chars)
     is_icon_search = len(description) <= 3 and any(ord(c) > 127 for c in description)
     if is_icon_search:

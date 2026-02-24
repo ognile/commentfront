@@ -427,6 +427,8 @@ Rules:
 - If you see a banner saying "The link you followed may be broken", close it using the X button.
 - Target group reference URL: {group_url}
 - If you are not already in this target group, navigate to it first.
+- If both "Visit" and "View group" appear, always click "View group" to enter the real group feed.
+- If "View group" appears after joining, click it immediately before any other action.
 - Use this exact text for the group post:
 {group_post_text}
 - Prefer text-only submission. Do not upload an image if upload causes back-navigation or modal loops.
@@ -459,6 +461,10 @@ Rules:
 - If you see a banner saying "The link you followed may be broken", close it using the X button.
 - {join_instruction}
 - {pending_instruction}
+- Prefer groups labeled "Your group" in INTERACTIVE ELEMENTS when available.
+- If both "Visit" and "View group" appear, always click "View group" to enter the actual group feed.
+- If "View group" appears after joining, click it immediately before any other action.
+- Do not click "Visit" repeatedly in the same UI state.
 - A group is actionable only if a posting composer is available in the INTERACTIVE ELEMENTS list (for example: "Write something...", "Create public post", "What's on your mind?", "Share something", or "Discuss something").
 - If a group has no posting composer, skip it and move to another relevant group.
 - Use this exact text for the group post:
