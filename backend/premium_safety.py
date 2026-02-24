@@ -411,9 +411,9 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
 
             if (posts.length < 5) {
                 const hasEngagementControls = (node) => {
-                    const controls = Array.from(
-                        node.querySelectorAll("div[role='button'], a[role='button'], a[role='link'], span")
-                    ).slice(0, 160);
+                    const roleButtons = node.querySelectorAll("div[role='button'], a[role='button']");
+                    if (roleButtons.length >= 3) return true;
+                    const controls = Array.from(node.querySelectorAll("div[role='button'], a[role='button'], a[role='link'], span")).slice(0, 160);
                     let hasLike = false;
                     let hasComment = false;
                     let hasShare = false;
@@ -444,8 +444,8 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                         const text = normalize(node.innerText || "");
                         if (!text || text.length < 40 || text.length > 2200) continue;
                         const rect = node.getBoundingClientRect();
-                        if (!rect || rect.height <= 0 || rect.height > (window.innerHeight * 0.82)) continue;
-                        if (!hasEngagementControls(node) && !/\\blike\\b.*\\bcomment\\b/i.test(text)) continue;
+                        if (!rect || rect.height <= 0 || rect.height > (window.innerHeight * 0.98)) continue;
+                        if (!hasEngagementControls(node)) continue;
                         const author = extractAuthor(node);
                         if (!hasExpectedAuthor(text, author)) continue;
                         const permalink = extractPermalink(node);
