@@ -261,6 +261,40 @@ interface AppealSchedulerStatus {
   }>;
 }
 
+interface PremiumRun {
+  id: string;
+  status: string;
+  run_spec?: {
+    profile_name?: string;
+  };
+  next_execute_at?: string | null;
+  error?: string | null;
+  pass_matrix?: Record<string, string>;
+  updated_at?: string;
+}
+
+interface PremiumStatusPayload {
+  scheduler: {
+    enabled?: boolean;
+    is_running?: boolean;
+    last_tick_at?: string | null;
+    last_error?: string | null;
+    last_processed_count?: number;
+  };
+  counts: {
+    scheduled: number;
+    in_progress: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+  };
+  recent_runs: PremiumRun[];
+  rules_snapshot?: {
+    version?: string;
+    synced_at?: string;
+  } | null;
+}
+
 // Mobile viewport dimensions
 const VIEWPORT_WIDTH = 393;
 const VIEWPORT_HEIGHT = 873;
@@ -399,6 +433,8 @@ function App() {
   const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<AppealSchedulerStatus | null>(null);
   const [schedulerRunning, setSchedulerRunning] = useState(false);
+  const [premiumStatus, setPremiumStatus] = useState<PremiumStatusPayload | null>(null);
+  const [premiumLoading, setPremiumLoading] = useState(false);
 
   // WebSocket and live status
   const [liveStatus, setLiveStatus] = useState<LiveStatus>({
@@ -768,6 +804,23 @@ function App() {
                 fetchSchedulerStatus();
                 break;
 
+              // Premium automation events
+              case 'premium_run_scheduled':
+              case 'premium_run_start':
+              case 'premium_step_result':
+              case 'premium_verification_progress':
+              case 'premium_run_complete':
+              case 'premium_run_failed':
+              case 'premium_run_cancelled':
+                if (update.type === 'premium_run_complete') {
+                  toast.success(`Premium run complete: ${update.data.run_id?.slice(0, 8)}`);
+                }
+                if (update.type === 'premium_run_failed') {
+                  toast.error(`Premium run failed: ${update.data.error || 'unknown error'}`);
+                }
+                fetchPremiumStatus();
+                break;
+
               // Bulk retry-all events (parallel background task)
               case 'bulk_retry_all_start':
                 setIsRetryingAll(true);
@@ -968,6 +1021,20 @@ function App() {
     }
   };
 
+  const fetchPremiumStatus = async () => {
+    try {
+      setPremiumLoading(true);
+      const res = await fetch(`${API_BASE}/premium/status`, { headers: getAuthHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      setPremiumStatus(data);
+    } catch {
+      // Silently fail
+    } finally {
+      setPremiumLoading(false);
+    }
+  };
+
   const handleSchedulerRunNow = async () => {
     setSchedulerRunning(true);
     try {
@@ -1163,6 +1230,7 @@ function App() {
     fetchAppealStatuses();
     fetchQueue();
     fetchDrafts();
+    fetchPremiumStatus();
   }, []);
 
   // Tier 2: Background loading - load after critical data, during idle time
@@ -2151,6 +2219,9 @@ function App() {
     if (activeTab === 'sessions') {
       fetchSessions();
     }
+    if (activeTab === 'premium') {
+      fetchPremiumStatus();
+    }
   }, [activeTab]);
 
   // ============================================================================
@@ -2545,6 +2616,9 @@ function App() {
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
             <TabsTrigger value="credentials">Credentials</TabsTrigger>
             <TabsTrigger value="proxies">Proxies</TabsTrigger>
+            <TabsTrigger value="premium" onClick={() => { fetchPremiumStatus(); }}>
+              Premium
+            </TabsTrigger>
             <TabsTrigger value="analytics" onClick={() => { fetchGeminiObservations(); fetchProfileAnalytics(); fetchSchedulerStatus(); }}>
               <BarChart3 className="w-4 h-4 mr-1" />
               Analytics
@@ -3837,6 +3911,111 @@ function App() {
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
+
+          <TabsContent value="premium" className="mt-6 space-y-6">
+            <Card>
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
+                <CardTitle className="text-lg flex items-center justify-between">
+                  <span>Premium Pipeline Status</span>
+                  <Button size="sm" variant="outline" onClick={fetchPremiumStatus} disabled={premiumLoading}>
+                    {premiumLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4" />
+                    )}
+                    Refresh
+                  </Button>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4">
+                {!premiumStatus ? (
+                  <div className="text-sm text-[#999999]">No premium status data yet.</div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
+                      <div>
+                        <div className="text-xs text-[#999999]">Scheduler</div>
+                        <div className="font-medium">{premiumStatus.scheduler?.is_running ? 'Running' : 'Stopped'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-[#999999]">Last Tick</div>
+                        <div className="font-medium">{premiumStatus.scheduler?.last_tick_at ? formatRelativeTime(premiumStatus.scheduler.last_tick_at) : 'Never'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-[#999999]">Scheduled</div>
+                        <div className="font-medium">{premiumStatus.counts?.scheduled ?? 0}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-[#999999]">In Progress</div>
+                        <div className="font-medium">{premiumStatus.counts?.in_progress ?? 0}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-[#999999]">Completed</div>
+                        <div className="font-medium text-green-600">{premiumStatus.counts?.completed ?? 0}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-[#999999]">Failed</div>
+                        <div className="font-medium text-red-500">{premiumStatus.counts?.failed ?? 0}</div>
+                      </div>
+                    </div>
+
+                    {premiumStatus.rules_snapshot && (
+                      <div className="text-xs text-[#666666]">
+                        Rules snapshot: {premiumStatus.rules_snapshot.version || 'N/A'}
+                        {premiumStatus.rules_snapshot.synced_at ? ` · synced ${formatRelativeTime(premiumStatus.rules_snapshot.synced_at)}` : ''}
+                      </div>
+                    )}
+
+                    {premiumStatus.scheduler?.last_error && (
+                      <div className="text-xs text-red-500">Last scheduler error: {premiumStatus.scheduler.last_error}</div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
+                <CardTitle className="text-lg">Recent Premium Runs</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                {!premiumStatus || (premiumStatus.recent_runs || []).length === 0 ? (
+                  <div className="p-6 text-sm text-[#999999]">No premium runs recorded yet.</div>
+                ) : (
+                  <div className="divide-y divide-[rgba(0,0,0,0.1)]">
+                    {(premiumStatus.recent_runs || []).slice(0, 15).map((run) => (
+                      <div key={run.id} className="p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium text-[#111111]">
+                              {run.run_spec?.profile_name || 'Unknown profile'}
+                            </div>
+                            <div className="text-xs text-[#999999]">
+                              Run {run.id.slice(0, 8)}
+                              {run.next_execute_at ? ` · next ${formatRelativeTime(run.next_execute_at)}` : ''}
+                            </div>
+                          </div>
+                          <Badge variant={run.status === 'completed' ? 'default' : run.status === 'failed' ? 'destructive' : 'secondary'}>
+                            {run.status}
+                          </Badge>
+                        </div>
+                        {run.error && (
+                          <div className="text-xs text-red-500 mt-2">{run.error}</div>
+                        )}
+                        {run.pass_matrix && (
+                          <div className="text-xs text-[#666666] mt-2 flex flex-wrap gap-3">
+                            {Object.entries(run.pass_matrix).map(([key, value]) => (
+                              <span key={key}>{key}: {value}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* Analytics Tab - Gemini Observations */}

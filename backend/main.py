@@ -59,6 +59,15 @@ from queue_manager import (
 from login_bot import create_session_from_credentials, refresh_session_profile_name, refresh_session_picture, fetch_profile_data_from_cookies
 from browser_manager import get_browser_manager, UPLOAD_DIR
 from name_dedupe_workflow import build_dedupe_plan, apply_dedupe_plan
+from premium_models import (
+    PremiumProfileConfig,
+    RulesSyncRequest,
+    PremiumRunCreateRequest,
+)
+from premium_rules import build_rules_snapshot, load_rule_texts_from_paths
+from premium_store import get_premium_store
+from premium_orchestrator import PremiumOrchestrator
+from premium_scheduler import PremiumScheduler
 
 # Setup Logging - JSON structured logs for production, readable logs for dev
 class JSONFormatter(logging.Formatter):
@@ -147,6 +156,17 @@ queue_manager = CampaignQueueManager()
 
 # Initialize shared draft manager
 draft_manager = DraftManager()
+
+# Initialize premium automation components
+premium_store = get_premium_store()
+premium_orchestrator = PremiumOrchestrator(
+    store=premium_store,
+    broadcast_update=broadcast_update,
+)
+premium_scheduler = PremiumScheduler(
+    store=premium_store,
+    orchestrator=premium_orchestrator,
+)
 
 # =========================================================================
 # Media Store (ephemeral file-backed storage for queue jobs)
@@ -4089,6 +4109,248 @@ async def retry_all_status(current_user: dict = Depends(get_current_user)) -> Di
     }
 
 
+# =========================================================================
+# Premium Automation API
+# =========================================================================
+
+def _has_premium_tag(session_payload: Dict) -> bool:
+    tags = [str(t).strip().lower() for t in (session_payload.get("tags") or []) if str(t).strip()]
+    return "premium" in tags
+
+
+def _find_session_by_profile_name(profile_name: str) -> Optional[Dict]:
+    target = str(profile_name or "").strip().lower()
+    for session in list_saved_sessions():
+        candidate = str(session.get("profile_name") or "").strip().lower()
+        if candidate == target:
+            return session
+    return None
+
+
+def _premium_default_rule_paths() -> Dict[str, str]:
+    return {
+        "negative_patterns_path": os.getenv(
+            "PREMIUM_NEGATIVE_PATTERNS_PATH",
+            "/Users/nikitalienov/Documents/writing/.claude/rules/negative-patterns.md",
+        ),
+        "vocabulary_guidance_path": os.getenv(
+            "PREMIUM_VOCAB_GUIDANCE_PATH",
+            "/Users/nikitalienov/Documents/writing/.claude/rules/vocabulary-guidance.md",
+        ),
+    }
+
+
+@app.get("/premium/profiles")
+async def list_premium_profiles(current_user: dict = Depends(get_current_user)) -> Dict:
+    sessions = list_saved_sessions()
+    configs_by_key = {
+        str(c.get("profile_name", "")).strip().lower(): c
+        for c in premium_store.list_profile_configs()
+    }
+
+    profiles = []
+    for session in sessions:
+        profile_name = session.get("profile_name")
+        if not profile_name:
+            continue
+        has_tag = _has_premium_tag(session)
+        key = str(profile_name).strip().lower()
+        config = configs_by_key.get(key)
+        if has_tag or config:
+            profiles.append(
+                {
+                    "profile_name": profile_name,
+                    "has_premium_tag": has_tag,
+                    "has_config": config is not None,
+                    "config_updated_at": config.get("updated_at") if config else None,
+                    "valid_session": bool(session.get("has_valid_cookies")),
+                    "tags": session.get("tags", []),
+                }
+            )
+
+    profiles.sort(key=lambda p: str(p.get("profile_name", "")).lower())
+    return {"profiles": profiles, "total": len(profiles)}
+
+
+@app.put("/premium/profiles/{profile_name}/config")
+async def upsert_premium_profile_config(
+    profile_name: str,
+    request: PremiumProfileConfig,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    session = _find_session_by_profile_name(profile_name)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {profile_name}")
+    if not _has_premium_tag(session):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Profile '{profile_name}' must have 'premium' tag before configuring premium automation",
+        )
+
+    payload = _model_to_dict(request)
+    snapshot = premium_store.get_rules_snapshot()
+    if snapshot and not payload.get("content_policy", {}).get("rules_snapshot_version"):
+        payload.setdefault("content_policy", {})
+        payload["content_policy"]["rules_snapshot_version"] = snapshot.get("version")
+
+    saved = premium_store.upsert_profile_config(profile_name, payload)
+    await broadcast_update(
+        "premium_profile_config_updated",
+        {"profile_name": profile_name, "updated_by": current_user.get("username")},
+    )
+    return {"success": True, "config": saved}
+
+
+@app.post("/premium/rules/sync")
+async def sync_premium_rules(
+    request: RulesSyncRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    req = _model_to_dict(request)
+    negative_text = (req.get("negative_patterns_text") or "").strip()
+    vocab_text = (req.get("vocabulary_guidance_text") or "").strip()
+    source_paths = req.get("source_paths") or {}
+
+    # If texts are missing, try explicit source paths.
+    if (not negative_text or not vocab_text) and source_paths:
+        try:
+            negative_text, vocab_text = load_rule_texts_from_paths(source_paths)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed reading source_paths: {exc}")
+
+    # Fallback to configured default local paths for convenience.
+    if not negative_text or not vocab_text:
+        default_paths = _premium_default_rule_paths()
+        try:
+            negative_text, vocab_text = load_rule_texts_from_paths(default_paths)
+            source_paths = default_paths
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Rules text missing and default local rule paths unavailable. "
+                    f"Provide text or valid source_paths. error={exc}"
+                ),
+            )
+
+    snapshot = build_rules_snapshot(
+        negative_patterns_text=negative_text,
+        vocabulary_guidance_text=vocab_text,
+        source_paths=source_paths,
+        source_sha=req.get("source_sha"),
+    )
+    premium_store.set_rules_snapshot(snapshot)
+
+    await broadcast_update(
+        "premium_rules_synced",
+        {
+            "version": snapshot.get("version"),
+            "synced_by": current_user.get("username"),
+            "negative_patterns_count": len(snapshot.get("negative_patterns", [])),
+            "vocabulary_count": len(snapshot.get("vocabulary_guidance", [])),
+        },
+    )
+    return {
+        "success": True,
+        "snapshot": {
+            "version": snapshot.get("version"),
+            "source_sha": snapshot.get("source_sha"),
+            "source_paths": snapshot.get("source_paths", {}),
+            "synced_at": snapshot.get("synced_at"),
+            "negative_patterns_count": len(snapshot.get("negative_patterns", [])),
+            "vocabulary_count": len(snapshot.get("vocabulary_guidance", [])),
+        },
+    }
+
+
+@app.post("/premium/runs")
+async def create_premium_run(
+    request: PremiumRunCreateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    req = _model_to_dict(request)
+    run_spec = req.get("run_spec") or {}
+    profile_name = str(run_spec.get("profile_name") or "").strip()
+    if not profile_name:
+        raise HTTPException(status_code=400, detail="run_spec.profile_name is required")
+
+    session = _find_session_by_profile_name(profile_name)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {profile_name}")
+    if not _has_premium_tag(session):
+        raise HTTPException(status_code=400, detail=f"Profile '{profile_name}' is not premium-tagged")
+
+    config = premium_store.get_profile_config(profile_name)
+    if not config:
+        raise HTTPException(status_code=400, detail=f"Premium config missing for profile '{profile_name}'")
+
+    run = premium_store.create_run(run_spec=run_spec, created_by=current_user.get("username", "unknown"))
+    premium_store.append_event(run["id"], "run_created", {"created_by": current_user.get("username")})
+
+    await broadcast_update(
+        "premium_run_scheduled",
+        {
+            "run_id": run.get("id"),
+            "profile_name": profile_name,
+            "next_execute_at": run.get("next_execute_at"),
+        },
+    )
+    return run
+
+
+@app.post("/premium/scheduler/tick")
+async def premium_scheduler_tick(current_user: dict = Depends(get_current_user)) -> Dict:
+    return await premium_scheduler.tick(source="api")
+
+
+@app.get("/premium/status")
+async def premium_status(current_user: dict = Depends(get_current_user)) -> Dict:
+    status_payload = premium_scheduler.get_status()
+    snapshot = premium_store.get_rules_snapshot()
+    if snapshot:
+        status_payload["rules_snapshot"] = {
+            "version": snapshot.get("version"),
+            "source_sha": snapshot.get("source_sha"),
+            "synced_at": snapshot.get("synced_at"),
+            "negative_patterns_count": len(snapshot.get("negative_patterns", [])),
+            "vocabulary_count": len(snapshot.get("vocabulary_guidance", [])),
+        }
+    else:
+        status_payload["rules_snapshot"] = None
+    return status_payload
+
+
+@app.get("/premium/runs")
+async def list_premium_runs(
+    limit: int = Query(default=50, ge=1, le=200),
+    status_filter: Optional[str] = Query(default=None),
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    runs = premium_store.list_runs(limit=limit, status=status_filter)
+    return {"runs": runs, "total": len(runs)}
+
+
+@app.get("/premium/runs/{run_id}")
+async def get_premium_run(run_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    run = premium_store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Premium run not found")
+    return run
+
+
+@app.post("/premium/runs/{run_id}/cancel")
+async def cancel_premium_run(run_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    run = premium_store.cancel_run(run_id, actor=current_user.get("username", "unknown"))
+    if not run:
+        raise HTTPException(status_code=404, detail="Premium run not found")
+
+    await broadcast_update(
+        "premium_run_cancelled",
+        {"run_id": run_id, "cancelled_by": current_user.get("username")},
+    )
+    return {"success": True, "run": run}
+
+
 @app.get("/config")
 async def get_config(current_user: dict = Depends(get_current_user)) -> Dict:
     """Get current configuration."""
@@ -5896,6 +6158,9 @@ async def startup_event():
     scheduler = get_appeal_scheduler()
     await scheduler.start()
     logger.info("Appeal scheduler started on startup")
+    # Start premium automation scheduler
+    await premium_scheduler.start()
+    logger.info("Premium scheduler started on startup")
 
 
 @app.on_event("shutdown")
@@ -5907,6 +6172,8 @@ async def shutdown_event():
     scheduler = get_appeal_scheduler()
     await scheduler.stop()
     logger.info("Appeal scheduler stopped on shutdown")
+    await premium_scheduler.stop()
+    logger.info("Premium scheduler stopped on shutdown")
 
 
 # =========================================================================
