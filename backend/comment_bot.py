@@ -566,7 +566,6 @@ async def dump_interactive_elements(page: Page, context: str = "") -> List[dict]
                         bounds: {x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height)}
                     });
                 }
-                }
             };
 
             // Core interactive candidates.
