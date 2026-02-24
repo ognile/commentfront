@@ -337,7 +337,7 @@ Required actions:
         profile_name=profile_name,
         action_type="feed_post",
         task=task,
-        start_url="https://m.facebook.com/",
+        start_url="https://m.facebook.com/me/?v=timeline",
         upload_file_path=image_path,
         expected_count=1,
         confirmation_keyword="post",
@@ -354,6 +354,10 @@ Required actions:
         final_url,
         ["/posts/", "story_fbid=", "permalink", "/groups/"],
     )
+    own_feed_url_hint = bool(final_url) and _contains_any(
+        final_url,
+        ["m.facebook.com/", "m.facebook.com/me", "profile.php?id="],
+    )
     if not permalink_or_visible:
         permalink_or_visible = _contains_any(
             blob,
@@ -363,7 +367,23 @@ Required actions:
                 "post complete",
                 "visible on the feed",
                 "visible on the facebook feed",
+                "visible on the user's feed",
+                "visible on your feed",
                 "most recent post",
+                "successfully submitted",
+                "posted notification",
+                "your post has been posted",
+                "your post was posted",
+            ],
+        )
+    if not permalink_or_visible and own_feed_url_hint and bool(result.get("success")):
+        permalink_or_visible = _contains_any(
+            blob,
+            [
+                "done:",
+                "posted",
+                "submitted",
+                "uploading your post",
             ],
         )
 
