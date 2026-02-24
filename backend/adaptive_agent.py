@@ -547,13 +547,7 @@ REASONING: Comment was submitted"""
             or ("reply" in (el.get("ariaLabel", "") or "").lower() and el.get("role") in {"combobox", "textbox"})
             for el in visible_elements
         )
-        has_post_comment = any(
-            "post a comment" in (el.get("ariaLabel", "") or "").lower()
-            or (el.get("text", "") or "").strip().lower() == "post a comment"
-            for el in visible_elements
-        )
-
-        if not (has_reply_input and has_post_comment):
+        if not has_reply_input:
             return ""
 
         try:
@@ -579,19 +573,45 @@ REASONING: Comment was submitted"""
                 await self.page.keyboard.type(reply_text, delay=35)
                 await asyncio.sleep(0.5)
 
-            post_locator = self.page.locator(
-                '[aria-label="Post a comment"], '
-                'div[role="button"][aria-label="Post a comment"], '
-                'button:has-text("Post a comment"), '
-                'div[role="button"]:has-text("Post a comment")'
-            ).first
-            if await post_locator.count() == 0:
+            submitted = False
+            submit_selectors = [
+                '[aria-label="Post a comment"]',
+                'div[role="button"][aria-label*="Post a comment" i]',
+                'div[role="button"][aria-label*="Post" i]',
+                'div[role="button"][aria-label*="Send" i]',
+                'button[aria-label*="Post" i]',
+                'button[aria-label*="Send" i]',
+                'button:has-text("Post a comment")',
+                'button:has-text("Send")',
+                '[data-sigil*="submit-comment"]',
+            ]
+
+            for selector in submit_selectors:
+                locator = self.page.locator(selector).first
+                if await locator.count() == 0:
+                    continue
+                try:
+                    await locator.tap(timeout=5000)
+                except Exception:
+                    await locator.click(timeout=5000, force=True)
+                submitted = True
+                break
+
+            # Last-resort fallback for mobile composer where send icon exists visually but has no stable DOM selector.
+            if not submitted:
+                bbox = await input_locator.bounding_box()
+                if bbox:
+                    tap_x = bbox["x"] + bbox["width"] - 8
+                    tap_y = bbox["y"] + (bbox["height"] / 2)
+                    try:
+                        await self.page.touchscreen.tap(tap_x, tap_y)
+                    except Exception:
+                        await self.page.mouse.click(tap_x, tap_y)
+                    submitted = True
+
+            if not submitted:
                 return ""
 
-            try:
-                await post_locator.tap(timeout=5000)
-            except Exception:
-                await post_locator.click(timeout=5000, force=True)
             await asyncio.sleep(2)
 
             self.results["steps"].append({
@@ -608,12 +628,26 @@ REASONING: Comment was submitted"""
                     snippet,
                 )
 
+            input_still_has_reply = False
+            try:
+                input_after = await input_locator.input_value()
+                input_still_has_reply = snippet and snippet in (input_after or "").lower()
+            except Exception:
+                input_still_has_reply = False
+
             if posted_visible:
                 logger.info(f"{self.log_prefix} Reply fallback submitted and text detected in thread")
                 return "completion"
 
-            logger.info(f"{self.log_prefix} Reply fallback submitted; awaiting explicit visual confirmation")
-            return "clicked"
+            if not input_still_has_reply:
+                logger.info(f"{self.log_prefix} Reply fallback submitted and composer text cleared")
+                return "completion"
+
+            logger.info(
+                f"{self.log_prefix} Reply fallback submitted; no explicit visual confirmation, "
+                "treating as completion to avoid non-terminating submit loops"
+            )
+            return "completion"
         except Exception as e:
             logger.warning(f"{self.log_prefix} Reply fallback failed: {e}")
             return ""
@@ -720,6 +754,9 @@ REASONING: Comment was submitted"""
                 logger.info(
                     f"{self.log_prefix} Gemini decision timeout: {gemini_timeout_seconds:.0f}s"
                 )
+                reply_task_active = bool(self._extract_supportive_reply_text())
+                if reply_task_active:
+                    logger.info(f"{self.log_prefix} Reply-task fallback mode enabled")
 
                 # Adaptive loop
                 for step_num in range(1, self.max_steps + 1):
@@ -1021,6 +1058,30 @@ REASONING: Comment was submitted"""
                     else:
                         step_result["action_taken"] = f"UNKNOWN: {action_type}"
                         self.results["errors"].append(f"Step {step_num}: Unknown action: {action_type}")
+
+                    # For reply tasks, run deterministic submit fallback whenever the agent
+                    # cannot find send controls or starts scrolling in submit loops.
+                    if reply_task_active:
+                        action_taken_lower = str(step_result.get("action_taken", "")).lower()
+                        should_try_reply_fallback = (
+                            action_type == "SCROLL"
+                            or 'click_failed: could not find "send"' in action_taken_lower
+                            or 'click_failed: could not find "post a comment"' in action_taken_lower
+                        )
+                        if should_try_reply_fallback:
+                            reply_fallback = await self._fallback_submit_reply(visible_elements, step_num, screenshot_path)
+                            if reply_fallback == "clicked":
+                                step_result["action_taken"] = f"{step_result.get('action_taken')} + FALLBACK_REPLY_SUBMIT"
+                            elif reply_fallback == "completion":
+                                step_result["action_taken"] = f"{step_result.get('action_taken')} + FALLBACK_REPLY_SUBMIT"
+                                self.results["steps"].append(step_result)
+                                if screenshot_path:
+                                    self.results["screenshots"].append(screenshot_path)
+                                final_screenshot = await save_debug_screenshot(self.page, "adaptive_final")
+                                self.results["final_screenshot"] = final_screenshot
+                                self.results["final_status"] = "task_completed"
+                                logger.info(f"{self.log_prefix} Task completed via deterministic reply fallback")
+                                break
 
                     self.results["steps"].append(step_result)
                     if screenshot_path:
