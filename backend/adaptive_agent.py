@@ -439,6 +439,11 @@ REASONING: Comment was submitted"""
                 if button_name == 'see why':
                     if aria == 'see why' or text.strip() == 'see why':
                         is_match = True
+                elif button_name == 'ok':
+                    # Only accept explicit OK/Okay controls; avoid accidental substring
+                    # matches inside long comment text (e.g. "look", "took", "book").
+                    if aria.strip() in {'ok', 'okay'} or text.strip() in {'ok', 'okay'}:
+                        is_match = True
                 elif button_name in aria or button_name in text:
                     is_match = True
 
@@ -448,9 +453,12 @@ REASONING: Comment was submitted"""
                         logger.info(f"{self.log_prefix} Found button '{button_name}' with aria='{original_aria}'")
                         try:
                             if original_aria:
-                                locator = self.page.locator(f'[aria-label="{original_aria}"]').first
+                                locator = self.page.get_by_label(original_aria, exact=True).first
                             else:
-                                locator = self.page.locator(f'text="{el.get("text", "")}"').first
+                                source_text = (el.get("text", "") or "").strip()
+                                if not source_text:
+                                    continue
+                                locator = self.page.get_by_text(source_text, exact=True).first
 
                             if await locator.count() > 0:
                                 await locator.scroll_into_view_if_needed()
@@ -501,6 +509,114 @@ REASONING: Comment was submitted"""
                             return "completion" if button_name in completion_buttons else "clicked"
 
         return ""
+
+    def _extract_supportive_reply_text(self) -> Optional[str]:
+        """Extract requested supportive reply text from task instructions when present."""
+        match = re.search(
+            r"Use this supportive tone and wording:\s*(.+?)\n(?:Finish|$)",
+            self.task,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        candidate = (match.group(1) or "").strip()
+        if not candidate:
+            return None
+        first_line = candidate.splitlines()[0].strip()
+        return first_line or None
+
+    async def _fallback_submit_reply(
+        self,
+        visible_elements: List[dict],
+        step_num: int,
+        screenshot_path: str,
+    ) -> str:
+        """
+        Deterministic fallback for reply tasks when Gemini returns empty output.
+        Returns:
+            - "completion" if reply appears submitted
+            - "clicked" if reply input/submit was attempted
+            - "" if not applicable
+        """
+        reply_text = self._extract_supportive_reply_text()
+        if not reply_text:
+            return ""
+
+        has_reply_input = any(
+            (el.get("tag") in {"TEXTAREA", "INPUT"})
+            or ("reply" in (el.get("ariaLabel", "") or "").lower() and el.get("role") in {"combobox", "textbox"})
+            for el in visible_elements
+        )
+        has_post_comment = any(
+            "post a comment" in (el.get("ariaLabel", "") or "").lower()
+            or (el.get("text", "") or "").strip().lower() == "post a comment"
+            for el in visible_elements
+        )
+
+        if not (has_reply_input and has_post_comment):
+            return ""
+
+        try:
+            input_locator = self.page.locator(
+                'textarea[role="combobox"], textarea, [contenteditable="true"][role="textbox"], [aria-label*="reply" i]'
+            ).first
+            if await input_locator.count() == 0:
+                return ""
+
+            await input_locator.click()
+            await asyncio.sleep(0.2)
+
+            existing_text = ""
+            try:
+                existing_text = await input_locator.input_value()
+            except Exception:
+                try:
+                    existing_text = await input_locator.evaluate("el => (el.innerText || el.textContent || '')")
+                except Exception:
+                    existing_text = ""
+
+            if reply_text.lower() not in (existing_text or "").lower():
+                await self.page.keyboard.type(reply_text, delay=35)
+                await asyncio.sleep(0.5)
+
+            post_locator = self.page.locator(
+                '[aria-label="Post a comment"], '
+                'div[role="button"][aria-label="Post a comment"], '
+                'button:has-text("Post a comment"), '
+                'div[role="button"]:has-text("Post a comment")'
+            ).first
+            if await post_locator.count() == 0:
+                return ""
+
+            try:
+                await post_locator.tap(timeout=5000)
+            except Exception:
+                await post_locator.click(timeout=5000, force=True)
+            await asyncio.sleep(2)
+
+            self.results["steps"].append({
+                "step": step_num,
+                "action_taken": "FALLBACK_REPLY_SUBMIT",
+                "screenshot": screenshot_path,
+            })
+
+            snippet = reply_text[:32].strip().lower()
+            posted_visible = False
+            if snippet:
+                posted_visible = await self.page.evaluate(
+                    "(needle) => (document.body?.innerText || '').toLowerCase().includes(needle)",
+                    snippet,
+                )
+
+            if posted_visible:
+                logger.info(f"{self.log_prefix} Reply fallback submitted and text detected in thread")
+                return "completion"
+
+            logger.info(f"{self.log_prefix} Reply fallback submitted; awaiting explicit visual confirmation")
+            return "clicked"
+        except Exception as e:
+            logger.warning(f"{self.log_prefix} Reply fallback failed: {e}")
+            return ""
 
     async def run(self) -> Dict[str, Any]:
         """Run the adaptive agent task. Returns results dict."""
@@ -674,6 +790,16 @@ REASONING: Comment was submitted"""
 
                         if not result_text:
                             # Fallback: try known buttons
+                            reply_fallback = await self._fallback_submit_reply(visible_elements, step_num, screenshot_path)
+                            if reply_fallback == "completion":
+                                logger.info(f"{self.log_prefix} Task completed via reply fallback")
+                                final_screenshot = await save_debug_screenshot(self.page, "adaptive_final")
+                                self.results["final_screenshot"] = final_screenshot
+                                self.results["final_status"] = "task_completed"
+                                break
+                            if reply_fallback == "clicked":
+                                continue
+
                             logger.info(f"{self.log_prefix} Gemini empty - trying DOM fallback")
                             fallback_result = await self._fallback_click_known_buttons(visible_elements, step_num, screenshot_path)
 
