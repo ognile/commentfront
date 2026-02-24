@@ -322,12 +322,17 @@ Post to your own Facebook feed as this profile.
 Required actions:
 1. If you see a banner saying "The link you followed may be broken", close it using the X button.
 2. Open the create post flow by tapping "What's on your mind?".
-2. Write this exact text as the main post body:
+3. Write this exact text as the main post body:
 {caption}
-3. Prefer text-only submission. Do not upload an image if upload causes modal loops or prevents posting.
-4. Submit/publish the feed post.
-5. Do NOT click "ok" unless a visible button with text exactly "OK" exists.
-6. Finish with DONE only after submission is completed and the post is visible on feed or permalink opens.
+4. Prefer text-only submission. Do not upload an image if upload causes modal loops or prevents posting.
+5. Submit/publish the feed post with EXACTLY ONE click on "POST".
+6. After the first "POST" click:
+   - NEVER click "POST" again in this task.
+   - NEVER reopen the composer in this task.
+   - wait for confirmation ("Posted", "Just now", "Uploading your post...", or visible feed post) then finish.
+7. If no confirmation appears after waiting, end with FAILED instead of a second submit.
+8. Do NOT click "ok" unless a visible button with text exactly "OK" exists.
+9. Finish with DONE only after submission is completed and the post is visible on feed or permalink opens.
 """.strip()
 
     result = await _execute_task(
