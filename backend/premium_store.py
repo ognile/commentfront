@@ -222,6 +222,9 @@ class PremiumStore:
         pending.sort(key=lambda c: c.get("scheduled_at") or "")
         return pending[0]
 
+    def _has_running_cycle(self, run: Dict) -> bool:
+        return any(str(c.get("status")) == "running" for c in run.get("cycles", []))
+
     def create_run(self, *, run_spec: Dict, created_by: str) -> Dict:
         with self._lock:
             run_id = str(uuid.uuid4())
@@ -381,10 +384,17 @@ class PremiumStore:
                 return None
             if run.get("status") in ("completed", "failed", "cancelled"):
                 return run
+            cancelled_at = _utc_iso()
+            for cycle in run.get("cycles", []):
+                if str(cycle.get("status")) == "running":
+                    cycle["status"] = "cancelled"
+                    cycle["completed_at"] = cancelled_at
+                    cycle["error"] = f"cancelled by {actor}"
             run["status"] = "cancelled"
             run["error"] = f"cancelled by {actor}"
-            run["updated_at"] = _utc_iso()
-            run["completed_at"] = _utc_iso()
+            run["updated_at"] = cancelled_at
+            run["completed_at"] = cancelled_at
+            run["next_execute_at"] = None
             self.save()
             return run
 
@@ -398,6 +408,8 @@ class PremiumStore:
                 if not run:
                     continue
                 if run.get("status") not in ("scheduled", "in_progress"):
+                    continue
+                if self._has_running_cycle(run):
                     continue
                 next_cycle = self._next_pending_cycle(run)
                 if not next_cycle:

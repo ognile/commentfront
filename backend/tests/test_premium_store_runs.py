@@ -68,3 +68,33 @@ def test_due_cycles_only_returns_schedulable_runs(tmp_path):
     assert due
     assert due[0][0] == run["id"]
     assert due[0][1] == 0
+
+
+def test_due_cycles_skips_runs_with_active_running_cycle(tmp_path):
+    store = PremiumStore(file_path=str(tmp_path / "premium_state.json"))
+    run = store.create_run(run_spec=_run_spec(), created_by="tester")
+
+    # Force first cycle as active and second cycle as due.
+    store.state["runs"][run["id"]]["status"] = "in_progress"
+    store.state["runs"][run["id"]]["cycles"][0]["status"] = "running"
+    store.state["runs"][run["id"]]["cycles"][1]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    store.save()
+
+    due = store.get_due_cycles()
+    assert due == []
+
+
+def test_cancel_run_marks_running_cycles_cancelled(tmp_path):
+    store = PremiumStore(file_path=str(tmp_path / "premium_state.json"))
+    run = store.create_run(run_spec=_run_spec(), created_by="tester")
+
+    store.state["runs"][run["id"]]["status"] = "in_progress"
+    store.state["runs"][run["id"]]["cycles"][0]["status"] = "running"
+    store.save()
+
+    cancelled = store.cancel_run(run["id"], actor="tester")
+    assert cancelled is not None
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["next_execute_at"] is None
+    assert cancelled["cycles"][0]["status"] == "cancelled"
+    assert cancelled["cycles"][0]["completed_at"] is not None
