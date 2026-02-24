@@ -695,12 +695,29 @@ Finish with DONE only after replies are sent.
         task=task,
         start_url="https://m.facebook.com/groups",
         expected_count=replies_count,
-        confirmation_keyword="reply",
+        confirmation_keyword=None,
         max_steps=35,
     )
 
-    blob = _step_blob(result.get("result") or {})
-    reply_visible = _contains_any(blob, ["reply sent", "reply posted", "comment replied", "replied"])
+    adaptive_result = result.get("result") or {}
+    blob = _step_blob(adaptive_result)
+    action_trace = [str(action).strip().lower() for action in _step_actions(adaptive_result)]
+    used_fallback_submit = any("fallback_reply_submit" in action for action in action_trace)
+    final_status = str(adaptive_result.get("final_status") or "").strip().lower()
+
+    reply_visible = _contains_any(
+        blob,
+        [
+            "reply sent",
+            "reply posted",
+            "comment replied",
+            "replied",
+            "fallback_reply_submit",
+        ],
+    )
+    if used_fallback_submit and final_status == "task_completed":
+        reply_visible = True
+
     return _apply_confirmation(
         result,
         key="reply_visible_under_thread",

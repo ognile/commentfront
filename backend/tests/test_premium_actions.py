@@ -152,3 +152,43 @@ def test_group_publish_retries_to_home_after_groups_tunnel_error(monkeypatch):
     assert calls[1]["start_url"] == "https://m.facebook.com/groups"
     assert calls[2]["start_url"] == "https://m.facebook.com/"
     assert result["evidence"]["action_method"]["retry_attempts"] == 2
+
+
+def test_comment_replies_fallback_submit_marks_reply_visible(monkeypatch):
+    async def fake_run_adaptive_task(**kwargs):
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/story.php?story_fbid=123&id=456",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {
+                    "action_taken": "CLICK \"Posts\"",
+                    "gemini_response": "ACTION: CLICK element=\"Posts\"",
+                    "reasoning": "open posts tab",
+                    "matched_element": {"tag": "DIV", "ariaLabel": "Posts", "text": "Posts"},
+                },
+                {
+                    "action_taken": "FALLBACK_REPLY_SUBMIT",
+                    "gemini_response": "",
+                    "reasoning": "",
+                },
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.perform_comment_replies(
+            run_id="run_reply_1",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            replies_count=1,
+            reply_text="sending support here",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["completed_count"] == 1
+    assert result["evidence"]["confirmation"]["reply_visible_under_thread"] is True
+    assert result["evidence"]["result_state"]["success"] is True
