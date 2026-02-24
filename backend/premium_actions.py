@@ -280,7 +280,10 @@ Required actions:
         ["/posts/", "story_fbid=", "permalink", "/groups/"],
     )
     if not permalink_or_visible:
-        permalink_or_visible = _contains_any(blob, ["published", "post submitted", "post complete"])
+        permalink_or_visible = _contains_any(
+            blob,
+            ["published", "post submitted", "post complete", "visible on the feed", "most recent post"],
+        )
 
     result.setdefault("evidence", {}).setdefault("confirmation", {})
     result["evidence"]["confirmation"]["post_visible_or_permalink_resolved"] = permalink_or_visible
