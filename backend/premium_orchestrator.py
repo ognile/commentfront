@@ -262,7 +262,7 @@ class PremiumOrchestrator:
             cycle_index=cycle_index,
             profile_name=profile_name,
             caption=caption,
-            image_path=image_path,
+            image_path=None,
         )
         feed_record = await self._record_action(
             run_id=run_id,

@@ -252,7 +252,7 @@ Required actions:
 2. Open the create post flow by tapping "What's on your mind?".
 2. Write this exact text as the main post body:
 {caption}
-3. Attach image if upload is available.
+3. Prefer text-only submission. Do not upload an image if upload causes modal loops or prevents posting.
 4. Submit/publish the feed post.
 5. Do NOT click "ok" unless a visible button with text exactly "OK" exists.
 6. Finish with DONE only after submission is completed and the post is visible on feed or permalink opens.
