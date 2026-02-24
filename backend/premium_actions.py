@@ -73,6 +73,10 @@ def _apply_confirmation(result: Dict, *, key: str, value: bool, error_message: s
     result.setdefault("evidence", {}).setdefault("confirmation", {})
     result["evidence"]["confirmation"][key] = bool(value)
     result["success"] = bool(result.get("success")) and bool(value)
+    if isinstance(result.get("evidence"), dict) and isinstance(result["evidence"].get("result_state"), dict):
+        result["evidence"]["result_state"]["success"] = bool(result["success"])
+        if result["success"] and int(result.get("completed_count", 0)) > 0:
+            result["evidence"]["result_state"]["completed_count"] = int(result.get("completed_count", 0))
     if not result["success"]:
         result["error"] = result.get("error") or error_message
     return result
@@ -138,6 +142,7 @@ async def _execute_task(
     upload_file_path: Optional[str] = None,
     expected_count: int = 1,
     confirmation_keyword: Optional[str] = None,
+    max_steps: int = 20,
 ) -> Dict:
     if expected_count <= 0:
         return {
@@ -191,7 +196,7 @@ async def _execute_task(
     adaptive_result = await run_adaptive_task(
         profile_name=profile_name,
         task=task,
-        max_steps=20,
+        max_steps=max_steps,
         start_url=start_url,
         upload_file_path=upload_file_path,
     )
@@ -262,6 +267,7 @@ Required actions:
         upload_file_path=image_path,
         expected_count=1,
         confirmation_keyword="post",
+        max_steps=30,
     )
 
     adaptive_result = result.get("result") or {}
@@ -328,18 +334,26 @@ Rules:
         upload_file_path=image_path,
         expected_count=1,
         confirmation_keyword="group",
+        max_steps=45,
     )
 
     adaptive_result = result.get("result") or {}
     blob = _step_blob(adaptive_result)
     final_url = str(adaptive_result.get("final_url") or "")
-    group_post_confirmed = bool(final_url) and "/groups/" in final_url
-    if not group_post_confirmed:
-        group_post_confirmed = _contains_any(blob, ["group post", "posted in group", "published"])
+    final_status = str(adaptive_result.get("final_status") or "")
+    has_group_permalink = _contains_any(final_url, ["/posts/", "permalink", "story_fbid="])
+    group_post_confirmed = has_group_permalink
+    if not group_post_confirmed and final_status == "task_completed":
+        group_post_confirmed = _contains_any(blob, ["posted in group", "published", "group post submitted"])
 
     result.setdefault("evidence", {}).setdefault("confirmation", {})
     result["evidence"]["confirmation"]["post_visible_or_permalink_resolved"] = group_post_confirmed
     result["success"] = bool(result.get("success")) and bool(group_post_confirmed)
+    if isinstance(result.get("evidence"), dict) and isinstance(result["evidence"].get("result_state"), dict):
+        result["evidence"]["result_state"]["success"] = bool(result["success"])
+        if result["success"]:
+            result["completed_count"] = 1
+            result["evidence"]["result_state"]["completed_count"] = 1
     if not result["success"]:
         result["error"] = result.get("error") or "group post confirmation missing"
     return result
@@ -367,6 +381,7 @@ Then finish with DONE.
         start_url="https://m.facebook.com/groups",
         expected_count=likes_count,
         confirmation_keyword="like",
+        max_steps=30,
     )
 
     blob = _step_blob(result.get("result") or {})
@@ -408,6 +423,7 @@ End with DONE only after all required shares are completed.
         start_url="https://m.facebook.com/groups",
         expected_count=shares_count,
         confirmation_keyword="share",
+        max_steps=35,
     )
 
     adaptive_result = result.get("result") or {}
@@ -428,6 +444,10 @@ End with DONE only after all required shares are completed.
         and share_target == "own_feed"
         and bool(own_feed_confirmed)
     )
+    if isinstance(result.get("evidence"), dict) and isinstance(result["evidence"].get("result_state"), dict):
+        result["evidence"]["result_state"]["success"] = bool(result["success"])
+        if result["success"]:
+            result["evidence"]["result_state"]["completed_count"] = int(result.get("completed_count", 0))
     if not result["success"]:
         result["error"] = result.get("error") or "share confirmation missing or destination not own_feed"
 
@@ -459,6 +479,7 @@ Finish with DONE only after replies are sent.
         start_url="https://m.facebook.com/groups",
         expected_count=replies_count,
         confirmation_keyword="reply",
+        max_steps=35,
     )
 
     blob = _step_blob(result.get("result") or {})
