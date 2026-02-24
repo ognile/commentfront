@@ -433,6 +433,7 @@ Rules:
 {group_post_text}
 - Prefer text-only submission. Do not upload an image if upload causes back-navigation or modal loops.
 - Finish with DONE only after the group post is submitted.
+- If Facebook shows the post is pending admin approval, treat that as submitted and finish with DONE.
 """.strip()
 
         result = await _execute_task(
@@ -471,7 +472,8 @@ Rules:
 - Use this exact text for the group post:
 {group_post_text}
 - Prefer text-only submission. Do not upload an image if upload causes modal loops or back-navigation loops.
-- Finish with DONE only after the group post is submitted and visible in that group feed.
+- Finish with DONE only after the group post is submitted and visible in that group feed,
+  or Facebook confirms the post is pending admin approval.
 - Do NOT click "ok" unless a visible button with text exactly "OK" exists.
 """.strip()
 
@@ -560,6 +562,9 @@ Rules:
                 "post published",
                 "visible in the group",
                 "visible in group feed",
+                "pending admin approval",
+                "post is pending",
+                "pending review by admins",
             ],
         )
 

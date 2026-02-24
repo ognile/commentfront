@@ -194,3 +194,39 @@ def test_comment_replies_fallback_submit_marks_reply_visible(monkeypatch):
     assert result["completed_count"] == 1
     assert result["evidence"]["confirmation"]["reply_visible_under_thread"] is True
     assert result["evidence"]["result_state"]["success"] is True
+
+
+def test_group_publish_accepts_pending_admin_approval_signal(monkeypatch):
+    async def fake_run_adaptive_task(**kwargs):
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/groups/123456789/",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {
+                    "action_taken": "group post submitted",
+                    "gemini_response": "DONE: post is pending admin approval",
+                    "reasoning": "facebook confirmed pending admin approval",
+                    "matched_element": {"tag": "DIV", "ariaLabel": "Post", "text": "Post"},
+                }
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.discover_group_and_publish(
+            run_id="run_group_pending",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            topic_seed="menopause groups",
+            allow_join_new=True,
+            join_pending_policy="try_next_group",
+            group_post_text="supportive post",
+            image_path=None,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["evidence"]["confirmation"]["post_visible_or_permalink_resolved"] is True
