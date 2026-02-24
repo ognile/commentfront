@@ -313,18 +313,56 @@ async def discover_group_and_publish(
         "fail_run": "If join approval is pending, end with FAILED.",
     }.get(join_pending_policy, "If join approval is pending, skip to the next actionable group.")
 
-    task = f"""
-Find an actionable Facebook group related to "{topic_seed}" and publish one post in that group.
+    discovery_task = f"""
+Find an actionable Facebook group related to "{topic_seed}" and open that group's main feed.
 
 Rules:
 - If you see a banner saying "The link you followed may be broken", close it using the X button.
 - {join_instruction}
 - {pending_instruction}
+- End with DONE only when you are inside a group feed where posting is possible.
+- Do NOT click "ok" unless a visible button with text exactly "OK" exists.
+""".strip()
+
+    discovery_result = await _execute_task(
+        run_id=run_id,
+        cycle_index=cycle_index,
+        step_id=f"cycle_{cycle_index}_group_discovery",
+        profile_name=profile_name,
+        action_type="group_discovery",
+        task=discovery_task,
+        start_url="https://m.facebook.com/groups",
+        upload_file_path=None,
+        expected_count=1,
+        confirmation_keyword="group",
+        max_steps=35,
+    )
+
+    # Normalize failed discovery into a group_post action result so downstream verification remains consistent.
+    if not discovery_result.get("success"):
+        evidence = discovery_result.setdefault("evidence", {})
+        evidence["action_type"] = "group_post"
+        evidence.setdefault("confirmation", {})
+        evidence["confirmation"]["post_visible_or_permalink_resolved"] = False
+        if isinstance(evidence.get("result_state"), dict):
+            evidence["result_state"]["success"] = False
+            evidence["result_state"]["completed_count"] = 0
+        discovery_result["completed_count"] = 0
+        discovery_result["expected_count"] = 1
+        discovery_result["error"] = discovery_result.get("error") or "group discovery failed before publish"
+        return discovery_result
+
+    group_url = str((discovery_result.get("result") or {}).get("final_url") or "https://m.facebook.com/groups")
+
+    publish_task = f"""
+From the currently opened group page, create and submit one group post.
+
+Rules:
+- If you see a banner saying "The link you followed may be broken", close it using the X button.
 - Use this exact text for the group post:
 {group_post_text}
-- Image is optional. If image upload interrupts flow, skip image and submit text-only post.
-- Do NOT click "ok" unless a visible button with text exactly "OK" exists.
-- End with DONE only after one group post is submitted.
+- Prefer text-only submission. Do not upload an image if upload causes back-navigation or modal loops.
+- Finish with DONE only after the group post is submitted.
 """.strip()
 
     result = await _execute_task(
@@ -333,22 +371,28 @@ Rules:
         step_id=f"cycle_{cycle_index}_group_post",
         profile_name=profile_name,
         action_type="group_post",
-        task=task,
-        start_url="https://m.facebook.com/groups",
-        upload_file_path=image_path,
+        task=publish_task,
+        start_url=group_url,
+        upload_file_path=None,
         expected_count=1,
-        confirmation_keyword="group",
-        max_steps=45,
+        confirmation_keyword="post",
+        max_steps=35,
     )
+
+    # Attach discovery metadata for auditability.
+    result.setdefault("evidence", {}).setdefault("action_method", {})
+    result["evidence"]["action_method"]["discovery_final_status"] = (discovery_result.get("result") or {}).get("final_status")
+    result["evidence"]["action_method"]["discovery_url"] = group_url
+    result["evidence"]["action_method"]["discovery_steps_count"] = len((discovery_result.get("result") or {}).get("steps", []))
 
     adaptive_result = result.get("result") or {}
     blob = _step_blob(adaptive_result)
     final_url = str(adaptive_result.get("final_url") or "")
     final_status = str(adaptive_result.get("final_status") or "")
-    has_group_permalink = _contains_any(final_url, ["/posts/", "permalink", "story_fbid="])
-    group_post_confirmed = has_group_permalink
+    has_group_permalink = _contains_any(final_url, ["/groups/", "/posts/", "permalink", "story_fbid="])
+    group_post_confirmed = has_group_permalink and _contains_any(final_url, ["/posts/", "permalink", "story_fbid="])
     if not group_post_confirmed and final_status == "task_completed":
-        group_post_confirmed = _contains_any(blob, ["posted in group", "published", "group post submitted"])
+        group_post_confirmed = _contains_any(blob, ["posted in group", "group post submitted", "post published"])
 
     result.setdefault("evidence", {}).setdefault("confirmation", {})
     result["evidence"]["confirmation"]["post_visible_or_permalink_resolved"] = group_post_confirmed
