@@ -16,7 +16,7 @@ import re
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
@@ -143,15 +143,128 @@ def _profile_url(session: FacebookSession, profile_name: str) -> str:
     return f"https://m.facebook.com/{normalized}"
 
 
+def _profile_candidate_urls(session: FacebookSession, profile_name: str) -> List[str]:
+    candidates: List[str] = []
+    seen = set()
+    user_id = _session_user_id(session)
+    slug = str(profile_name or "").strip().replace(" ", ".")
+
+    def _add(url: str) -> None:
+        value = str(url or "").strip()
+        if not value or value in seen:
+            return
+        seen.add(value)
+        candidates.append(value)
+
+    if user_id:
+        _add(f"https://m.facebook.com/profile.php?id={user_id}&v=timeline")
+        _add(f"https://m.facebook.com/profile.php?id={user_id}")
+    _add("https://m.facebook.com/me/?v=timeline")
+    _add("https://m.facebook.com/me/")
+    if slug:
+        _add(f"https://m.facebook.com/{slug}?v=timeline")
+        _add(f"https://m.facebook.com/{slug}")
+    _add("https://m.facebook.com/")
+    return candidates
+
+
+def _url_profile_hint(url: Optional[str], user_id: Optional[str]) -> bool:
+    value = str(url or "").strip().lower()
+    if not value:
+        return False
+    if "m.facebook.com/me" in value:
+        return True
+    if "profile.php" in value:
+        return True
+    if "v=timeline" in value:
+        return True
+    if user_id and f"id={user_id}" in value:
+        return True
+    return False
+
+
+def _snapshot_score(snapshot: Dict, expected_profile_name: str, user_id: Optional[str]) -> Dict[str, object]:
+    body_text = str(snapshot.get("body_text") or "")
+    profile_name_seen = str(snapshot.get("profile_name_seen") or "").strip()
+    posts_count = len(list(snapshot.get("posts") or []))
+    profile_surface_detected = bool(snapshot.get("profile_surface_detected"))
+    go_to_profile_visible = bool(snapshot.get("go_to_profile_visible"))
+    final_url = str(snapshot.get("current_url") or "").strip()
+    strict_name_match = _name_matches(expected_profile_name, profile_name_seen)
+    token_name_match = _name_tokens_present(expected_profile_name, body_text)
+    url_profile = _url_profile_hint(final_url, user_id)
+
+    score = 0
+    if strict_name_match:
+        score += 40
+    if token_name_match:
+        score += 12
+    if profile_surface_detected:
+        score += 22
+    if url_profile:
+        score += 18
+    if go_to_profile_visible:
+        score -= 15
+    score += min(posts_count, 10) * 6
+
+    return {
+        "score": score,
+        "strict_name_match": strict_name_match,
+        "token_name_match": token_name_match,
+        "profile_surface_detected": profile_surface_detected,
+        "go_to_profile_visible": go_to_profile_visible,
+        "url_profile_hint": url_profile,
+        "posts_count": posts_count,
+        "final_url": final_url,
+    }
+
+
 async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
     return await page.evaluate(
         """(expectedProfileName) => {
             const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
             const expectedTokens = normalize(expectedProfileName).toLowerCase().split(" ").filter(Boolean);
-            const hasExpectedAuthor = (text) => {
+            const hasExpectedAuthor = (text, author) => {
                 if (!expectedTokens.length) return true;
-                const lower = normalize(text).toLowerCase();
-                return expectedTokens.every((token) => lower.includes(token));
+                const lowerText = normalize(text).toLowerCase();
+                const lowerAuthor = normalize(author).toLowerCase();
+                return expectedTokens.every((token) => lowerText.includes(token) || lowerAuthor.includes(token));
+            };
+            const scoreName = (name) => {
+                const value = normalize(name);
+                if (!value || value.length < 3 || value.length > 90) return -1;
+                const lower = value.toLowerCase();
+                const blockedContains = [
+                    "this browser is not supported",
+                    "facebook",
+                    "news feed",
+                    "marketplace",
+                    "notifications",
+                    "messages",
+                    "watch",
+                    "menu",
+                    "reels",
+                    "groups",
+                    "friends",
+                    "safari",
+                    "home"
+                ];
+                if (blockedContains.some((bad) => lower.includes(bad))) return -1;
+                let score = 0;
+                if (expectedTokens.length) {
+                    const overlap = expectedTokens.filter((token) => lower.includes(token)).length;
+                    score += overlap * 2;
+                    if (overlap === expectedTokens.length) score += 10;
+                }
+                if (/^[a-z][a-z\\s'.-]+$/i.test(value)) score += 1;
+                return score;
+            };
+            const absolutize = (href) => {
+                const raw = (href || "").trim();
+                if (!raw) return "";
+                if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+                if (raw.startsWith("/")) return "https://m.facebook.com" + raw;
+                return raw;
             };
 
             const profileNameCandidates = [];
@@ -166,12 +279,16 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                 .slice(0, 50);
             profileNameCandidates.push(...topStrong);
 
-            const blocked = ["this browser is not supported", "facebook"];
-            const profile_name_seen = profileNameCandidates.find((item) => {
-                if (!item || item.length < 3) return false;
-                const lower = item.toLowerCase();
-                return !blocked.some((bad) => lower.includes(bad));
-            }) || "";
+            let profile_name_seen = "";
+            let bestScore = -1;
+            for (const candidate of profileNameCandidates) {
+                const currentScore = scoreName(candidate);
+                if (currentScore > bestScore) {
+                    bestScore = currentScore;
+                    profile_name_seen = normalize(candidate);
+                }
+            }
+            if (bestScore < 0) profile_name_seen = "";
 
             let profile_avatar_seen = "";
             const imgs = Array.from(document.querySelectorAll("img"));
@@ -191,57 +308,103 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                 }
             }
 
-            const anchors = Array.from(
-                document.querySelectorAll('a[href*="story_fbid="], a[href*="/posts/"], a[href*=\"permalink.php\"], a[href*=\"story.php\"], a[href*=\"/videos/\"]')
-            );
+            const postAnchorSelector = [
+                'a[href*="story_fbid="]',
+                'a[href*="story.php"]',
+                'a[href*="/posts/"]',
+                'a[href*="permalink.php"]',
+                'a[href*="/videos/"]',
+                'a[href*="/reel/"]',
+                'a[href*="/watch/?v="]',
+                'a[href*="/share/p/"]',
+                'a[href*="fbid="]'
+            ].join(", ");
+            const anchors = Array.from(document.querySelectorAll(postAnchorSelector));
             const seen = new Set();
             const posts = [];
 
-            for (const anchor of anchors) {
-                let href = anchor.getAttribute("href") || "";
-                if (!href) continue;
-                if (href.startsWith("/")) href = "https://m.facebook.com" + href;
-                const container =
-                    anchor.closest("article") ||
-                    anchor.closest('div[role="article"]') ||
-                    anchor.closest('div[data-ft]') ||
-                    anchor.closest("section") ||
-                    anchor.parentElement;
-                const text = normalize(container ? container.innerText : "");
-                if (!text || text.length < 12) continue;
-                if (!hasExpectedAuthor(text)) continue;
-                const key = `${href}::${text.slice(0, 160)}`;
+            const articleNodes = Array.from(document.querySelectorAll("article, div[role='article'], div[data-ft]"));
+            const extractAuthor = (node) => {
+                const candidates = Array.from(
+                    node.querySelectorAll("h3, h4, strong, a[role='link'], span[dir='auto'], div[dir='auto']")
+                ).map((el) => normalize(el.innerText)).filter(Boolean).slice(0, 20);
+                let best = "";
+                let bestCandidateScore = -1;
+                for (const candidate of candidates) {
+                    const currentScore = scoreName(candidate);
+                    if (currentScore > bestCandidateScore) {
+                        bestCandidateScore = currentScore;
+                        best = candidate;
+                    }
+                }
+                return best;
+            };
+            const extractPermalink = (node) => {
+                const anchor = node.querySelector(postAnchorSelector);
+                if (!anchor) return "";
+                return absolutize(anchor.getAttribute("href") || "");
+            };
+
+            for (const node of articleNodes) {
+                const text = normalize(node.innerText || "");
+                if (!text || text.length < 24) continue;
+                const author = extractAuthor(node);
+                if (!hasExpectedAuthor(text, author)) continue;
+                const permalink = extractPermalink(node);
+                const key = `${permalink || "no_link"}::${text.slice(0, 160)}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
-                posts.push({ permalink: href, text: text.slice(0, 800) });
+                posts.push({ permalink: permalink || null, text: text.slice(0, 800), author: author || null });
                 if (posts.length >= 25) break;
             }
 
             if (posts.length < 5) {
-                const articleNodes = Array.from(document.querySelectorAll("article, div[role='article'], div[data-ft]"));
-                for (const node of articleNodes) {
-                    const text = normalize(node.innerText || "");
+                for (const anchor of anchors) {
+                    const href = absolutize(anchor.getAttribute("href") || "");
+                    if (!href) continue;
+                    const container =
+                        anchor.closest("article") ||
+                        anchor.closest('div[role="article"]') ||
+                        anchor.closest('div[data-ft]') ||
+                        anchor.closest("section") ||
+                        anchor.parentElement;
+                    if (!container) continue;
+                    const text = normalize(container.innerText || "");
                     if (!text || text.length < 24) continue;
-                    if (!hasExpectedAuthor(text)) continue;
-                    let href = "";
-                    const anchor = node.querySelector('a[href*="story_fbid="], a[href*="/posts/"], a[href*="permalink.php"], a[href*="story.php"], a[href*="/videos/"]');
-                    if (anchor) {
-                        href = anchor.getAttribute("href") || "";
-                    }
-                    if (href.startsWith("/")) href = "https://m.facebook.com" + href;
+                    const author = extractAuthor(container);
+                    if (!hasExpectedAuthor(text, author)) continue;
                     const key = `${href || "no_link"}::${text.slice(0, 160)}`;
                     if (seen.has(key)) continue;
                     seen.add(key);
-                    posts.push({ permalink: href || null, text: text.slice(0, 800) });
+                    posts.push({ permalink: href || null, text: text.slice(0, 800), author: author || null });
                     if (posts.length >= 25) break;
                 }
             }
+
+            const tabTexts = Array.from(document.querySelectorAll('a, div[role="tab"], span'))
+                .map((el) => normalize(el.innerText).toLowerCase())
+                .filter(Boolean);
+            const profileTabHits = ["posts", "about", "friends", "photos", "reels", "more"].filter((name) =>
+                tabTexts.includes(name)
+            ).length;
+            const profile_surface_detected = profileTabHits >= 2;
+            const go_to_profile_visible = Array.from(document.querySelectorAll('a, div[role="button"], span')).some((el) => {
+                const text = normalize(el.innerText).toLowerCase();
+                const aria = normalize(el.getAttribute("aria-label")).toLowerCase();
+                return text.includes("go to profile") || aria.includes("go to profile");
+            });
 
             return {
                 profile_name_seen,
                 profile_avatar_seen,
                 body_text: normalize(document.body ? document.body.innerText : "").slice(0, 5000),
                 posts,
+                profile_surface_detected,
+                go_to_profile_visible,
+                profile_tab_hits: profileTabHits,
+                candidate_names: profileNameCandidates.slice(0, 30),
+                current_url: window.location.href || "",
+                title: normalize(document.title || ""),
             };
         }""",
         expected_profile_name,
@@ -285,12 +448,111 @@ async def _open_posts_tab_if_available(page) -> bool:
         return False
 
 
+async def _open_go_to_profile_if_available(page) -> bool:
+    try:
+        clicked = await page.evaluate(
+            """() => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const candidates = Array.from(document.querySelectorAll('a, div[role="button"], span'));
+                for (const el of candidates) {
+                    const text = normalize(el.innerText);
+                    const aria = normalize(el.getAttribute("aria-label"));
+                    if (text.includes("go to profile") || aria.includes("go to profile")) {
+                        const target = el.closest('a, div[role="button"]') || el;
+                        if (target && typeof target.click === "function") {
+                            target.click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }"""
+        )
+        return bool(clicked)
+    except Exception:
+        return False
+
+
+async def _collect_snapshot_with_scroll(page, expected_profile_name: str, required_posts: int, user_id: Optional[str]) -> Dict:
+    best_snapshot: Dict = {}
+    best_score = -9999
+
+    for idx in range(3):
+        snapshot = await _extract_profile_snapshot(page, expected_profile_name)
+        score_data = _snapshot_score(snapshot, expected_profile_name, user_id)
+        score = int(score_data.get("score", 0))
+        if score > best_score:
+            best_snapshot = snapshot
+            best_score = score
+        enough_posts = int(score_data.get("posts_count", 0)) >= int(required_posts)
+        strict_name = bool(score_data.get("strict_name_match"))
+        if enough_posts and strict_name:
+            break
+        if idx < 2:
+            await page.mouse.wheel(0, 850)
+            await asyncio.sleep(1.0)
+
+    return best_snapshot or await _extract_profile_snapshot(page, expected_profile_name)
+
+
+async def _navigate_to_best_profile_surface(page, session: FacebookSession, profile_name: str, required_posts: int) -> Tuple[Dict, str]:
+    best_snapshot: Dict = {}
+    best_url = _profile_url(session, profile_name)
+    best_score = -9999
+    user_id = _session_user_id(session)
+
+    for candidate_url in _profile_candidate_urls(session, profile_name):
+        try:
+            await page.goto(candidate_url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as nav_exc:
+            if "ERR_TUNNEL_CONNECTION_FAILED" in str(nav_exc):
+                logger.warning(f"precheck tunnel error at {candidate_url} for {profile_name}")
+                continue
+            logger.warning(f"precheck navigation failed at {candidate_url} for {profile_name}: {nav_exc}")
+            continue
+
+        await asyncio.sleep(2.5)
+        if await _has_broken_link_banner(page):
+            logger.warning(f"precheck broken-link banner at {candidate_url} for {profile_name}")
+            continue
+
+        opened_profile = await _open_go_to_profile_if_available(page)
+        if opened_profile:
+            await asyncio.sleep(2.0)
+        posts_tab_clicked = await _open_posts_tab_if_available(page)
+        if posts_tab_clicked:
+            await asyncio.sleep(1.5)
+
+        snapshot = await _collect_snapshot_with_scroll(page, profile_name, required_posts, user_id)
+        snapshot["current_url"] = page.url
+        score_data = _snapshot_score(snapshot, profile_name, user_id)
+        score = int(score_data.get("score", 0))
+        if score > best_score:
+            best_snapshot = snapshot
+            best_url = page.url
+            best_score = score
+
+        strict_name = bool(score_data.get("strict_name_match"))
+        enough_posts = int(score_data.get("posts_count", 0)) >= int(required_posts)
+        if strict_name and enough_posts:
+            break
+
+    if not best_snapshot:
+        best_snapshot = await _extract_profile_snapshot(page, profile_name)
+        best_snapshot["current_url"] = page.url
+        best_url = page.url
+
+    return best_snapshot, best_url
+
+
 async def run_feed_safety_precheck(
     *,
     profile_name: str,
     caption: str,
     lookback_posts: int = 5,
     threshold: float = 0.90,
+    run_id: Optional[str] = None,
+    cycle_index: Optional[int] = None,
 ) -> Dict:
     """
     Verify creator identity and block duplicate captions before feed posting.
@@ -374,68 +636,25 @@ async def run_feed_safety_precheck(
             await apply_session_to_context(context, session)
 
             required_posts = max(1, int(lookback_posts))
-            try:
-                await page.goto(profile_page_url, wait_until="domcontentloaded", timeout=60000)
-            except Exception as nav_exc:
-                if "ERR_TUNNEL_CONNECTION_FAILED" in str(nav_exc):
-                    logger.warning(f"precheck primary goto tunnel error for {profile_name}; fallback to home")
-                    await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=60000)
-                    profile_page_url = "https://m.facebook.com/"
-                else:
-                    raise
-            await asyncio.sleep(3)
-            if await _has_broken_link_banner(page):
-                logger.warning(f"precheck detected broken-link banner for {profile_name}; switching to /me")
-                await page.goto("https://m.facebook.com/me", wait_until="domcontentloaded", timeout=60000)
-                profile_page_url = "https://m.facebook.com/me"
-                await asyncio.sleep(3)
-            posts_tab_clicked = await _open_posts_tab_if_available(page)
-            if posts_tab_clicked:
-                await asyncio.sleep(2)
-            await page.mouse.wheel(0, 600)
-            await asyncio.sleep(1)
+            snapshot, resolved_profile_url = await _navigate_to_best_profile_surface(
+                page,
+                session,
+                profile_name,
+                required_posts,
+            )
+            profile_page_url = resolved_profile_url
 
-            before_screenshot = await save_debug_screenshot(page, "premium_precheck_before")
-            snapshot = await _extract_profile_snapshot(page, profile_name)
-
-            primary_body_text = str(snapshot.get("body_text") or "")
-            primary_posts = list(snapshot.get("posts") or [])
-            primary_name_seen = str(snapshot.get("profile_name_seen") or "").strip()
-            primary_name_match = _name_matches(profile_name, primary_name_seen) or _name_tokens_present(profile_name, primary_body_text)
-
-            if (not primary_name_match) or (len(primary_posts) < required_posts):
-                try:
-                    try:
-                        await page.goto("https://m.facebook.com/me", wait_until="domcontentloaded", timeout=60000)
-                        profile_page_url = "https://m.facebook.com/me"
-                    except Exception as alt_nav_exc:
-                        if "ERR_TUNNEL_CONNECTION_FAILED" in str(alt_nav_exc):
-                            await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=60000)
-                            profile_page_url = "https://m.facebook.com/"
-                        else:
-                            raise
-                    await asyncio.sleep(3)
-                    if await _has_broken_link_banner(page):
-                        await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=60000)
-                        await asyncio.sleep(2)
-                    alt_posts_tab_clicked = await _open_posts_tab_if_available(page)
-                    if alt_posts_tab_clicked:
-                        await asyncio.sleep(2)
-                    await page.mouse.wheel(0, 600)
-                    await asyncio.sleep(1)
-                    alt_snapshot = await _extract_profile_snapshot(page, profile_name)
-                    alt_body_text = str(alt_snapshot.get("body_text") or "")
-                    alt_posts = list(alt_snapshot.get("posts") or [])
-                    alt_name_seen = str(alt_snapshot.get("profile_name_seen") or "").strip()
-                    alt_name_match = _name_matches(profile_name, alt_name_seen) or _name_tokens_present(profile_name, alt_body_text)
-                    if alt_name_match or len(alt_posts) > len(primary_posts):
-                        snapshot = alt_snapshot
-                        profile_page_url = "https://m.facebook.com/me"
-                except Exception as nav_exc:
-                    logger.warning(f"fallback /me navigation failed for {profile_name}: {nav_exc}")
-
-            await asyncio.sleep(0.5)
-            after_screenshot = await save_debug_screenshot(page, "premium_precheck_after")
+            screenshot_suffix = f"{str(run_id or 'adhoc').replace('-', '')[:12]}_{int(cycle_index or 0)}"
+            before_screenshot = await save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}")
+            await page.mouse.wheel(0, 300)
+            await asyncio.sleep(0.7)
+            refreshed_snapshot = await _extract_profile_snapshot(page, profile_name)
+            refreshed_snapshot["current_url"] = page.url
+            refreshed_score = _snapshot_score(refreshed_snapshot, profile_name, _session_user_id(session))
+            existing_score = _snapshot_score(snapshot, profile_name, _session_user_id(session))
+            if int(refreshed_score.get("score", 0)) >= int(existing_score.get("score", 0)):
+                snapshot = refreshed_snapshot
+            after_screenshot = await save_debug_screenshot(page, f"premium_precheck_after_{screenshot_suffix}")
 
             profile_name_seen = str(snapshot.get("profile_name_seen") or "").strip()
             profile_avatar_seen = str(snapshot.get("profile_avatar_seen") or "").strip()
@@ -444,14 +663,20 @@ async def run_feed_safety_precheck(
             expected_avatar_ref = _canonical_avatar_ref(expected_avatar)
             seen_avatar_ref = _canonical_avatar_ref(profile_avatar_seen)
 
-            name_match = _name_matches(profile_name, profile_name_seen) or _name_tokens_present(profile_name, body_text)
-            if not profile_name_seen and name_match:
+            user_id = _session_user_id(session)
+            posts = list(snapshot.get("posts") or [])
+            strict_name_match = _name_matches(profile_name, profile_name_seen)
+            token_name_match = _name_tokens_present(profile_name, body_text)
+            profile_surface_detected = bool(snapshot.get("profile_surface_detected"))
+            url_profile_hint = _url_profile_hint(snapshot.get("current_url") or profile_page_url, user_id)
+            name_match = strict_name_match or (token_name_match and (profile_surface_detected or url_profile_hint) and len(posts) > 0)
+            if (not profile_name_seen) and strict_name_match:
                 profile_name_seen = profile_name
             avatar_similarity = _avatar_similarity(expected_avatar, profile_avatar_seen)
             avatar_required = bool(expected_avatar_ref and seen_avatar_ref)
             avatar_passed = avatar_similarity is not None and avatar_similarity >= 0.60
             identity_passed = bool(name_match and (avatar_passed or not avatar_required))
-            posts = list(snapshot.get("posts") or [])[:required_posts]
+            posts = posts[:required_posts]
 
             top_similarity = 0.0
             matched_permalink = None
@@ -474,6 +699,10 @@ async def run_feed_safety_precheck(
                 "avatar_similarity": round(float(avatar_similarity), 4) if avatar_similarity is not None else None,
                 "avatar_hash_match": bool(avatar_passed) if avatar_similarity is not None else None,
                 "passed": identity_passed,
+                "strict_name_match": bool(strict_name_match),
+                "token_name_match": bool(token_name_match),
+                "profile_surface_detected": bool(profile_surface_detected),
+                "url_profile_hint": bool(url_profile_hint),
             }
             duplicate_precheck = {
                 "checked_posts": len(posts),
@@ -484,6 +713,7 @@ async def run_feed_safety_precheck(
                 "insufficient_posts": insufficient_posts,
                 "passed": duplicate_passed,
                 "posts": posts,
+                "profile_tab_hits": int(snapshot.get("profile_tab_hits") or 0),
             }
 
             return {

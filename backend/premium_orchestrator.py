@@ -415,6 +415,8 @@ class PremiumOrchestrator:
             caption=caption,
             lookback_posts=dedupe_recent_feed_posts,
             threshold=dedupe_threshold,
+            run_id=run_id,
+            cycle_index=cycle_index,
         )
         identity_check = dict(precheck.get("identity_check") or {})
         duplicate_precheck = dict(precheck.get("duplicate_precheck") or {})
