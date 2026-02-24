@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional
 from urllib.parse import quote_plus, urlparse
+from pathlib import Path
 
 from adaptive_agent import run_adaptive_task
 
@@ -28,6 +29,15 @@ def _extract_target_id(url: Optional[str]) -> Optional[str]:
         return segments[-1] or None
     except Exception:
         return None
+
+
+def _to_public_screenshot_url(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    name = Path(path).name
+    if not name:
+        return None
+    return f"/screenshots/{name}"
 
 
 def _step_blob(result: Dict) -> str:
@@ -117,6 +127,10 @@ def _build_evidence(
         "target_id": _extract_target_id(final_url),
         "before_screenshot": before,
         "after_screenshot": after,
+        "screenshot_urls": {
+            "before": _to_public_screenshot_url(before),
+            "after": _to_public_screenshot_url(after),
+        },
         "action_method": {
             "engine": "adaptive_agent",
             "final_status": adaptive_result.get("final_status"),
@@ -156,6 +170,9 @@ async def _execute_task(
     max_steps: int = 20,
     retry_fallback_url: Optional[str] = None,
     retry_task_prefix: Optional[str] = None,
+    profile_identity_confirmed: bool = True,
+    identity_check: Optional[Dict] = None,
+    duplicate_precheck: Optional[Dict] = None,
 ) -> Dict:
     if expected_count <= 0:
         return {
@@ -194,7 +211,7 @@ async def _execute_task(
                     "errors": [],
                 },
                 "confirmation": {
-                    "profile_identity_confirmed": True,
+                    "profile_identity_confirmed": bool(profile_identity_confirmed),
                     "keyword_detected": True,
                     "final_status": "task_completed",
                 },
@@ -257,7 +274,7 @@ async def _execute_task(
     completed_count = expected_count if (status_ok and keyword_ok) else 0
 
     confirmation = {
-        "profile_identity_confirmed": True,
+        "profile_identity_confirmed": bool(profile_identity_confirmed),
         "keyword_detected": keyword_ok,
         "final_status": adaptive_result.get("final_status"),
     }
@@ -272,6 +289,10 @@ async def _execute_task(
         completed_count=completed_count,
         confirmation=confirmation,
     )
+    if isinstance(identity_check, dict):
+        evidence["identity_check"] = identity_check
+    if isinstance(duplicate_precheck, dict):
+        evidence["duplicate_precheck"] = duplicate_precheck
 
     return {
         "success": completed_count >= expected_count,
@@ -290,6 +311,10 @@ async def publish_feed_post(
     profile_name: str,
     caption: str,
     image_path: Optional[str],
+    profile_identity_confirmed: bool = True,
+    identity_check: Optional[Dict] = None,
+    duplicate_precheck: Optional[Dict] = None,
+    single_submit_guard: bool = True,
 ) -> Dict:
     task = f"""
 Post to your own Facebook feed as this profile.
@@ -317,6 +342,9 @@ Required actions:
         expected_count=1,
         confirmation_keyword="post",
         max_steps=30,
+        profile_identity_confirmed=profile_identity_confirmed,
+        identity_check=identity_check,
+        duplicate_precheck=duplicate_precheck,
     )
 
     adaptive_result = result.get("result") or {}
@@ -342,6 +370,31 @@ Required actions:
     result.setdefault("evidence", {}).setdefault("confirmation", {})
     result["evidence"]["confirmation"]["post_visible_or_permalink_resolved"] = permalink_or_visible
     result["evidence"]["confirmation"]["post_permalink"] = final_url or None
+
+    if single_submit_guard:
+        post_clicks = [
+            str(action).strip().lower()
+            for action in ((result.get("evidence", {}).get("action_method", {}) or {}).get("action_trace", []) or [])
+            if 'click "post"' in str(action).strip().lower()
+        ]
+        submit_guard_passed = len(post_clicks) <= 1
+        result["evidence"]["confirmation"]["submit_guard_passed"] = submit_guard_passed
+        if not submit_guard_passed:
+            result["evidence"]["result_state"]["success"] = False
+            result["evidence"]["result_state"]["completed_count"] = 0
+            result["success"] = False
+            result["error"] = "submit_idempotency_blocked"
+            result["evidence"]["submit_guard"] = {
+                "passed": False,
+                "post_click_count": len(post_clicks),
+                "reason": "multiple feed submit clicks detected in single action",
+            }
+            return result
+        result["evidence"]["submit_guard"] = {
+            "passed": True,
+            "post_click_count": len(post_clicks),
+        }
+
     result["success"] = bool(result.get("success")) and bool(permalink_or_visible)
     if not result["success"]:
         result["error"] = result.get("error") or "feed post confirmation missing"
@@ -358,6 +411,8 @@ async def discover_group_and_publish(
     join_pending_policy: str,
     group_post_text: str,
     image_path: Optional[str],
+    profile_identity_confirmed: bool = True,
+    identity_check: Optional[Dict] = None,
 ) -> Dict:
     topic_seed_text = str(topic_seed or "").strip()
     direct_group_url = topic_seed_text if topic_seed_text.startswith("http://") or topic_seed_text.startswith("https://") else None
@@ -450,6 +505,8 @@ Rules:
             max_steps=25,
             retry_fallback_url="https://m.facebook.com/groups",
             retry_task_prefix=f"Direct navigation to {group_url} can fail due proxy tunnel issues. Start from Groups home, open this exact target group, then continue.",
+            profile_identity_confirmed=profile_identity_confirmed,
+            identity_check=identity_check,
         )
         discovery_meta["final_status"] = (discovery_result.get("result") or {}).get("final_status")
         discovery_meta["url"] = group_url
@@ -509,6 +566,8 @@ Rules:
                 max_steps=28,
                 retry_fallback_url="https://m.facebook.com/groups",
                 retry_task_prefix="If direct group-search URL fails due proxy tunnel issues, open Groups, tap Search, run the topic query, then continue.",
+                profile_identity_confirmed=profile_identity_confirmed,
+                identity_check=identity_check,
             )
 
             selected_attempt = attempt
@@ -588,6 +647,8 @@ async def perform_likes(
     profile_name: str,
     likes_count: int,
     start_url: Optional[str] = None,
+    profile_identity_confirmed: bool = True,
+    identity_check: Optional[Dict] = None,
 ) -> Dict:
     task = f"""
 Inside the current group context, like exactly {likes_count} posts.
@@ -605,6 +666,8 @@ Then finish with DONE.
         expected_count=likes_count,
         confirmation_keyword="like",
         max_steps=30,
+        profile_identity_confirmed=profile_identity_confirmed,
+        identity_check=identity_check,
     )
 
     blob = _step_blob(result.get("result") or {})
@@ -625,6 +688,8 @@ async def perform_shares(
     shares_count: int,
     share_target: str,
     start_url: Optional[str] = None,
+    profile_identity_confirmed: bool = True,
+    identity_check: Optional[Dict] = None,
 ) -> Dict:
     destination_text = {
         "own_feed": "share to your own feed",
@@ -648,6 +713,8 @@ End with DONE only after all required shares are completed.
         expected_count=shares_count,
         confirmation_keyword="share",
         max_steps=35,
+        profile_identity_confirmed=profile_identity_confirmed,
+        identity_check=identity_check,
     )
 
     adaptive_result = result.get("result") or {}
@@ -686,6 +753,8 @@ async def perform_comment_replies(
     replies_count: int,
     reply_text: str,
     start_url: Optional[str] = None,
+    profile_identity_confirmed: bool = True,
+    identity_check: Optional[Dict] = None,
 ) -> Dict:
     task = f"""
 Reply supportively to exactly {replies_count} group comment(s).
@@ -705,6 +774,8 @@ Finish with DONE only after replies are sent.
         expected_count=replies_count,
         confirmation_keyword=None,
         max_steps=35,
+        profile_identity_confirmed=profile_identity_confirmed,
+        identity_check=identity_check,
     )
 
     adaptive_result = result.get("result") or {}

@@ -98,3 +98,36 @@ def test_cancel_run_marks_running_cycles_cancelled(tmp_path):
     assert cancelled["next_execute_at"] is None
     assert cancelled["cycles"][0]["status"] == "cancelled"
     assert cancelled["cycles"][0]["completed_at"] is not None
+
+
+def test_enqueue_or_create_queues_same_profile_and_promotes_fifo(tmp_path):
+    store = PremiumStore(file_path=str(tmp_path / "premium_state.json"))
+
+    first = store.enqueue_or_create_run(run_spec=_run_spec(), created_by="tester")
+    second = store.enqueue_or_create_run(run_spec=_run_spec(), created_by="tester")
+    third = store.enqueue_or_create_run(run_spec=_run_spec(), created_by="tester")
+
+    assert first["status"] == "scheduled"
+    assert second["status"] == "queued"
+    assert third["status"] == "queued"
+    assert second["queue_position"] == 1
+    assert third["queue_position"] == 2
+    assert second["blocked_by_run_id"] == first["id"]
+    assert third["blocked_by_run_id"] == second["id"]
+    assert second["admission_policy"] == "queue_behind"
+
+    store.set_run_status(first["id"], "completed")
+    second_after = store.get_run(second["id"])
+    third_after = store.get_run(third["id"])
+    assert second_after["status"] == "scheduled"
+    assert second_after["queue_position"] == 0
+    assert second_after["blocked_by_run_id"] is None
+    assert third_after["status"] == "queued"
+    assert third_after["queue_position"] == 1
+    assert third_after["blocked_by_run_id"] == second["id"]
+
+    store.set_run_status(second["id"], "completed")
+    third_final = store.get_run(third["id"])
+    assert third_final["status"] == "scheduled"
+    assert third_final["queue_position"] == 0
+    assert third_final["blocked_by_run_id"] is None

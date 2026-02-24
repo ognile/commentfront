@@ -9,10 +9,11 @@ import base64
 import logging
 import os
 import random
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from fb_session import FacebookSession
 from gemini_image_gen import generate_profile_photo_with_reference
@@ -105,16 +106,40 @@ async def _generate_ambient_image(prompt: str, profile_name: str) -> Dict:
         return {"success": False, "error": str(exc)}
 
 
-def _build_caption(post_kind: str, cycle_index: int, persona: str) -> str:
+def _build_caption(post_kind: str, cycle_index: int) -> str:
     pool = CHARACTER_CAPTION_TEMPLATES if post_kind == "character" else AMBIENT_CAPTION_TEMPLATES
-    random.seed(f"{cycle_index}:{persona}:{post_kind}")
-    base = random.choice(pool)
-    persona_hint = str(persona or "").strip()
-    if persona_hint:
-        # Keep tiny personalization while remaining generic and compliant.
-        suffix = persona_hint.split(",", 1)[0].strip().rstrip(".")
-        if suffix and len(suffix) <= 80:
-            return f"{base} {suffix}."
+    random.seed(f"{cycle_index}:{post_kind}")
+    return random.choice(pool)
+
+
+def _strip_prompt_tail(caption: str) -> str:
+    """
+    Remove obvious prompt/policy leakage tails before posting.
+    """
+    cleaned = str(caption or "").strip()
+    tail_patterns = [
+        r"\s*supportive middle-aged woman navigating menopause with practical optimism\.?\s*$",
+        r"\s*supportive woman in menopause community\.?\s*$",
+        r"\s*persona[:\-].*$",
+        r"\s*prompt[:\-].*$",
+    ]
+    for pattern in tail_patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _dedupe_caption_candidates(base: str, pool: List[str], recent_captions: List[str]) -> str:
+    """
+    Avoid repeating a recently used caption when alternatives exist.
+    """
+    normalized_recent = {str(item).strip().lower() for item in recent_captions if str(item).strip()}
+    if base.strip().lower() not in normalized_recent:
+        return base
+
+    for candidate in pool:
+        if str(candidate).strip().lower() not in normalized_recent:
+            return candidate
     return base
 
 
@@ -133,10 +158,13 @@ async def generate_post_bundle(
     execution_policy = profile_config.get("execution_policy", {})
     content_policy = profile_config.get("content_policy", {})
 
-    persona = str(character_profile.get("persona_description", "")).strip()
     casing_mode = str(content_policy.get("casing_mode", "natural_mixed"))
+    recent_captions = character_profile.get("recent_captions") or []
 
-    caption = _build_caption(post_kind=post_kind, cycle_index=cycle_index, persona=persona)
+    caption_pool = CHARACTER_CAPTION_TEMPLATES if post_kind == "character" else AMBIENT_CAPTION_TEMPLATES
+    caption = _build_caption(post_kind=post_kind, cycle_index=cycle_index)
+    caption = _dedupe_caption_candidates(caption, caption_pool, recent_captions)
+    caption = _strip_prompt_tail(caption)
     caption = enforce_casing_mode(caption, casing_mode)
     validation = validate_text_against_rules(caption, rules_snapshot)
 

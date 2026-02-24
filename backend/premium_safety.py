@@ -1,0 +1,359 @@
+"""
+Safety checks for premium feed posting.
+
+Includes:
+- profile identity verification on creator profile page
+- duplicate/near-duplicate precheck against recent authored feed posts
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import logging
+import re
+from difflib import SequenceMatcher
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional
+from urllib.parse import urlparse
+
+from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
+
+from comment_bot import _build_playwright_proxy, save_debug_screenshot
+from config import MOBILE_VIEWPORT
+from fb_session import FacebookSession, apply_session_to_context
+from queue_manager import near_duplicate_ratio
+
+logger = logging.getLogger("PremiumSafety")
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_name(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    return cleaned
+
+
+def _name_matches(expected: str, seen: str) -> bool:
+    expected_norm = _normalize_name(expected)
+    seen_norm = _normalize_name(seen)
+    if not expected_norm or not seen_norm:
+        return False
+    if expected_norm == seen_norm:
+        return True
+    expected_tokens = [t for t in expected_norm.split(" ") if t]
+    return bool(expected_tokens) and all(token in seen_norm for token in expected_tokens)
+
+
+def _canonical_avatar_ref(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    if text.startswith("data:image"):
+        try:
+            _, payload = text.split(",", 1)
+            blob = base64.b64decode(payload)
+            return "data:" + hashlib.sha256(blob).hexdigest()
+        except Exception:
+            return None
+
+    if text.startswith("http://") or text.startswith("https://"):
+        parsed = urlparse(text)
+        path = parsed.path or ""
+        if not path:
+            return None
+        return f"url:{parsed.netloc.lower()}{path}"
+
+    return text.lower()
+
+
+def _avatar_similarity(expected_ref: Optional[str], seen_ref: Optional[str]) -> Optional[float]:
+    left = _canonical_avatar_ref(expected_ref)
+    right = _canonical_avatar_ref(seen_ref)
+    if not left or not right:
+        return None
+    if left == right:
+        return 1.0
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _to_public_screenshot_url(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    name = Path(path).name
+    if not name:
+        return None
+    return f"/screenshots/{name}"
+
+
+def _profile_url(session: FacebookSession, profile_name: str) -> str:
+    data = session.data or {}
+    user_id = data.get("user_id")
+    if user_id:
+        return f"https://m.facebook.com/profile.php?id={user_id}"
+    normalized = str(profile_name or "").strip().replace(" ", ".")
+    return f"https://m.facebook.com/{normalized}"
+
+
+async def _extract_profile_snapshot(page) -> Dict:
+    return await page.evaluate(
+        """() => {
+            const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+
+            const profileNameCandidates = [];
+            const h1 = document.querySelector("h1");
+            if (h1 && h1.innerText) profileNameCandidates.push(normalize(h1.innerText));
+            const h2 = document.querySelector("h2");
+            if (h2 && h2.innerText) profileNameCandidates.push(normalize(h2.innerText));
+            if (document.title) profileNameCandidates.push(normalize(document.title));
+
+            const profile_name_seen = profileNameCandidates.find((item) => item.length >= 3) || "";
+
+            let profile_avatar_seen = "";
+            const imgs = Array.from(document.querySelectorAll("img"));
+            for (const img of imgs) {
+                const rect = img.getBoundingClientRect();
+                const src = img.getAttribute("src") || "";
+                const alt = normalize(img.getAttribute("alt") || "");
+                if (!src) continue;
+                if (rect.top > 420) continue;
+                const altMatch =
+                    (profile_name_seen && alt.toLowerCase().includes(profile_name_seen.toLowerCase())) ||
+                    alt.toLowerCase().includes("profile");
+                const sizeMatch = rect.width >= 36 && rect.height >= 36;
+                if (altMatch || sizeMatch) {
+                    profile_avatar_seen = src;
+                    break;
+                }
+            }
+
+            const anchors = Array.from(
+                document.querySelectorAll('a[href*="story_fbid="], a[href*="/posts/"], a[href*="permalink.php"]')
+            );
+            const seen = new Set();
+            const posts = [];
+
+            for (const anchor of anchors) {
+                let href = anchor.getAttribute("href") || "";
+                if (!href) continue;
+                if (href.startsWith("/")) href = "https://m.facebook.com" + href;
+                const container =
+                    anchor.closest("article") ||
+                    anchor.closest('div[role="article"]') ||
+                    anchor.closest('div[data-ft]') ||
+                    anchor.closest("section") ||
+                    anchor.parentElement;
+                const text = normalize(container ? container.innerText : "");
+                if (!text || text.length < 12) continue;
+                const key = `${href}::${text.slice(0, 160)}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                posts.push({ permalink: href, text: text.slice(0, 800) });
+                if (posts.length >= 25) break;
+            }
+
+            return {
+                profile_name_seen,
+                profile_avatar_seen,
+                posts,
+            };
+        }"""
+    )
+
+
+async def run_feed_safety_precheck(
+    *,
+    profile_name: str,
+    caption: str,
+    lookback_posts: int = 5,
+    threshold: float = 0.90,
+) -> Dict:
+    """
+    Verify creator identity and block duplicate captions before feed posting.
+    """
+    session = FacebookSession(profile_name)
+    if not session.load():
+        return {
+            "success": False,
+            "error": f"session not found for {profile_name}",
+            "identity_check": {
+                "profile_name_expected": profile_name,
+                "profile_name_seen": None,
+                "profile_avatar_expected_ref": None,
+                "profile_avatar_seen_ref": None,
+                "name_match": False,
+                "avatar_similarity": None,
+                "avatar_hash_match": None,
+                "passed": False,
+            },
+            "duplicate_precheck": {
+                "checked_posts": 0,
+                "threshold": float(threshold),
+                "top_similarity": 0.0,
+                "matched_post_permalink": None,
+                "passed": False,
+            },
+        }
+
+    from proxy_manager import get_system_proxy
+
+    proxy = get_system_proxy()
+    if not proxy:
+        return {
+            "success": False,
+            "error": "no proxy available for safety precheck",
+            "identity_check": {
+                "profile_name_expected": profile_name,
+                "profile_name_seen": None,
+                "profile_avatar_expected_ref": None,
+                "profile_avatar_seen_ref": None,
+                "name_match": False,
+                "avatar_similarity": None,
+                "avatar_hash_match": None,
+                "passed": False,
+            },
+            "duplicate_precheck": {
+                "checked_posts": 0,
+                "threshold": float(threshold),
+                "top_similarity": 0.0,
+                "matched_post_permalink": None,
+                "passed": False,
+            },
+        }
+
+    before_screenshot = None
+    after_screenshot = None
+    profile_page_url = _profile_url(session, profile_name)
+
+    async with async_playwright() as p:
+        browser = None
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--disable-notifications", "--disable-geolocation"],
+            )
+            context = await browser.new_context(
+                user_agent=session.get_user_agent(),
+                viewport=session.get_viewport() or MOBILE_VIEWPORT,
+                ignore_https_errors=True,
+                device_scale_factor=1,
+                timezone_id=session.get_device_fingerprint()["timezone"],
+                locale=session.get_device_fingerprint()["locale"],
+                proxy=_build_playwright_proxy(proxy),
+            )
+            await Stealth().apply_stealth_async(context)
+            page = await context.new_page()
+            await apply_session_to_context(context, session)
+
+            await page.goto(profile_page_url, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(3)
+
+            before_screenshot = await save_debug_screenshot(page, "premium_precheck_before")
+            snapshot = await _extract_profile_snapshot(page)
+            await asyncio.sleep(0.5)
+            after_screenshot = await save_debug_screenshot(page, "premium_precheck_after")
+
+            profile_name_seen = str(snapshot.get("profile_name_seen") or "").strip()
+            profile_avatar_seen = str(snapshot.get("profile_avatar_seen") or "").strip()
+            expected_avatar = str((session.data or {}).get("profile_picture") or "").strip()
+            expected_avatar_ref = _canonical_avatar_ref(expected_avatar)
+            seen_avatar_ref = _canonical_avatar_ref(profile_avatar_seen)
+
+            name_match = _name_matches(profile_name, profile_name_seen)
+            avatar_similarity = _avatar_similarity(expected_avatar, profile_avatar_seen)
+            avatar_passed = avatar_similarity is not None and avatar_similarity >= 0.60
+            identity_passed = bool(name_match and avatar_passed)
+            posts = list(snapshot.get("posts") or [])[: max(1, int(lookback_posts))]
+
+            top_similarity = 0.0
+            matched_permalink = None
+            for post in posts:
+                ratio = near_duplicate_ratio(str(caption or ""), str(post.get("text") or ""))
+                if ratio > top_similarity:
+                    top_similarity = ratio
+                    matched_permalink = post.get("permalink")
+
+            duplicate_block = top_similarity >= float(threshold)
+
+            identity_check = {
+                "profile_name_expected": profile_name,
+                "profile_name_seen": profile_name_seen or None,
+                "profile_avatar_expected_ref": expected_avatar_ref,
+                "profile_avatar_seen_ref": seen_avatar_ref,
+                "name_match": bool(name_match),
+                "avatar_similarity": round(float(avatar_similarity), 4) if avatar_similarity is not None else None,
+                "avatar_hash_match": bool(avatar_passed) if avatar_similarity is not None else None,
+                "passed": identity_passed,
+            }
+            duplicate_precheck = {
+                "checked_posts": len(posts),
+                "threshold": float(threshold),
+                "top_similarity": round(float(top_similarity), 4),
+                "matched_post_permalink": matched_permalink if duplicate_block else None,
+                "passed": not duplicate_block,
+                "posts": posts,
+            }
+
+            return {
+                "success": bool(identity_passed and not duplicate_block),
+                "identity_check": identity_check,
+                "duplicate_precheck": duplicate_precheck,
+                "profile_url": profile_page_url,
+                "before_screenshot": before_screenshot,
+                "after_screenshot": after_screenshot,
+                "screenshot_urls": {
+                    "before": _to_public_screenshot_url(before_screenshot),
+                    "after": _to_public_screenshot_url(after_screenshot),
+                },
+                "error": None
+                if (identity_passed and not duplicate_block)
+                else (
+                    "identity_verification_failed"
+                    if not identity_passed
+                    else "duplicate_precheck_failed"
+                ),
+                "checked_at": _utc_iso(),
+            }
+        except Exception as exc:
+            logger.error(f"safety precheck failed for {profile_name}: {exc}")
+            return {
+                "success": False,
+                "identity_check": {
+                    "profile_name_expected": profile_name,
+                    "profile_name_seen": None,
+                    "profile_avatar_expected_ref": None,
+                    "profile_avatar_seen_ref": None,
+                    "name_match": False,
+                    "avatar_similarity": None,
+                    "avatar_hash_match": None,
+                    "passed": False,
+                },
+                "duplicate_precheck": {
+                    "checked_posts": 0,
+                    "threshold": float(threshold),
+                    "top_similarity": 0.0,
+                    "matched_post_permalink": None,
+                    "passed": False,
+                },
+                "profile_url": profile_page_url,
+                "before_screenshot": before_screenshot,
+                "after_screenshot": after_screenshot,
+                "screenshot_urls": {
+                    "before": _to_public_screenshot_url(before_screenshot),
+                    "after": _to_public_screenshot_url(after_screenshot),
+                },
+                "error": str(exc),
+                "checked_at": _utc_iso(),
+            }
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass

@@ -53,6 +53,7 @@ from queue_manager import (
     CampaignQueueManager,
     canonicalize_campaign_jobs,
     find_duplicate_text_conflicts,
+    near_duplicate_ratio,
     LOOKBACK_DAYS_DEFAULT,
     NEAR_DUPLICATE_THRESHOLD,
 )
@@ -4140,6 +4141,45 @@ def _premium_default_rule_paths() -> Dict[str, str]:
     }
 
 
+def _build_premium_safety_snapshot(run: Dict) -> Dict:
+    evidence_items = list(run.get("evidence") or [])
+    duplicate_checks = [item.get("duplicate_precheck") for item in evidence_items if isinstance(item.get("duplicate_precheck"), dict)]
+    identity_checks = [item.get("identity_check") for item in evidence_items if isinstance(item.get("identity_check"), dict)]
+    submit_guards = [item.get("submit_guard") for item in evidence_items if isinstance(item.get("submit_guard"), dict)]
+
+    latest_duplicate = duplicate_checks[-1] if duplicate_checks else None
+    latest_identity = identity_checks[-1] if identity_checks else None
+    latest_submit_guard = submit_guards[-1] if submit_guards else None
+
+    duplicate_passed = all(bool(item.get("passed", True)) for item in duplicate_checks) if duplicate_checks else None
+    identity_passed = all(bool(item.get("passed", False)) for item in identity_checks) if identity_checks else None
+    submit_guard_passed = all(bool(item.get("passed", True)) for item in submit_guards) if submit_guards else None
+
+    return {
+        "duplicate_precheck": {
+            "latest": latest_duplicate,
+            "all_passed": duplicate_passed,
+            "checks_count": len(duplicate_checks),
+        },
+        "identity_check": {
+            "latest": latest_identity,
+            "all_passed": identity_passed,
+            "checks_count": len(identity_checks),
+        },
+        "submit_guard": {
+            "latest": latest_submit_guard,
+            "all_passed": submit_guard_passed,
+            "checks_count": len(submit_guards),
+        },
+    }
+
+
+def _augment_run_payload(run: Dict) -> Dict:
+    enriched = dict(run)
+    enriched["safety"] = _build_premium_safety_snapshot(run)
+    return enriched
+
+
 @app.get("/premium/profiles")
 async def list_premium_profiles(current_user: dict = Depends(get_current_user)) -> Dict:
     sessions = list_saved_sessions()
@@ -4284,18 +4324,41 @@ async def create_premium_run(
     if not config:
         raise HTTPException(status_code=400, detail=f"Premium config missing for profile '{profile_name}'")
 
-    run = premium_store.create_run(run_spec=run_spec, created_by=current_user.get("username", "unknown"))
-    premium_store.append_event(run["id"], "run_created", {"created_by": current_user.get("username")})
-
-    await broadcast_update(
-        "premium_run_scheduled",
+    run = premium_store.enqueue_or_create_run(run_spec=run_spec, created_by=current_user.get("username", "unknown"))
+    premium_store.append_event(
+        run["id"],
+        "run_created",
         {
-            "run_id": run.get("id"),
-            "profile_name": profile_name,
-            "next_execute_at": run.get("next_execute_at"),
+            "created_by": current_user.get("username"),
+            "status": run.get("status"),
+            "queue_position": run.get("queue_position"),
+            "blocked_by_run_id": run.get("blocked_by_run_id"),
+            "admission_policy": run.get("admission_policy"),
         },
     )
-    return run
+
+    if run.get("status") == "queued":
+        await broadcast_update(
+            "premium_run_queued",
+            {
+                "run_id": run.get("id"),
+                "profile_name": profile_name,
+                "queue_position": run.get("queue_position"),
+                "blocked_by_run_id": run.get("blocked_by_run_id"),
+                "admission_policy": run.get("admission_policy"),
+            },
+        )
+    else:
+        await broadcast_update(
+            "premium_run_scheduled",
+            {
+                "run_id": run.get("id"),
+                "profile_name": profile_name,
+                "next_execute_at": run.get("next_execute_at"),
+                "admission_policy": run.get("admission_policy"),
+            },
+        )
+    return _augment_run_payload(run)
 
 
 @app.post("/premium/scheduler/tick")
@@ -4306,6 +4369,7 @@ async def premium_scheduler_tick(current_user: dict = Depends(get_current_user))
 @app.get("/premium/status")
 async def premium_status(current_user: dict = Depends(get_current_user)) -> Dict:
     status_payload = premium_scheduler.get_status()
+    status_payload["recent_runs"] = [_augment_run_payload(run) for run in status_payload.get("recent_runs", [])]
     snapshot = premium_store.get_rules_snapshot()
     if snapshot:
         status_payload["rules_snapshot"] = {
@@ -4327,7 +4391,7 @@ async def list_premium_runs(
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
     runs = premium_store.list_runs(limit=limit, status=status_filter)
-    return {"runs": runs, "total": len(runs)}
+    return {"runs": [_augment_run_payload(run) for run in runs], "total": len(runs)}
 
 
 @app.get("/premium/runs/{run_id}")
@@ -4335,7 +4399,7 @@ async def get_premium_run(run_id: str, current_user: dict = Depends(get_current_
     run = premium_store.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Premium run not found")
-    return run
+    return _augment_run_payload(run)
 
 
 @app.post("/premium/runs/{run_id}/cancel")
@@ -4348,7 +4412,68 @@ async def cancel_premium_run(run_id: str, current_user: dict = Depends(get_curre
         "premium_run_cancelled",
         {"run_id": run_id, "cancelled_by": current_user.get("username")},
     )
-    return {"success": True, "run": run}
+    return {"success": True, "run": _augment_run_payload(run)}
+
+
+@app.get("/premium/duplicates/report/{profile_name}")
+async def premium_duplicates_report(
+    profile_name: str,
+    limit: int = Query(default=200, ge=1, le=1000),
+    threshold: float = Query(default=0.90, ge=0.5, le=1.0),
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    target = str(profile_name or "").strip().lower()
+    runs = premium_store.list_runs(limit=limit)
+
+    feed_rows = []
+    for run in runs:
+        for item in list(run.get("evidence") or []):
+            if str(item.get("action_type") or "") != "feed_post":
+                continue
+            if str(item.get("profile_name") or "").strip().lower() != target:
+                continue
+            caption = str(item.get("generated_caption") or "").strip()
+            if not caption:
+                continue
+            permalink = (
+                (item.get("confirmation") or {}).get("post_permalink")
+                or item.get("target_url")
+            )
+            feed_rows.append(
+                {
+                    "timestamp": item.get("timestamp"),
+                    "run_id": item.get("run_id"),
+                    "step_id": item.get("step_id"),
+                    "caption": caption,
+                    "permalink": permalink,
+                }
+            )
+
+    feed_rows.sort(key=lambda row: str(row.get("timestamp") or ""))
+
+    duplicates = []
+    for i, left in enumerate(feed_rows):
+        for j in range(i + 1, len(feed_rows)):
+            right = feed_rows[j]
+            ratio = near_duplicate_ratio(left.get("caption", ""), right.get("caption", ""))
+            if ratio < float(threshold):
+                continue
+            duplicates.append(
+                {
+                    "similarity": round(float(ratio), 4),
+                    "left": left,
+                    "right": right,
+                }
+            )
+
+    duplicates.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
+    return {
+        "profile_name": profile_name,
+        "threshold": float(threshold),
+        "total_feed_posts_scanned": len(feed_rows),
+        "total_duplicate_pairs": len(duplicates),
+        "duplicates": duplicates,
+    }
 
 
 @app.get("/config")
@@ -5315,20 +5440,34 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
         # Subscribe FIRST so we receive progress updates during start_session
         manager.subscribe(websocket)
 
-        # Start session if not already active for this session_id
-        if manager.session_id != session_id:
-            result = await manager.start_session(session_id)
-            if not result["success"]:
-                manager.unsubscribe(websocket)
-                await websocket.send_json({"type": "error", "data": {"message": result.get("error", "Failed to start session")}})
-                await websocket.close()
-                return
+        # Health-aware readiness check even for same session id.
+        result = await manager.ensure_session_ready(session_id)
+        if not result["success"]:
+            manager.unsubscribe(websocket)
+            await websocket.send_json({"type": "error", "data": {"message": result.get("error", "Failed to start session")}})
+            await websocket.close()
+            return
 
         # Send initial state
         state = await manager.get_current_state()
         try:
             await websocket.send_json({"type": "state", "data": state})
             await websocket.send_json({"type": "browser_ready", "data": {"session_id": session_id}})
+            bootstrap_sent = await manager.send_bootstrap_frame(websocket)
+            if not bootstrap_sent:
+                await asyncio.sleep(3.0)
+                if not manager.subscriber_has_recent_frame(websocket, within_seconds=3.0):
+                    heal_result = await manager.auto_heal_session(
+                        session_id=session_id,
+                        reason="bootstrap_frame_timeout",
+                    )
+                    if not heal_result.get("success"):
+                        await websocket.send_json({
+                            "type": "error",
+                            "data": {"message": heal_result.get("error", "Auto-heal failed")},
+                        })
+                    else:
+                        await manager.send_bootstrap_frame(websocket)
         except Exception as e:
             logger.warning(f"Failed to send initial state: {e}")
             return
@@ -5409,6 +5548,16 @@ async def start_remote_session(session_id: str, current_user: dict = Depends(get
     """Start a remote control session for the given session."""
     manager = get_browser_manager()
     return await manager.start_session(session_id)
+
+
+@app.post("/sessions/{session_id}/remote/restart")
+async def restart_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Force restart remote control browser for the same session id."""
+    manager = get_browser_manager()
+    return await manager.restart_session(
+        session_id,
+        reason=f"manual_restart:{current_user.get('username', 'unknown')}",
+    )
 
 
 @app.post("/sessions/{session_id}/remote/stop")

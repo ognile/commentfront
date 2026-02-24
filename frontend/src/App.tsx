@@ -271,6 +271,14 @@ interface PremiumRun {
   error?: string | null;
   pass_matrix?: Record<string, string>;
   updated_at?: string;
+  queue_position?: number;
+  blocked_by_run_id?: string | null;
+  admission_policy?: string;
+  safety?: {
+    duplicate_precheck?: { all_passed?: boolean | null };
+    identity_check?: { all_passed?: boolean | null };
+    submit_guard?: { all_passed?: boolean | null };
+  };
 }
 
 interface PremiumStatusPayload {
@@ -283,6 +291,7 @@ interface PremiumStatusPayload {
   };
   counts: {
     scheduled: number;
+    queued: number;
     in_progress: number;
     completed: number;
     failed: number;
@@ -806,12 +815,19 @@ function App() {
 
               // Premium automation events
               case 'premium_run_scheduled':
+              case 'premium_run_queued':
+              case 'premium_run_dequeued':
               case 'premium_run_start':
               case 'premium_step_result':
               case 'premium_verification_progress':
+              case 'premium_precheck_blocked':
+              case 'premium_identity_check_result':
               case 'premium_run_complete':
               case 'premium_run_failed':
               case 'premium_run_cancelled':
+                if (update.type === 'premium_precheck_blocked') {
+                  toast.error(`Premium precheck blocked: ${update.data.error || 'safety gate failed'}`);
+                }
                 if (update.type === 'premium_run_complete') {
                   toast.success(`Premium run complete: ${update.data.run_id?.slice(0, 8)}`);
                 }
@@ -2270,6 +2286,7 @@ function App() {
           switch (message.type) {
             case 'frame':
               setRemoteFrame(message.data.image);
+              setRemoteProgress(null);
               break;
             case 'state':
               setRemoteUrl(message.data.url || '');
@@ -2281,6 +2298,25 @@ function App() {
             case 'browser_ready':
               setRemoteProgress(null);
               toast.success('Browser ready');
+              break;
+            case 'session_auto_heal_start':
+              setRemoteProgress('auto_heal');
+              toast.loading('Recovering browser session...', { id: 'remote-auto-heal' });
+              break;
+            case 'stream_restarted':
+              setRemoteProgress('stream_restarted');
+              toast.success('Browser stream restarted');
+              break;
+            case 'session_auto_heal_done':
+              if (message.data?.success) {
+                setRemoteProgress(null);
+                toast.success('Browser session recovered', { id: 'remote-auto-heal' });
+              } else {
+                toast.error(message.data?.error || 'Browser recovery failed', { id: 'remote-auto-heal' });
+              }
+              break;
+            case 'session_idle_timeout_close':
+              toast('Session closed after 5 minutes of idle time');
               break;
             case 'action_result':
               setActionLog(prev => prev.map(entry =>
@@ -2480,6 +2516,29 @@ function App() {
     const actionId = sendRemoteAction({ type: 'navigate', data: { url } });
     if (actionId) {
       addActionLogEntry('navigate', `Navigate to ${url}`, actionId);
+    }
+  };
+
+  const handleRemoteRestart = async () => {
+    if (!remoteSession) return;
+    try {
+      setRemoteProgress('auto_heal');
+      setRemoteFrame(null);
+      const res = await fetch(
+        `${API_BASE}/sessions/${encodeURIComponent(remoteSession.profile_name)}/remote/restart`,
+        {
+          method: 'POST',
+          headers: getAuthHeaders(),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || data.detail || 'Failed to restart remote browser');
+      }
+      toast.success('Remote browser restart triggered');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to restart remote browser');
+      setRemoteProgress(null);
     }
   };
 
@@ -3933,7 +3992,7 @@ function App() {
                   <div className="text-sm text-[#999999]">No premium status data yet.</div>
                 ) : (
                   <div className="space-y-4">
-                    <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
+                    <div className="grid grid-cols-2 md:grid-cols-7 gap-3 text-sm">
                       <div>
                         <div className="text-xs text-[#999999]">Scheduler</div>
                         <div className="font-medium">{premiumStatus.scheduler?.is_running ? 'Running' : 'Stopped'}</div>
@@ -3945,6 +4004,10 @@ function App() {
                       <div>
                         <div className="text-xs text-[#999999]">Scheduled</div>
                         <div className="font-medium">{premiumStatus.counts?.scheduled ?? 0}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-[#999999]">Queued</div>
+                        <div className="font-medium">{premiumStatus.counts?.queued ?? 0}</div>
                       </div>
                       <div>
                         <div className="text-xs text-[#999999]">In Progress</div>
@@ -3994,6 +4057,7 @@ function App() {
                             <div className="text-xs text-[#999999]">
                               Run {run.id.slice(0, 8)}
                               {run.next_execute_at ? ` · next ${formatRelativeTime(run.next_execute_at)}` : ''}
+                              {run.status === 'queued' && run.queue_position ? ` · queue #${run.queue_position}` : ''}
                             </div>
                           </div>
                           <Badge variant={run.status === 'completed' ? 'default' : run.status === 'failed' ? 'destructive' : 'secondary'}>
@@ -4008,6 +4072,13 @@ function App() {
                             {Object.entries(run.pass_matrix).map(([key, value]) => (
                               <span key={key}>{key}: {value}</span>
                             ))}
+                          </div>
+                        )}
+                        {run.safety && (
+                          <div className="text-xs text-[#666666] mt-2 flex flex-wrap gap-3">
+                            <span>dup: {run.safety.duplicate_precheck?.all_passed === null ? 'n/a' : run.safety.duplicate_precheck?.all_passed ? 'pass' : 'fail'}</span>
+                            <span>identity: {run.safety.identity_check?.all_passed === null ? 'n/a' : run.safety.identity_check?.all_passed ? 'pass' : 'fail'}</span>
+                            <span>submit guard: {run.safety.submit_guard?.all_passed === null ? 'n/a' : run.safety.submit_guard?.all_passed ? 'pass' : 'fail'}</span>
                           </div>
                         )}
                       </div>
@@ -4828,6 +4899,9 @@ function App() {
                 placeholder="Enter URL..."
                 className="flex-1 bg-white"
               />
+              <Button variant="outline" onClick={handleRemoteRestart} disabled={!remoteSession}>
+                Restart
+              </Button>
               <Button onClick={handleRemoteNavigate} disabled={!remoteConnected}>
                 Go
               </Button>
@@ -4865,6 +4939,8 @@ function App() {
                           remoteProgress === 'applying_stealth' ? 'Applying security...' :
                           remoteProgress === 'navigating' ? 'Loading Facebook...' :
                           remoteProgress === 'retrying' ? 'Retrying connection...' :
+                          remoteProgress === 'auto_heal' ? 'Recovering browser session...' :
+                          remoteProgress === 'stream_restarted' ? 'Restarting stream...' :
                           'Waiting for browser...'
                         }</p>
                       </div>

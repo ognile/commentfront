@@ -103,6 +103,11 @@ class ExecutionPolicy(BaseModel):
     max_retries: int = Field(1, ge=0, le=5)
     stop_on_first_failure: bool = True
     allow_text_only_if_image_fails: bool = False
+    dedupe_precheck_enabled: bool = True
+    dedupe_recent_feed_posts: int = Field(5, ge=1, le=20)
+    dedupe_threshold: float = Field(0.90, ge=0.5, le=1.0)
+    block_on_duplicate: bool = True
+    single_submit_guard: bool = True
 
 
 class PremiumProfileConfig(BaseModel):

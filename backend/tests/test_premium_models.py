@@ -7,6 +7,7 @@ from pydantic import ValidationError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from premium_models import PremiumRunCreateRequest
+from premium_models import PremiumProfileConfig
 
 
 def test_run_spec_validation_rejects_invalid_feed_mix():
@@ -59,3 +60,15 @@ def test_run_spec_defaults_match_strict_pilot_baseline():
     assert spec.engagement_recipe.shares_per_cycle == 1
     assert spec.engagement_recipe.replies_per_cycle == 1
     assert spec.verification_contract.require_evidence is True
+
+
+def test_execution_policy_defaults_enable_safety_gates():
+    cfg = PremiumProfileConfig(
+        character_profile={"persona_description": "supportive member"},
+    )
+    policy = cfg.execution_policy
+    assert policy.dedupe_precheck_enabled is True
+    assert policy.dedupe_recent_feed_posts == 5
+    assert policy.dedupe_threshold == 0.90
+    assert policy.block_on_duplicate is True
+    assert policy.single_submit_guard is True

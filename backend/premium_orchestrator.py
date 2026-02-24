@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, Optional
 
 import premium_actions
 import premium_content
+import premium_safety
 from premium_store import PremiumStore
 from premium_verify import (
     build_pass_matrix,
@@ -30,11 +31,13 @@ class PremiumOrchestrator:
         broadcast_update: Optional[Callable[[str, Dict], Any]] = None,
         actions_module=None,
         content_module=None,
+        safety_module=None,
     ):
         self.store = store
         self.broadcast_update = broadcast_update
         self.actions = actions_module or premium_actions
         self.content = content_module or premium_content
+        self.safety = safety_module or premium_safety
         self._lock = asyncio.Lock()
 
     async def _emit(self, event_type: str, data: Dict) -> None:
@@ -44,6 +47,90 @@ class PremiumOrchestrator:
             await self.broadcast_update(event_type, data)
         except Exception as exc:
             logger.warning(f"broadcast failure ({event_type}): {exc}")
+
+    def _queued_run_ids_for_profile(self, profile_name: str) -> set:
+        target = str(profile_name or "").strip().lower()
+        queued = self.store.list_runs(limit=500, status="queued")
+        return {
+            str(run.get("id"))
+            for run in queued
+            if str((run.get("run_spec") or {}).get("profile_name") or "").strip().lower() == target
+        }
+
+    async def _emit_dequeued_runs(self, *, profile_name: str, queued_before: set) -> None:
+        if not queued_before:
+            return
+        target = str(profile_name or "").strip().lower()
+        scheduled = self.store.list_runs(limit=500, status="scheduled")
+        for run in scheduled:
+            run_id = str(run.get("id") or "")
+            if run_id not in queued_before:
+                continue
+            run_profile = str((run.get("run_spec") or {}).get("profile_name") or "").strip().lower()
+            if run_profile != target:
+                continue
+            await self._emit(
+                "premium_run_dequeued",
+                {
+                    "run_id": run_id,
+                    "profile_name": (run.get("run_spec") or {}).get("profile_name"),
+                    "next_execute_at": run.get("next_execute_at"),
+                },
+            )
+
+    def _build_precheck_evidence(
+        self,
+        *,
+        run_id: str,
+        cycle_index: int,
+        profile_name: str,
+        precheck: Dict,
+    ) -> Dict:
+        identity_check = dict(precheck.get("identity_check") or {})
+        duplicate_precheck = dict(precheck.get("duplicate_precheck") or {})
+        screenshot_urls = dict(precheck.get("screenshot_urls") or {})
+        before = precheck.get("before_screenshot")
+        after = precheck.get("after_screenshot")
+        error = precheck.get("error")
+        return {
+            "action_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "run_id": run_id,
+            "step_id": f"cycle_{cycle_index}_feed_precheck",
+            "cycle_index": cycle_index,
+            "action_type": "feed_precheck",
+            "profile_name": profile_name,
+            "target_url": precheck.get("profile_url"),
+            "target_id": None,
+            "before_screenshot": before,
+            "after_screenshot": after,
+            "screenshot_urls": {
+                "before": screenshot_urls.get("before"),
+                "after": screenshot_urls.get("after"),
+            },
+            "action_method": {
+                "engine": "safety_precheck",
+                "final_status": "completed" if precheck.get("success") else "blocked",
+                "steps_count": 1,
+                "action_trace": ["safety_precheck"],
+                "selector_trace": [],
+            },
+            "result_state": {
+                "success": bool(precheck.get("success")),
+                "completed_count": 1 if precheck.get("success") else 0,
+                "errors": [error] if error else [],
+            },
+            "confirmation": {
+                "profile_identity_confirmed": bool(identity_check.get("passed")),
+                "duplicate_precheck_passed": bool(duplicate_precheck.get("passed", True)),
+            },
+            "identity_check": identity_check,
+            "duplicate_precheck": duplicate_precheck,
+            "raw": {
+                "checked_at": precheck.get("checked_at"),
+                "error": error,
+            },
+        }
 
     async def process_due_runs(self, max_runs: int = 3) -> Dict:
         processed = 0
@@ -74,8 +161,11 @@ class PremiumOrchestrator:
     async def _fail_run(self, *, run_id: str, cycle_index: int, reason: str) -> None:
         self.store.set_cycle_status(run_id=run_id, cycle_index=cycle_index, status="failed", error=reason)
         run = self.store.get_run(run_id) or {}
+        profile_name = str((run.get("run_spec") or {}).get("profile_name") or "")
+        queued_before = self._queued_run_ids_for_profile(profile_name)
         pass_matrix = build_pass_matrix(run.get("verification_state", {}))
         self.store.set_run_status(run_id, "failed", error=reason, pass_matrix=pass_matrix)
+        await self._emit_dequeued_runs(profile_name=profile_name, queued_before=queued_before)
         self.store.append_event(run_id, "run_failed", {"cycle_index": cycle_index, "reason": reason})
         await self._emit(
             "premium_run_failed",
@@ -314,6 +404,106 @@ class PremiumOrchestrator:
 
         caption = bundle.get("caption", "")
         image_path = bundle.get("image_path")
+        dedupe_precheck_enabled = bool(execution_policy.get("dedupe_precheck_enabled", True))
+        dedupe_recent_feed_posts = int(execution_policy.get("dedupe_recent_feed_posts", 5))
+        dedupe_threshold = float(execution_policy.get("dedupe_threshold", 0.90))
+        block_on_duplicate = bool(execution_policy.get("block_on_duplicate", True))
+        single_submit_guard = bool(execution_policy.get("single_submit_guard", True))
+
+        precheck = await self.safety.run_feed_safety_precheck(
+            profile_name=profile_name,
+            caption=caption,
+            lookback_posts=dedupe_recent_feed_posts,
+            threshold=dedupe_threshold,
+        )
+        identity_check = dict(precheck.get("identity_check") or {})
+        duplicate_precheck = dict(precheck.get("duplicate_precheck") or {})
+        profile_identity_confirmed = bool(identity_check.get("passed"))
+
+        if not profile_identity_confirmed:
+            self.store.append_evidence(
+                run_id,
+                self._build_precheck_evidence(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    profile_name=profile_name,
+                    precheck=precheck,
+                ),
+            )
+            self.store.append_event(
+                run_id,
+                "identity_verification_failed",
+                {
+                    "cycle_index": cycle_index,
+                    "identity_check": identity_check,
+                    "precheck_error": precheck.get("error"),
+                },
+            )
+            await self._emit(
+                "premium_identity_check_result",
+                {
+                    "run_id": run_id,
+                    "cycle_index": cycle_index,
+                    "success": False,
+                    "identity_check": identity_check,
+                    "error": precheck.get("error") or "identity_verification_failed",
+                },
+            )
+            self.content.cleanup_generated_image(image_path)
+            await self._fail_run(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                reason="identity_verification_failed",
+            )
+            return
+
+        if dedupe_precheck_enabled and block_on_duplicate and not bool(duplicate_precheck.get("passed", True)):
+            self.store.append_evidence(
+                run_id,
+                self._build_precheck_evidence(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    profile_name=profile_name,
+                    precheck=precheck,
+                ),
+            )
+            self.store.append_event(
+                run_id,
+                "duplicate_precheck_failed",
+                {
+                    "cycle_index": cycle_index,
+                    "duplicate_precheck": duplicate_precheck,
+                    "precheck_error": precheck.get("error"),
+                },
+            )
+            await self._emit(
+                "premium_precheck_blocked",
+                {
+                    "run_id": run_id,
+                    "cycle_index": cycle_index,
+                    "profile_name": profile_name,
+                    "duplicate_precheck": duplicate_precheck,
+                    "error": precheck.get("error") or "duplicate_precheck_failed",
+                },
+            )
+            self.content.cleanup_generated_image(image_path)
+            await self._fail_run(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                reason="duplicate_precheck_failed",
+            )
+            return
+
+        await self._emit(
+            "premium_identity_check_result",
+            {
+                "run_id": run_id,
+                "cycle_index": cycle_index,
+                "success": True,
+                "identity_check": identity_check,
+                "duplicate_precheck": duplicate_precheck,
+            },
+        )
 
         # 1) feed post
         feed_result = await self._run_action_with_tunnel_retries(
@@ -327,6 +517,10 @@ class PremiumOrchestrator:
                 profile_name=profile_name,
                 caption=caption,
                 image_path=None,
+                profile_identity_confirmed=profile_identity_confirmed,
+                identity_check=identity_check,
+                duplicate_precheck=duplicate_precheck,
+                single_submit_guard=single_submit_guard,
             ),
         )
         feed_record = await self._record_action(
@@ -341,6 +535,9 @@ class PremiumOrchestrator:
                 "rules_validation": bundle.get("rules_validation"),
                 "generated_caption": caption,
                 "generated_post_kind": post_kind,
+                "identity_check": identity_check,
+                "duplicate_precheck": duplicate_precheck,
+                "precheck_screenshot_urls": precheck.get("screenshot_urls") or {},
             },
         )
         if not feed_record.get("ok"):
@@ -360,6 +557,8 @@ class PremiumOrchestrator:
             )
             return
 
+        self.store.remember_recent_caption(profile_name, caption)
+
         # 2) group post
         group_cfg = run_spec.get("group_discovery", {})
         group_result = await self._run_action_with_tunnel_retries(
@@ -376,6 +575,8 @@ class PremiumOrchestrator:
                 join_pending_policy=str(group_cfg.get("join_pending_policy", "try_next_group")),
                 group_post_text=caption,
                 image_path=None,
+                profile_identity_confirmed=profile_identity_confirmed,
+                identity_check=identity_check,
             ),
         )
         group_record = await self._record_action(
@@ -389,6 +590,7 @@ class PremiumOrchestrator:
             extra_evidence={
                 "rules_validation": bundle.get("rules_validation"),
                 "generated_caption": caption,
+                "identity_check": identity_check,
             },
         )
         if not group_record.get("ok"):
@@ -429,6 +631,8 @@ class PremiumOrchestrator:
                     profile_name=profile_name,
                     likes_count=likes_target,
                     start_url=group_context_url,
+                    profile_identity_confirmed=profile_identity_confirmed,
+                    identity_check=identity_check,
                 ),
             )
             likes_record = await self._record_action(
@@ -439,6 +643,7 @@ class PremiumOrchestrator:
                 profile_name=profile_name,
                 post_kind=None,
                 action_result=likes_result,
+                extra_evidence={"identity_check": identity_check},
             )
             if not likes_record.get("ok"):
                 self.content.cleanup_generated_image(image_path)
@@ -472,6 +677,8 @@ class PremiumOrchestrator:
                     shares_count=shares_target,
                     share_target=str(engagement.get("share_target", "own_feed")),
                     start_url=group_context_url,
+                    profile_identity_confirmed=profile_identity_confirmed,
+                    identity_check=identity_check,
                 ),
             )
             shares_record = await self._record_action(
@@ -482,6 +689,7 @@ class PremiumOrchestrator:
                 profile_name=profile_name,
                 post_kind=None,
                 action_result=shares_result,
+                extra_evidence={"identity_check": identity_check},
             )
             if not shares_record.get("ok"):
                 self.content.cleanup_generated_image(image_path)
@@ -518,6 +726,8 @@ class PremiumOrchestrator:
                     replies_count=replies_target,
                     reply_text=reply_text,
                     start_url=group_context_url,
+                    profile_identity_confirmed=profile_identity_confirmed,
+                    identity_check=identity_check,
                 ),
             )
             replies_record = await self._record_action(
@@ -528,6 +738,7 @@ class PremiumOrchestrator:
                 profile_name=profile_name,
                 post_kind=None,
                 action_result=replies_result,
+                extra_evidence={"identity_check": identity_check},
             )
             if not replies_record.get("ok"):
                 self.content.cleanup_generated_image(image_path)
@@ -565,7 +776,9 @@ class PremiumOrchestrator:
         pass_matrix = count_evaluation.get("pass_matrix", {})
 
         if count_evaluation.get("passed") and evidence_evaluation.get("passed"):
+            queued_before = self._queued_run_ids_for_profile(profile_name)
             self.store.set_run_status(run_id, "completed", pass_matrix=pass_matrix)
+            await self._emit_dequeued_runs(profile_name=profile_name, queued_before=queued_before)
             self.store.append_event(
                 run_id,
                 "run_completed",
@@ -584,6 +797,7 @@ class PremiumOrchestrator:
                 },
             )
         else:
+            queued_before = self._queued_run_ids_for_profile(profile_name)
             reason = (
                 "verification contract not met: "
                 f"count_missing={count_evaluation.get('missing', [])}; "
@@ -591,6 +805,7 @@ class PremiumOrchestrator:
                 f"invalid_evidence={evidence_evaluation.get('invalid_evidence', [])}"
             )
             self.store.set_run_status(run_id, "failed", error=reason, pass_matrix=pass_matrix)
+            await self._emit_dequeued_runs(profile_name=profile_name, queued_before=queued_before)
             self.store.append_event(
                 run_id,
                 "run_failed",

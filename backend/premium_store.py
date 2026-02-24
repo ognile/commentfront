@@ -121,6 +121,28 @@ class PremiumStore:
         configs.sort(key=lambda c: str(c.get("profile_name", "")).lower())
         return configs
 
+    def remember_recent_caption(self, profile_name: str, caption: str, *, limit: int = 20) -> Optional[Dict]:
+        key = _normalize_profile_name(profile_name)
+        text = str(caption or "").strip()
+        if not text:
+            return None
+        with self._lock:
+            config = self.state.get("profile_configs", {}).get(key)
+            if not config:
+                return None
+            character_profile = config.setdefault("character_profile", {})
+            existing = [str(item).strip() for item in (character_profile.get("recent_captions") or []) if str(item).strip()]
+            deduped = [text]
+            text_key = text.lower()
+            for item in existing:
+                if item.lower() == text_key:
+                    continue
+                deduped.append(item)
+            character_profile["recent_captions"] = deduped[: max(1, int(limit))]
+            config["updated_at"] = _utc_iso()
+            self.save()
+            return config
+
     # ------------------------------------------------------------------
     # rules snapshot
     # ------------------------------------------------------------------
@@ -225,30 +247,138 @@ class PremiumStore:
     def _has_running_cycle(self, run: Dict) -> bool:
         return any(str(c.get("status")) == "running" for c in run.get("cycles", []))
 
+    def _profile_key_for_run(self, run: Dict) -> str:
+        run_spec = run.get("run_spec") or {}
+        return _normalize_profile_name(str(run_spec.get("profile_name") or ""))
+
+    def _list_profile_runs_locked(self, profile_key: str) -> List[Dict]:
+        runs = []
+        for run_id in self.state.get("run_order", []):
+            run = self.state.get("runs", {}).get(run_id)
+            if not run:
+                continue
+            if self._profile_key_for_run(run) != profile_key:
+                continue
+            runs.append(run)
+        return runs
+
+    def _find_profile_active_run_locked(self, profile_key: str) -> Optional[Dict]:
+        runs = self._list_profile_runs_locked(profile_key)
+        for run in runs:
+            if run.get("status") in ("scheduled", "in_progress"):
+                return run
+        return None
+
+    def _list_profile_queued_runs_locked(self, profile_key: str) -> List[Dict]:
+        runs = self._list_profile_runs_locked(profile_key)
+        return [run for run in runs if run.get("status") == "queued"]
+
+    def _recompute_profile_queue_locked(self, profile_key: str) -> None:
+        queued_runs = sorted(
+            self._list_profile_queued_runs_locked(profile_key),
+            key=lambda run: str(run.get("created_at") or ""),
+        )
+        active = self._find_profile_active_run_locked(profile_key)
+        blocker_id = str(active.get("id")) if active else None
+        for position, queued_run in enumerate(queued_runs, start=1):
+            queued_run["queue_position"] = position
+            queued_run["blocked_by_run_id"] = blocker_id
+            queued_run["admission_policy"] = "queue_behind"
+            blocker_id = queued_run.get("id")
+
+    def _promote_next_queued_run_locked(self, profile_key: str) -> Optional[Dict]:
+        queued_runs = sorted(
+            self._list_profile_queued_runs_locked(profile_key),
+            key=lambda run: str(run.get("created_at") or ""),
+        )
+        if not queued_runs:
+            return None
+        next_run = queued_runs[0]
+        next_cycle = self._next_pending_cycle(next_run)
+        next_run["status"] = "scheduled"
+        next_run["blocked_by_run_id"] = None
+        next_run["queue_position"] = 0
+        next_run["next_execute_at"] = next_cycle.get("scheduled_at") if next_cycle else None
+        next_run["updated_at"] = _utc_iso()
+        self._recompute_profile_queue_locked(profile_key)
+        return next_run
+
+    def _create_run_locked(
+        self,
+        *,
+        run_spec: Dict,
+        created_by: str,
+        status: str,
+        blocked_by_run_id: Optional[str],
+        queue_position: int,
+        admission_policy: str,
+    ) -> Dict:
+        run_id = str(uuid.uuid4())
+        cycles = self._build_cycle_plan(run_spec, seed=run_id)
+        next_cycle = cycles[0] if cycles else None
+
+        run = {
+            "id": run_id,
+            "created_at": _utc_iso(),
+            "created_by": created_by,
+            "updated_at": _utc_iso(),
+            "status": status,
+            "error": None,
+            "run_spec": run_spec,
+            "cycles": cycles,
+            "next_execute_at": next_cycle.get("scheduled_at") if (next_cycle and status != "queued") else None,
+            "verification_state": initialize_verification_state(run_spec),
+            "events": [],
+            "evidence": [],
+            "pass_matrix": {},
+            "blocked_by_run_id": blocked_by_run_id,
+            "queue_position": int(queue_position),
+            "admission_policy": admission_policy,
+        }
+
+        self.state["runs"][run_id] = run
+        self.state["run_order"].insert(0, run_id)
+        return run
+
     def create_run(self, *, run_spec: Dict, created_by: str) -> Dict:
         with self._lock:
-            run_id = str(uuid.uuid4())
-            cycles = self._build_cycle_plan(run_spec, seed=run_id)
-            next_cycle = cycles[0] if cycles else None
+            run = self._create_run_locked(
+                run_spec=run_spec,
+                created_by=created_by,
+                status="scheduled",
+                blocked_by_run_id=None,
+                queue_position=0,
+                admission_policy="direct",
+            )
+            self.save()
+            return run
 
-            run = {
-                "id": run_id,
-                "created_at": _utc_iso(),
-                "created_by": created_by,
-                "updated_at": _utc_iso(),
-                "status": "scheduled",
-                "error": None,
-                "run_spec": run_spec,
-                "cycles": cycles,
-                "next_execute_at": next_cycle.get("scheduled_at") if next_cycle else None,
-                "verification_state": initialize_verification_state(run_spec),
-                "events": [],
-                "evidence": [],
-                "pass_matrix": {},
-            }
+    def enqueue_or_create_run(self, *, run_spec: Dict, created_by: str) -> Dict:
+        with self._lock:
+            profile_key = _normalize_profile_name(str((run_spec or {}).get("profile_name") or ""))
+            active_run = self._find_profile_active_run_locked(profile_key)
+            queued_runs = self._list_profile_queued_runs_locked(profile_key)
 
-            self.state["runs"][run_id] = run
-            self.state["run_order"].insert(0, run_id)
+            if active_run:
+                blocked_by_run_id = str(queued_runs[-1].get("id")) if queued_runs else str(active_run.get("id"))
+                run = self._create_run_locked(
+                    run_spec=run_spec,
+                    created_by=created_by,
+                    status="queued",
+                    blocked_by_run_id=blocked_by_run_id,
+                    queue_position=len(queued_runs) + 1,
+                    admission_policy="queue_behind",
+                )
+                self._recompute_profile_queue_locked(profile_key)
+            else:
+                run = self._create_run_locked(
+                    run_spec=run_spec,
+                    created_by=created_by,
+                    status="scheduled",
+                    blocked_by_run_id=None,
+                    queue_position=0,
+                    admission_policy="direct",
+                )
             self.save()
             return run
 
@@ -367,6 +497,7 @@ class PremiumStore:
             run = self.state.get("runs", {}).get(run_id)
             if not run:
                 return None
+            previous_status = str(run.get("status") or "")
             run["status"] = status
             run["error"] = error
             run["updated_at"] = _utc_iso()
@@ -374,6 +505,11 @@ class PremiumStore:
                 run["completed_at"] = _utc_iso()
             if pass_matrix is not None:
                 run["pass_matrix"] = pass_matrix
+            profile_key = self._profile_key_for_run(run)
+            if status in ("completed", "failed", "cancelled"):
+                if previous_status != "queued":
+                    self._promote_next_queued_run_locked(profile_key)
+            self._recompute_profile_queue_locked(profile_key)
             self.save()
             return run
 
@@ -395,6 +531,9 @@ class PremiumStore:
             run["updated_at"] = cancelled_at
             run["completed_at"] = cancelled_at
             run["next_execute_at"] = None
+            profile_key = self._profile_key_for_run(run)
+            self._promote_next_queued_run_locked(profile_key)
+            self._recompute_profile_queue_locked(profile_key)
             self.save()
             return run
 

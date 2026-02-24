@@ -26,6 +26,38 @@ class FakeContent:
         return None
 
 
+class FakeSafety:
+    @staticmethod
+    async def run_feed_safety_precheck(**kwargs):
+        return {
+            "success": True,
+            "error": None,
+            "checked_at": "2026-02-24T12:00:00Z",
+            "profile_url": "https://m.facebook.com/profile.php?id=1",
+            "before_screenshot": "/tmp/precheck_before.png",
+            "after_screenshot": "/tmp/precheck_after.png",
+            "screenshot_urls": {
+                "before": "/screenshots/precheck_before.png",
+                "after": "/screenshots/precheck_after.png",
+            },
+            "identity_check": {
+                "profile_name_expected": kwargs.get("profile_name"),
+                "profile_name_seen": kwargs.get("profile_name"),
+                "name_match": True,
+                "avatar_similarity": 1.0,
+                "avatar_hash_match": True,
+                "passed": True,
+            },
+            "duplicate_precheck": {
+                "checked_posts": int(kwargs.get("lookback_posts", 5)),
+                "threshold": float(kwargs.get("threshold", 0.90)),
+                "top_similarity": 0.2,
+                "matched_post_permalink": None,
+                "passed": True,
+            },
+        }
+
+
 def _evidence(action_type: str, profile_name: str, completed_count: int, confirmation: dict) -> dict:
     return {
         "action_id": str(uuid.uuid4()),
@@ -143,6 +175,7 @@ def test_scheduler_tick_is_idempotent_for_same_due_cycle(tmp_path):
         broadcast_update=None,
         actions_module=FakeActions(),
         content_module=FakeContent,
+        safety_module=FakeSafety,
     )
     scheduler = PremiumScheduler(store=store, orchestrator=orchestrator)
 

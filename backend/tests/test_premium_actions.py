@@ -230,3 +230,34 @@ def test_group_publish_accepts_pending_admin_approval_signal(monkeypatch):
 
     assert result["success"] is True
     assert result["evidence"]["confirmation"]["post_visible_or_permalink_resolved"] is True
+
+
+def test_feed_submit_guard_blocks_repeated_submit_loop(monkeypatch):
+    async def fake_run_adaptive_task(**kwargs):
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/story.php?story_fbid=123&id=456",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {"action_taken": 'CLICK "Post"'},
+                {"action_taken": 'CLICK "Post"'},
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.publish_feed_post(
+            run_id="run_feed_guard",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            caption="test caption",
+            image_path=None,
+            single_submit_guard=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "submit_idempotency_blocked"
+    assert result["evidence"]["submit_guard"]["passed"] is False

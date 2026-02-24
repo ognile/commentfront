@@ -25,6 +25,62 @@ class FakeContentModule:
         return None
 
 
+class FakeSafetyPass:
+    @staticmethod
+    async def run_feed_safety_precheck(**kwargs):
+        return {
+            "success": True,
+            "error": None,
+            "checked_at": "2026-02-24T12:00:00Z",
+            "profile_url": "https://m.facebook.com/profile.php?id=1",
+            "before_screenshot": "/tmp/precheck_before.png",
+            "after_screenshot": "/tmp/precheck_after.png",
+            "screenshot_urls": {
+                "before": "/screenshots/precheck_before.png",
+                "after": "/screenshots/precheck_after.png",
+            },
+            "identity_check": {
+                "profile_name_expected": kwargs.get("profile_name"),
+                "profile_name_seen": kwargs.get("profile_name"),
+                "name_match": True,
+                "avatar_similarity": 1.0,
+                "avatar_hash_match": True,
+                "passed": True,
+            },
+            "duplicate_precheck": {
+                "checked_posts": int(kwargs.get("lookback_posts", 5)),
+                "threshold": float(kwargs.get("threshold", 0.90)),
+                "top_similarity": 0.23,
+                "matched_post_permalink": None,
+                "passed": True,
+            },
+        }
+
+
+class FakeSafetyIdentityFail(FakeSafetyPass):
+    @staticmethod
+    async def run_feed_safety_precheck(**kwargs):
+        payload = await FakeSafetyPass.run_feed_safety_precheck(**kwargs)
+        payload["success"] = False
+        payload["error"] = "identity_verification_failed"
+        payload["identity_check"]["passed"] = False
+        payload["identity_check"]["avatar_similarity"] = 0.12
+        payload["identity_check"]["avatar_hash_match"] = False
+        return payload
+
+
+class FakeSafetyDuplicateFail(FakeSafetyPass):
+    @staticmethod
+    async def run_feed_safety_precheck(**kwargs):
+        payload = await FakeSafetyPass.run_feed_safety_precheck(**kwargs)
+        payload["success"] = False
+        payload["error"] = "duplicate_precheck_failed"
+        payload["duplicate_precheck"]["top_similarity"] = 0.97
+        payload["duplicate_precheck"]["matched_post_permalink"] = "https://m.facebook.com/story.php?story_fbid=1&id=1"
+        payload["duplicate_precheck"]["passed"] = False
+        return payload
+
+
 def _evidence_payload(
     *,
     action_type: str,
@@ -275,6 +331,7 @@ def test_orchestrator_completes_run_with_strict_verification_pass(tmp_path):
         broadcast_update=None,
         actions_module=actions,
         content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
     )
 
     summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
@@ -302,6 +359,7 @@ def test_orchestrator_fails_when_evidence_is_incomplete(tmp_path):
         broadcast_update=None,
         actions_module=MissingEvidenceActions(),
         content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
     )
 
     summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
@@ -324,6 +382,7 @@ def test_orchestrator_retries_group_action_on_tunnel_error(tmp_path):
         broadcast_update=None,
         actions_module=actions,
         content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
     )
 
     summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
@@ -349,6 +408,7 @@ def test_orchestrator_full_pilot_hits_strict_pass_matrix(tmp_path):
         broadcast_update=None,
         actions_module=actions,
         content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
     )
 
     # Run until all due cycles are consumed.
@@ -380,6 +440,7 @@ def test_orchestrator_passes_group_context_url_to_engagement_actions(tmp_path):
         broadcast_update=None,
         actions_module=actions,
         content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
     )
 
     summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
@@ -389,3 +450,59 @@ def test_orchestrator_passes_group_context_url_to_engagement_actions(tmp_path):
     assert actions.likes_kwargs.get("start_url") == group_target
     assert actions.shares_kwargs.get("start_url") == group_target
     assert actions.replies_kwargs.get("start_url") == group_target
+
+
+def test_orchestrator_fails_closed_on_identity_mismatch(tmp_path):
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    store.state["runs"][run["id"]]["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    store.save()
+
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=StrictSuccessActions(),
+        content_module=FakeContentModule,
+        safety_module=FakeSafetyIdentityFail,
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "failed"
+    assert "identity_verification_failed" in str(updated_run.get("error", ""))
+    precheck_evidence = [
+        item for item in (updated_run.get("evidence") or [])
+        if item.get("action_type") == "feed_precheck"
+    ]
+    assert precheck_evidence
+    assert precheck_evidence[-1]["identity_check"]["passed"] is False
+
+
+def test_orchestrator_blocks_on_duplicate_precheck(tmp_path):
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    store.state["runs"][run["id"]]["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    store.save()
+
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=StrictSuccessActions(),
+        content_module=FakeContentModule,
+        safety_module=FakeSafetyDuplicateFail,
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "failed"
+    assert "duplicate_precheck_failed" in str(updated_run.get("error", ""))
+    precheck_evidence = [
+        item for item in (updated_run.get("evidence") or [])
+        if item.get("action_type") == "feed_precheck"
+    ]
+    assert precheck_evidence
+    assert precheck_evidence[-1]["duplicate_precheck"]["passed"] is False

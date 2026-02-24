@@ -82,6 +82,7 @@ class PremiumScheduler:
 
         counts = {
             "scheduled": 0,
+            "queued": 0,
             "in_progress": 0,
             "completed": 0,
             "failed": 0,

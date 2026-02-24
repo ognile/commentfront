@@ -10,7 +10,7 @@ import hashlib
 import logging
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Set
 from pathlib import Path
 
@@ -26,6 +26,9 @@ logger = logging.getLogger("BrowserManager")
 # Temp directory for uploaded images
 UPLOAD_DIR = Path("/tmp/commentbot_uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+IDLE_CLOSE_SECONDS = int(os.getenv("REMOTE_IDLE_CLOSE_SECONDS", "300"))
+STREAM_STALE_SECONDS = float(os.getenv("REMOTE_STREAM_STALE_SECONDS", "10"))
 
 
 def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
@@ -62,8 +65,10 @@ class PersistentBrowserManager:
 
         self._streaming_task: Optional[asyncio.Task] = None
         self._subscribers: Set = set()  # WebSocket connections
+        self._subscriber_last_frame_at: Dict[Any, float] = {}
         self._action_log: List[Dict] = []
         self._lock = asyncio.Lock()
+        self._idle_close_task: Optional[asyncio.Task] = None
 
         # For file chooser interception
         self._pending_file: Optional[str] = None
@@ -72,6 +77,11 @@ class PersistentBrowserManager:
         self._last_frame_hash: Optional[str] = None
         self._last_action_time: float = 0
         self._frame_count: int = 0
+        self._latest_frame: Optional[bytes] = None
+        self._stream_task_state: str = "stopped"
+        self._last_frame_at_ts: Optional[float] = None
+        self._last_subscriber_at_ts: Optional[float] = None
+        self._idle_deadline_at_ts: Optional[float] = None
 
     @property
     def is_active(self) -> bool:
@@ -90,6 +100,78 @@ class PersistentBrowserManager:
             return self._page.url
         return None
 
+    @staticmethod
+    def _now_ts() -> float:
+        import time
+
+        return time.time()
+
+    @staticmethod
+    def _iso_from_ts(ts: Optional[float]) -> Optional[str]:
+        if ts is None:
+            return None
+        try:
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        except Exception:
+            return None
+
+    def _streaming_active(self) -> bool:
+        return bool(self._streaming_task and not self._streaming_task.done())
+
+    def _stream_health_reason(self) -> Optional[str]:
+        if not self.is_active:
+            return "page_inactive"
+        if not self._streaming_active():
+            return "stream_task_inactive"
+        if self._stream_task_state in ("failed", "stopped"):
+            return f"stream_state_{self._stream_task_state}"
+        if self._subscribers and self._last_frame_at_ts is not None:
+            age = self._now_ts() - float(self._last_frame_at_ts)
+            if age > STREAM_STALE_SECONDS:
+                return f"stream_stale_{age:.1f}s"
+        return None
+
+    def _cancel_idle_close_timer(self) -> None:
+        current = asyncio.current_task()
+        if self._idle_close_task and not self._idle_close_task.done() and self._idle_close_task is not current:
+            self._idle_close_task.cancel()
+        self._idle_close_task = None
+        self._idle_deadline_at_ts = None
+
+    def _schedule_idle_close_timer(self) -> None:
+        if self._subscribers:
+            return
+        if not self._session_id or not self.is_active:
+            return
+        self._cancel_idle_close_timer()
+        deadline_ts = self._now_ts() + max(1, IDLE_CLOSE_SECONDS)
+        self._idle_deadline_at_ts = deadline_ts
+        self._idle_close_task = asyncio.create_task(self._idle_close_worker(deadline_ts))
+
+    async def _idle_close_worker(self, deadline_ts: float) -> None:
+        sleep_for = max(0.0, float(deadline_ts) - self._now_ts())
+        try:
+            await asyncio.sleep(sleep_for)
+        except asyncio.CancelledError:
+            return
+
+        if self._subscribers:
+            self._idle_deadline_at_ts = None
+            return
+
+        if not self._session_id or not self.is_active:
+            self._idle_deadline_at_ts = None
+            return
+
+        payload = {
+            "session_id": self._session_id,
+            "idle_seconds": IDLE_CLOSE_SECONDS,
+            "closed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        self._log_action("session_idle_timeout_close", payload)
+        await self.broadcast_event("session_idle_timeout_close", payload)
+        await self.close_session()
+
     async def start_session(self, session_id: str) -> Dict[str, Any]:
         """
         Launch browser with session's fingerprint.
@@ -102,9 +184,10 @@ class PersistentBrowserManager:
         """
         import time
         async with self._lock:
-            # Close existing session if any
-            if self.is_active:
+            # Close existing resources (active or stale) before opening target session.
+            if self._page or self._context or self._browser or self._playwright:
                 await self._cleanup()
+            self._cancel_idle_close_timer()
 
             try:
                 t_total = time.time()
@@ -197,6 +280,9 @@ class PersistentBrowserManager:
                 logger.info(f"[TIMING] Navigation completed in {time.time()-t6:.2f}s")
 
                 # Start frame streaming
+                self._stream_task_state = "starting"
+                self._latest_frame = None
+                self._last_frame_at_ts = None
                 self._streaming_task = asyncio.create_task(self._streaming_loop())
 
                 logger.info(f"[TIMING] Total session start: {time.time()-t_total:.2f}s")
@@ -225,6 +311,8 @@ class PersistentBrowserManager:
 
     async def _cleanup(self):
         """Clean up all browser resources."""
+        self._cancel_idle_close_timer()
+
         # Stop streaming
         if self._streaming_task:
             self._streaming_task.cancel()
@@ -233,6 +321,7 @@ class PersistentBrowserManager:
             except asyncio.CancelledError:
                 pass
             self._streaming_task = None
+        self._stream_task_state = "stopped"
 
         # Close browser
         if self._browser:
@@ -256,6 +345,10 @@ class PersistentBrowserManager:
         self._session = None
         self._pending_file = None
         self._last_frame_hash = None
+        self._latest_frame = None
+        self._last_frame_at_ts = None
+        self._subscriber_last_frame_at = {}
+        self._frame_count = 0
 
     async def _handle_file_chooser(self, file_chooser):
         """
@@ -285,6 +378,7 @@ class PersistentBrowserManager:
     async def _on_page_close(self):
         """Handle unexpected page closure."""
         logger.warning("Page closed unexpectedly")
+        self._stream_task_state = "failed"
         # Notify subscribers of disconnect
         for ws in self._subscribers:
             try:
@@ -295,6 +389,7 @@ class PersistentBrowserManager:
     async def _on_page_crash(self):
         """Handle page crash."""
         logger.error("Page crashed!")
+        self._stream_task_state = "failed"
         # Notify subscribers of crash
         for ws in self._subscribers:
             try:
@@ -315,82 +410,148 @@ class PersistentBrowserManager:
         import time
 
         consecutive_errors = 0
+        self._stream_task_state = "running"
 
-        while self._page and not self._page.is_closed():
-            try:
-                # Adjust rate based on recent activity
-                now = time.time()
-                if now - self._last_action_time < 0.5:
-                    interval = 0.033  # 30 FPS burst mode
-                else:
-                    interval = 0.100  # 10 FPS idle mode
+        try:
+            while self._page and not self._page.is_closed():
+                try:
+                    # Adjust rate based on recent activity
+                    now = time.time()
+                    if now - self._last_action_time < 0.5:
+                        interval = 0.033  # 30 FPS burst mode
+                    else:
+                        interval = 0.100  # 10 FPS idle mode
 
-                # Capture screenshot as JPEG bytes with timeout
-                frame = await asyncio.wait_for(
-                    self._page.screenshot(
-                        type="jpeg",
-                        quality=70,
-                        scale="css"  # 1:1 pixel mapping for coordinate accuracy
-                    ),
-                    timeout=10.0  # 10 second max to prevent hangs
-                )
+                    # Capture screenshot as JPEG bytes with timeout
+                    frame = await asyncio.wait_for(
+                        self._page.screenshot(
+                            type="jpeg",
+                            quality=70,
+                            scale="css"  # 1:1 pixel mapping for coordinate accuracy
+                        ),
+                        timeout=10.0  # 10 second max to prevent hangs
+                    )
 
-                # Reset consecutive errors on success
-                consecutive_errors = 0
+                    # Reset consecutive errors on success
+                    consecutive_errors = 0
 
-                # Delta detection - skip if unchanged
-                frame_hash = hashlib.md5(frame).hexdigest()[:8]
-                if frame_hash != self._last_frame_hash:
-                    self._last_frame_hash = frame_hash
-                    self._frame_count += 1
-                    await self._broadcast_frame(frame)
+                    # Delta detection - skip if unchanged
+                    frame_hash = hashlib.md5(frame).hexdigest()[:8]
+                    if frame_hash != self._last_frame_hash:
+                        self._last_frame_hash = frame_hash
+                        self._frame_count += 1
+                        self._latest_frame = frame
+                        self._last_frame_at_ts = self._now_ts()
+                        await self._broadcast_frame(frame)
 
-                await asyncio.sleep(interval)
+                    await asyncio.sleep(interval)
 
-            except asyncio.CancelledError:
-                break
-            except asyncio.TimeoutError:
-                consecutive_errors += 1
-                logger.warning(f"Screenshot timeout ({consecutive_errors}/5)")
-                if consecutive_errors >= 5:
-                    logger.error("Too many consecutive screenshot timeouts, stopping stream")
-                    break
-                await asyncio.sleep(0.5 * consecutive_errors)  # Exponential backoff
-            except Exception as e:
-                consecutive_errors += 1
-                logger.error(f"Streaming error ({consecutive_errors}/5): {e}")
-                if consecutive_errors >= 5:
-                    logger.error("Too many consecutive streaming errors, stopping stream")
-                    break
-                await asyncio.sleep(0.5 * consecutive_errors)  # Exponential backoff
+                except asyncio.CancelledError:
+                    raise
+                except asyncio.TimeoutError:
+                    consecutive_errors += 1
+                    logger.warning(f"Screenshot timeout ({consecutive_errors}/5)")
+                    if consecutive_errors >= 5:
+                        self._stream_task_state = "failed"
+                        logger.error("Too many consecutive screenshot timeouts, stopping stream")
+                        break
+                    await asyncio.sleep(0.5 * consecutive_errors)  # Exponential backoff
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.error(f"Streaming error ({consecutive_errors}/5): {e}")
+                    if consecutive_errors >= 5:
+                        self._stream_task_state = "failed"
+                        logger.error("Too many consecutive streaming errors, stopping stream")
+                        break
+                    await asyncio.sleep(0.5 * consecutive_errors)  # Exponential backoff
+        except asyncio.CancelledError:
+            self._stream_task_state = "stopped"
+            raise
+        finally:
+            if self._stream_task_state != "failed":
+                self._stream_task_state = "stopped"
 
-    async def _broadcast_frame(self, frame: bytes):
-        """Send frame to all subscribed WebSocket connections."""
+    def _build_frame_message(self, frame: bytes, *, bootstrap: bool) -> str:
         import base64
 
-        if not self._subscribers:
-            return
-
-        # Send as base64 JSON (simpler than binary for now)
-        message = json.dumps({
+        return json.dumps({
             "type": "frame",
             "data": {
                 "image": base64.b64encode(frame).decode("utf-8"),
                 "width": MOBILE_VIEWPORT["width"],
                 "height": MOBILE_VIEWPORT["height"],
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "bootstrap": bootstrap,
             }
         })
 
+    async def _send_frame_to_subscriber(self, websocket, frame: bytes, *, bootstrap: bool) -> bool:
+        try:
+            await websocket.send_text(self._build_frame_message(frame, bootstrap=bootstrap))
+            self._subscriber_last_frame_at[websocket] = self._now_ts()
+            self._last_frame_at_ts = self._subscriber_last_frame_at[websocket]
+            return True
+        except Exception:
+            return False
+
+    async def _broadcast_frame(self, frame: bytes):
+        """Send frame to all subscribed WebSocket connections."""
+        if not self._subscribers:
+            return
+
         disconnected = set()
-        for ws in self._subscribers:
+        for ws in list(self._subscribers):
+            ok = await self._send_frame_to_subscriber(ws, frame, bootstrap=False)
+            if not ok:
+                disconnected.add(ws)
+
+        for ws in disconnected:
+            self.unsubscribe(ws)
+
+    async def send_bootstrap_frame(self, websocket) -> bool:
+        """Send one immediate frame to a subscriber right after browser_ready."""
+        if websocket not in self._subscribers:
+            return False
+
+        frame = self._latest_frame
+        if frame is None:
+            frame = await self.get_screenshot()
+        if frame is None:
+            return False
+
+        sent = await self._send_frame_to_subscriber(websocket, frame, bootstrap=True)
+        if sent:
+            self._latest_frame = frame
+        return sent
+
+    def subscriber_has_recent_frame(self, websocket, within_seconds: float = 3.0) -> bool:
+        ts = self._subscriber_last_frame_at.get(websocket)
+        if ts is None:
+            return False
+        return (self._now_ts() - float(ts)) <= float(within_seconds)
+
+    async def broadcast_event(self, event_type: str, data: Dict[str, Any]):
+        """Broadcast a non-frame event to all subscribers."""
+        if not self._subscribers:
+            return
+
+        message = json.dumps({
+            "type": event_type,
+            "data": {
+                **(data or {}),
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+        })
+
+        disconnected = set()
+        for ws in list(self._subscribers):
             try:
                 await ws.send_text(message)
             except Exception:
                 disconnected.add(ws)
 
         for ws in disconnected:
-            self._subscribers.discard(ws)
+            self.unsubscribe(ws)
 
     async def broadcast_progress(self, stage: str):
         """Broadcast progress update to all subscribers during session startup."""
@@ -406,14 +567,14 @@ class PersistentBrowserManager:
         })
 
         disconnected = set()
-        for ws in self._subscribers:
+        for ws in list(self._subscribers):
             try:
                 await ws.send_text(message)
             except Exception:
                 disconnected.add(ws)
 
         for ws in disconnected:
-            self._subscribers.discard(ws)
+            self.unsubscribe(ws)
 
     async def broadcast_state(self):
         """Broadcast current state to all subscribers."""
@@ -431,24 +592,87 @@ class PersistentBrowserManager:
         })
 
         disconnected = set()
-        for ws in self._subscribers:
+        for ws in list(self._subscribers):
             try:
                 await ws.send_text(message)
             except Exception:
                 disconnected.add(ws)
 
         for ws in disconnected:
-            self._subscribers.discard(ws)
+            self.unsubscribe(ws)
 
     def subscribe(self, websocket) -> None:
         """Add WebSocket to frame subscribers."""
         self._subscribers.add(websocket)
+        self._subscriber_last_frame_at.setdefault(websocket, 0.0)
+        self._last_subscriber_at_ts = self._now_ts()
+        self._cancel_idle_close_timer()
         logger.info(f"Subscriber added, total: {len(self._subscribers)}")
 
     def unsubscribe(self, websocket) -> None:
         """Remove WebSocket from subscribers."""
         self._subscribers.discard(websocket)
+        self._subscriber_last_frame_at.pop(websocket, None)
+        self._last_subscriber_at_ts = self._now_ts()
+        if not self._subscribers:
+            self._schedule_idle_close_timer()
         logger.info(f"Subscriber removed, total: {len(self._subscribers)}")
+
+    async def auto_heal_session(self, *, session_id: Optional[str], reason: str) -> Dict[str, Any]:
+        target = session_id or self._session_id
+        if not target:
+            return {"success": False, "error": "No session available for auto-heal"}
+
+        payload = {
+            "session_id": target,
+            "reason": reason,
+        }
+        self._log_action("session_auto_heal_start", payload)
+        await self.broadcast_event("session_auto_heal_start", payload)
+
+        result = await self.start_session(target)
+        if result.get("success"):
+            await self.broadcast_event("stream_restarted", {
+                "session_id": target,
+                "reason": reason,
+                "url": result.get("url"),
+            })
+
+        completion_payload = {
+            "session_id": target,
+            "reason": reason,
+            "success": bool(result.get("success")),
+            "error": result.get("error"),
+        }
+        self._log_action("session_auto_heal_done", completion_payload)
+        await self.broadcast_event("session_auto_heal_done", completion_payload)
+        return result
+
+    async def restart_session(self, session_id: str, *, reason: str = "manual_restart") -> Dict[str, Any]:
+        return await self.auto_heal_session(session_id=session_id, reason=reason)
+
+    async def ensure_session_ready(self, session_id: str) -> Dict[str, Any]:
+        """
+        Health-aware session readiness check.
+        Reuses healthy session, otherwise restarts automatically.
+        """
+        if self.session_id != session_id:
+            return await self.start_session(session_id)
+
+        if not self.is_active:
+            return await self.start_session(session_id)
+
+        reason = self._stream_health_reason()
+        if reason:
+            return await self.auto_heal_session(session_id=session_id, reason=reason)
+
+        return {
+            "success": True,
+            "session_id": session_id,
+            "url": self.current_url,
+            "reused": True,
+            "stream_task_state": self._stream_task_state,
+        }
 
     async def handle_click(self, x: int, y: int) -> Dict[str, Any]:
         """
@@ -627,19 +851,31 @@ class PersistentBrowserManager:
             return None
 
         try:
-            return await self._page.screenshot(type="jpeg", quality=80, scale="css")
+            frame = await self._page.screenshot(type="jpeg", quality=80, scale="css")
+            self._latest_frame = frame
+            self._last_frame_at_ts = self._now_ts()
+            return frame
         except Exception as e:
             logger.warning(f"Screenshot failed: {e}")
             return None
 
     async def get_current_state(self) -> Dict[str, Any]:
         """Return current session state."""
+        stream_status = {
+            "streaming_active": self._streaming_active(),
+            "stream_task_state": self._stream_task_state,
+            "last_frame_at": self._iso_from_ts(self._last_frame_at_ts),
+            "last_subscriber_at": self._iso_from_ts(self._last_subscriber_at_ts),
+            "idle_close_at": self._iso_from_ts(self._idle_deadline_at_ts),
+        }
+
         if not self._page or self._page.is_closed():
             return {
                 "active": False,
-                "session_id": None,
+                "session_id": self._session_id,
                 "url": None,
-                "title": None
+                "title": None,
+                **stream_status,
             }
 
         try:
@@ -650,11 +886,12 @@ class PersistentBrowserManager:
                 "title": await self._page.title(),
                 "viewport": self._page.viewport_size,
                 "subscriber_count": len(self._subscribers),
-                "frame_count": self._frame_count
+                "frame_count": self._frame_count,
+                **stream_status,
             }
         except Exception as e:
             logger.warning(f"Error getting current state: {e}")
-            return {"active": False, "session_id": self._session_id}
+            return {"active": False, "session_id": self._session_id, **stream_status}
 
     def _log_action(self, action: str, details: Dict):
         """Log every action for debugging and audit trail."""
