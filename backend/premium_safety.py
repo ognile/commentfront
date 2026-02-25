@@ -815,9 +815,9 @@ async def _collect_snapshot_with_scroll(page, expected_profile_name: str, requir
         if idx < (passes - 1):
             expanded = await _expand_posts_surface_if_available(page)
             if expanded:
-                await asyncio.sleep(1.4)
+                await asyncio.sleep(0.8)
             await page.mouse.wheel(0, 850)
-            await asyncio.sleep(1.4)
+            await asyncio.sleep(0.8)
 
     return best_snapshot or await _extract_profile_snapshot(page, expected_profile_name)
 
@@ -838,7 +838,7 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
             logger.warning(f"precheck navigation failed at {candidate_url} for {profile_name}: {nav_exc}")
             continue
 
-        await asyncio.sleep(2.5)
+        await asyncio.sleep(1.2)
         if await _has_broken_link_banner(page):
             dismissed = await _dismiss_broken_link_banner(page)
             if dismissed:
@@ -849,10 +849,10 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
 
         opened_profile = await _open_go_to_profile_if_available(page)
         if opened_profile:
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.0)
         posts_tab_clicked = await _open_posts_tab_if_available(page)
         if posts_tab_clicked:
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(1.0)
 
         snapshot = await _collect_snapshot_with_scroll(page, profile_name, required_posts, user_id)
         snapshot["current_url"] = page.url
@@ -972,6 +972,7 @@ async def run_feed_safety_precheck(
             await apply_session_to_context(context, session)
 
             required_posts = max(1, int(lookback_posts))
+            timeout_recovered = False
             try:
                 snapshot, resolved_profile_url = await asyncio.wait_for(
                     _navigate_to_best_profile_surface(
@@ -991,7 +992,36 @@ async def run_feed_safety_precheck(
                         )
                     except Exception:
                         pass
-                raise RuntimeError(f"precheck_navigation_timeout_{int(PRECHECK_NAVIGATION_TIMEOUT_SECONDS)}s") from timeout_exc
+                    try:
+                        snapshot = await _extract_profile_snapshot(page, profile_name)
+                        snapshot["current_url"] = page.url
+                    except Exception:
+                        snapshot = {
+                            "profile_name_seen": None,
+                            "profile_avatar_seen": None,
+                            "body_text": "",
+                            "posts": [],
+                            "profile_surface_detected": False,
+                            "go_to_profile_visible": False,
+                            "current_url": page.url,
+                        }
+                else:
+                    snapshot = {
+                        "profile_name_seen": None,
+                        "profile_avatar_seen": None,
+                        "body_text": "",
+                        "posts": [],
+                        "profile_surface_detected": False,
+                        "go_to_profile_visible": False,
+                        "current_url": profile_page_url,
+                    }
+                resolved_profile_url = str(snapshot.get("current_url") or profile_page_url)
+                timeout_recovered = True
+                logger.warning(
+                    "precheck navigation timed out for %s after %ss; continuing with best-effort snapshot",
+                    profile_name,
+                    int(PRECHECK_NAVIGATION_TIMEOUT_SECONDS),
+                )
             profile_page_url = resolved_profile_url
 
             before_screenshot = await save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}")
@@ -1104,7 +1134,11 @@ async def run_feed_safety_precheck(
                 "error": None
                 if (identity_passed and duplicate_passed)
                 else (
-                    "identity_verification_failed"
+                    (
+                        "precheck_navigation_timeout_recovered"
+                        if timeout_recovered
+                        else "identity_verification_failed"
+                    )
                     if not identity_passed
                     else (
                         "duplicate_precheck_no_posts"
