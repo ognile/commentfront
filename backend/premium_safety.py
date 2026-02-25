@@ -35,6 +35,7 @@ PRECHECK_NAVIGATION_TIMEOUT_SECONDS = max(20.0, float(os.getenv("PRECHECK_NAVIGA
 PRECHECK_MAX_CANDIDATE_URLS = max(2, int(os.getenv("PRECHECK_MAX_CANDIDATE_URLS", "6")))
 PRECHECK_SCROLL_PASSES = max(2, int(os.getenv("PRECHECK_SCROLL_PASSES", "4")))
 PRECHECK_STAGNANT_PASSES = max(1, int(os.getenv("PRECHECK_STAGNANT_PASSES", "2")))
+PRECHECK_SNAPSHOT_TIMEOUT_SECONDS = max(2.0, float(os.getenv("PRECHECK_SNAPSHOT_TIMEOUT_SECONDS", "8")))
 
 
 def _utc_iso() -> str:
@@ -319,6 +320,78 @@ def _snapshot_score(snapshot: Dict, expected_profile_name: str, user_id: Optiona
         "posts_count": posts_count,
         "final_url": final_url,
     }
+
+
+def _empty_profile_snapshot(current_url: str = "") -> Dict:
+    return {
+        "profile_name_seen": None,
+        "profile_avatar_seen": None,
+        "body_text": "",
+        "posts": [],
+        "profile_surface_detected": False,
+        "go_to_profile_visible": False,
+        "current_url": current_url,
+    }
+
+
+async def _safe_page_url(page, *, fallback: str = "") -> str:
+    if page is None:
+        return fallback
+    try:
+        value = str(page.url or "").strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    return fallback
+
+
+async def _stop_page_load(page) -> None:
+    if page is None:
+        return
+    try:
+        if page.is_closed():
+            return
+    except Exception:
+        return
+    try:
+        await page.evaluate(
+            """() => {
+                try { window.stop(); } catch (_) {}
+                return true;
+            }"""
+        )
+    except Exception:
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+
+async def _extract_profile_snapshot_bounded(
+    page,
+    expected_profile_name: str,
+    *,
+    fallback_url: str = "",
+) -> Dict:
+    timeout_seconds = max(1.0, float(PRECHECK_SNAPSHOT_TIMEOUT_SECONDS))
+    try:
+        snapshot = await asyncio.wait_for(
+            _extract_profile_snapshot(page, expected_profile_name),
+            timeout=timeout_seconds,
+        )
+        if not isinstance(snapshot, dict):
+            return _empty_profile_snapshot(fallback_url)
+        return snapshot
+    except Exception as exc:
+        resolved_url = await _safe_page_url(page, fallback=fallback_url)
+        logger.warning(
+            "precheck snapshot extraction failed for %s after %ss: %s",
+            expected_profile_name,
+            int(timeout_seconds),
+            exc,
+        )
+        return _empty_profile_snapshot(resolved_url)
 
 
 async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
@@ -794,7 +867,7 @@ async def _collect_snapshot_with_scroll(page, expected_profile_name: str, requir
     passes = max(2, PRECHECK_SCROLL_PASSES)
 
     for idx in range(passes):
-        snapshot = await _extract_profile_snapshot(page, expected_profile_name)
+        snapshot = await _extract_profile_snapshot_bounded(page, expected_profile_name)
         score_data = _snapshot_score(snapshot, expected_profile_name, user_id)
         score = int(score_data.get("score", 0))
         if score > best_score:
@@ -819,7 +892,7 @@ async def _collect_snapshot_with_scroll(page, expected_profile_name: str, requir
             await page.mouse.wheel(0, 850)
             await asyncio.sleep(0.8)
 
-    return best_snapshot or await _extract_profile_snapshot(page, expected_profile_name)
+    return best_snapshot or await _extract_profile_snapshot_bounded(page, expected_profile_name)
 
 
 async def _navigate_to_best_profile_surface(page, session: FacebookSession, profile_name: str, required_posts: int) -> Tuple[Dict, str]:
@@ -834,8 +907,10 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
         except Exception as nav_exc:
             if "ERR_TUNNEL_CONNECTION_FAILED" in str(nav_exc):
                 logger.warning(f"precheck tunnel error at {candidate_url} for {profile_name}")
+                await _stop_page_load(page)
                 continue
             logger.warning(f"precheck navigation failed at {candidate_url} for {profile_name}: {nav_exc}")
+            await _stop_page_load(page)
             continue
 
         await asyncio.sleep(1.2)
@@ -874,9 +949,14 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
             break
 
     if not best_snapshot:
-        best_snapshot = await _extract_profile_snapshot(page, profile_name)
-        best_snapshot["current_url"] = page.url
-        best_url = page.url
+        fallback_url = await _safe_page_url(page, fallback=best_url)
+        best_snapshot = await _extract_profile_snapshot_bounded(
+            page,
+            profile_name,
+            fallback_url=fallback_url,
+        )
+        best_snapshot["current_url"] = str(best_snapshot.get("current_url") or fallback_url)
+        best_url = str(best_snapshot.get("current_url") or fallback_url)
 
     return best_snapshot, best_url
 
@@ -993,28 +1073,18 @@ async def run_feed_safety_precheck(
                     except Exception:
                         pass
                     try:
-                        snapshot = await _extract_profile_snapshot(page, profile_name)
-                        snapshot["current_url"] = page.url
+                        await _stop_page_load(page)
+                        fallback_url = await _safe_page_url(page, fallback=profile_page_url)
+                        snapshot = await _extract_profile_snapshot_bounded(
+                            page,
+                            profile_name,
+                            fallback_url=fallback_url,
+                        )
+                        snapshot["current_url"] = str(snapshot.get("current_url") or fallback_url)
                     except Exception:
-                        snapshot = {
-                            "profile_name_seen": None,
-                            "profile_avatar_seen": None,
-                            "body_text": "",
-                            "posts": [],
-                            "profile_surface_detected": False,
-                            "go_to_profile_visible": False,
-                            "current_url": page.url,
-                        }
+                        snapshot = _empty_profile_snapshot(await _safe_page_url(page, fallback=profile_page_url))
                 else:
-                    snapshot = {
-                        "profile_name_seen": None,
-                        "profile_avatar_seen": None,
-                        "body_text": "",
-                        "posts": [],
-                        "profile_surface_detected": False,
-                        "go_to_profile_visible": False,
-                        "current_url": profile_page_url,
-                    }
+                    snapshot = _empty_profile_snapshot(profile_page_url)
                 resolved_profile_url = str(snapshot.get("current_url") or profile_page_url)
                 timeout_recovered = True
                 logger.warning(
@@ -1039,8 +1109,15 @@ async def run_feed_safety_precheck(
                 before_screenshot = await save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}")
                 await page.mouse.wheel(0, 300)
                 await asyncio.sleep(0.7)
-                refreshed_snapshot = await _extract_profile_snapshot(page, profile_name)
-                refreshed_snapshot["current_url"] = page.url
+                refreshed_snapshot = await _extract_profile_snapshot_bounded(
+                    page,
+                    profile_name,
+                    fallback_url=await _safe_page_url(page, fallback=profile_page_url),
+                )
+                refreshed_snapshot["current_url"] = str(
+                    refreshed_snapshot.get("current_url")
+                    or await _safe_page_url(page, fallback=profile_page_url)
+                )
                 refreshed_score = _snapshot_score(refreshed_snapshot, profile_name, _session_user_id(session))
                 existing_score = _snapshot_score(snapshot, profile_name, _session_user_id(session))
                 if int(refreshed_score.get("score", 0)) >= int(existing_score.get("score", 0)):
