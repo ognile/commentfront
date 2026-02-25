@@ -830,7 +830,7 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
 
     for candidate_url in _profile_candidate_urls(session, profile_name):
         try:
-            await page.goto(candidate_url, wait_until="commit", timeout=PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS)
+            await page.goto(candidate_url, wait_until="domcontentloaded", timeout=PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS)
         except Exception as nav_exc:
             if "ERR_TUNNEL_CONNECTION_FAILED" in str(nav_exc):
                 logger.warning(f"precheck tunnel error at {candidate_url} for {profile_name}")
