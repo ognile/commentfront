@@ -1079,16 +1079,6 @@ async def run_feed_safety_precheck(
                 )
             except asyncio.TimeoutError as timeout_exc:
                 if page and not page.is_closed():
-                    try:
-                        before_screenshot = await asyncio.wait_for(
-                            save_debug_screenshot(
-                                page,
-                                f"premium_precheck_timeout_{screenshot_suffix}",
-                            ),
-                            timeout=5.0,
-                        )
-                    except Exception:
-                        pass
                     snapshot = _empty_profile_snapshot(await _safe_page_url(page, fallback=profile_page_url))
                 else:
                     snapshot = _empty_profile_snapshot(profile_page_url)
@@ -1102,15 +1092,8 @@ async def run_feed_safety_precheck(
             profile_page_url = resolved_profile_url
 
             if timeout_recovered:
-                # Keep timeout-recovery path lightweight to avoid lingering on unstable pages.
-                if before_screenshot is None:
-                    try:
-                        before_screenshot = await asyncio.wait_for(
-                            save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}"),
-                            timeout=5.0,
-                        )
-                    except Exception:
-                        before_screenshot = None
+                # Do not capture screenshots on timeout recovery; screenshot APIs can block on stalled pages.
+                before_screenshot = None
                 after_screenshot = None
             else:
                 before_screenshot = await save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}")
