@@ -7,14 +7,19 @@ import premium_safety
 from premium_safety import (
     _extract_post_segments_from_blob,
     _profile_candidate_urls,
+    _resolve_precheck_proxy,
     _snapshot_score,
     _url_profile_hint,
 )
 
 
 class _SessionStub:
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str, proxy: str = ""):
         self.data = {"user_id": user_id}
+        self._proxy = proxy
+
+    def get_proxy(self):
+        return self._proxy
 
 
 def test_profile_candidate_urls_prefers_me_timeline_first():
@@ -39,6 +44,18 @@ def test_profile_candidate_urls_respects_max_candidate_limit(monkeypatch):
         "https://m.facebook.com/me/",
         "https://mbasic.facebook.com/me/?v=timeline",
     ]
+
+
+def test_resolve_precheck_proxy_prefers_session_proxy(monkeypatch):
+    session = _SessionStub("12345", proxy="http://session-proxy:8000")
+    monkeypatch.setattr("proxy_manager.get_system_proxy", lambda: "http://system-proxy:9000")
+    assert _resolve_precheck_proxy(session) == "http://session-proxy:8000"
+
+
+def test_resolve_precheck_proxy_falls_back_to_system_proxy(monkeypatch):
+    session = _SessionStub("12345", proxy="")
+    monkeypatch.setattr("proxy_manager.get_system_proxy", lambda: "http://system-proxy:9000")
+    assert _resolve_precheck_proxy(session) == "http://system-proxy:9000"
 
 
 def test_url_profile_hint_detects_profile_routes():

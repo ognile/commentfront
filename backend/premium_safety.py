@@ -261,6 +261,15 @@ def _profile_candidate_urls(session: FacebookSession, profile_name: str) -> List
     return candidates[:PRECHECK_MAX_CANDIDATE_URLS]
 
 
+def _resolve_precheck_proxy(session: FacebookSession) -> Optional[str]:
+    session_proxy = str(session.get_proxy() or "").strip()
+    if session_proxy:
+        return session_proxy
+    from proxy_manager import get_system_proxy
+
+    return get_system_proxy()
+
+
 def _url_profile_hint(url: Optional[str], user_id: Optional[str]) -> bool:
     value = str(url or "").strip().lower()
     if not value:
@@ -910,9 +919,7 @@ async def run_feed_safety_precheck(
             },
         }
 
-    from proxy_manager import get_system_proxy
-
-    proxy = get_system_proxy()
+    proxy = _resolve_precheck_proxy(session)
     if not proxy:
         return {
             "success": False,
