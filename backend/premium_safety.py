@@ -838,7 +838,7 @@ async def run_feed_safety_precheck(
             duplicate_block = top_similarity >= float(threshold)
             insufficient_posts = len(posts) < required_posts
             no_posts = len(posts) == 0
-            duplicate_passed = (not duplicate_block) and (not no_posts)
+            duplicate_passed = (not duplicate_block) and (not insufficient_posts) and (not no_posts)
 
             identity_check = {
                 "profile_name_expected": profile_name,
@@ -887,7 +887,11 @@ async def run_feed_safety_precheck(
                 else (
                     "identity_verification_failed"
                     if not identity_passed
-                    else ("duplicate_precheck_no_posts" if no_posts else "duplicate_precheck_failed")
+                    else (
+                        "duplicate_precheck_no_posts"
+                        if no_posts
+                        else ("duplicate_precheck_insufficient_posts" if insufficient_posts else "duplicate_precheck_failed")
+                    )
                 ),
                 "checked_at": _utc_iso(),
             }

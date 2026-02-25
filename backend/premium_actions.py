@@ -59,6 +59,27 @@ def _step_actions(result: Dict) -> list:
     return actions
 
 
+def _count_type_actions_for_caption(action_trace: list, caption: str) -> int:
+    """
+    Count TYPE actions that appear to type the target caption text.
+    Uses token overlap to tolerate truncated action traces.
+    """
+    tokens = _token_set(caption)
+    if not tokens:
+        return 0
+    threshold = min(3, len(tokens))
+    count = 0
+    for action in action_trace or []:
+        text = str(action or "").strip().lower()
+        if not text.startswith("type:"):
+            continue
+        payload_tokens = _token_set(text)
+        overlap = len(tokens.intersection(payload_tokens))
+        if overlap >= threshold:
+            count += 1
+    return count
+
+
 def _selector_trace(result: Dict) -> list:
     selectors = []
     for step in result.get("steps", []):
@@ -406,9 +427,10 @@ Required actions:
     result["evidence"]["confirmation"]["post_permalink"] = final_url or None
 
     if single_submit_guard:
+        action_trace = ((result.get("evidence", {}).get("action_method", {}) or {}).get("action_trace", []) or [])
         post_clicks = [
             str(action).strip().lower()
-            for action in ((result.get("evidence", {}).get("action_method", {}) or {}).get("action_trace", []) or [])
+            for action in action_trace
             if 'click "post"' in str(action).strip().lower()
         ]
         submit_guard_passed = len(post_clicks) <= 1
@@ -424,9 +446,27 @@ Required actions:
                 "reason": "multiple feed submit clicks detected in single action",
             }
             return result
+
+        caption_type_count = _count_type_actions_for_caption(action_trace, caption)
+        type_guard_passed = caption_type_count <= 1
+        if not type_guard_passed:
+            result["evidence"]["result_state"]["success"] = False
+            result["evidence"]["result_state"]["completed_count"] = 0
+            result["success"] = False
+            result["error"] = "composer_type_idempotency_blocked"
+            result["evidence"]["type_guard"] = {
+                "passed": False,
+                "caption_type_count": int(caption_type_count),
+                "reason": "caption typed multiple times in a single feed composer flow",
+            }
+            return result
         result["evidence"]["submit_guard"] = {
             "passed": True,
             "post_click_count": len(post_clicks),
+        }
+        result["evidence"]["type_guard"] = {
+            "passed": True,
+            "caption_type_count": int(caption_type_count),
         }
 
     result["success"] = bool(result.get("success")) and bool(permalink_or_visible)

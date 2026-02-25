@@ -671,7 +671,6 @@ class PremiumOrchestrator:
             no_posts_available = (
                 int(duplicate_precheck.get("checked_posts", 0)) <= 0
                 or bool(duplicate_precheck.get("insufficient_posts"))
-                and not bool(duplicate_precheck.get("history_limited"))
             )
             if no_posts_available:
                 attempts = self._cycle_attempts(run_id=run_id, cycle_index=cycle_index)

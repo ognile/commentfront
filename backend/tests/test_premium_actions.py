@@ -308,6 +308,72 @@ def test_feed_submit_guard_blocks_repeated_submit_loop(monkeypatch):
     assert result["evidence"]["submit_guard"]["passed"] is False
 
 
+def test_feed_type_guard_blocks_repeated_caption_typing(monkeypatch):
+    async def fake_run_adaptive_task(**kwargs):
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/story.php?story_fbid=123&id=456",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {"action_taken": "TYPE: small wins today and trying to stay..."},
+                {"action_taken": "TYPE: small wins today and trying to stay..."},
+                {"action_taken": 'CLICK "POST"'},
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.publish_feed_post(
+            run_id="run_feed_type_guard",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            caption="small wins today and trying to stay consistent with my routine.",
+            image_path=None,
+            single_submit_guard=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "composer_type_idempotency_blocked"
+    assert result["evidence"]["type_guard"]["passed"] is False
+    assert result["evidence"]["type_guard"]["caption_type_count"] == 2
+
+
+def test_feed_type_guard_ignores_type_skipped_duplicate(monkeypatch):
+    async def fake_run_adaptive_task(**kwargs):
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {"action_taken": "TYPE: small wins today and trying to stay..."},
+                {"action_taken": "TYPE_SKIPPED_DUPLICATE: small wins today and trying to stay..."},
+                {"action_taken": 'CLICK "POST"'},
+                {"action_taken": "DONE: post visible"},
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.publish_feed_post(
+            run_id="run_feed_type_guard_ok",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            caption="small wins today and trying to stay consistent with my routine.",
+            image_path=None,
+            single_submit_guard=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["evidence"]["type_guard"]["passed"] is True
+    assert result["evidence"]["type_guard"]["caption_type_count"] == 1
+
+
 def test_feed_visibility_accepts_done_signal_on_own_feed_url(monkeypatch):
     async def fake_run_adaptive_task(**kwargs):
         return {

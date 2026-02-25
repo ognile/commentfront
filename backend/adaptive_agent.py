@@ -225,6 +225,82 @@ class AdaptiveAgent:
         self.action_history: List[Dict] = []
         self._file_chooser_handler_set = False
 
+    async def _editable_text_contains(self, target_text: str) -> bool:
+        """Check visible editable fields for target text (normalized)."""
+        if not self.page:
+            return False
+        needle = re.sub(r"\s+", " ", str(target_text or "")).strip().lower()
+        if not needle:
+            return False
+        try:
+            return bool(
+                await self.page.evaluate(
+                    """(needle) => {
+                        const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                        const isVisible = (el) => {
+                            if (!el) return false;
+                            const rect = el.getBoundingClientRect();
+                            if (!rect || rect.width < 2 || rect.height < 2) return false;
+                            if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
+                            const style = window.getComputedStyle(el);
+                            if (!style) return true;
+                            return style.visibility !== "hidden" && style.display !== "none";
+                        };
+                        const isEditable = (el) => {
+                            if (!el) return false;
+                            const tag = (el.tagName || "").toLowerCase();
+                            if (tag === "textarea") return true;
+                            if (tag === "input") {
+                                const type = (el.getAttribute("type") || "text").toLowerCase();
+                                return ["", "text", "search", "email", "url", "tel", "number", "password"].includes(type);
+                            }
+                            if (el.isContentEditable) return true;
+                            const role = (el.getAttribute("role") || "").toLowerCase();
+                            return role === "textbox" || role === "combobox";
+                        };
+                        const readText = (el) => {
+                            if (!el) return "";
+                            if (el.isContentEditable) return normalize(el.innerText || el.textContent || "");
+                            const tag = (el.tagName || "").toLowerCase();
+                            if (tag === "textarea" || tag === "input") return normalize(el.value || "");
+                            return normalize(el.innerText || el.textContent || "");
+                        };
+
+                        const candidates = [];
+                        const addCandidate = (el) => {
+                            if (!el || !isEditable(el) || !isVisible(el)) return;
+                            if (candidates.includes(el)) return;
+                            candidates.push(el);
+                        };
+
+                        addCandidate(document.activeElement);
+                        const selectors = [
+                            "textarea[role='combobox']",
+                            "textarea",
+                            "[contenteditable='true'][role='textbox']",
+                            "[contenteditable='true']",
+                            "input[type='text']",
+                            "input:not([type])",
+                            "[role='textbox']",
+                            "[role='combobox']"
+                        ];
+                        for (const selector of selectors) {
+                            const nodes = Array.from(document.querySelectorAll(selector));
+                            for (const node of nodes.slice(0, 24)) addCandidate(node);
+                        }
+
+                        for (const candidate of candidates) {
+                            const value = readText(candidate);
+                            if (value && value.includes(needle)) return true;
+                        }
+                        return false;
+                    }""",
+                    needle,
+                )
+            )
+        except Exception:
+            return False
+
     def _build_prompt(self, step_num: int, elements_summary: List[str]) -> str:
         """Build the Gemini prompt for decision making."""
         # Build action history summary for loop detection
@@ -995,10 +1071,57 @@ REASONING: Comment was submitted"""
                                         input_focused = True
                                         break
 
-                            await self.page.keyboard.type(text, delay=50)
-                            await asyncio.sleep(1)
-                            step_result["action_taken"] = f"TYPE: {text[:50]}..."
-                            step_result["input_focused"] = input_focused
+                            if not input_focused:
+                                fallback_selectors = [
+                                    "textarea[role='combobox']",
+                                    "textarea",
+                                    "[contenteditable='true'][role='textbox']",
+                                    "[contenteditable='true']",
+                                    "input[type='text']",
+                                    "input:not([type])",
+                                    "[role='textbox']",
+                                    "[role='combobox']",
+                                ]
+                                for selector in fallback_selectors:
+                                    locator = self.page.locator(selector).first
+                                    if await locator.count() == 0:
+                                        continue
+                                    try:
+                                        await locator.scroll_into_view_if_needed()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        await locator.click(timeout=2000)
+                                        await asyncio.sleep(0.3)
+                                        input_focused = True
+                                        break
+                                    except Exception:
+                                        continue
+
+                            already_present = await self._editable_text_contains(text)
+                            if already_present:
+                                step_result["action_taken"] = f"TYPE_SKIPPED_DUPLICATE: {text[:50]}..."
+                                step_result["input_focused"] = input_focused
+                                step_result["type_guard"] = "already_present_in_composer"
+                                logger.info(f"{self.log_prefix} TYPE skipped because text already exists in composer")
+                            else:
+                                # Replace composer text instead of appending. This blocks repeated TYPE spam.
+                                for combo in ("Meta+A", "Control+A"):
+                                    try:
+                                        await self.page.keyboard.press(combo)
+                                        await asyncio.sleep(0.05)
+                                    except Exception:
+                                        continue
+                                try:
+                                    await self.page.keyboard.press("Backspace")
+                                except Exception:
+                                    pass
+                                await asyncio.sleep(0.05)
+                                await self.page.keyboard.type(text, delay=50)
+                                await asyncio.sleep(1)
+                                step_result["action_taken"] = f"TYPE: {text[:50]}..."
+                                step_result["input_focused"] = input_focused
+                                step_result["type_guard"] = "typed_with_replace"
                         else:
                             step_result["action_taken"] = "TYPE_PARSE_ERROR"
 
