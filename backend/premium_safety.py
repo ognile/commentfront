@@ -413,18 +413,24 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                 const hasEngagementControls = (node) => {
                     const roleButtons = node.querySelectorAll("div[role='button'], a[role='button']");
                     if (roleButtons.length >= 3) return true;
+                    const tapTargets = node.querySelectorAll("a, button, div[role='button'], a[role='button'], div[tabindex], span[role='button']");
+                    if (tapTargets.length >= 6) return true;
                     const controls = Array.from(node.querySelectorAll("div[role='button'], a[role='button'], a[role='link'], span")).slice(0, 160);
                     let hasLike = false;
                     let hasComment = false;
                     let hasShare = false;
+                    let iconLikeCount = 0;
                     for (const control of controls) {
                         const text = normalize(control.innerText).toLowerCase();
                         const aria = normalize(control.getAttribute("aria-label")).toLowerCase();
                         if (text === "like" || aria.startsWith("like")) hasLike = true;
                         if (text === "comment" || aria.includes("comment")) hasComment = true;
                         if (text === "share" || aria.includes("share")) hasShare = true;
+                        if (!text && /like|comment|share|reacted/.test(aria)) iconLikeCount += 1;
+                        if (text && text.length <= 3 && /[^\\w\\s]/.test(text)) iconLikeCount += 1;
                         if ((hasLike && hasComment) || (hasComment && hasShare) || (hasLike && hasShare)) return true;
                     }
+                    if (iconLikeCount >= 3) return true;
                     return false;
                 };
 
@@ -442,7 +448,7 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                         node = node ? node.parentElement : null;
                         if (!node) break;
                         const text = normalize(node.innerText || "");
-                        if (!text || text.length < 40 || text.length > 2200) continue;
+                        if (!text || text.length < 40 || text.length > 6000) continue;
                         const rect = node.getBoundingClientRect();
                         if (!rect || rect.height <= 0 || rect.height > (window.innerHeight * 0.98)) continue;
                         if (!hasEngagementControls(node)) continue;
