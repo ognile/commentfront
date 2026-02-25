@@ -12,6 +12,7 @@ import asyncio
 import base64
 import hashlib
 import logging
+import os
 import re
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
@@ -28,6 +29,9 @@ from fb_session import FacebookSession, apply_session_to_context
 from queue_manager import near_duplicate_ratio
 
 logger = logging.getLogger("PremiumSafety")
+
+PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS = max(5000, int(os.getenv("PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS", "25000")))
+PRECHECK_NAVIGATION_TIMEOUT_SECONDS = max(30.0, float(os.getenv("PRECHECK_NAVIGATION_TIMEOUT_SECONDS", "180")))
 
 
 def _utc_iso() -> str:
@@ -766,7 +770,7 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
 
     for candidate_url in _profile_candidate_urls(session, profile_name):
         try:
-            await page.goto(candidate_url, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(candidate_url, wait_until="commit", timeout=PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS)
         except Exception as nav_exc:
             if "ERR_TUNNEL_CONNECTION_FAILED" in str(nav_exc):
                 logger.warning(f"precheck tunnel error at {candidate_url} for {profile_name}")
@@ -903,12 +907,18 @@ async def run_feed_safety_precheck(
             await apply_session_to_context(context, session)
 
             required_posts = max(1, int(lookback_posts))
-            snapshot, resolved_profile_url = await _navigate_to_best_profile_surface(
-                page,
-                session,
-                profile_name,
-                required_posts,
-            )
+            try:
+                snapshot, resolved_profile_url = await asyncio.wait_for(
+                    _navigate_to_best_profile_surface(
+                        page,
+                        session,
+                        profile_name,
+                        required_posts,
+                    ),
+                    timeout=PRECHECK_NAVIGATION_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError as timeout_exc:
+                raise RuntimeError(f"precheck_navigation_timeout_{int(PRECHECK_NAVIGATION_TIMEOUT_SECONDS)}s") from timeout_exc
             profile_page_url = resolved_profile_url
 
             screenshot_suffix = f"{str(run_id or 'adhoc').replace('-', '')[:12]}_{int(cycle_index or 0)}"
