@@ -308,10 +308,62 @@ class PremiumOrchestrator:
         action_key: str,
         execute_action: Callable[[], Any],
         max_retries: int,
+        action_timeout_seconds: int,
     ) -> Dict:
         attempt = 0
+        timeout_seconds = max(1, int(action_timeout_seconds))
         while True:
-            result = await execute_action()
+            try:
+                result = await asyncio.wait_for(execute_action(), timeout=float(timeout_seconds))
+            except asyncio.TimeoutError:
+                reason = f"{action_key} timed out after {timeout_seconds}s"
+                self.store.append_event(
+                    run_id,
+                    "action_timeout",
+                    {
+                        "cycle_index": cycle_index,
+                        "action": action_key,
+                        "timeout_seconds": timeout_seconds,
+                        "attempt": attempt + 1,
+                    },
+                )
+                await self._emit(
+                    "premium_step_result",
+                    {
+                        "run_id": run_id,
+                        "cycle_index": cycle_index,
+                        "action": action_key,
+                        "success": False,
+                        "completed_count": 0,
+                        "expected_count": 0,
+                        "error": reason,
+                    },
+                )
+                return {
+                    "success": False,
+                    "completed_count": 0,
+                    "expected_count": 0,
+                    "error": "action_timeout",
+                    "result": {
+                        "final_status": "task_timeout",
+                        "steps": [],
+                        "errors": [reason],
+                    },
+                    "evidence": {
+                        "action_method": {
+                            "engine": "orchestrator_timeout_guard",
+                            "final_status": "task_timeout",
+                            "steps_count": 0,
+                            "action_trace": [f"TIMEOUT {timeout_seconds}s"],
+                            "selector_trace": [],
+                        },
+                        "result_state": {
+                            "success": False,
+                            "completed_count": 0,
+                            "errors": [reason],
+                        },
+                    },
+                }
             if not self._contains_tunnel_connection_error(result):
                 return result
             if attempt >= max_retries:
@@ -471,6 +523,7 @@ class PremiumOrchestrator:
             await self._fail_run(run_id=run_id, cycle_index=cycle_index, reason=f"premium execution disabled for {profile_name}")
             return
         max_action_retries = int(execution_policy.get("max_retries", 1))
+        action_timeout_seconds = max(1, int(execution_policy.get("action_timeout_seconds", 420)))
 
         rules_snapshot = self.store.get_rules_snapshot()
         if not rules_snapshot:
@@ -836,6 +889,7 @@ class PremiumOrchestrator:
             cycle_index=cycle_index,
             action_key="feed_posts",
             max_retries=max_action_retries,
+            action_timeout_seconds=action_timeout_seconds,
             execute_action=lambda: self.actions.publish_feed_post(
                 run_id=run_id,
                 cycle_index=cycle_index,
@@ -848,6 +902,14 @@ class PremiumOrchestrator:
                 single_submit_guard=single_submit_guard,
             ),
         )
+        if str(feed_result.get("error", "")).strip().lower() == "action_timeout":
+            self.content.cleanup_generated_image(image_path)
+            await self._fail_run(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                reason=f"feed_posts action timed out after {action_timeout_seconds}s",
+            )
+            return
         if await self._defer_or_fail_on_tunnel_error(
             run_id=run_id,
             cycle_index=cycle_index,
@@ -902,6 +964,7 @@ class PremiumOrchestrator:
             cycle_index=cycle_index,
             action_key="group_posts",
             max_retries=max_action_retries,
+            action_timeout_seconds=action_timeout_seconds,
             execute_action=lambda: self.actions.discover_group_and_publish(
                 run_id=run_id,
                 cycle_index=cycle_index,
@@ -915,6 +978,14 @@ class PremiumOrchestrator:
                 identity_check=identity_check,
             ),
         )
+        if str(group_result.get("error", "")).strip().lower() == "action_timeout":
+            self.content.cleanup_generated_image(image_path)
+            await self._fail_run(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                reason=f"group_posts action timed out after {action_timeout_seconds}s",
+            )
+            return
         if await self._defer_or_fail_on_tunnel_error(
             run_id=run_id,
             cycle_index=cycle_index,
@@ -972,6 +1043,7 @@ class PremiumOrchestrator:
                 cycle_index=cycle_index,
                 action_key="likes",
                 max_retries=max_action_retries,
+                action_timeout_seconds=action_timeout_seconds,
                 execute_action=lambda: self.actions.perform_likes(
                     run_id=run_id,
                     cycle_index=cycle_index,
@@ -982,6 +1054,14 @@ class PremiumOrchestrator:
                     identity_check=identity_check,
                 ),
             )
+            if str(likes_result.get("error", "")).strip().lower() == "action_timeout":
+                self.content.cleanup_generated_image(image_path)
+                await self._fail_run(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    reason=f"likes action timed out after {action_timeout_seconds}s",
+                )
+                return
             if await self._defer_or_fail_on_tunnel_error(
                 run_id=run_id,
                 cycle_index=cycle_index,
@@ -1028,6 +1108,7 @@ class PremiumOrchestrator:
                 cycle_index=cycle_index,
                 action_key="shares",
                 max_retries=max_action_retries,
+                action_timeout_seconds=action_timeout_seconds,
                 execute_action=lambda: self.actions.perform_shares(
                     run_id=run_id,
                     cycle_index=cycle_index,
@@ -1039,6 +1120,14 @@ class PremiumOrchestrator:
                     identity_check=identity_check,
                 ),
             )
+            if str(shares_result.get("error", "")).strip().lower() == "action_timeout":
+                self.content.cleanup_generated_image(image_path)
+                await self._fail_run(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    reason=f"shares action timed out after {action_timeout_seconds}s",
+                )
+                return
             if await self._defer_or_fail_on_tunnel_error(
                 run_id=run_id,
                 cycle_index=cycle_index,
@@ -1088,6 +1177,7 @@ class PremiumOrchestrator:
                 cycle_index=cycle_index,
                 action_key="comment_replies",
                 max_retries=max_action_retries,
+                action_timeout_seconds=action_timeout_seconds,
                 execute_action=lambda: self.actions.perform_comment_replies(
                     run_id=run_id,
                     cycle_index=cycle_index,
@@ -1099,6 +1189,14 @@ class PremiumOrchestrator:
                     identity_check=identity_check,
                 ),
             )
+            if str(replies_result.get("error", "")).strip().lower() == "action_timeout":
+                self.content.cleanup_generated_image(image_path)
+                await self._fail_run(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    reason=f"comment_replies action timed out after {action_timeout_seconds}s",
+                )
+                return
             if await self._defer_or_fail_on_tunnel_error(
                 run_id=run_id,
                 cycle_index=cycle_index,

@@ -71,7 +71,7 @@ def _count_type_actions_for_caption(action_trace: list, caption: str) -> int:
     count = 0
     for action in action_trace or []:
         text = str(action or "").strip().lower()
-        if not text.startswith("type:"):
+        if not (text.startswith("type:") or text.startswith("type_set_exact:")):
             continue
         payload_tokens = _token_set(text)
         overlap = len(tokens.intersection(payload_tokens))

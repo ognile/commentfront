@@ -73,5 +73,6 @@ def test_execution_policy_defaults_enable_safety_gates():
     assert policy.block_on_duplicate is True
     assert policy.dedupe_retry_attempts == 2
     assert policy.single_submit_guard is True
+    assert policy.action_timeout_seconds == 420
     assert policy.tunnel_recovery_cycles == 2
     assert policy.tunnel_recovery_delay_seconds == 90

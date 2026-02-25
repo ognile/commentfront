@@ -224,6 +224,11 @@ class AdaptiveAgent:
         self.page: Optional[Page] = None
         self.action_history: List[Dict] = []
         self._file_chooser_handler_set = False
+        self._typed_payloads: set[str] = set()
+
+    @staticmethod
+    def _normalize_typed_payload(text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "")).strip().lower()
 
     async def _editable_text_contains(self, target_text: str) -> bool:
         """Check visible editable fields for target text (normalized)."""
@@ -1136,6 +1141,22 @@ REASONING: Comment was submitted"""
                         text_match = re.search(r'text="([^"]+)"', action_params)
                         if text_match:
                             text = text_match.group(1)
+                            normalized_text = self._normalize_typed_payload(text)
+
+                            if normalized_text and normalized_text in self._typed_payloads:
+                                step_result["action_taken"] = f"TYPE_SKIPPED_REPEAT_MEMORY: {text[:50]}..."
+                                step_result["input_focused"] = False
+                                step_result["type_guard"] = "blocked_by_typed_payload_memory"
+                                logger.info(
+                                    f"{self.log_prefix} TYPE skipped because payload was already typed in this task"
+                                )
+                                self.results["steps"].append(step_result)
+                                self.action_history.append({
+                                    "step": step_num,
+                                    "action": step_result["action_taken"],
+                                    "url": self.page.url,
+                                })
+                                continue
 
                             # Try to find and focus a visible input
                             input_focused = False
@@ -1182,15 +1203,28 @@ REASONING: Comment was submitted"""
                                 step_result["action_taken"] = f"TYPE_SKIPPED_DUPLICATE: {text[:50]}..."
                                 step_result["input_focused"] = input_focused
                                 step_result["type_guard"] = "already_present_in_composer"
+                                if normalized_text:
+                                    self._typed_payloads.add(normalized_text)
                                 logger.info(f"{self.log_prefix} TYPE skipped because text already exists in composer")
                             else:
                                 # Deterministic set: write exact value into composer, no append semantics.
                                 exact_set = await self._set_editable_text_exact(text)
                                 if exact_set:
                                     await asyncio.sleep(0.5)
-                                    step_result["action_taken"] = f"TYPE_SET_EXACT: {text[:50]}..."
-                                    step_result["input_focused"] = input_focused
-                                    step_result["type_guard"] = "typed_with_exact_set"
+                                    typed_verified = await self._editable_text_contains(text)
+                                    if typed_verified:
+                                        if normalized_text:
+                                            self._typed_payloads.add(normalized_text)
+                                        step_result["action_taken"] = f"TYPE_SET_EXACT: {text[:50]}..."
+                                        step_result["input_focused"] = input_focused
+                                        step_result["type_guard"] = "typed_with_exact_set"
+                                    else:
+                                        step_result["action_taken"] = f"TYPE_VERIFICATION_FAILED: {text[:50]}..."
+                                        step_result["input_focused"] = input_focused
+                                        step_result["type_guard"] = "verification_failed_after_exact_set"
+                                        self.results["errors"].append(
+                                            f"Step {step_num}: TYPE verification failed after exact set"
+                                        )
                                 else:
                                     # Last fallback: keyboard replace sequence.
                                     for combo in ("Meta+A", "Control+A"):
@@ -1206,9 +1240,20 @@ REASONING: Comment was submitted"""
                                     await asyncio.sleep(0.05)
                                     await self.page.keyboard.type(text, delay=50)
                                     await asyncio.sleep(1)
-                                    step_result["action_taken"] = f"TYPE: {text[:50]}..."
-                                    step_result["input_focused"] = input_focused
-                                    step_result["type_guard"] = "typed_with_replace_fallback"
+                                    typed_verified = await self._editable_text_contains(text)
+                                    if typed_verified:
+                                        if normalized_text:
+                                            self._typed_payloads.add(normalized_text)
+                                        step_result["action_taken"] = f"TYPE: {text[:50]}..."
+                                        step_result["input_focused"] = input_focused
+                                        step_result["type_guard"] = "typed_with_replace_fallback"
+                                    else:
+                                        step_result["action_taken"] = f"TYPE_VERIFICATION_FAILED: {text[:50]}..."
+                                        step_result["input_focused"] = input_focused
+                                        step_result["type_guard"] = "verification_failed_after_replace_fallback"
+                                        self.results["errors"].append(
+                                            f"Step {step_num}: TYPE verification failed after replace fallback"
+                                        )
                         else:
                             step_result["action_taken"] = "TYPE_PARSE_ERROR"
 

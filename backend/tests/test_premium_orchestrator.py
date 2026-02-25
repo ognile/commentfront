@@ -412,6 +412,39 @@ def test_orchestrator_retries_group_action_on_tunnel_error(tmp_path):
     assert any(evt.get("type") == "action_retry_scheduled" for evt in updated_run.get("events", []))
 
 
+def test_run_action_with_tunnel_retries_returns_timeout_result(tmp_path):
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=StrictSuccessActions(),
+        content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
+    )
+
+    async def slow_action():
+        await asyncio.sleep(1.2)
+        return {"success": True, "errors": []}
+
+    result = asyncio.run(
+        orchestrator._run_action_with_tunnel_retries(
+            run_id=run["id"],
+            cycle_index=0,
+            action_key="feed_posts",
+            execute_action=slow_action,
+            max_retries=1,
+            action_timeout_seconds=1,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "action_timeout"
+    updated_run = store.get_run(run["id"])
+    assert any(evt.get("type") == "action_timeout" for evt in updated_run.get("events", []))
+
+
 def test_orchestrator_defers_cycle_on_transient_tunnel_error(tmp_path):
     store = _setup_store(tmp_path)
     run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")

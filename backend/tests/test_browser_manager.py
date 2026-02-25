@@ -116,6 +116,42 @@ def test_ensure_session_ready_auto_heals_dead_stream():
     asyncio.run(scenario())
 
 
+def test_ensure_session_ready_auto_heals_no_frame_stream():
+    async def scenario():
+        manager = _fresh_manager()
+        manager._session_id = "Vanessa Hines"
+        manager._page = FakePage()
+        manager._stream_task_state = "running"
+        manager._streaming_task = asyncio.create_task(asyncio.sleep(60))
+        manager._last_frame_at_ts = None
+        ws = FakeWebSocket()
+        manager.subscribe(ws)
+
+        calls = []
+
+        async def fake_auto_heal_session(*, session_id, reason):
+            calls.append({"session_id": session_id, "reason": reason})
+            return {"success": True, "session_id": session_id}
+
+        manager.auto_heal_session = fake_auto_heal_session  # type: ignore[assignment]
+        try:
+            result = await manager.ensure_session_ready("Vanessa Hines")
+            assert result["success"] is True
+            assert calls
+            assert calls[0]["session_id"] == "Vanessa Hines"
+            assert "stream_no_frames" in calls[0]["reason"]
+        finally:
+            manager.unsubscribe(ws)
+            manager._cancel_idle_close_timer()
+            if manager._streaming_task:
+                manager._streaming_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await manager._streaming_task
+
+    import contextlib
+    asyncio.run(scenario())
+
+
 def test_send_bootstrap_frame_marks_subscriber_recent():
     async def scenario():
         manager = _fresh_manager()
@@ -132,5 +168,21 @@ def test_send_bootstrap_frame_marks_subscriber_recent():
 
         manager.unsubscribe(ws)
         manager._cancel_idle_close_timer()
+
+    asyncio.run(scenario())
+
+
+def test_get_screenshot_times_out(monkeypatch):
+    class SlowPage(FakePage):
+        async def screenshot(self, **kwargs):
+            await asyncio.sleep(0.7)
+            return b"late-jpeg"
+
+    async def scenario():
+        manager = _fresh_manager()
+        manager._page = SlowPage()
+        monkeypatch.setattr(browser_manager, "SINGLE_SCREENSHOT_TIMEOUT_SECONDS", 0.05)
+        frame = await manager.get_screenshot()
+        assert frame is None
 
     asyncio.run(scenario())

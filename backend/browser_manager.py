@@ -29,6 +29,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 IDLE_CLOSE_SECONDS = int(os.getenv("REMOTE_IDLE_CLOSE_SECONDS", "300"))
 STREAM_STALE_SECONDS = float(os.getenv("REMOTE_STREAM_STALE_SECONDS", "10"))
+SINGLE_SCREENSHOT_TIMEOUT_SECONDS = float(os.getenv("REMOTE_SCREENSHOT_TIMEOUT_SECONDS", "3"))
 
 
 def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
@@ -125,7 +126,9 @@ class PersistentBrowserManager:
             return "stream_task_inactive"
         if self._stream_task_state in ("failed", "stopped"):
             return f"stream_state_{self._stream_task_state}"
-        if self._subscribers and self._last_frame_at_ts is not None:
+        if self._subscribers:
+            if self._last_frame_at_ts is None:
+                return "stream_no_frames"
             age = self._now_ts() - float(self._last_frame_at_ts)
             if age > STREAM_STALE_SECONDS:
                 return f"stream_stale_{age:.1f}s"
@@ -851,10 +854,16 @@ class PersistentBrowserManager:
             return None
 
         try:
-            frame = await self._page.screenshot(type="jpeg", quality=80, scale="css")
+            frame = await asyncio.wait_for(
+                self._page.screenshot(type="jpeg", quality=80, scale="css"),
+                timeout=max(0.5, float(SINGLE_SCREENSHOT_TIMEOUT_SECONDS)),
+            )
             self._latest_frame = frame
             self._last_frame_at_ts = self._now_ts()
             return frame
+        except asyncio.TimeoutError:
+            logger.warning("Single screenshot timed out")
+            return None
         except Exception as e:
             logger.warning(f"Screenshot failed: {e}")
             return None
