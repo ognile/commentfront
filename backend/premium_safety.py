@@ -625,6 +625,67 @@ async def _has_broken_link_banner(page) -> bool:
         return False
 
 
+async def _dismiss_broken_link_banner(page) -> bool:
+    """
+    Try to close the broken-link toast/modal instead of abandoning the surface immediately.
+    """
+    selectors = [
+        'div[role="button"][aria-label*="close" i]',
+        'div[role="button"][aria-label*="dismiss" i]',
+        'a[role="button"][aria-label*="close" i]',
+        'button[aria-label*="close" i]',
+        'div[role="button"]:has-text("Close")',
+        'div[role="button"]:has-text("Dismiss")',
+        'div[role="button"]:has-text("X")',
+        'button:has-text("Close")',
+        'button:has-text("Dismiss")',
+    ]
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            try:
+                await locator.tap(timeout=2500)
+            except Exception:
+                await locator.click(timeout=2500, force=True)
+            await asyncio.sleep(0.8)
+            if not await _has_broken_link_banner(page):
+                return True
+        except Exception:
+            continue
+
+    try:
+        clicked = await page.evaluate(
+            """() => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const nodes = Array.from(document.querySelectorAll('div[role="button"], a[role="button"], button, span, a')).slice(0, 240);
+                for (const node of nodes) {
+                    const text = normalize(node.innerText);
+                    const aria = normalize(node.getAttribute("aria-label"));
+                    if ((text === "x" || text === "close" || aria.includes("close") || aria.includes("dismiss"))) {
+                        const rect = node.getBoundingClientRect();
+                        if (rect && rect.top >= 0 && rect.top < (window.innerHeight * 0.45)) {
+                            const target = node.closest('div[role="button"], a[role="button"], button, a') || node;
+                            if (target && typeof target.click === "function") {
+                                target.click();
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            }"""
+        )
+        if clicked:
+            await asyncio.sleep(0.8)
+            return not await _has_broken_link_banner(page)
+    except Exception:
+        pass
+
+    return False
+
+
 async def _open_posts_tab_if_available(page) -> bool:
     try:
         clicked = await page.evaluate(
@@ -715,8 +776,12 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
 
         await asyncio.sleep(2.5)
         if await _has_broken_link_banner(page):
-            logger.warning(f"precheck broken-link banner at {candidate_url} for {profile_name}")
-            continue
+            dismissed = await _dismiss_broken_link_banner(page)
+            if dismissed:
+                await asyncio.sleep(1.0)
+            if await _has_broken_link_banner(page):
+                logger.warning(f"precheck broken-link banner at {candidate_url} for {profile_name}")
+                continue
 
         opened_profile = await _open_go_to_profile_if_available(page)
         if opened_profile:
