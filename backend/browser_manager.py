@@ -437,14 +437,19 @@ class PersistentBrowserManager:
 
                     # Reset consecutive errors on success
                     consecutive_errors = 0
+                    self._latest_frame = frame
+                    self._last_frame_at_ts = self._now_ts()
 
                     # Delta detection - skip if unchanged
                     frame_hash = hashlib.md5(frame).hexdigest()[:8]
                     if frame_hash != self._last_frame_hash:
                         self._last_frame_hash = frame_hash
                         self._frame_count += 1
-                        self._latest_frame = frame
-                        self._last_frame_at_ts = self._now_ts()
+                        await self._broadcast_frame(frame)
+                    elif self._any_subscriber_missing_recent_frame():
+                        # Static pages can keep the same hash indefinitely.
+                        # Re-send the current frame so reconnecting subscribers
+                        # do not remain stuck waiting for the first render.
                         await self._broadcast_frame(frame)
 
                     await asyncio.sleep(interval)
@@ -532,6 +537,14 @@ class PersistentBrowserManager:
         if ts is None:
             return False
         return (self._now_ts() - float(ts)) <= float(within_seconds)
+
+    def _any_subscriber_missing_recent_frame(self, within_seconds: float = 2.5) -> bool:
+        if not self._subscribers:
+            return False
+        for ws in list(self._subscribers):
+            if not self.subscriber_has_recent_frame(ws, within_seconds=within_seconds):
+                return True
+        return False
 
     async def broadcast_event(self, event_type: str, data: Dict[str, Any]):
         """Broadcast a non-frame event to all subscribers."""

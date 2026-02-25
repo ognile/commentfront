@@ -198,6 +198,7 @@ async def _execute_task(
     expected_count: int = 1,
     confirmation_keyword: Optional[str] = None,
     max_steps: int = 20,
+    max_type_actions: Optional[int] = None,
     retry_fallback_url: Optional[str] = None,
     retry_task_prefix: Optional[str] = None,
     profile_identity_confirmed: bool = True,
@@ -259,6 +260,7 @@ async def _execute_task(
         max_steps=max_steps,
         start_url=start_url,
         upload_file_path=upload_file_path,
+        max_type_actions=max_type_actions,
     )
     if _has_tunnel_connection_error(adaptive_result):
         fallback_chain = []
@@ -280,6 +282,7 @@ async def _execute_task(
                 max_steps=max_steps,
                 start_url=fallback_url,
                 upload_file_path=upload_file_path,
+                max_type_actions=max_type_actions,
             )
             tunnel_persisted = _has_tunnel_connection_error(retry_result)
             combined_errors = []
@@ -377,6 +380,7 @@ Required actions:
         expected_count=1,
         confirmation_keyword="post",
         max_steps=30,
+        max_type_actions=1,
         profile_identity_confirmed=profile_identity_confirmed,
         identity_check=identity_check,
         duplicate_precheck=duplicate_precheck,

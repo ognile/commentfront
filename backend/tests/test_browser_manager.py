@@ -172,6 +172,24 @@ def test_send_bootstrap_frame_marks_subscriber_recent():
     asyncio.run(scenario())
 
 
+def test_any_subscriber_missing_recent_frame_detects_stale_subscriber():
+    async def scenario():
+        manager = _fresh_manager()
+        ws = FakeWebSocket()
+        manager.subscribe(ws)
+
+        assert manager._any_subscriber_missing_recent_frame(within_seconds=0.01) is True
+
+        sent = await manager._send_frame_to_subscriber(ws, b"fake-jpeg", bootstrap=False)
+        assert sent is True
+        assert manager._any_subscriber_missing_recent_frame(within_seconds=3.0) is False
+
+        manager.unsubscribe(ws)
+        manager._cancel_idle_close_timer()
+
+    asyncio.run(scenario())
+
+
 def test_get_screenshot_times_out(monkeypatch):
     class SlowPage(FakePage):
         async def screenshot(self, **kwargs):

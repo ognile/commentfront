@@ -201,7 +201,8 @@ class AdaptiveAgent:
         task: str,
         max_steps: int = 15,
         start_url: str = "https://m.facebook.com",
-        upload_file_path: Optional[str] = None
+        upload_file_path: Optional[str] = None,
+        max_type_actions: Optional[int] = None,
     ):
         self.profile_name = profile_name
         self.task = task
@@ -225,6 +226,12 @@ class AdaptiveAgent:
         self.action_history: List[Dict] = []
         self._file_chooser_handler_set = False
         self._typed_payloads: set[str] = set()
+        self._type_action_count = 0
+        self._max_type_actions = (
+            int(max_type_actions)
+            if isinstance(max_type_actions, int) and max_type_actions > 0
+            else None
+        )
 
     @staticmethod
     def _normalize_typed_payload(text: str) -> str:
@@ -1140,6 +1147,25 @@ REASONING: Comment was submitted"""
                     elif action_type == "TYPE":
                         text_match = re.search(r'text="([^"]+)"', action_params)
                         if text_match:
+                            if self._max_type_actions is not None and self._type_action_count >= self._max_type_actions:
+                                step_result["action_taken"] = "TYPE_SKIPPED_MAX_TYPE_ACTIONS"
+                                step_result["input_focused"] = False
+                                step_result["type_guard"] = "blocked_by_max_type_actions"
+                                logger.info(
+                                    f"{self.log_prefix} TYPE skipped by max_type_actions guard "
+                                    f"(limit={self._max_type_actions})"
+                                )
+                                self.results["steps"].append(step_result)
+                                self.action_history.append(
+                                    {
+                                        "step": step_num,
+                                        "action": step_result["action_taken"],
+                                        "url": self.page.url,
+                                    }
+                                )
+                                continue
+
+                            self._type_action_count += 1
                             text = text_match.group(1)
                             normalized_text = self._normalize_typed_payload(text)
 
@@ -1374,7 +1400,8 @@ async def run_adaptive_task(
     task: str,
     max_steps: int = 15,
     start_url: str = "https://m.facebook.com",
-    upload_file_path: Optional[str] = None
+    upload_file_path: Optional[str] = None,
+    max_type_actions: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Convenience function to run an adaptive agent task.
@@ -1386,6 +1413,7 @@ async def run_adaptive_task(
         max_steps: Maximum number of agent steps
         start_url: Starting URL for the agent
         upload_file_path: Optional path to file for UPLOAD action
+        max_type_actions: Optional max TYPE actions allowed in one task
 
     Returns:
         Dict with results including steps, screenshots, errors, final_status
@@ -1396,6 +1424,7 @@ async def run_adaptive_task(
             task=task,
             max_steps=max_steps,
             start_url=start_url,
-            upload_file_path=upload_file_path
+            upload_file_path=upload_file_path,
+            max_type_actions=max_type_actions,
         )
         return await agent.run()

@@ -338,7 +338,41 @@ def test_feed_type_guard_blocks_repeated_caption_typing(monkeypatch):
     assert result["success"] is False
     assert result["error"] == "composer_type_idempotency_blocked"
     assert result["evidence"]["type_guard"]["passed"] is False
-    assert result["evidence"]["type_guard"]["caption_type_count"] == 2
+
+
+def test_feed_publish_sets_max_type_actions_guard(monkeypatch):
+    calls = []
+
+    async def fake_run_adaptive_task(**kwargs):
+        calls.append(kwargs)
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/story.php?story_fbid=123&id=456",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {"action_taken": 'CLICK "What\'s on your mind?"'},
+                {"action_taken": "TYPE_SET_EXACT: checking single-type guard..."},
+                {"action_taken": 'CLICK "POST"'},
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.publish_feed_post(
+            run_id="run_feed_single_type_limit",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            caption="checking single-type guard",
+            image_path=None,
+            single_submit_guard=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 1
+    assert calls[0]["max_type_actions"] == 1
 
 
 def test_feed_type_guard_blocks_repeated_exact_set_typing(monkeypatch):

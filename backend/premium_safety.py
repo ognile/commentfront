@@ -32,6 +32,9 @@ logger = logging.getLogger("PremiumSafety")
 
 PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS = max(4000, int(os.getenv("PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS", "12000")))
 PRECHECK_NAVIGATION_TIMEOUT_SECONDS = max(20.0, float(os.getenv("PRECHECK_NAVIGATION_TIMEOUT_SECONDS", "75")))
+PRECHECK_MAX_CANDIDATE_URLS = max(2, int(os.getenv("PRECHECK_MAX_CANDIDATE_URLS", "6")))
+PRECHECK_SCROLL_PASSES = max(2, int(os.getenv("PRECHECK_SCROLL_PASSES", "4")))
+PRECHECK_STAGNANT_PASSES = max(1, int(os.getenv("PRECHECK_STAGNANT_PASSES", "2")))
 
 
 def _utc_iso() -> str:
@@ -255,7 +258,7 @@ def _profile_candidate_urls(session: FacebookSession, profile_name: str) -> List
         _add(f"https://mbasic.facebook.com/{slug}")
     _add("https://mbasic.facebook.com/")
     _add("https://m.facebook.com/")
-    return candidates
+    return candidates[:PRECHECK_MAX_CANDIDATE_URLS]
 
 
 def _url_profile_hint(url: Optional[str], user_id: Optional[str]) -> bool:
@@ -777,19 +780,30 @@ async def _open_go_to_profile_if_available(page) -> bool:
 async def _collect_snapshot_with_scroll(page, expected_profile_name: str, required_posts: int, user_id: Optional[str]) -> Dict:
     best_snapshot: Dict = {}
     best_score = -9999
+    best_posts_count = 0
+    stagnant_passes = 0
+    passes = max(2, PRECHECK_SCROLL_PASSES)
 
-    for idx in range(6):
+    for idx in range(passes):
         snapshot = await _extract_profile_snapshot(page, expected_profile_name)
         score_data = _snapshot_score(snapshot, expected_profile_name, user_id)
         score = int(score_data.get("score", 0))
         if score > best_score:
             best_snapshot = snapshot
             best_score = score
-        enough_posts = int(score_data.get("posts_count", 0)) >= int(required_posts)
+        posts_count = int(score_data.get("posts_count", 0))
+        enough_posts = posts_count >= int(required_posts)
         strict_name = bool(score_data.get("strict_name_match"))
+        if posts_count > best_posts_count:
+            best_posts_count = posts_count
+            stagnant_passes = 0
+        else:
+            stagnant_passes += 1
         if enough_posts and strict_name:
             break
-        if idx < 5:
+        if strict_name and posts_count > 0 and stagnant_passes >= PRECHECK_STAGNANT_PASSES:
+            break
+        if idx < (passes - 1):
             expanded = await _expand_posts_surface_if_available(page)
             if expanded:
                 await asyncio.sleep(1.4)
@@ -841,8 +855,13 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
             best_score = score
 
         strict_name = bool(score_data.get("strict_name_match"))
-        enough_posts = int(score_data.get("posts_count", 0)) >= int(required_posts)
+        posts_count = int(score_data.get("posts_count", 0))
+        enough_posts = posts_count >= int(required_posts)
         if strict_name and enough_posts:
+            break
+        # Stop early when we already landed on the correct profile surface.
+        # Duplicate gate can still fail closed later if post history is insufficient.
+        if strict_name and posts_count > 0 and score >= 58:
             break
 
     if not best_snapshot:
@@ -925,6 +944,8 @@ async def run_feed_safety_precheck(
 
     async with async_playwright() as p:
         browser = None
+        page = None
+        screenshot_suffix = f"{str(run_id or 'adhoc').replace('-', '')[:12]}_{int(cycle_index or 0)}"
         try:
             browser = await p.chromium.launch(
                 headless=True,
@@ -955,10 +976,17 @@ async def run_feed_safety_precheck(
                     timeout=PRECHECK_NAVIGATION_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError as timeout_exc:
+                if page and not page.is_closed():
+                    try:
+                        before_screenshot = await save_debug_screenshot(
+                            page,
+                            f"premium_precheck_timeout_{screenshot_suffix}",
+                        )
+                    except Exception:
+                        pass
                 raise RuntimeError(f"precheck_navigation_timeout_{int(PRECHECK_NAVIGATION_TIMEOUT_SECONDS)}s") from timeout_exc
             profile_page_url = resolved_profile_url
 
-            screenshot_suffix = f"{str(run_id or 'adhoc').replace('-', '')[:12]}_{int(cycle_index or 0)}"
             before_screenshot = await save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}")
             await page.mouse.wheel(0, 300)
             await asyncio.sleep(0.7)
@@ -1081,6 +1109,14 @@ async def run_feed_safety_precheck(
             }
         except Exception as exc:
             logger.error(f"safety precheck failed for {profile_name}: {exc}")
+            if before_screenshot is None and page and not page.is_closed():
+                try:
+                    before_screenshot = await save_debug_screenshot(
+                        page,
+                        f"premium_precheck_error_{screenshot_suffix}",
+                    )
+                except Exception:
+                    pass
             return {
                 "success": False,
                 "identity_check": {

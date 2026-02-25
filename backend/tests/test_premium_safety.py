@@ -3,6 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import premium_safety
 from premium_safety import (
     _extract_post_segments_from_blob,
     _profile_candidate_urls,
@@ -26,6 +27,18 @@ def test_profile_candidate_urls_prefers_me_timeline_first():
     assert "https://m.facebook.com/profile.php?id=12345&v=timeline" in urls
     assert "https://m.facebook.com/me/?v=timeline" in urls
     assert "https://mbasic.facebook.com/me/?v=timeline" in urls
+
+
+def test_profile_candidate_urls_respects_max_candidate_limit(monkeypatch):
+    monkeypatch.setattr(premium_safety, "PRECHECK_MAX_CANDIDATE_URLS", 3)
+    session = _SessionStub("12345")
+    urls = _profile_candidate_urls(session, "Wanda Lobb")
+    assert len(urls) == 3
+    assert urls == [
+        "https://m.facebook.com/me/?v=timeline",
+        "https://m.facebook.com/me/",
+        "https://mbasic.facebook.com/me/?v=timeline",
+    ]
 
 
 def test_url_profile_hint_detects_profile_routes():
