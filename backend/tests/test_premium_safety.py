@@ -3,7 +3,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from premium_safety import _profile_candidate_urls, _snapshot_score, _url_profile_hint
+from premium_safety import (
+    _extract_post_segments_from_blob,
+    _profile_candidate_urls,
+    _snapshot_score,
+    _url_profile_hint,
+)
 
 
 class _SessionStub:
@@ -54,3 +59,28 @@ def test_snapshot_score_prefers_strong_profile_context():
     assert int(strong_score["score"]) > int(weak_score["score"])
     assert strong_score["strict_name_match"] is True
     assert weak_score["strict_name_match"] is False
+
+
+def test_extract_post_segments_from_blob_splits_compound_timeline_text():
+    blob = (
+        "Wanda Lobb 26m small wins today and trying to stay consistent with my routine. "
+        "Like Comment Share "
+        "Wanda Lobb 32m kept things simple today and that honestly helped a lot. "
+        "Like Comment Share "
+        "Wanda Lobb 1h slow morning, warm coffee, and a better mood after a long week."
+    )
+
+    posts = _extract_post_segments_from_blob(blob, "Wanda Lobb", max_posts=5)
+    assert len(posts) >= 3
+    assert any("small wins today" in p["text"].lower() for p in posts)
+    assert any("kept things simple" in p["text"].lower() for p in posts)
+
+
+def test_extract_post_segments_from_blob_ignores_profile_header_noise():
+    blob = (
+        "Wanda Lobb 25 posts Add to story Edit profile All Photos Reels Personal details "
+        "Post a status update Loading more..."
+    )
+
+    posts = _extract_post_segments_from_blob(blob, "Wanda Lobb", max_posts=5)
+    assert posts == []

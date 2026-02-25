@@ -143,6 +143,59 @@ def _dedupe_extracted_posts(posts: List[Dict], similarity_threshold: float = 0.9
     return unique
 
 
+def _extract_post_segments_from_blob(blob_text: str, expected_profile_name: str, max_posts: int = 12) -> List[Dict]:
+    """
+    Split one oversized timeline blob into multiple authored post-like segments.
+    This is a fallback for mobile surfaces where DOM wrappers collapse many posts.
+    """
+    raw = re.sub(r"\s+", " ", str(blob_text or "")).strip()
+    author = str(expected_profile_name or "").strip()
+    if not raw or len(raw) < 60 or not author:
+        return []
+
+    author_re = re.compile(re.escape(author), re.IGNORECASE)
+    hits = list(author_re.finditer(raw))
+    if len(hits) < 2:
+        return []
+
+    time_re = re.compile(
+        r"\b(?:just now|today|yesterday|\d{1,2}[mh]|\d{1,2}\s*(?:min|mins|hour|hours|day|days)|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b",
+        re.IGNORECASE,
+    )
+    blocked_phrases = (
+        "add to story",
+        "edit profile",
+        "post a status update",
+        "all photos reels personal details",
+    )
+
+    segments: List[Dict] = []
+    for idx, hit in enumerate(hits):
+        start = hit.start()
+        if idx + 1 < len(hits):
+            end = hits[idx + 1].start()
+        else:
+            end = min(len(raw), start + 1200)
+        chunk = raw[start:end].strip()
+        if len(chunk) < 35:
+            continue
+        lower = chunk.lower()
+        if any(phrase in lower for phrase in blocked_phrases):
+            continue
+        if not time_re.search(lower):
+            continue
+        cleaned = author_re.sub("", chunk, count=1).strip(" .:-")
+        cleaned = re.split(r"(?:\blike\b|\bcomment\b|\bshare\b|󰍸|󰍹|󰍺)", cleaned, maxsplit=1, flags=re.IGNORECASE)[0]
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) < 20:
+            continue
+        segments.append({"permalink": None, "text": cleaned[:800], "author": author})
+        if len(segments) >= int(max_posts):
+            break
+
+    return _dedupe_extracted_posts(segments, similarity_threshold=0.92)
+
+
 def _session_user_id(session: FacebookSession) -> Optional[str]:
     data = session.data or {}
     user_id = data.get("user_id")
@@ -814,6 +867,25 @@ async def run_feed_safety_precheck(
 
             user_id = _session_user_id(session)
             posts = _dedupe_extracted_posts(list(snapshot.get("posts") or []))
+            if len(posts) < required_posts:
+                expanded: List[Dict] = []
+                for item in list(snapshot.get("posts") or []):
+                    expanded.extend(
+                        _extract_post_segments_from_blob(
+                            str((item or {}).get("text") or ""),
+                            profile_name,
+                            max_posts=max(required_posts * 2, 8),
+                        )
+                    )
+                expanded.extend(
+                    _extract_post_segments_from_blob(
+                        body_text,
+                        profile_name,
+                        max_posts=max(required_posts * 2, 8),
+                    )
+                )
+                if expanded:
+                    posts = _dedupe_extracted_posts(posts + expanded, similarity_threshold=0.94)
             strict_name_match = _name_matches(profile_name, profile_name_seen)
             token_name_match = _name_tokens_present(profile_name, body_text)
             profile_surface_detected = bool(snapshot.get("profile_surface_detected"))
