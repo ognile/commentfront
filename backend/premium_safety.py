@@ -955,6 +955,7 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
             best_snapshot = snapshot
             best_url = page.url
             best_score = score
+            best_snapshot["navigation_unreachable"] = False
 
         strict_name = bool(score_data.get("strict_name_match"))
         posts_count = int(score_data.get("posts_count", 0))
@@ -970,6 +971,7 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
         fallback_url = await _safe_page_url(page, fallback=best_url)
         best_snapshot = _empty_profile_snapshot(fallback_url)
         best_snapshot["current_url"] = str(fallback_url)
+        best_snapshot["navigation_unreachable"] = True
         best_url = str(fallback_url)
 
     return best_snapshot, best_url
@@ -1090,8 +1092,9 @@ async def run_feed_safety_precheck(
                     int(PRECHECK_NAVIGATION_TIMEOUT_SECONDS),
                 )
             profile_page_url = resolved_profile_url
+            precheck_surface_unreachable = bool(timeout_recovered or snapshot.get("navigation_unreachable"))
 
-            if timeout_recovered:
+            if precheck_surface_unreachable:
                 # Do not capture screenshots on timeout recovery; screenshot APIs can block on stalled pages.
                 before_screenshot = None
                 after_screenshot = None
@@ -1215,7 +1218,7 @@ async def run_feed_safety_precheck(
                 else (
                     (
                         "precheck_navigation_timeout_recovered"
-                        if timeout_recovered
+                        if precheck_surface_unreachable
                         else "identity_verification_failed"
                     )
                     if not identity_passed
