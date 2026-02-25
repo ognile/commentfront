@@ -220,6 +220,16 @@ class MissingEvidenceActions(StrictSuccessActions):
         return result
 
 
+class SlowRepliesActions(StrictSuccessActions):
+    def __init__(self, delay_seconds: float):
+        super().__init__()
+        self.delay_seconds = float(delay_seconds)
+
+    async def perform_comment_replies(self, **kwargs):
+        await asyncio.sleep(self.delay_seconds)
+        return await super().perform_comment_replies(**kwargs)
+
+
 class TunnelRetryGroupActions(StrictSuccessActions):
     def __init__(self):
         super().__init__()
@@ -411,6 +421,34 @@ def test_orchestrator_retries_group_action_on_tunnel_error(tmp_path):
     assert updated_run["pass_matrix"]["group_posts"] == "1/1"
     assert actions.group_calls == 2
     assert any(evt.get("type") == "action_retry_scheduled" for evt in updated_run.get("events", []))
+
+
+def test_orchestrator_uses_reply_timeout_override(tmp_path):
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    store.state["runs"][run["id"]]["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    profile_cfg = store.state["profile_configs"]["vanessa hines"]
+    profile_cfg["execution_policy"]["action_timeout_seconds"] = 1
+    profile_cfg["execution_policy"]["comment_replies_timeout_seconds"] = 2
+    store.save()
+
+    actions = SlowRepliesActions(delay_seconds=1.2)
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=actions,
+        content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "completed"
+    assert updated_run["pass_matrix"]["comment_replies"] == "1/1"
+    timeout_events = [evt for evt in updated_run.get("events", []) if evt.get("type") == "action_timeout"]
+    assert timeout_events == []
 
 
 def test_run_action_with_tunnel_retries_returns_timeout_result(tmp_path):

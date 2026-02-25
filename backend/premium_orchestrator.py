@@ -588,6 +588,12 @@ class PremiumOrchestrator:
             return
         max_action_retries = int(execution_policy.get("max_retries", 1))
         action_timeout_seconds = max(1, int(execution_policy.get("action_timeout_seconds", 420)))
+        # Reply search can legitimately traverse multiple groups/posts before finding
+        # a threaded-reply surface, so it needs its own timeout budget.
+        comment_replies_timeout_seconds = max(
+            1,
+            int(execution_policy.get("comment_replies_timeout_seconds", max(action_timeout_seconds, 900))),
+        )
 
         rules_snapshot = self.store.get_rules_snapshot()
         if not rules_snapshot:
@@ -1290,7 +1296,7 @@ class PremiumOrchestrator:
                 cycle_index=cycle_index,
                 action_key="comment_replies",
                 max_retries=max_action_retries,
-                action_timeout_seconds=action_timeout_seconds,
+                action_timeout_seconds=comment_replies_timeout_seconds,
                 execute_action=lambda: self.actions.perform_comment_replies(
                     run_id=run_id,
                     cycle_index=cycle_index,
@@ -1307,7 +1313,7 @@ class PremiumOrchestrator:
                 await self._fail_run(
                     run_id=run_id,
                     cycle_index=cycle_index,
-                    reason=f"comment_replies action timed out after {action_timeout_seconds}s",
+                    reason=f"comment_replies action timed out after {comment_replies_timeout_seconds}s",
                 )
                 return
             if await self._defer_or_fail_on_tunnel_error(

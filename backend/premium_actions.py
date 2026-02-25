@@ -862,6 +862,8 @@ Reply supportively to exactly {replies_count} group comment(s).
 Hard rules:
 - Open comments on a group post, then click a visible "Reply" control under an existing comment thread.
 - Do NOT leave a top-level standalone comment; each submission must be a threaded reply.
+- Prefer posts where comment count is already visible and non-zero.
+- If a candidate post has no visible "Reply" control after opening comments, back out immediately and try another post.
 - Use this exact supportive wording for each reply:
 {reply_text}
 - Click "Post a comment" once per reply.
@@ -927,7 +929,7 @@ Hard rules:
         start_url=start_url or "https://m.facebook.com/groups",
         expected_count=replies_count,
         confirmation_keyword=None,
-        max_steps=35,
+        max_steps=30,
         profile_identity_confirmed=profile_identity_confirmed,
         identity_check=identity_check,
     )
@@ -942,7 +944,9 @@ Reply supportively to exactly {replies_count} group comment(s).
 Fallback navigation rules:
 - Start from group-search results for "menopause groups".
 - Open a group with active posts and non-zero comment threads.
+- Do not keep opening/closing the same group preview repeatedly in the same state.
 - If a post has no comments or no "Reply" control, back out immediately and try another post or group.
+- If still on search cards after several attempts, switch to the "Group posts" tab and open a post with visible comments.
 - Click a visible "Reply" control under an existing comment thread before typing.
 - Use this exact supportive wording:
 {reply_text}
@@ -961,7 +965,7 @@ Fallback navigation rules:
         start_url=fallback_start_url,
         expected_count=replies_count,
         confirmation_keyword=None,
-        max_steps=45,
+        max_steps=30,
         profile_identity_confirmed=profile_identity_confirmed,
         identity_check=identity_check,
     )
