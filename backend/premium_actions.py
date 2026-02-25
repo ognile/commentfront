@@ -842,6 +842,7 @@ Hard rules:
 - Use this exact supportive wording for each reply:
 {reply_text}
 - Click "Post a comment" once per reply.
+- Never click composer controls like "Post a photo", "Photo", or "Video" for reply submission.
 - Finish with DONE only after the threaded reply is visible under that thread or Facebook explicitly confirms pending approval.
 - If threaded reply visibility cannot be confirmed, finish with FAILED.
 """.strip()
@@ -909,10 +910,7 @@ Hard rules:
     )
     result = _finalize_reply_result(result)
 
-    needs_broader_retry = (
-        not bool(result.get("success"))
-        and not bool(((result.get("evidence") or {}).get("confirmation") or {}).get("reply_cta_clicked"))
-    )
+    needs_broader_retry = not bool(result.get("success"))
     if not needs_broader_retry:
         return result
 

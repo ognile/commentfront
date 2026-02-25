@@ -8,11 +8,22 @@ from adaptive_agent import AdaptiveAgent
 
 
 class DummyLocator:
-    def __init__(self, *, count=0, input_value_text="", bbox=None, on_submit=None):
+    def __init__(
+        self,
+        *,
+        count=0,
+        input_value_text="",
+        bbox=None,
+        on_submit=None,
+        aria_label="",
+        inner_text="",
+    ):
         self._count = count
         self._input_value_text = input_value_text
         self._bbox = bbox or {"x": 10, "y": 10, "width": 200, "height": 36}
         self._on_submit = on_submit
+        self._aria_label = aria_label
+        self._inner_text = inner_text
         self.tap_calls = 0
         self.click_calls = 0
 
@@ -41,6 +52,14 @@ class DummyLocator:
 
     async def bounding_box(self):
         return self._bbox
+
+    async def get_attribute(self, attr: str):
+        if attr == "aria-label":
+            return self._aria_label
+        return None
+
+    async def inner_text(self):
+        return self._inner_text
 
     def set_value(self, value: str):
         self._input_value_text = value
@@ -73,12 +92,19 @@ class DummyMouse:
 
 
 class DummyPage:
-    def __init__(self, *, submit_selector_available: bool):
+    def __init__(self, *, submit_selector_available: bool, post_photo_selector_available: bool = False):
         self.input_locator = DummyLocator(count=1, input_value_text="")
         self.submit_selector_available = submit_selector_available
+        self.post_photo_selector_available = post_photo_selector_available
         self.keyboard = DummyKeyboard(self.input_locator)
         self.touchscreen = DummyTouchscreen()
         self.mouse = DummyMouse()
+        self.post_photo_locator = DummyLocator(
+            count=1,
+            on_submit=self._on_submit,
+            aria_label="Post a photo",
+            inner_text="Post",
+        )
 
     def _on_submit(self):
         # Simulate composer reset after successful send.
@@ -90,6 +116,9 @@ class DummyPage:
 
         if self.submit_selector_available and selector == '[aria-label="Post a comment"]':
             return DummyLocator(count=1, on_submit=self._on_submit)
+
+        if self.post_photo_selector_available and selector == 'div[role="button"][aria-label*="Post" i]':
+            return self.post_photo_locator
 
         return DummyLocator(count=0)
 
@@ -130,6 +159,20 @@ def test_reply_fallback_uses_coordinate_submit_when_selector_missing():
     outcome = asyncio.run(agent._fallback_submit_reply(visible_elements, 6, "/tmp/adaptive_step_6.png"))
 
     assert outcome == "completion"
+    assert len(agent.page.touchscreen.taps) == 1
+
+
+def test_reply_fallback_skips_post_a_photo_button():
+    reply_text = "sending support here, you are not alone in this phase."
+    agent = AdaptiveAgent(profile_name="Vanessa Hines", task=_build_reply_task(reply_text), max_steps=10)
+    agent.page = DummyPage(submit_selector_available=False, post_photo_selector_available=True)
+
+    visible_elements = [{"tag": "TEXTAREA", "ariaLabel": "Write a public reply", "role": "combobox"}]
+    outcome = asyncio.run(agent._fallback_submit_reply(visible_elements, 7, "/tmp/adaptive_step_7.png"))
+
+    assert outcome == "completion"
+    assert agent.page.post_photo_locator.tap_calls == 0
+    assert agent.page.post_photo_locator.click_calls == 0
     assert len(agent.page.touchscreen.taps) == 1
 
 

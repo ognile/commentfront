@@ -776,10 +776,24 @@ REASONING: Comment was submitted"""
                 'button:has-text("Send")',
                 '[data-sigil*="submit-comment"]',
             ]
+            submit_block_tokens = ("photo", "video", "gif", "sticker", "camera")
 
             for selector in submit_selectors:
                 locator = self.page.locator(selector).first
                 if await locator.count() == 0:
+                    continue
+                aria_value = ""
+                text_value = ""
+                try:
+                    aria_value = (await locator.get_attribute("aria-label")) or ""
+                except Exception:
+                    aria_value = ""
+                try:
+                    text_value = (await locator.inner_text()) or ""
+                except Exception:
+                    text_value = ""
+                selector_blob = f"{aria_value} {text_value}".lower()
+                if any(token in selector_blob for token in submit_block_tokens):
                     continue
                 try:
                     await locator.tap(timeout=5000)
