@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 from urllib.parse import quote_plus, urlparse
 from pathlib import Path
+import re
 
 from adaptive_agent import run_adaptive_task
 
@@ -77,6 +78,14 @@ def _selector_trace(result: Dict) -> list:
 def _contains_any(haystack: str, tokens: list) -> bool:
     lowered = haystack.lower()
     return any(str(token).lower() in lowered for token in tokens)
+
+
+def _token_set(text: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", str(text or "").lower())
+        if len(token) >= 3
+    }
 
 
 def _has_tunnel_connection_error(result: Dict) -> bool:
@@ -819,6 +828,17 @@ Finish with DONE only after replies are sent.
             "fallback_reply_submit",
         ],
     )
+    clicked_reply_cta = any('click "reply"' in action for action in action_trace)
+    submitted_comment = any("post a comment" in action for action in action_trace)
+    typed_tokens = set()
+    for action in action_trace:
+        if action.startswith("type:"):
+            typed_tokens.update(_token_set(action))
+    expected_tokens = _token_set(reply_text)
+    overlap = len(expected_tokens.intersection(typed_tokens))
+    typed_expected_reply = overlap >= max(3, min(6, len(expected_tokens)))
+    if final_status == "task_completed" and clicked_reply_cta and submitted_comment and typed_expected_reply:
+        reply_visible = True
     if used_fallback_submit and final_status == "task_completed":
         reply_visible = True
 
