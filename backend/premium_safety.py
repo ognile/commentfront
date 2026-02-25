@@ -17,7 +17,7 @@ import re
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
@@ -36,6 +36,7 @@ PRECHECK_MAX_CANDIDATE_URLS = max(2, int(os.getenv("PRECHECK_MAX_CANDIDATE_URLS"
 PRECHECK_SCROLL_PASSES = max(2, int(os.getenv("PRECHECK_SCROLL_PASSES", "4")))
 PRECHECK_STAGNANT_PASSES = max(1, int(os.getenv("PRECHECK_STAGNANT_PASSES", "2")))
 PRECHECK_SNAPSHOT_TIMEOUT_SECONDS = max(2.0, float(os.getenv("PRECHECK_SNAPSHOT_TIMEOUT_SECONDS", "8")))
+PRECHECK_EVAL_TIMEOUT_SECONDS = max(0.5, float(os.getenv("PRECHECK_EVAL_TIMEOUT_SECONDS", "2.5")))
 
 
 def _utc_iso() -> str:
@@ -344,6 +345,13 @@ async def _safe_page_url(page, *, fallback: str = "") -> str:
     except Exception:
         pass
     return fallback
+
+
+async def _evaluate_bounded(page, script: str, arg: Any = None):
+    timeout_seconds = max(0.5, float(PRECHECK_EVAL_TIMEOUT_SECONDS))
+    if arg is None:
+        return await asyncio.wait_for(page.evaluate(script), timeout=timeout_seconds)
+    return await asyncio.wait_for(page.evaluate(script, arg), timeout=timeout_seconds)
 
 
 async def _stop_page_load(page) -> None:
@@ -707,11 +715,14 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
 
 async def _has_broken_link_banner(page) -> bool:
     try:
-        return await page.evaluate(
-            """() => {
-                const text = (document.body && document.body.innerText) ? document.body.innerText : "";
-                return text.includes("The link you followed may be broken");
-            }"""
+        return bool(
+            await _evaluate_bounded(
+                page,
+                """() => {
+                    const text = (document.body && document.body.innerText) ? document.body.innerText : "";
+                    return text.includes("The link you followed may be broken");
+                }""",
+            )
         )
     except Exception:
         return False
@@ -748,7 +759,8 @@ async def _dismiss_broken_link_banner(page) -> bool:
             continue
 
     try:
-        clicked = await page.evaluate(
+        clicked = await _evaluate_bounded(
+            page,
             """() => {
                 const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
                 const nodes = Array.from(document.querySelectorAll('div[role="button"], a[role="button"], button, span, a')).slice(0, 240);
@@ -767,7 +779,7 @@ async def _dismiss_broken_link_banner(page) -> bool:
                     }
                 }
                 return false;
-            }"""
+            }""",
         )
         if clicked:
             await asyncio.sleep(0.8)
@@ -780,7 +792,8 @@ async def _dismiss_broken_link_banner(page) -> bool:
 
 async def _open_posts_tab_if_available(page) -> bool:
     try:
-        clicked = await page.evaluate(
+        clicked = await _evaluate_bounded(
+            page,
             """() => {
                 const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
                 const candidates = Array.from(document.querySelectorAll('a, div[role="tab"], div[role="button"], span'));
@@ -796,7 +809,7 @@ async def _open_posts_tab_if_available(page) -> bool:
                     }
                 }
                 return false;
-            }"""
+            }""",
         )
         return bool(clicked)
     except Exception:
@@ -808,7 +821,8 @@ async def _expand_posts_surface_if_available(page) -> bool:
     Trigger lazy-loaded timeline content when "Loading more" / "See all posts" controls are present.
     """
     try:
-        clicked = await page.evaluate(
+        clicked = await _evaluate_bounded(
+            page,
             """() => {
                 const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
                 const targets = [
@@ -830,7 +844,7 @@ async def _expand_posts_surface_if_available(page) -> bool:
                     }
                 }
                 return false;
-            }"""
+            }""",
         )
         return bool(clicked)
     except Exception:
@@ -839,7 +853,8 @@ async def _expand_posts_surface_if_available(page) -> bool:
 
 async def _open_go_to_profile_if_available(page) -> bool:
     try:
-        clicked = await page.evaluate(
+        clicked = await _evaluate_bounded(
+            page,
             """() => {
                 const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
                 const candidates = Array.from(document.querySelectorAll('a, div[role="button"], span'));
@@ -855,7 +870,7 @@ async def _open_go_to_profile_if_available(page) -> bool:
                     }
                 }
                 return false;
-            }"""
+            }""",
         )
         return bool(clicked)
     except Exception:
