@@ -666,3 +666,72 @@ def test_orchestrator_retries_content_when_duplicate_precheck_blocks(tmp_path):
     ]
     assert precheck_evidence
     assert precheck_evidence[0]["duplicate_precheck"]["passed"] is False
+
+
+def test_orchestrator_defers_cycle_when_precheck_has_no_authored_posts(tmp_path):
+    class NoPostsSafety:
+        async def run_feed_safety_precheck(self, **kwargs):
+            return {
+                "success": False,
+                "error": "duplicate_precheck_no_posts",
+                "checked_at": "2026-02-24T12:00:00Z",
+                "profile_url": "https://m.facebook.com/profile.php?id=1",
+                "before_screenshot": "/tmp/precheck_before.png",
+                "after_screenshot": "/tmp/precheck_after.png",
+                "screenshot_urls": {
+                    "before": "/screenshots/precheck_before.png",
+                    "after": "/screenshots/precheck_after.png",
+                },
+                "identity_check": {
+                    "profile_name_expected": kwargs.get("profile_name"),
+                    "profile_name_seen": kwargs.get("profile_name"),
+                    "name_match": True,
+                    "avatar_similarity": 1.0,
+                    "avatar_hash_match": True,
+                    "passed": True,
+                },
+                "duplicate_precheck": {
+                    "checked_posts": 0,
+                    "threshold": float(kwargs.get("threshold", 0.90)),
+                    "top_similarity": 0.0,
+                    "matched_post_permalink": None,
+                    "required_posts": int(kwargs.get("lookback_posts", 5)),
+                    "insufficient_posts": True,
+                    "history_limited": False,
+                    "passed": False,
+                    "posts": [],
+                },
+            }
+
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    run_state = store.state["runs"][run["id"]]
+    profile_cfg = store.state["profile_configs"]["vanessa hines"]
+    run_state["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    profile_cfg["execution_policy"]["tunnel_recovery_cycles"] = 2
+    profile_cfg["execution_policy"]["tunnel_recovery_delay_seconds"] = 60
+    store.save()
+
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=StrictSuccessActions(),
+        content_module=FakeContentModule,
+        safety_module=NoPostsSafety(),
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "in_progress"
+    cycle = next(c for c in updated_run["cycles"] if c["index"] == 0)
+    assert cycle["status"] == "pending"
+    assert cycle["attempts"] == 1
+    assert cycle.get("error") == "duplicate_precheck_no_posts"
+    assert any(evt.get("type") == "duplicate_precheck_no_posts_deferred" for evt in updated_run.get("events", []))
+    precheck_evidence = [
+        item for item in (updated_run.get("evidence") or [])
+        if item.get("action_type") == "feed_precheck"
+    ]
+    assert precheck_evidence

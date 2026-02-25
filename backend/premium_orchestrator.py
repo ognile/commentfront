@@ -593,6 +593,80 @@ class PremiumOrchestrator:
             if not duplicate_blocked:
                 break
 
+            no_posts_available = (
+                int(duplicate_precheck.get("checked_posts", 0)) <= 0
+                or bool(duplicate_precheck.get("insufficient_posts"))
+                and not bool(duplicate_precheck.get("history_limited"))
+            )
+            if no_posts_available:
+                attempts = self._cycle_attempts(run_id=run_id, cycle_index=cycle_index)
+                self.store.append_evidence(
+                    run_id,
+                    self._build_precheck_evidence(
+                        run_id=run_id,
+                        cycle_index=cycle_index,
+                        profile_name=profile_name,
+                        precheck=precheck,
+                    ),
+                )
+                if attempts > tunnel_recovery_cycles:
+                    self.store.append_event(
+                        run_id,
+                        "duplicate_precheck_no_posts_exhausted",
+                        {
+                            "cycle_index": cycle_index,
+                            "attempts": attempts,
+                            "max_deferrals": tunnel_recovery_cycles,
+                            "duplicate_precheck": duplicate_precheck,
+                        },
+                    )
+                    self.content.cleanup_generated_image(image_path)
+                    await self._fail_run(
+                        run_id=run_id,
+                        cycle_index=cycle_index,
+                        reason="duplicate_precheck_no_posts",
+                    )
+                    return
+
+                deferred = self.store.defer_cycle(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    delay_seconds=tunnel_recovery_delay_seconds,
+                    reason="duplicate_precheck_no_posts",
+                    metadata={
+                        "attempts": attempts,
+                        "max_deferrals": tunnel_recovery_cycles,
+                        "duplicate_precheck": duplicate_precheck,
+                    },
+                )
+                retry_at = (deferred or {}).get("scheduled_at")
+                self.store.append_event(
+                    run_id,
+                    "duplicate_precheck_no_posts_deferred",
+                    {
+                        "cycle_index": cycle_index,
+                        "attempts": attempts,
+                        "max_deferrals": tunnel_recovery_cycles,
+                        "retry_at": retry_at,
+                        "duplicate_precheck": duplicate_precheck,
+                    },
+                )
+                await self._emit(
+                    "premium_precheck_blocked",
+                    {
+                        "run_id": run_id,
+                        "cycle_index": cycle_index,
+                        "profile_name": profile_name,
+                        "duplicate_precheck": duplicate_precheck,
+                        "error": "duplicate_precheck_no_posts",
+                        "retry_scheduled": True,
+                        "deferred": True,
+                        "retry_at": retry_at,
+                    },
+                )
+                self.content.cleanup_generated_image(image_path)
+                return
+
             if generation_attempt < dedupe_retry_attempts:
                 retry_number = generation_attempt + 1
                 self.store.append_evidence(
