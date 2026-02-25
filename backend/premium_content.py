@@ -197,6 +197,7 @@ async def generate_post_bundle(
     post_kind: str,
     cycle_index: int,
     rules_snapshot: Optional[Dict],
+    require_image: bool = False,
 ) -> Dict:
     """
     Generate text and image for one cycle post bundle.
@@ -232,6 +233,17 @@ async def generate_post_bundle(
             "caption": caption,
             "rules_validation": validation,
             "post_kind": post_kind,
+        }
+
+    if not require_image:
+        return {
+            "success": True,
+            "post_kind": post_kind,
+            "caption": caption,
+            "rules_validation": validation,
+            "image_path": None,
+            "image_generation": {"skipped": True, "reason": "image_not_required"},
+            "text_only_fallback": True,
         }
 
     image_result: Dict

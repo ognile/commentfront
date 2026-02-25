@@ -109,6 +109,7 @@ class ExecutionPolicy(BaseModel):
     block_on_duplicate: bool = True
     dedupe_retry_attempts: int = Field(2, ge=0, le=10)
     single_submit_guard: bool = True
+    generate_images_for_posts: bool = False
     action_timeout_seconds: int = Field(420, ge=1, le=3600)
     tunnel_recovery_cycles: int = Field(2, ge=0, le=10)
     tunnel_recovery_delay_seconds: int = Field(90, ge=15, le=1800)

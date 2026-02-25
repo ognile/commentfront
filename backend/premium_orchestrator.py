@@ -557,6 +557,7 @@ class PremiumOrchestrator:
         block_on_duplicate = bool(execution_policy.get("block_on_duplicate", True))
         dedupe_retry_attempts = max(0, int(execution_policy.get("dedupe_retry_attempts", 2)))
         single_submit_guard = bool(execution_policy.get("single_submit_guard", True))
+        generate_images_for_posts = bool(execution_policy.get("generate_images_for_posts", False))
         tunnel_recovery_cycles = max(0, int(execution_policy.get("tunnel_recovery_cycles", 2)))
         tunnel_recovery_delay_seconds = max(15, int(execution_policy.get("tunnel_recovery_delay_seconds", 90)))
 
@@ -577,6 +578,7 @@ class PremiumOrchestrator:
                 post_kind=post_kind,
                 cycle_index=cycle_index + (generation_attempt * 101),
                 rules_snapshot=rules_snapshot,
+                require_image=generate_images_for_posts,
             )
             if not bundle.get("success"):
                 await self._fail_run(
