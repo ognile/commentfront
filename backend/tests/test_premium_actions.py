@@ -241,6 +241,102 @@ def test_comment_replies_accepts_reply_submit_trace_with_done(monkeypatch):
     assert result["evidence"]["result_state"]["success"] is True
 
 
+def test_comment_replies_accepts_type_set_exact_reply_trace(monkeypatch):
+    async def fake_run_adaptive_task(**kwargs):
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/story.php?story_fbid=123&id=456",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {
+                    "action_taken": 'CLICK "Reply"',
+                    "gemini_response": "ACTION: CLICK element=\"Reply\"",
+                    "reasoning": "reply to thread",
+                    "matched_element": {"tag": "DIV", "ariaLabel": "", "text": "Reply"},
+                },
+                {
+                    "action_taken": "TYPE_SET_EXACT: sending you support. you are not alone in this and...",
+                    "gemini_response": "ACTION: TYPE text=...",
+                    "reasoning": "type supportive message",
+                },
+                {
+                    "action_taken": 'CLICK "Post a comment"',
+                    "gemini_response": "ACTION: CLICK element=\"Post a comment\"",
+                    "reasoning": "submit reply",
+                    "matched_element": {"tag": "DIV", "ariaLabel": "Post a comment", "text": "Post"},
+                },
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.perform_comment_replies(
+            run_id="run_reply_trace_exact",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            replies_count=1,
+            reply_text="sending you support. you are not alone in this and i hope today gets gentler for you.",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["evidence"]["confirmation"]["reply_visible_under_thread"] is True
+    assert result["evidence"]["confirmation"]["reply_cta_clicked"] is True
+    assert result["evidence"]["confirmation"]["reply_submit_clicked"] is True
+    assert result["evidence"]["confirmation"]["reply_text_typed"] is True
+    assert result["evidence"]["result_state"]["success"] is True
+
+
+def test_comment_replies_rejects_non_thread_comment_flow(monkeypatch):
+    async def fake_run_adaptive_task(**kwargs):
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/story.php?story_fbid=123&id=456",
+            "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+            "steps": [
+                {
+                    "action_taken": 'CLICK "󰍹"',
+                    "gemini_response": "ACTION: CLICK element=\"󰍹\"",
+                    "reasoning": "open comments",
+                    "matched_element": {"tag": "DIV", "ariaLabel": "󰍹comment", "text": "󰍹"},
+                },
+                {
+                    "action_taken": "TYPE_SET_EXACT: sending you support. you are not alone in this and...",
+                    "gemini_response": "ACTION: TYPE text=...",
+                    "reasoning": "type supportive message",
+                },
+                {
+                    "action_taken": 'CLICK "Post a comment"',
+                    "gemini_response": "ACTION: CLICK element=\"Post a comment\"",
+                    "reasoning": "submit top-level comment",
+                    "matched_element": {"tag": "DIV", "ariaLabel": "Post a comment", "text": "Post"},
+                },
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.perform_comment_replies(
+            run_id="run_reply_non_thread",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            replies_count=1,
+            reply_text="sending you support. you are not alone in this and i hope today gets gentler for you.",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["evidence"]["confirmation"]["reply_visible_under_thread"] is False
+    assert result["evidence"]["confirmation"]["reply_cta_clicked"] is False
+    assert result["evidence"]["confirmation"]["reply_submit_clicked"] is True
+    assert result["evidence"]["confirmation"]["reply_text_typed"] is True
+    assert result["evidence"]["result_state"]["success"] is False
+
+
 def test_group_publish_accepts_pending_admin_approval_signal(monkeypatch):
     async def fake_run_adaptive_task(**kwargs):
         return {

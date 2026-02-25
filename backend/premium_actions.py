@@ -836,9 +836,14 @@ async def perform_comment_replies(
 ) -> Dict:
     task = f"""
 Reply supportively to exactly {replies_count} group comment(s).
-Use this supportive tone and wording:
+Hard rules:
+- Open comments on a group post, then click a visible "Reply" control under an existing comment thread.
+- Do NOT leave a top-level standalone comment; each submission must be a threaded reply.
+- Use this exact supportive wording for each reply:
 {reply_text}
-Finish with DONE only after replies are sent.
+- Click "Post a comment" once per reply.
+- Finish with DONE only after the threaded reply is visible under that thread or Facebook explicitly confirms pending approval.
+- If threaded reply visibility cannot be confirmed, finish with FAILED.
 """.strip()
 
     result = await _execute_task(
@@ -876,7 +881,11 @@ Finish with DONE only after replies are sent.
     submitted_comment = any("post a comment" in action for action in action_trace)
     typed_tokens = set()
     for action in action_trace:
-        if action.startswith("type:"):
+        if (
+            action.startswith("type:")
+            or action.startswith("type_set_exact:")
+            or action.startswith("type_skipped_duplicate:")
+        ):
             typed_tokens.update(_token_set(action))
     expected_tokens = _token_set(reply_text)
     overlap = len(expected_tokens.intersection(typed_tokens))
@@ -885,6 +894,11 @@ Finish with DONE only after replies are sent.
         reply_visible = True
     if used_fallback_submit and final_status == "task_completed":
         reply_visible = True
+
+    result.setdefault("evidence", {}).setdefault("confirmation", {})
+    result["evidence"]["confirmation"]["reply_cta_clicked"] = clicked_reply_cta
+    result["evidence"]["confirmation"]["reply_submit_clicked"] = submitted_comment
+    result["evidence"]["confirmation"]["reply_text_typed"] = typed_expected_reply
 
     return _apply_confirmation(
         result,

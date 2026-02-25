@@ -449,12 +449,17 @@ class PremiumOrchestrator:
             verification_contract=contract,
         )
         evidence["evidence_validation"] = evidence_validation
+        registered_count = (
+            int(action_result.get("completed_count", 0))
+            if bool(evidence_validation.get("ok"))
+            else 0
+        )
 
         self.store.append_evidence(run_id, evidence)
         self.store.register_verification(
             run_id=run_id,
             key=action_key,
-            count=int(action_result.get("completed_count", 0)),
+            count=registered_count,
             post_kind=post_kind,
             evidence=evidence,
         )
@@ -474,6 +479,7 @@ class PremiumOrchestrator:
             "action": action_key,
             "success": bool(action_result.get("success")),
             "completed_count": int(action_result.get("completed_count", 0)),
+            "registered_count": int(registered_count),
             "expected_count": int(action_result.get("expected_count", 0)),
             "error": action_result.get("error"),
             "evidence": evidence,

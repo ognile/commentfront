@@ -385,6 +385,7 @@ def test_orchestrator_fails_when_evidence_is_incomplete(tmp_path):
     updated_run = store.get_run(run["id"])
     assert updated_run["status"] == "failed"
     assert "evidence contract failed" in str(updated_run.get("error", "")).lower()
+    assert updated_run["pass_matrix"]["feed_posts"] == "0/1"
 
 
 def test_orchestrator_retries_group_action_on_tunnel_error(tmp_path):

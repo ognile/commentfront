@@ -709,11 +709,35 @@ REASONING: Comment was submitted"""
         if not reply_text:
             return ""
 
+        reply_button_el: Optional[dict] = None
+        for el in visible_elements:
+            aria = (el.get("ariaLabel", "") or "").strip().lower()
+            text = (el.get("text", "") or "").strip().lower()
+            role = (el.get("role", "") or "").strip().lower()
+            if "post a comment" in aria or "post a comment" in text:
+                continue
+            if "reply" in aria or text == "reply":
+                if role in {"button", "link", ""}:
+                    reply_button_el = el
+                    break
+
         has_reply_input = any(
             (el.get("tag") in {"TEXTAREA", "INPUT"})
             or ("reply" in (el.get("ariaLabel", "") or "").lower() and el.get("role") in {"combobox", "textbox"})
             for el in visible_elements
         )
+        if not has_reply_input and reply_button_el:
+            try:
+                await self._click_element(reply_button_el, "Reply")
+                await asyncio.sleep(0.6)
+                self.results["steps"].append({
+                    "step": step_num,
+                    "action_taken": "FALLBACK_REPLY_OPEN_THREAD",
+                    "screenshot": screenshot_path,
+                })
+                return "clicked"
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} Reply-thread fallback click failed: {e}")
         if not has_reply_input:
             return ""
 

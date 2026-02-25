@@ -131,3 +131,19 @@ def test_reply_fallback_uses_coordinate_submit_when_selector_missing():
 
     assert outcome == "completion"
     assert len(agent.page.touchscreen.taps) == 1
+
+
+def test_reply_fallback_opens_thread_when_reply_button_visible(monkeypatch):
+    reply_text = "sending support here, you are not alone in this phase."
+    agent = AdaptiveAgent(profile_name="Vanessa Hines", task=_build_reply_task(reply_text), max_steps=10)
+
+    async def fake_click_element(target_el, element_desc):
+        return f"FAKE_CLICK:{element_desc}:{target_el.get('text', '')}"
+
+    monkeypatch.setattr(agent, "_click_element", fake_click_element)
+
+    visible_elements = [{"tag": "DIV", "role": "button", "ariaLabel": "Reply", "text": "Reply"}]
+    outcome = asyncio.run(agent._fallback_submit_reply(visible_elements, 3, "/tmp/adaptive_step_3.png"))
+
+    assert outcome == "clicked"
+    assert any(step.get("action_taken") == "FALLBACK_REPLY_OPEN_THREAD" for step in agent.results["steps"])
