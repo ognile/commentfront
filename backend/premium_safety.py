@@ -715,6 +715,40 @@ async def _open_posts_tab_if_available(page) -> bool:
         return False
 
 
+async def _expand_posts_surface_if_available(page) -> bool:
+    """
+    Trigger lazy-loaded timeline content when "Loading more" / "See all posts" controls are present.
+    """
+    try:
+        clicked = await page.evaluate(
+            """() => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const targets = [
+                    "see all posts",
+                    "see more posts",
+                    "more posts",
+                    "loading more",
+                    "see more",
+                ];
+                const nodes = Array.from(document.querySelectorAll('a, div[role="button"], span, button')).slice(0, 260);
+                for (const node of nodes) {
+                    const text = normalize(node.innerText);
+                    if (!text) continue;
+                    if (!targets.some((target) => text.includes(target))) continue;
+                    const target = node.closest('a, div[role="button"], button') || node;
+                    if (target && typeof target.click === "function") {
+                        target.click();
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+        return bool(clicked)
+    except Exception:
+        return False
+
+
 async def _open_go_to_profile_if_available(page) -> bool:
     try:
         clicked = await page.evaluate(
@@ -744,7 +778,7 @@ async def _collect_snapshot_with_scroll(page, expected_profile_name: str, requir
     best_snapshot: Dict = {}
     best_score = -9999
 
-    for idx in range(3):
+    for idx in range(6):
         snapshot = await _extract_profile_snapshot(page, expected_profile_name)
         score_data = _snapshot_score(snapshot, expected_profile_name, user_id)
         score = int(score_data.get("score", 0))
@@ -755,9 +789,12 @@ async def _collect_snapshot_with_scroll(page, expected_profile_name: str, requir
         strict_name = bool(score_data.get("strict_name_match"))
         if enough_posts and strict_name:
             break
-        if idx < 2:
+        if idx < 5:
+            expanded = await _expand_posts_surface_if_available(page)
+            if expanded:
+                await asyncio.sleep(1.4)
             await page.mouse.wheel(0, 850)
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1.4)
 
     return best_snapshot or await _extract_profile_snapshot(page, expected_profile_name)
 
