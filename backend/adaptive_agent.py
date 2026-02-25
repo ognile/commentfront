@@ -226,7 +226,7 @@ class AdaptiveAgent:
         self.action_history: List[Dict] = []
         self._file_chooser_handler_set = False
         self._typed_payloads: set[str] = set()
-        self._type_action_count = 0
+        self._successful_type_action_count = 0
         self._max_type_actions = (
             int(max_type_actions)
             if isinstance(max_type_actions, int) and max_type_actions > 0
@@ -1147,7 +1147,10 @@ REASONING: Comment was submitted"""
                     elif action_type == "TYPE":
                         text_match = re.search(r'text="([^"]+)"', action_params)
                         if text_match:
-                            if self._max_type_actions is not None and self._type_action_count >= self._max_type_actions:
+                            if (
+                                self._max_type_actions is not None
+                                and self._successful_type_action_count >= self._max_type_actions
+                            ):
                                 step_result["action_taken"] = "TYPE_SKIPPED_MAX_TYPE_ACTIONS"
                                 step_result["input_focused"] = False
                                 step_result["type_guard"] = "blocked_by_max_type_actions"
@@ -1165,9 +1168,9 @@ REASONING: Comment was submitted"""
                                 )
                                 continue
 
-                            self._type_action_count += 1
                             text = text_match.group(1)
                             normalized_text = self._normalize_typed_payload(text)
+                            type_action_succeeded = False
 
                             if normalized_text and normalized_text in self._typed_payloads:
                                 step_result["action_taken"] = f"TYPE_SKIPPED_REPEAT_MEMORY: {text[:50]}..."
@@ -1231,6 +1234,7 @@ REASONING: Comment was submitted"""
                                 step_result["type_guard"] = "already_present_in_composer"
                                 if normalized_text:
                                     self._typed_payloads.add(normalized_text)
+                                type_action_succeeded = True
                                 logger.info(f"{self.log_prefix} TYPE skipped because text already exists in composer")
                             else:
                                 # Deterministic set: write exact value into composer, no append semantics.
@@ -1244,6 +1248,7 @@ REASONING: Comment was submitted"""
                                         step_result["action_taken"] = f"TYPE_SET_EXACT: {text[:50]}..."
                                         step_result["input_focused"] = input_focused
                                         step_result["type_guard"] = "typed_with_exact_set"
+                                        type_action_succeeded = True
                                     else:
                                         step_result["action_taken"] = f"TYPE_VERIFICATION_FAILED: {text[:50]}..."
                                         step_result["input_focused"] = input_focused
@@ -1273,6 +1278,7 @@ REASONING: Comment was submitted"""
                                         step_result["action_taken"] = f"TYPE: {text[:50]}..."
                                         step_result["input_focused"] = input_focused
                                         step_result["type_guard"] = "typed_with_replace_fallback"
+                                        type_action_succeeded = True
                                     else:
                                         step_result["action_taken"] = f"TYPE_VERIFICATION_FAILED: {text[:50]}..."
                                         step_result["input_focused"] = input_focused
@@ -1280,6 +1286,8 @@ REASONING: Comment was submitted"""
                                         self.results["errors"].append(
                                             f"Step {step_num}: TYPE verification failed after replace fallback"
                                         )
+                            if type_action_succeeded:
+                                self._successful_type_action_count += 1
                         else:
                             step_result["action_taken"] = "TYPE_PARSE_ERROR"
 
