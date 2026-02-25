@@ -1024,16 +1024,28 @@ async def run_feed_safety_precheck(
                 )
             profile_page_url = resolved_profile_url
 
-            before_screenshot = await save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}")
-            await page.mouse.wheel(0, 300)
-            await asyncio.sleep(0.7)
-            refreshed_snapshot = await _extract_profile_snapshot(page, profile_name)
-            refreshed_snapshot["current_url"] = page.url
-            refreshed_score = _snapshot_score(refreshed_snapshot, profile_name, _session_user_id(session))
-            existing_score = _snapshot_score(snapshot, profile_name, _session_user_id(session))
-            if int(refreshed_score.get("score", 0)) >= int(existing_score.get("score", 0)):
-                snapshot = refreshed_snapshot
-            after_screenshot = await save_debug_screenshot(page, f"premium_precheck_after_{screenshot_suffix}")
+            if timeout_recovered:
+                # Keep timeout-recovery path lightweight to avoid lingering on unstable pages.
+                if before_screenshot is None:
+                    try:
+                        before_screenshot = await asyncio.wait_for(
+                            save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}"),
+                            timeout=5.0,
+                        )
+                    except Exception:
+                        before_screenshot = None
+                after_screenshot = None
+            else:
+                before_screenshot = await save_debug_screenshot(page, f"premium_precheck_before_{screenshot_suffix}")
+                await page.mouse.wheel(0, 300)
+                await asyncio.sleep(0.7)
+                refreshed_snapshot = await _extract_profile_snapshot(page, profile_name)
+                refreshed_snapshot["current_url"] = page.url
+                refreshed_score = _snapshot_score(refreshed_snapshot, profile_name, _session_user_id(session))
+                existing_score = _snapshot_score(snapshot, profile_name, _session_user_id(session))
+                if int(refreshed_score.get("score", 0)) >= int(existing_score.get("score", 0)):
+                    snapshot = refreshed_snapshot
+                after_screenshot = await save_debug_screenshot(page, f"premium_precheck_after_{screenshot_suffix}")
 
             profile_name_seen = str(snapshot.get("profile_name_seen") or "").strip()
             profile_avatar_seen = str(snapshot.get("profile_avatar_seen") or "").strip()
