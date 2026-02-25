@@ -108,6 +108,8 @@ class ExecutionPolicy(BaseModel):
     dedupe_threshold: float = Field(0.90, ge=0.5, le=1.0)
     block_on_duplicate: bool = True
     single_submit_guard: bool = True
+    tunnel_recovery_cycles: int = Field(2, ge=0, le=10)
+    tunnel_recovery_delay_seconds: int = Field(90, ge=15, le=1800)
 
 
 class PremiumProfileConfig(BaseModel):

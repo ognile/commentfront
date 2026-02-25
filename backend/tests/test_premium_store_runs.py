@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -131,3 +132,31 @@ def test_enqueue_or_create_queues_same_profile_and_promotes_fifo(tmp_path):
     assert third_final["status"] == "scheduled"
     assert third_final["queue_position"] == 0
     assert third_final["blocked_by_run_id"] is None
+
+
+def test_defer_cycle_reschedules_pending_with_reason(tmp_path):
+    store = PremiumStore(file_path=str(tmp_path / "premium_state.json"))
+    run = store.create_run(run_spec=_run_spec(), created_by="tester")
+    cycle_index = run["cycles"][0]["index"]
+
+    store.set_cycle_status(run_id=run["id"], cycle_index=cycle_index, status="running")
+    deferred = store.defer_cycle(
+        run_id=run["id"],
+        cycle_index=cycle_index,
+        delay_seconds=90,
+        reason="transient tunnel outage during feed_posts",
+        metadata={"action": "feed_posts"},
+    )
+
+    assert deferred is not None
+    assert deferred["status"] == "pending"
+    assert deferred["started_at"] is None
+    assert deferred["completed_at"] is None
+    assert "tunnel outage" in str(deferred["error"]).lower()
+    assert deferred.get("results")
+    assert deferred["results"][-1]["type"] == "deferred"
+    retry_at = deferred.get("scheduled_at")
+    assert isinstance(retry_at, str) and retry_at
+
+    retry_dt = datetime.fromisoformat(retry_at.replace("Z", "+00:00"))
+    assert retry_dt > datetime.now(timezone.utc)

@@ -492,6 +492,52 @@ class PremiumStore:
             self.save()
             return cycle
 
+    def defer_cycle(
+        self,
+        *,
+        run_id: str,
+        cycle_index: int,
+        delay_seconds: int,
+        reason: str,
+        metadata: Optional[Dict] = None,
+    ) -> Optional[Dict]:
+        with self._lock:
+            run = self.state.get("runs", {}).get(run_id)
+            if not run:
+                return None
+
+            cycle = None
+            for c in run.get("cycles", []):
+                if int(c.get("index", -1)) == int(cycle_index):
+                    cycle = c
+                    break
+            if not cycle:
+                return None
+
+            delay = max(1, int(delay_seconds))
+            retry_at = (_utc_now() + timedelta(seconds=delay)).isoformat().replace("+00:00", "Z")
+
+            cycle["status"] = "pending"
+            cycle["scheduled_at"] = retry_at
+            cycle["started_at"] = None
+            cycle["completed_at"] = None
+            cycle["error"] = reason
+            if metadata:
+                cycle.setdefault("results", []).append(
+                    {
+                        "type": "deferred",
+                        "reason": reason,
+                        "retry_at": retry_at,
+                        "metadata": metadata,
+                    }
+                )
+
+            next_cycle = self._next_pending_cycle(run)
+            run["next_execute_at"] = next_cycle.get("scheduled_at") if next_cycle else None
+            run["updated_at"] = _utc_iso()
+            self.save()
+            return cycle
+
     def set_run_status(self, run_id: str, status: str, error: Optional[str] = None, pass_matrix: Optional[Dict] = None) -> Optional[Dict]:
         with self._lock:
             run = self.state.get("runs", {}).get(run_id)

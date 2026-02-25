@@ -189,6 +189,117 @@ class PremiumOrchestrator:
             return any(PremiumOrchestrator._contains_tunnel_connection_error(v) for v in payload)
         return False
 
+    @staticmethod
+    def _collect_tunnel_errors(payload: Any) -> list[str]:
+        matches: list[str] = []
+
+        def _walk(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, str):
+                if "ERR_TUNNEL_CONNECTION_FAILED" in value:
+                    matches.append(value)
+                return
+            if isinstance(value, dict):
+                for item in value.values():
+                    _walk(item)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    _walk(item)
+
+        _walk(payload)
+        return matches
+
+    def _cycle_attempts(self, *, run_id: str, cycle_index: int) -> int:
+        run = self.store.get_run(run_id) or {}
+        for cycle in run.get("cycles", []):
+            if int(cycle.get("index", -1)) == int(cycle_index):
+                return int(cycle.get("attempts", 0))
+        return 0
+
+    async def _defer_or_fail_on_tunnel_error(
+        self,
+        *,
+        run_id: str,
+        cycle_index: int,
+        profile_name: str,
+        action_key: str,
+        action_result: Dict,
+        max_cycle_deferrals: int,
+        defer_delay_seconds: int,
+    ) -> bool:
+        if bool(action_result.get("success")):
+            return False
+        if not self._contains_tunnel_connection_error(action_result):
+            return False
+
+        attempts = self._cycle_attempts(run_id=run_id, cycle_index=cycle_index)
+        tunnel_errors = self._collect_tunnel_errors(action_result)
+
+        if attempts > max_cycle_deferrals:
+            reason = (
+                f"tunnel recovery exhausted during {action_key}: "
+                f"attempts={attempts}, max_deferrals={max_cycle_deferrals}"
+            )
+            self.store.append_event(
+                run_id,
+                "cycle_tunnel_recovery_exhausted",
+                {
+                    "cycle_index": cycle_index,
+                    "action": action_key,
+                    "attempts": attempts,
+                    "max_deferrals": max_cycle_deferrals,
+                    "errors": tunnel_errors[:3],
+                },
+            )
+            await self._fail_run(run_id=run_id, cycle_index=cycle_index, reason=reason)
+            return True
+
+        deferred = self.store.defer_cycle(
+            run_id=run_id,
+            cycle_index=cycle_index,
+            delay_seconds=defer_delay_seconds,
+            reason=f"transient tunnel outage during {action_key}",
+            metadata={
+                "action": action_key,
+                "attempts": attempts,
+                "max_deferrals": max_cycle_deferrals,
+                "errors": tunnel_errors[:3],
+            },
+        )
+        retry_at = (deferred or {}).get("scheduled_at")
+
+        self.store.append_event(
+            run_id,
+            "cycle_deferred_transient",
+            {
+                "cycle_index": cycle_index,
+                "action": action_key,
+                "attempts": attempts,
+                "max_deferrals": max_cycle_deferrals,
+                "retry_at": retry_at,
+                "delay_seconds": defer_delay_seconds,
+                "errors": tunnel_errors[:3],
+            },
+        )
+        await self._emit(
+            "premium_step_result",
+            {
+                "run_id": run_id,
+                "cycle_index": cycle_index,
+                "profile_name": profile_name,
+                "action": action_key,
+                "success": False,
+                "deferred": True,
+                "retry_at": retry_at,
+                "attempts": attempts,
+                "max_deferrals": max_cycle_deferrals,
+                "error": f"transient tunnel outage during {action_key}; retry scheduled",
+            },
+        )
+        return True
+
     async def _run_action_with_tunnel_retries(
         self,
         *,
@@ -409,6 +520,8 @@ class PremiumOrchestrator:
         dedupe_threshold = float(execution_policy.get("dedupe_threshold", 0.90))
         block_on_duplicate = bool(execution_policy.get("block_on_duplicate", True))
         single_submit_guard = bool(execution_policy.get("single_submit_guard", True))
+        tunnel_recovery_cycles = max(0, int(execution_policy.get("tunnel_recovery_cycles", 2)))
+        tunnel_recovery_delay_seconds = max(15, int(execution_policy.get("tunnel_recovery_delay_seconds", 90)))
 
         precheck = await self.safety.run_feed_safety_precheck(
             profile_name=profile_name,
@@ -525,6 +638,17 @@ class PremiumOrchestrator:
                 single_submit_guard=single_submit_guard,
             ),
         )
+        if await self._defer_or_fail_on_tunnel_error(
+            run_id=run_id,
+            cycle_index=cycle_index,
+            profile_name=profile_name,
+            action_key="feed_posts",
+            action_result=feed_result,
+            max_cycle_deferrals=tunnel_recovery_cycles,
+            defer_delay_seconds=tunnel_recovery_delay_seconds,
+        ):
+            self.content.cleanup_generated_image(image_path)
+            return
         feed_record = await self._record_action(
             run_id=run_id,
             cycle_index=cycle_index,
@@ -581,6 +705,17 @@ class PremiumOrchestrator:
                 identity_check=identity_check,
             ),
         )
+        if await self._defer_or_fail_on_tunnel_error(
+            run_id=run_id,
+            cycle_index=cycle_index,
+            profile_name=profile_name,
+            action_key="group_posts",
+            action_result=group_result,
+            max_cycle_deferrals=tunnel_recovery_cycles,
+            defer_delay_seconds=tunnel_recovery_delay_seconds,
+        ):
+            self.content.cleanup_generated_image(image_path)
+            return
         group_record = await self._record_action(
             run_id=run_id,
             cycle_index=cycle_index,
@@ -637,6 +772,17 @@ class PremiumOrchestrator:
                     identity_check=identity_check,
                 ),
             )
+            if await self._defer_or_fail_on_tunnel_error(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                profile_name=profile_name,
+                action_key="likes",
+                action_result=likes_result,
+                max_cycle_deferrals=tunnel_recovery_cycles,
+                defer_delay_seconds=tunnel_recovery_delay_seconds,
+            ):
+                self.content.cleanup_generated_image(image_path)
+                return
             likes_record = await self._record_action(
                 run_id=run_id,
                 cycle_index=cycle_index,
@@ -683,6 +829,17 @@ class PremiumOrchestrator:
                     identity_check=identity_check,
                 ),
             )
+            if await self._defer_or_fail_on_tunnel_error(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                profile_name=profile_name,
+                action_key="shares",
+                action_result=shares_result,
+                max_cycle_deferrals=tunnel_recovery_cycles,
+                defer_delay_seconds=tunnel_recovery_delay_seconds,
+            ):
+                self.content.cleanup_generated_image(image_path)
+                return
             shares_record = await self._record_action(
                 run_id=run_id,
                 cycle_index=cycle_index,
@@ -732,6 +889,17 @@ class PremiumOrchestrator:
                     identity_check=identity_check,
                 ),
             )
+            if await self._defer_or_fail_on_tunnel_error(
+                run_id=run_id,
+                cycle_index=cycle_index,
+                profile_name=profile_name,
+                action_key="comment_replies",
+                action_result=replies_result,
+                max_cycle_deferrals=tunnel_recovery_cycles,
+                defer_delay_seconds=tunnel_recovery_delay_seconds,
+            ):
+                self.content.cleanup_generated_image(image_path)
+                return
             replies_record = await self._record_action(
                 run_id=run_id,
                 cycle_index=cycle_index,

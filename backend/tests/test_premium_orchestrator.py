@@ -244,6 +244,23 @@ class TunnelRetryGroupActions(StrictSuccessActions):
         return await super().discover_group_and_publish(**kwargs)
 
 
+class TunnelAlwaysFeedActions(StrictSuccessActions):
+    async def publish_feed_post(self, **kwargs):
+        return {
+            "success": False,
+            "completed_count": 0,
+            "expected_count": 1,
+            "error": "Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://m.facebook.com/me/?v=timeline",
+            "result": {
+                "final_status": "error",
+                "errors": [
+                    "Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://m.facebook.com/me/?v=timeline",
+                ],
+            },
+            "evidence": {},
+        }
+
+
 def _run_spec_single_cycle():
     return {
         "profile_name": "Vanessa Hines",
@@ -393,6 +410,70 @@ def test_orchestrator_retries_group_action_on_tunnel_error(tmp_path):
     assert updated_run["pass_matrix"]["group_posts"] == "1/1"
     assert actions.group_calls == 2
     assert any(evt.get("type") == "action_retry_scheduled" for evt in updated_run.get("events", []))
+
+
+def test_orchestrator_defers_cycle_on_transient_tunnel_error(tmp_path):
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    run_state = store.state["runs"][run["id"]]
+    profile_cfg = store.state["profile_configs"]["vanessa hines"]
+    run_state["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    profile_cfg["execution_policy"]["max_retries"] = 0
+    profile_cfg["execution_policy"]["tunnel_recovery_cycles"] = 2
+    profile_cfg["execution_policy"]["tunnel_recovery_delay_seconds"] = 60
+    store.save()
+
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=TunnelAlwaysFeedActions(),
+        content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "in_progress"
+    cycle = next(c for c in updated_run["cycles"] if c["index"] == 0)
+    assert cycle["status"] == "pending"
+    assert cycle["attempts"] == 1
+    assert cycle.get("error") == "transient tunnel outage during feed_posts"
+    assert cycle.get("results")
+    assert cycle["results"][-1]["type"] == "deferred"
+    assert len(updated_run.get("evidence", [])) == 0
+    assert any(evt.get("type") == "cycle_deferred_transient" for evt in updated_run.get("events", []))
+
+
+def test_orchestrator_fails_when_tunnel_recovery_budget_exhausted(tmp_path):
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    run_state = store.state["runs"][run["id"]]
+    profile_cfg = store.state["profile_configs"]["vanessa hines"]
+    run_state["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    run_state["cycles"][0]["attempts"] = 1
+    profile_cfg["execution_policy"]["max_retries"] = 0
+    profile_cfg["execution_policy"]["tunnel_recovery_cycles"] = 0
+    profile_cfg["execution_policy"]["tunnel_recovery_delay_seconds"] = 60
+    store.save()
+
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=TunnelAlwaysFeedActions(),
+        content_module=FakeContentModule,
+        safety_module=FakeSafetyPass,
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "failed"
+    assert "tunnel recovery exhausted" in str(updated_run.get("error", "")).lower()
+    assert len(updated_run.get("evidence", [])) == 0
+    assert any(evt.get("type") == "cycle_tunnel_recovery_exhausted" for evt in updated_run.get("events", []))
 
 
 def test_orchestrator_full_pilot_hits_strict_pass_matrix(tmp_path):
