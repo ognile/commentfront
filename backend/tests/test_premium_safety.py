@@ -14,14 +14,18 @@ class _SessionStub:
 def test_profile_candidate_urls_prefers_direct_profile_first():
     session = _SessionStub("12345")
     urls = _profile_candidate_urls(session, "Wanda Lobb")
-    assert urls[0] == "https://m.facebook.com/profile.php?id=12345&v=timeline"
-    assert urls[1] == "https://m.facebook.com/profile.php?id=12345"
+    assert urls[0] == "https://mbasic.facebook.com/profile.php?id=12345&v=timeline"
+    assert urls[1] == "https://mbasic.facebook.com/profile.php?id=12345"
+    assert urls[2] == "https://m.facebook.com/profile.php?id=12345&v=timeline"
+    assert urls[3] == "https://m.facebook.com/profile.php?id=12345"
     assert "https://m.facebook.com/me/?v=timeline" in urls
+    assert "https://mbasic.facebook.com/me/?v=timeline" in urls
 
 
 def test_url_profile_hint_detects_profile_routes():
     assert _url_profile_hint("https://m.facebook.com/profile.php?id=42", "42") is True
     assert _url_profile_hint("https://m.facebook.com/me/", "42") is True
+    assert _url_profile_hint("https://mbasic.facebook.com/me/", "42") is True
     assert _url_profile_hint("https://m.facebook.com/?v=timeline", "42") is True
     assert _url_profile_hint("https://m.facebook.com/home.php", "42") is False
 

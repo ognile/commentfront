@@ -183,13 +183,20 @@ def _profile_candidate_urls(session: FacebookSession, profile_name: str) -> List
         candidates.append(value)
 
     if user_id:
+        _add(f"https://mbasic.facebook.com/profile.php?id={user_id}&v=timeline")
+        _add(f"https://mbasic.facebook.com/profile.php?id={user_id}")
         _add(f"https://m.facebook.com/profile.php?id={user_id}&v=timeline")
         _add(f"https://m.facebook.com/profile.php?id={user_id}")
+    _add("https://mbasic.facebook.com/me/?v=timeline")
+    _add("https://mbasic.facebook.com/me/")
     _add("https://m.facebook.com/me/?v=timeline")
     _add("https://m.facebook.com/me/")
     if slug:
+        _add(f"https://mbasic.facebook.com/{slug}?v=timeline")
+        _add(f"https://mbasic.facebook.com/{slug}")
         _add(f"https://m.facebook.com/{slug}?v=timeline")
         _add(f"https://m.facebook.com/{slug}")
+    _add("https://mbasic.facebook.com/")
     _add("https://m.facebook.com/")
     return candidates
 
@@ -198,11 +205,11 @@ def _url_profile_hint(url: Optional[str], user_id: Optional[str]) -> bool:
     value = str(url or "").strip().lower()
     if not value:
         return False
-    if "m.facebook.com/me" in value:
+    if "facebook.com/me" in value:
         return True
     if "profile.php" in value:
         return True
-    if "v=timeline" in value:
+    if "v=timeline" in value and "facebook.com" in value:
         return True
     if user_id and f"id={user_id}" in value:
         return True
@@ -289,7 +296,8 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                 const raw = (href || "").trim();
                 if (!raw) return "";
                 if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
-                if (raw.startsWith("/")) return "https://m.facebook.com" + raw;
+                const origin = (window.location && window.location.origin) ? window.location.origin : "https://m.facebook.com";
+                if (raw.startsWith("/")) return origin + raw;
                 return raw;
             };
 
@@ -351,6 +359,7 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
 
             const articleNodes = Array.from(document.querySelectorAll("article, div[role='article'], div[data-ft]"));
             let fallback_container_hits = 0;
+            let engagement_container_hits = 0;
             const extractAuthor = (node) => {
                 const candidates = Array.from(
                     node.querySelectorAll("h3, h4, strong, a[role='link'], span[dir='auto'], div[dir='auto']")
@@ -450,7 +459,7 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                         const text = normalize(node.innerText || "");
                         if (!text || text.length < 40 || text.length > 6000) continue;
                         const rect = node.getBoundingClientRect();
-                        if (!rect || rect.height <= 0 || rect.height > (window.innerHeight * 0.98)) continue;
+                        if (!rect || rect.height <= 0 || rect.height > (window.innerHeight * 2.5)) continue;
                         if (!hasEngagementControls(node)) continue;
                         const author = extractAuthor(node);
                         if (!hasExpectedAuthor(text, author)) continue;
@@ -460,6 +469,58 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                         seen.add(key);
                         posts.push({ permalink: permalink || null, text: text.slice(0, 800), author: author || null });
                         fallback_container_hits += 1;
+                        break;
+                    }
+                    if (posts.length >= 25) break;
+                }
+            }
+
+            if (posts.length < 5) {
+                const engagementControls = Array.from(document.querySelectorAll([
+                    "div[role='button'][aria-label*='comment' i]",
+                    "div[role='button'][aria-label*='comments' i]",
+                    "div[role='button'][aria-label*='share' i]",
+                    "div[role='button'][aria-label*='like' i]",
+                    "a[role='button'][aria-label*='comment' i]",
+                    "a[role='button'][aria-label*='share' i]",
+                    "a[role='button'][aria-label*='like' i]"
+                ].join(", "))).slice(0, 280);
+
+                for (const control of engagementControls) {
+                    let node = control;
+                    for (let depth = 0; depth < 10; depth++) {
+                        node = node ? node.parentElement : null;
+                        if (!node) break;
+                        const rect = node.getBoundingClientRect();
+                        if (!rect || rect.height < 70 || rect.height > (window.innerHeight * 3.0)) continue;
+                        const text = normalize(node.innerText || "");
+                        if (!text || text.length < 40 || text.length > 7000) continue;
+                        if (!hasEngagementControls(node)) continue;
+
+                        const author = extractAuthor(node);
+                        const authorMatch = hasExpectedAuthor(text, author);
+                        const inlineLabels = Array.from(
+                            node.querySelectorAll("div[role='button'], a[role='link'], span, strong, h3, h4")
+                        )
+                            .map((el) =>
+                                normalize(
+                                    `${el.getAttribute("aria-label") || ""} ${el.innerText || ""}`
+                                ).toLowerCase()
+                            )
+                            .filter(Boolean)
+                            .slice(0, 90);
+                        const weakAuthorMatch = expectedTokens.length
+                            ? inlineLabels.some((label) => expectedTokens.every((token) => label.includes(token)))
+                            : false;
+                        if (!authorMatch && !weakAuthorMatch) continue;
+
+                        const permalink = extractPermalink(node);
+                        const key = `${permalink || "no_link"}::${text.slice(0, 160)}`;
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        posts.push({ permalink: permalink || null, text: text.slice(0, 800), author: author || null });
+                        fallback_container_hits += 1;
+                        engagement_container_hits += 1;
                         break;
                     }
                     if (posts.length >= 25) break;
@@ -490,6 +551,7 @@ async def _extract_profile_snapshot(page, expected_profile_name: str) -> Dict:
                 article_nodes_count: articleNodes.length,
                 anchor_candidates_count: anchors.length,
                 fallback_container_hits,
+                engagement_container_hits,
                 candidate_names: profileNameCandidates.slice(0, 30),
                 current_url: window.location.href || "",
                 title: normalize(document.title || ""),
@@ -807,6 +869,7 @@ async def run_feed_safety_precheck(
                 "article_nodes_count": int(snapshot.get("article_nodes_count") or 0),
                 "anchor_candidates_count": int(snapshot.get("anchor_candidates_count") or 0),
                 "fallback_container_hits": int(snapshot.get("fallback_container_hits") or 0),
+                "engagement_container_hits": int(snapshot.get("engagement_container_hits") or 0),
             }
 
             return {
