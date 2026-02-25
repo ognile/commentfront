@@ -857,6 +857,20 @@ async def perform_comment_replies(
     profile_identity_confirmed: bool = True,
     identity_check: Optional[Dict] = None,
 ) -> Dict:
+    def _annotate_retry_metadata(
+        payload: Dict,
+        *,
+        retry_from_start_url: str,
+        retry_start_url: str,
+        retry_attempts: int,
+    ) -> Dict:
+        payload.setdefault("evidence", {}).setdefault("action_method", {})
+        payload["evidence"]["action_method"]["retry_used"] = True
+        payload["evidence"]["action_method"]["retry_from_start_url"] = retry_from_start_url
+        payload["evidence"]["action_method"]["retry_start_url"] = retry_start_url
+        payload["evidence"]["action_method"]["retry_attempts"] = int(retry_attempts)
+        return payload
+
     primary_task = f"""
 Reply supportively to exactly {replies_count} group comment(s).
 Hard rules:
@@ -970,9 +984,48 @@ Fallback navigation rules:
         identity_check=identity_check,
     )
     retry_result = _finalize_reply_result(retry_result)
-    retry_result.setdefault("evidence", {}).setdefault("action_method", {})
-    retry_result["evidence"]["action_method"]["retry_used"] = True
-    retry_result["evidence"]["action_method"]["retry_from_start_url"] = start_url or "https://m.facebook.com/groups"
-    retry_result["evidence"]["action_method"]["retry_start_url"] = fallback_start_url
-    retry_result["evidence"]["action_method"]["retry_attempts"] = 1
-    return retry_result
+    retry_result = _annotate_retry_metadata(
+        retry_result,
+        retry_from_start_url=start_url or "https://m.facebook.com/groups",
+        retry_start_url=fallback_start_url,
+        retry_attempts=1,
+    )
+    if retry_result.get("success"):
+        return retry_result
+
+    final_retry_task = f"""
+Reply supportively to exactly {replies_count} group comment(s).
+Strict fallback rules:
+- Start from menopause group search.
+- Open the "Group posts" tab first.
+- Only open posts that show explicit comment-count text (examples: "5 comments", "󰍹 5comments", "View 12 comments").
+- Skip generic "󰍹comment" targets when no count is visible.
+- Inside comments, click a visible "Reply" button under an existing comment before typing.
+- Use this exact supportive wording:
+{reply_text}
+- Click "Post a comment" once and confirm the reply appears (or pending approval notice appears).
+- If no qualified thread is found after several tries, return FAILED.
+""".strip()
+    final_retry_start_url = f"https://m.facebook.com/search/groups/?q={quote_plus('menopause groups')}"
+    final_retry_result = await _execute_task(
+        run_id=run_id,
+        cycle_index=cycle_index,
+        step_id=f"cycle_{cycle_index}_replies",
+        profile_name=profile_name,
+        action_type="comment_replies",
+        task=final_retry_task,
+        start_url=final_retry_start_url,
+        expected_count=replies_count,
+        confirmation_keyword=None,
+        max_steps=24,
+        profile_identity_confirmed=profile_identity_confirmed,
+        identity_check=identity_check,
+    )
+    final_retry_result = _finalize_reply_result(final_retry_result)
+    final_retry_result = _annotate_retry_metadata(
+        final_retry_result,
+        retry_from_start_url=start_url or "https://m.facebook.com/groups",
+        retry_start_url=final_retry_start_url,
+        retry_attempts=2,
+    )
+    return final_retry_result

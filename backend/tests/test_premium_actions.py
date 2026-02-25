@@ -503,6 +503,60 @@ def test_comment_replies_retries_when_submit_not_confirmed(monkeypatch):
     assert result["evidence"]["confirmation"]["reply_visible_under_thread"] is True
 
 
+def test_comment_replies_uses_second_fallback_with_comment_count_rule(monkeypatch):
+    calls = []
+
+    async def fake_run_adaptive_task(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 3:
+            return {
+                "final_status": "max_steps_reached",
+                "final_url": "https://m.facebook.com/groups/example-group/",
+                "screenshots": ["/tmp/before.png", "/tmp/after.png"],
+                "steps": [
+                    {"action_taken": 'SCROLL down', "gemini_response": "ACTION: SCROLL direction=down"},
+                    {"action_taken": 'CLICK \"󰍹\"', "gemini_response": "ACTION: CLICK element=\"󰍹\""},
+                ],
+                "errors": [],
+            }
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/story.php?story_fbid=654&id=321",
+            "screenshots": ["/tmp/before3.png", "/tmp/after3.png"],
+            "steps": [
+                {"action_taken": 'CLICK "Reply"', "gemini_response": "ACTION: CLICK element=\"Reply\""},
+                {
+                    "action_taken": "TYPE_SET_EXACT: sending you support. you are not alone in this and...",
+                    "gemini_response": "ACTION: TYPE text=...",
+                },
+                {"action_taken": 'CLICK "Post a comment"', "gemini_response": "ACTION: CLICK element=\"Post a comment\""},
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.perform_comment_replies(
+            run_id="run_reply_second_retry",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            replies_count=1,
+            reply_text="sending you support. you are not alone in this and i hope today gets gentler for you.",
+            start_url="https://m.facebook.com/groups/example-group/",
+        )
+    )
+
+    assert len(calls) == 3
+    assert "search/groups/?q=menopause+groups" in calls[1]["start_url"]
+    assert "search/groups/?q=menopause+groups" in calls[2]["start_url"]
+    assert "Only open posts that show explicit comment-count text" in calls[2]["task"]
+    assert result["success"] is True
+    assert result["evidence"]["action_method"]["retry_used"] is True
+    assert result["evidence"]["action_method"]["retry_attempts"] == 2
+    assert result["evidence"]["confirmation"]["reply_visible_under_thread"] is True
+
+
 def test_group_publish_accepts_pending_admin_approval_signal(monkeypatch):
     async def fake_run_adaptive_task(**kwargs):
         return {
