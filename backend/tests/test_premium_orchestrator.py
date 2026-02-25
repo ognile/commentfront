@@ -545,6 +545,80 @@ def test_orchestrator_defers_cycle_on_unreachable_identity_precheck(tmp_path):
     assert any(evt.get("type") == "identity_precheck_unreachable_deferred" for evt in updated_run.get("events", []))
 
 
+def test_orchestrator_uses_history_fallback_for_unreachable_identity_precheck(tmp_path):
+    class UnreachableIdentityWithHintSafety:
+        async def run_feed_safety_precheck(self, **kwargs):
+            return {
+                "success": False,
+                "error": "precheck_navigation_timeout_recovered",
+                "checked_at": "2026-02-24T12:00:00Z",
+                "profile_url": "https://m.facebook.com/me/?v=timeline",
+                "before_screenshot": None,
+                "after_screenshot": None,
+                "screenshot_urls": {"before": None, "after": None},
+                "identity_check": {
+                    "profile_name_expected": kwargs.get("profile_name"),
+                    "profile_name_seen": None,
+                    "name_match": False,
+                    "avatar_similarity": None,
+                    "avatar_hash_match": None,
+                    "profile_avatar_expected_ref": "data:abc123",
+                    "passed": False,
+                    "strict_name_match": False,
+                    "token_name_match": False,
+                    "profile_surface_detected": False,
+                    "url_profile_hint": True,
+                },
+                "duplicate_precheck": {
+                    "checked_posts": 0,
+                    "threshold": float(kwargs.get("threshold", 0.90)),
+                    "top_similarity": 0.0,
+                    "matched_post_permalink": None,
+                    "required_posts": int(kwargs.get("lookback_posts", 5)),
+                    "insufficient_posts": True,
+                    "history_limited": False,
+                    "passed": False,
+                    "posts": [],
+                },
+            }
+
+    store = _setup_store(tmp_path)
+
+    # Seed historical feed-post evidence for fallback duplicate precheck.
+    history_run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="seed")
+    history_state = store.state["runs"][history_run["id"]]
+    history_state["status"] = "completed"
+    history_state["verification_state"]["evidence"] = [
+        {
+            "action_type": "feed_post",
+            "generated_caption": f"historical caption {idx}",
+            "confirmation": {"post_permalink": f"https://m.facebook.com/story.php?story_fbid={idx}&id=1"},
+            "timestamp": f"2026-02-24T12:0{idx}:00Z",
+        }
+        for idx in range(5)
+    ]
+
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    run_state = store.state["runs"][run["id"]]
+    run_state["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    store.save()
+
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=StrictSuccessActions(),
+        content_module=FakeContentModule,
+        safety_module=UnreachableIdentityWithHintSafety(),
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "completed"
+    assert any(evt.get("type") == "identity_precheck_fallback_applied" for evt in updated_run.get("events", []))
+
+
 def test_orchestrator_fails_when_tunnel_recovery_budget_exhausted(tmp_path):
     store = _setup_store(tmp_path)
     run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")

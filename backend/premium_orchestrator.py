@@ -14,6 +14,7 @@ import premium_actions
 import premium_content
 import premium_safety
 from premium_store import PremiumStore
+from queue_manager import near_duplicate_ratio
 from premium_verify import (
     build_pass_matrix,
     evaluate_evidence_contract,
@@ -217,6 +218,63 @@ class PremiumOrchestrator:
             if int(cycle.get("index", -1)) == int(cycle_index):
                 return int(cycle.get("attempts", 0))
         return 0
+
+    def _history_duplicate_precheck(
+        self,
+        *,
+        profile_name: str,
+        caption: str,
+        threshold: float,
+        lookback_posts: int,
+    ) -> Optional[Dict]:
+        recent_posts = self.store.list_recent_feed_posts(
+            profile_name=profile_name,
+            limit=max(1, int(lookback_posts)),
+        )
+        if not recent_posts:
+            return None
+
+        top_similarity = 0.0
+        matched_permalink = None
+        for post in recent_posts:
+            ratio = near_duplicate_ratio(str(caption or ""), str(post.get("text") or ""))
+            if ratio > top_similarity:
+                top_similarity = ratio
+                matched_permalink = post.get("permalink")
+
+        required_posts = max(1, int(lookback_posts))
+        checked_posts = len(recent_posts)
+        duplicate_block = top_similarity >= float(threshold)
+        insufficient_posts = checked_posts < required_posts
+        passed = (not duplicate_block) and (not insufficient_posts)
+
+        return {
+            "checked_posts": checked_posts,
+            "threshold": float(threshold),
+            "top_similarity": round(float(top_similarity), 4),
+            "matched_post_permalink": matched_permalink if duplicate_block else None,
+            "required_posts": required_posts,
+            "insufficient_posts": bool(insufficient_posts),
+            "history_limited": bool(insufficient_posts),
+            "passed": bool(passed),
+            "posts": recent_posts,
+            "source": "historical_feed_evidence",
+        }
+
+    @staticmethod
+    def _session_identity_fallback(*, profile_name: str, identity_check: Dict) -> Optional[Dict]:
+        expected_avatar_ref = str(identity_check.get("profile_avatar_expected_ref") or "").strip()
+        has_profile_hint = bool(identity_check.get("url_profile_hint"))
+        if not has_profile_hint and not expected_avatar_ref:
+            return None
+
+        fallback = dict(identity_check or {})
+        fallback["profile_name_seen"] = profile_name
+        fallback["name_match"] = True
+        fallback["passed"] = True
+        fallback["fallback_source"] = "session_profile_hint"
+        fallback["fallback_reason"] = "precheck_surface_unreachable"
+        return fallback
 
     async def _defer_or_fail_on_tunnel_error(
         self,
@@ -630,6 +688,53 @@ class PremiumOrchestrator:
                     )
                 )
                 if transient_identity_precheck:
+                    fallback_duplicate = self._history_duplicate_precheck(
+                        profile_name=profile_name,
+                        caption=caption,
+                        threshold=dedupe_threshold,
+                        lookback_posts=dedupe_recent_feed_posts,
+                    )
+                    fallback_identity = self._session_identity_fallback(
+                        profile_name=profile_name,
+                        identity_check=identity_check,
+                    )
+                    fallback_ready = bool(
+                        fallback_identity
+                        and fallback_duplicate
+                        and bool(fallback_duplicate.get("passed"))
+                    )
+                    if fallback_ready:
+                        identity_check = dict(fallback_identity)
+                        duplicate_precheck = dict(fallback_duplicate)
+                        profile_identity_confirmed = True
+                        self.store.append_event(
+                            run_id,
+                            "identity_precheck_fallback_applied",
+                            {
+                                "cycle_index": cycle_index,
+                                "identity_source": fallback_identity.get("fallback_source"),
+                                "duplicate_source": fallback_duplicate.get("source"),
+                                "checked_posts": fallback_duplicate.get("checked_posts"),
+                                "top_similarity": fallback_duplicate.get("top_similarity"),
+                            },
+                        )
+                        await self._emit(
+                            "premium_identity_check_result",
+                            {
+                                "run_id": run_id,
+                                "cycle_index": cycle_index,
+                                "success": True,
+                                "identity_check": identity_check,
+                                "fallback_applied": True,
+                                "duplicate_precheck": {
+                                    "passed": fallback_duplicate.get("passed"),
+                                    "checked_posts": fallback_duplicate.get("checked_posts"),
+                                    "source": fallback_duplicate.get("source"),
+                                },
+                            },
+                        )
+                        break
+
                     attempts = self._cycle_attempts(run_id=run_id, cycle_index=cycle_index)
                     if attempts > tunnel_recovery_cycles:
                         self.store.append_event(

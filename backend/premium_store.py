@@ -404,6 +404,46 @@ class PremiumStore:
                 return None
             return run
 
+    def list_recent_feed_posts(self, *, profile_name: str, limit: int = 5) -> List[Dict]:
+        target = _normalize_profile_name(profile_name)
+        max_items = max(1, int(limit))
+        with self._lock:
+            posts: List[Dict] = []
+            seen_text = set()
+            run_ids = list(self.state.get("run_order", []))
+            for run_id in run_ids:
+                run = self.state.get("runs", {}).get(run_id)
+                if not run:
+                    continue
+                run_profile = _normalize_profile_name(str((run.get("run_spec") or {}).get("profile_name") or ""))
+                if run_profile != target:
+                    continue
+                evidence_stream: List[Dict] = []
+                evidence_stream.extend(list(((run.get("verification_state") or {}).get("evidence") or [])))
+                evidence_stream.extend(list(run.get("evidence") or []))
+                for evidence in reversed(evidence_stream):
+                    if str(evidence.get("action_type") or "") != "feed_post":
+                        continue
+                    caption = str(evidence.get("generated_caption") or "").strip()
+                    if not caption:
+                        continue
+                    dedupe_key = caption.lower()
+                    if dedupe_key in seen_text:
+                        continue
+                    seen_text.add(dedupe_key)
+                    confirmation = dict(evidence.get("confirmation") or {})
+                    posts.append(
+                        {
+                            "text": caption,
+                            "permalink": confirmation.get("post_permalink") or evidence.get("target_url"),
+                            "timestamp": evidence.get("timestamp"),
+                            "run_id": run.get("id"),
+                        }
+                    )
+                    if len(posts) >= max_items:
+                        return posts
+            return posts
+
     def append_event(self, run_id: str, event_type: str, data: Dict) -> None:
         with self._lock:
             run = self.state.get("runs", {}).get(run_id)
