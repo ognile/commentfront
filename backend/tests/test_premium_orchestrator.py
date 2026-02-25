@@ -587,3 +587,82 @@ def test_orchestrator_blocks_on_duplicate_precheck(tmp_path):
     ]
     assert precheck_evidence
     assert precheck_evidence[-1]["duplicate_precheck"]["passed"] is False
+
+
+def test_orchestrator_retries_content_when_duplicate_precheck_blocks(tmp_path):
+    class DuplicateThenUniqueContent:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate_post_bundle(self, **kwargs):
+            self.calls += 1
+            caption = "duplicate caption candidate" if self.calls == 1 else "fresh caption candidate"
+            return {
+                "success": True,
+                "post_kind": kwargs["post_kind"],
+                "caption": caption,
+                "image_path": "/tmp/generated.png",
+                "rules_validation": {"ok": True, "violations": []},
+            }
+
+        def cleanup_generated_image(self, _path):
+            return None
+
+    class DuplicateThenPassSafety:
+        async def run_feed_safety_precheck(self, **kwargs):
+            duplicate = "duplicate caption candidate" in str(kwargs.get("caption") or "")
+            return {
+                "success": not duplicate,
+                "error": "duplicate_precheck_failed" if duplicate else None,
+                "checked_at": "2026-02-24T12:00:00Z",
+                "profile_url": "https://m.facebook.com/profile.php?id=1",
+                "before_screenshot": "/tmp/precheck_before.png",
+                "after_screenshot": "/tmp/precheck_after.png",
+                "screenshot_urls": {
+                    "before": "/screenshots/precheck_before.png",
+                    "after": "/screenshots/precheck_after.png",
+                },
+                "identity_check": {
+                    "profile_name_expected": kwargs.get("profile_name"),
+                    "profile_name_seen": kwargs.get("profile_name"),
+                    "name_match": True,
+                    "avatar_similarity": 1.0,
+                    "avatar_hash_match": True,
+                    "passed": True,
+                },
+                "duplicate_precheck": {
+                    "checked_posts": int(kwargs.get("lookback_posts", 5)),
+                    "threshold": float(kwargs.get("threshold", 0.90)),
+                    "top_similarity": 0.97 if duplicate else 0.11,
+                    "matched_post_permalink": "https://m.facebook.com/story.php?story_fbid=1&id=1" if duplicate else None,
+                    "passed": not duplicate,
+                },
+            }
+
+    store = _setup_store(tmp_path)
+    run = store.create_run(run_spec=_run_spec_single_cycle(), created_by="tester")
+    store.state["runs"][run["id"]]["cycles"][0]["scheduled_at"] = "2000-01-01T00:00:00Z"
+    store.save()
+
+    content = DuplicateThenUniqueContent()
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=StrictSuccessActions(),
+        content_module=content,
+        safety_module=DuplicateThenPassSafety(),
+    )
+
+    summary = asyncio.run(orchestrator.process_due_runs(max_runs=1))
+    assert summary["processed"] == 1
+
+    updated_run = store.get_run(run["id"])
+    assert updated_run["status"] == "completed"
+    assert content.calls >= 2
+    assert any(evt.get("type") == "duplicate_precheck_retry_scheduled" for evt in updated_run.get("events", []))
+    precheck_evidence = [
+        item for item in (updated_run.get("evidence") or [])
+        if item.get("action_type") == "feed_precheck"
+    ]
+    assert precheck_evidence
+    assert precheck_evidence[0]["duplicate_precheck"]["passed"] is False

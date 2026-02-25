@@ -71,6 +71,7 @@ def test_execution_policy_defaults_enable_safety_gates():
     assert policy.dedupe_recent_feed_posts == 5
     assert policy.dedupe_threshold == 0.90
     assert policy.block_on_duplicate is True
+    assert policy.dedupe_retry_attempts == 2
     assert policy.single_submit_guard is True
     assert policy.tunnel_recovery_cycles == 2
     assert policy.tunnel_recovery_delay_seconds == 90

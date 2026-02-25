@@ -498,81 +498,141 @@ class PremiumOrchestrator:
 
         post_kind = str(cycle.get("post_kind", "character"))
 
-        bundle = await self.content.generate_post_bundle(
-            profile_name=profile_name,
-            profile_config=profile_config,
-            post_kind=post_kind,
-            cycle_index=cycle_index,
-            rules_snapshot=rules_snapshot,
-        )
-        if not bundle.get("success"):
-            await self._fail_run(
-                run_id=run_id,
-                cycle_index=cycle_index,
-                reason=f"content generation failed: {bundle.get('error')}",
-            )
-            return
-
-        caption = bundle.get("caption", "")
-        image_path = bundle.get("image_path")
         dedupe_precheck_enabled = bool(execution_policy.get("dedupe_precheck_enabled", True))
         dedupe_recent_feed_posts = int(execution_policy.get("dedupe_recent_feed_posts", 5))
         dedupe_threshold = float(execution_policy.get("dedupe_threshold", 0.90))
         block_on_duplicate = bool(execution_policy.get("block_on_duplicate", True))
+        dedupe_retry_attempts = max(0, int(execution_policy.get("dedupe_retry_attempts", 2)))
         single_submit_guard = bool(execution_policy.get("single_submit_guard", True))
         tunnel_recovery_cycles = max(0, int(execution_policy.get("tunnel_recovery_cycles", 2)))
         tunnel_recovery_delay_seconds = max(15, int(execution_policy.get("tunnel_recovery_delay_seconds", 90)))
 
-        precheck = await self.safety.run_feed_safety_precheck(
-            profile_name=profile_name,
-            caption=caption,
-            lookback_posts=dedupe_recent_feed_posts,
-            threshold=dedupe_threshold,
-            run_id=run_id,
-            cycle_index=cycle_index,
-        )
-        identity_check = dict(precheck.get("identity_check") or {})
-        duplicate_precheck = dict(precheck.get("duplicate_precheck") or {})
-        profile_identity_confirmed = bool(identity_check.get("passed"))
+        generation_attempt = 0
+        bundle: Dict = {}
+        caption = ""
+        image_path = None
+        precheck: Dict = {}
+        identity_check: Dict = {}
+        duplicate_precheck: Dict = {}
+        profile_identity_confirmed = False
 
-        if not profile_identity_confirmed:
-            self.store.append_evidence(
-                run_id,
-                self._build_precheck_evidence(
+        while True:
+            profile_config_current = self.store.get_profile_config(profile_name) or profile_config
+            bundle = await self.content.generate_post_bundle(
+                profile_name=profile_name,
+                profile_config=profile_config_current,
+                post_kind=post_kind,
+                cycle_index=cycle_index + (generation_attempt * 101),
+                rules_snapshot=rules_snapshot,
+            )
+            if not bundle.get("success"):
+                await self._fail_run(
                     run_id=run_id,
                     cycle_index=cycle_index,
-                    profile_name=profile_name,
-                    precheck=precheck,
-                ),
-            )
-            self.store.append_event(
-                run_id,
-                "identity_verification_failed",
-                {
-                    "cycle_index": cycle_index,
-                    "identity_check": identity_check,
-                    "precheck_error": precheck.get("error"),
-                },
-            )
-            await self._emit(
-                "premium_identity_check_result",
-                {
-                    "run_id": run_id,
-                    "cycle_index": cycle_index,
-                    "success": False,
-                    "identity_check": identity_check,
-                    "error": precheck.get("error") or "identity_verification_failed",
-                },
-            )
-            self.content.cleanup_generated_image(image_path)
-            await self._fail_run(
+                    reason=f"content generation failed: {bundle.get('error')}",
+                )
+                return
+
+            caption = bundle.get("caption", "")
+            image_path = bundle.get("image_path")
+
+            precheck = await self.safety.run_feed_safety_precheck(
+                profile_name=profile_name,
+                caption=caption,
+                lookback_posts=dedupe_recent_feed_posts,
+                threshold=dedupe_threshold,
                 run_id=run_id,
                 cycle_index=cycle_index,
-                reason="identity_verification_failed",
             )
-            return
+            identity_check = dict(precheck.get("identity_check") or {})
+            duplicate_precheck = dict(precheck.get("duplicate_precheck") or {})
+            profile_identity_confirmed = bool(identity_check.get("passed"))
 
-        if dedupe_precheck_enabled and block_on_duplicate and not bool(duplicate_precheck.get("passed", True)):
+            if not profile_identity_confirmed:
+                self.store.append_evidence(
+                    run_id,
+                    self._build_precheck_evidence(
+                        run_id=run_id,
+                        cycle_index=cycle_index,
+                        profile_name=profile_name,
+                        precheck=precheck,
+                    ),
+                )
+                self.store.append_event(
+                    run_id,
+                    "identity_verification_failed",
+                    {
+                        "cycle_index": cycle_index,
+                        "identity_check": identity_check,
+                        "precheck_error": precheck.get("error"),
+                    },
+                )
+                await self._emit(
+                    "premium_identity_check_result",
+                    {
+                        "run_id": run_id,
+                        "cycle_index": cycle_index,
+                        "success": False,
+                        "identity_check": identity_check,
+                        "error": precheck.get("error") or "identity_verification_failed",
+                    },
+                )
+                self.content.cleanup_generated_image(image_path)
+                await self._fail_run(
+                    run_id=run_id,
+                    cycle_index=cycle_index,
+                    reason="identity_verification_failed",
+                )
+                return
+
+            duplicate_blocked = (
+                dedupe_precheck_enabled
+                and block_on_duplicate
+                and not bool(duplicate_precheck.get("passed", True))
+            )
+            if not duplicate_blocked:
+                break
+
+            if generation_attempt < dedupe_retry_attempts:
+                retry_number = generation_attempt + 1
+                self.store.append_evidence(
+                    run_id,
+                    self._build_precheck_evidence(
+                        run_id=run_id,
+                        cycle_index=cycle_index,
+                        profile_name=profile_name,
+                        precheck=precheck,
+                    ),
+                )
+                self.store.append_event(
+                    run_id,
+                    "duplicate_precheck_retry_scheduled",
+                    {
+                        "cycle_index": cycle_index,
+                        "attempt": retry_number,
+                        "max_retries": dedupe_retry_attempts,
+                        "caption": caption,
+                        "duplicate_precheck": duplicate_precheck,
+                    },
+                )
+                await self._emit(
+                    "premium_precheck_blocked",
+                    {
+                        "run_id": run_id,
+                        "cycle_index": cycle_index,
+                        "profile_name": profile_name,
+                        "duplicate_precheck": duplicate_precheck,
+                        "error": precheck.get("error") or "duplicate_precheck_failed",
+                        "retry_scheduled": True,
+                        "attempt": retry_number,
+                        "max_retries": dedupe_retry_attempts,
+                    },
+                )
+                self.store.remember_recent_caption(profile_name, caption)
+                self.content.cleanup_generated_image(image_path)
+                generation_attempt += 1
+                continue
+
             self.store.append_evidence(
                 run_id,
                 self._build_precheck_evidence(
@@ -587,6 +647,8 @@ class PremiumOrchestrator:
                 "duplicate_precheck_failed",
                 {
                     "cycle_index": cycle_index,
+                    "attempt": generation_attempt + 1,
+                    "max_retries": dedupe_retry_attempts,
                     "duplicate_precheck": duplicate_precheck,
                     "precheck_error": precheck.get("error"),
                 },

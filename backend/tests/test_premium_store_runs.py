@@ -68,7 +68,7 @@ def test_due_cycles_only_returns_schedulable_runs(tmp_path):
     due = store.get_due_cycles()
     assert due
     assert due[0][0] == run["id"]
-    assert due[0][1] == 0
+    assert due[0][1] == int(first_cycle["index"])
 
 
 def test_due_cycles_skips_runs_with_active_running_cycle(tmp_path):
