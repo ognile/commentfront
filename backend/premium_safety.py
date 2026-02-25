@@ -968,13 +968,9 @@ async def _navigate_to_best_profile_surface(page, session: FacebookSession, prof
 
     if not best_snapshot:
         fallback_url = await _safe_page_url(page, fallback=best_url)
-        best_snapshot = await _extract_profile_snapshot_bounded(
-            page,
-            profile_name,
-            fallback_url=fallback_url,
-        )
-        best_snapshot["current_url"] = str(best_snapshot.get("current_url") or fallback_url)
-        best_url = str(best_snapshot.get("current_url") or fallback_url)
+        best_snapshot = _empty_profile_snapshot(fallback_url)
+        best_snapshot["current_url"] = str(fallback_url)
+        best_url = str(fallback_url)
 
     return best_snapshot, best_url
 
@@ -1093,17 +1089,7 @@ async def run_feed_safety_precheck(
                         )
                     except Exception:
                         pass
-                    try:
-                        await _stop_page_load(page)
-                        fallback_url = await _safe_page_url(page, fallback=profile_page_url)
-                        snapshot = await _extract_profile_snapshot_bounded(
-                            page,
-                            profile_name,
-                            fallback_url=fallback_url,
-                        )
-                        snapshot["current_url"] = str(snapshot.get("current_url") or fallback_url)
-                    except Exception:
-                        snapshot = _empty_profile_snapshot(await _safe_page_url(page, fallback=profile_page_url))
+                    snapshot = _empty_profile_snapshot(await _safe_page_url(page, fallback=profile_page_url))
                 else:
                     snapshot = _empty_profile_snapshot(profile_page_url)
                 resolved_profile_url = str(snapshot.get("current_url") or profile_page_url)
