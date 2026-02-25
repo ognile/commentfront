@@ -156,6 +156,62 @@ def test_group_publish_retries_to_home_after_groups_tunnel_error(monkeypatch):
     assert result["evidence"]["action_method"]["retry_attempts"] == 2
 
 
+def test_group_publish_retries_when_submission_not_verifiable(monkeypatch):
+    calls = []
+
+    async def fake_run_adaptive_task(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "final_status": "task_completed",
+                "final_url": "https://m.facebook.com/groups/111111111111111/",
+                "screenshots": ["/tmp/before1.png", "/tmp/after1.png"],
+                "steps": [
+                    {
+                        "action_taken": "group navigation completed",
+                        "gemini_response": "DONE: inside group feed",
+                        "reasoning": "in group",
+                        "matched_element": {"tag": "DIV", "ariaLabel": "Visit", "text": "Visit"},
+                    }
+                ],
+                "errors": [],
+            }
+        return {
+            "final_status": "task_completed",
+            "final_url": "https://m.facebook.com/groups/222222222222222/posts/67890?story_fbid=67890",
+            "screenshots": ["/tmp/before2.png", "/tmp/after2.png"],
+            "steps": [
+                {
+                    "action_taken": "group post submitted",
+                    "gemini_response": "DONE: post is pending admin approval",
+                    "reasoning": "facebook confirmed pending admin approval",
+                    "matched_element": {"tag": "DIV", "ariaLabel": "Post", "text": "Post"},
+                }
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(premium_actions, "run_adaptive_task", fake_run_adaptive_task)
+
+    result = asyncio.run(
+        premium_actions.discover_group_and_publish(
+            run_id="run_group_retry_unverified",
+            cycle_index=0,
+            profile_name="Vanessa Hines",
+            topic_seed="menopause groups",
+            allow_join_new=True,
+            join_pending_policy="try_next_group",
+            group_post_text="supportive post",
+            image_path=None,
+        )
+    )
+
+    assert len(calls) == 2
+    assert result["success"] is True
+    assert result["evidence"]["action_method"]["group_attempt"] == 2
+    assert result["evidence"]["confirmation"]["post_visible_or_permalink_resolved"] is True
+
+
 def test_comment_replies_fallback_submit_marks_reply_visible(monkeypatch):
     async def fake_run_adaptive_task(**kwargs):
         return {

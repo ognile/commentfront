@@ -617,6 +617,29 @@ Rules:
         result = None
         max_combined_attempts = 3
         search_start_url = f"https://m.facebook.com/search/groups/?q={quote_plus(topic_seed or 'groups')}"
+        
+        def _group_post_confirmed(candidate_result: Dict) -> bool:
+            candidate_adaptive_result = candidate_result.get("result") or {}
+            candidate_blob = _step_blob(candidate_adaptive_result)
+            candidate_final_url = str(candidate_adaptive_result.get("final_url") or "")
+            candidate_final_status = str(candidate_adaptive_result.get("final_status") or "")
+            has_group_permalink = _contains_any(candidate_final_url, ["/groups/", "/posts/", "permalink", "story_fbid="])
+            confirmed = has_group_permalink and _contains_any(candidate_final_url, ["/posts/", "permalink", "story_fbid="])
+            if not confirmed and candidate_final_status == "task_completed":
+                confirmed = _contains_any(
+                    candidate_blob,
+                    [
+                        "posted in group",
+                        "group post submitted",
+                        "post published",
+                        "visible in the group",
+                        "visible in group feed",
+                        "pending admin approval",
+                        "post is pending",
+                        "pending review by admins",
+                    ],
+                )
+            return bool(confirmed)
 
         for attempt in range(1, max_combined_attempts + 1):
             avoid_clause = ""
@@ -655,7 +678,7 @@ Rules:
             if "/groups/" in candidate_url and candidate_url not in tried_group_urls:
                 tried_group_urls.append(candidate_url)
 
-            if candidate.get("success"):
+            if candidate.get("success") and _group_post_confirmed(candidate):
                 break
 
         combined_result = (result or {}).get("result") or {}
