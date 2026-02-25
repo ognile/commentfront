@@ -301,6 +301,85 @@ class AdaptiveAgent:
         except Exception:
             return False
 
+    async def _set_editable_text_exact(self, text: str) -> bool:
+        """Set visible editable field value exactly (replace, no append)."""
+        if not self.page:
+            return False
+        value = str(text or "")
+        if not value:
+            return False
+        try:
+            return bool(
+                await self.page.evaluate(
+                    """(value) => {
+                        const isVisible = (el) => {
+                            if (!el) return false;
+                            const rect = el.getBoundingClientRect();
+                            if (!rect || rect.width < 2 || rect.height < 2) return false;
+                            if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
+                            const style = window.getComputedStyle(el);
+                            if (!style) return true;
+                            return style.visibility !== "hidden" && style.display !== "none";
+                        };
+                        const isEditable = (el) => {
+                            if (!el) return false;
+                            const tag = (el.tagName || "").toLowerCase();
+                            if (tag === "textarea") return true;
+                            if (tag === "input") {
+                                const type = (el.getAttribute("type") || "text").toLowerCase();
+                                return ["", "text", "search", "email", "url", "tel", "number", "password"].includes(type);
+                            }
+                            if (el.isContentEditable) return true;
+                            const role = (el.getAttribute("role") || "").toLowerCase();
+                            return role === "textbox" || role === "combobox";
+                        };
+
+                        const candidates = [];
+                        const addCandidate = (el) => {
+                            if (!el || !isEditable(el) || !isVisible(el)) return;
+                            if (candidates.includes(el)) return;
+                            candidates.push(el);
+                        };
+                        addCandidate(document.activeElement);
+                        const selectors = [
+                            "textarea[role='combobox']",
+                            "textarea",
+                            "[contenteditable='true'][role='textbox']",
+                            "[contenteditable='true']",
+                            "input[type='text']",
+                            "input:not([type])",
+                            "[role='textbox']",
+                            "[role='combobox']"
+                        ];
+                        for (const selector of selectors) {
+                            const nodes = Array.from(document.querySelectorAll(selector));
+                            for (const node of nodes.slice(0, 24)) addCandidate(node);
+                            if (candidates.length) break;
+                        }
+
+                        const target = candidates[0];
+                        if (!target) return false;
+                        target.focus();
+                        if (target.isContentEditable) {
+                            target.innerText = value;
+                            target.textContent = value;
+                        } else {
+                            target.value = value;
+                        }
+                        try {
+                            target.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
+                        } catch (_e) {
+                            target.dispatchEvent(new Event("input", { bubbles: true }));
+                        }
+                        target.dispatchEvent(new Event("change", { bubbles: true }));
+                        return true;
+                    }""",
+                    value,
+                )
+            )
+        except Exception:
+            return False
+
     def _build_prompt(self, step_num: int, elements_summary: List[str]) -> str:
         """Build the Gemini prompt for decision making."""
         # Build action history summary for loop detection
@@ -1105,23 +1184,31 @@ REASONING: Comment was submitted"""
                                 step_result["type_guard"] = "already_present_in_composer"
                                 logger.info(f"{self.log_prefix} TYPE skipped because text already exists in composer")
                             else:
-                                # Replace composer text instead of appending. This blocks repeated TYPE spam.
-                                for combo in ("Meta+A", "Control+A"):
+                                # Deterministic set: write exact value into composer, no append semantics.
+                                exact_set = await self._set_editable_text_exact(text)
+                                if exact_set:
+                                    await asyncio.sleep(0.5)
+                                    step_result["action_taken"] = f"TYPE_SET_EXACT: {text[:50]}..."
+                                    step_result["input_focused"] = input_focused
+                                    step_result["type_guard"] = "typed_with_exact_set"
+                                else:
+                                    # Last fallback: keyboard replace sequence.
+                                    for combo in ("Meta+A", "Control+A"):
+                                        try:
+                                            await self.page.keyboard.press(combo)
+                                            await asyncio.sleep(0.05)
+                                        except Exception:
+                                            continue
                                     try:
-                                        await self.page.keyboard.press(combo)
-                                        await asyncio.sleep(0.05)
+                                        await self.page.keyboard.press("Backspace")
                                     except Exception:
-                                        continue
-                                try:
-                                    await self.page.keyboard.press("Backspace")
-                                except Exception:
-                                    pass
-                                await asyncio.sleep(0.05)
-                                await self.page.keyboard.type(text, delay=50)
-                                await asyncio.sleep(1)
-                                step_result["action_taken"] = f"TYPE: {text[:50]}..."
-                                step_result["input_focused"] = input_focused
-                                step_result["type_guard"] = "typed_with_replace"
+                                        pass
+                                    await asyncio.sleep(0.05)
+                                    await self.page.keyboard.type(text, delay=50)
+                                    await asyncio.sleep(1)
+                                    step_result["action_taken"] = f"TYPE: {text[:50]}..."
+                                    step_result["input_focused"] = input_focused
+                                    step_result["type_guard"] = "typed_with_replace_fallback"
                         else:
                             step_result["action_taken"] = "TYPE_PARSE_ERROR"
 
