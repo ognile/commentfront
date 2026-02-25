@@ -834,7 +834,7 @@ async def perform_comment_replies(
     profile_identity_confirmed: bool = True,
     identity_check: Optional[Dict] = None,
 ) -> Dict:
-    task = f"""
+    primary_task = f"""
 Reply supportively to exactly {replies_count} group comment(s).
 Hard rules:
 - Open comments on a group post, then click a visible "Reply" control under an existing comment thread.
@@ -846,13 +846,60 @@ Hard rules:
 - If threaded reply visibility cannot be confirmed, finish with FAILED.
 """.strip()
 
+    def _finalize_reply_result(result: Dict) -> Dict:
+        adaptive_result = result.get("result") or {}
+        blob = _step_blob(adaptive_result)
+        action_trace = [str(action).strip().lower() for action in _step_actions(adaptive_result)]
+        used_fallback_submit = any("fallback_reply_submit" in action for action in action_trace)
+        final_status = str(adaptive_result.get("final_status") or "").strip().lower()
+
+        reply_visible = _contains_any(
+            blob,
+            [
+                "reply sent",
+                "reply posted",
+                "comment replied",
+                "replied",
+                "fallback_reply_submit",
+            ],
+        )
+        clicked_reply_cta = any('click "reply"' in action for action in action_trace)
+        submitted_comment = any("post a comment" in action for action in action_trace)
+        typed_tokens = set()
+        for action in action_trace:
+            if (
+                action.startswith("type:")
+                or action.startswith("type_set_exact:")
+                or action.startswith("type_skipped_duplicate:")
+            ):
+                typed_tokens.update(_token_set(action))
+        expected_tokens = _token_set(reply_text)
+        overlap = len(expected_tokens.intersection(typed_tokens))
+        typed_expected_reply = overlap >= max(3, min(6, len(expected_tokens)))
+        if final_status == "task_completed" and clicked_reply_cta and submitted_comment and typed_expected_reply:
+            reply_visible = True
+        if used_fallback_submit and final_status == "task_completed":
+            reply_visible = True
+
+        result.setdefault("evidence", {}).setdefault("confirmation", {})
+        result["evidence"]["confirmation"]["reply_cta_clicked"] = clicked_reply_cta
+        result["evidence"]["confirmation"]["reply_submit_clicked"] = submitted_comment
+        result["evidence"]["confirmation"]["reply_text_typed"] = typed_expected_reply
+
+        return _apply_confirmation(
+            result,
+            key="reply_visible_under_thread",
+            value=reply_visible,
+            error_message="reply visibility confirmation missing",
+        )
+
     result = await _execute_task(
         run_id=run_id,
         cycle_index=cycle_index,
         step_id=f"cycle_{cycle_index}_replies",
         profile_name=profile_name,
         action_type="comment_replies",
-        task=task,
+        task=primary_task,
         start_url=start_url or "https://m.facebook.com/groups",
         expected_count=replies_count,
         confirmation_keyword=None,
@@ -860,49 +907,47 @@ Hard rules:
         profile_identity_confirmed=profile_identity_confirmed,
         identity_check=identity_check,
     )
+    result = _finalize_reply_result(result)
 
-    adaptive_result = result.get("result") or {}
-    blob = _step_blob(adaptive_result)
-    action_trace = [str(action).strip().lower() for action in _step_actions(adaptive_result)]
-    used_fallback_submit = any("fallback_reply_submit" in action for action in action_trace)
-    final_status = str(adaptive_result.get("final_status") or "").strip().lower()
-
-    reply_visible = _contains_any(
-        blob,
-        [
-            "reply sent",
-            "reply posted",
-            "comment replied",
-            "replied",
-            "fallback_reply_submit",
-        ],
+    needs_broader_retry = (
+        not bool(result.get("success"))
+        and not bool(((result.get("evidence") or {}).get("confirmation") or {}).get("reply_cta_clicked"))
     )
-    clicked_reply_cta = any('click "reply"' in action for action in action_trace)
-    submitted_comment = any("post a comment" in action for action in action_trace)
-    typed_tokens = set()
-    for action in action_trace:
-        if (
-            action.startswith("type:")
-            or action.startswith("type_set_exact:")
-            or action.startswith("type_skipped_duplicate:")
-        ):
-            typed_tokens.update(_token_set(action))
-    expected_tokens = _token_set(reply_text)
-    overlap = len(expected_tokens.intersection(typed_tokens))
-    typed_expected_reply = overlap >= max(3, min(6, len(expected_tokens)))
-    if final_status == "task_completed" and clicked_reply_cta and submitted_comment and typed_expected_reply:
-        reply_visible = True
-    if used_fallback_submit and final_status == "task_completed":
-        reply_visible = True
+    if not needs_broader_retry:
+        return result
 
-    result.setdefault("evidence", {}).setdefault("confirmation", {})
-    result["evidence"]["confirmation"]["reply_cta_clicked"] = clicked_reply_cta
-    result["evidence"]["confirmation"]["reply_submit_clicked"] = submitted_comment
-    result["evidence"]["confirmation"]["reply_text_typed"] = typed_expected_reply
-
-    return _apply_confirmation(
-        result,
-        key="reply_visible_under_thread",
-        value=reply_visible,
-        error_message="reply visibility confirmation missing",
+    fallback_task = f"""
+Reply supportively to exactly {replies_count} group comment(s).
+Fallback navigation rules:
+- Start from group-search results for "menopause groups".
+- Open a group with active posts and non-zero comment threads.
+- If a post has no comments or no "Reply" control, back out immediately and try another post or group.
+- Click a visible "Reply" control under an existing comment thread before typing.
+- Use this exact supportive wording:
+{reply_text}
+- Click "Post a comment" once.
+- Finish with DONE only when the threaded reply is visible under the target thread (or Facebook confirms pending approval).
+- If no threaded reply path is available in the current location, keep searching in other groups.
+""".strip()
+    fallback_start_url = f"https://m.facebook.com/search/groups/?q={quote_plus('menopause groups')}"
+    retry_result = await _execute_task(
+        run_id=run_id,
+        cycle_index=cycle_index,
+        step_id=f"cycle_{cycle_index}_replies",
+        profile_name=profile_name,
+        action_type="comment_replies",
+        task=fallback_task,
+        start_url=fallback_start_url,
+        expected_count=replies_count,
+        confirmation_keyword=None,
+        max_steps=45,
+        profile_identity_confirmed=profile_identity_confirmed,
+        identity_check=identity_check,
     )
+    retry_result = _finalize_reply_result(retry_result)
+    retry_result.setdefault("evidence", {}).setdefault("action_method", {})
+    retry_result["evidence"]["action_method"]["retry_used"] = True
+    retry_result["evidence"]["action_method"]["retry_from_start_url"] = start_url or "https://m.facebook.com/groups"
+    retry_result["evidence"]["action_method"]["retry_start_url"] = fallback_start_url
+    retry_result["evidence"]["action_method"]["retry_attempts"] = 1
+    return retry_result
