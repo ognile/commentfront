@@ -558,6 +558,81 @@ class PremiumOrchestrator:
                         precheck=precheck,
                     ),
                 )
+                target_url = str(precheck.get("profile_url") or "")
+                transient_identity_precheck = (
+                    target_url.startswith("chrome-error://")
+                    or self._contains_tunnel_connection_error(precheck)
+                    or (
+                        not str(identity_check.get("profile_name_seen") or "").strip()
+                        and not bool(identity_check.get("profile_surface_detected"))
+                        and int(duplicate_precheck.get("checked_posts", 0)) <= 0
+                    )
+                )
+                if transient_identity_precheck:
+                    attempts = self._cycle_attempts(run_id=run_id, cycle_index=cycle_index)
+                    if attempts > tunnel_recovery_cycles:
+                        self.store.append_event(
+                            run_id,
+                            "identity_precheck_unreachable_exhausted",
+                            {
+                                "cycle_index": cycle_index,
+                                "attempts": attempts,
+                                "max_deferrals": tunnel_recovery_cycles,
+                                "identity_check": identity_check,
+                                "duplicate_precheck": duplicate_precheck,
+                                "target_url": target_url,
+                            },
+                        )
+                        self.content.cleanup_generated_image(image_path)
+                        await self._fail_run(
+                            run_id=run_id,
+                            cycle_index=cycle_index,
+                            reason="identity_precheck_unreachable",
+                        )
+                        return
+
+                    deferred = self.store.defer_cycle(
+                        run_id=run_id,
+                        cycle_index=cycle_index,
+                        delay_seconds=tunnel_recovery_delay_seconds,
+                        reason="identity_precheck_unreachable",
+                        metadata={
+                            "attempts": attempts,
+                            "max_deferrals": tunnel_recovery_cycles,
+                            "identity_check": identity_check,
+                            "duplicate_precheck": duplicate_precheck,
+                            "target_url": target_url,
+                        },
+                    )
+                    retry_at = (deferred or {}).get("scheduled_at")
+                    self.store.append_event(
+                        run_id,
+                        "identity_precheck_unreachable_deferred",
+                        {
+                            "cycle_index": cycle_index,
+                            "attempts": attempts,
+                            "max_deferrals": tunnel_recovery_cycles,
+                            "retry_at": retry_at,
+                            "identity_check": identity_check,
+                            "target_url": target_url,
+                        },
+                    )
+                    await self._emit(
+                        "premium_identity_check_result",
+                        {
+                            "run_id": run_id,
+                            "cycle_index": cycle_index,
+                            "success": False,
+                            "identity_check": identity_check,
+                            "error": "identity_precheck_unreachable",
+                            "retry_scheduled": True,
+                            "deferred": True,
+                            "retry_at": retry_at,
+                        },
+                    )
+                    self.content.cleanup_generated_image(image_path)
+                    return
+
                 self.store.append_event(
                     run_id,
                     "identity_verification_failed",
