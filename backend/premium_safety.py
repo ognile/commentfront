@@ -355,15 +355,18 @@ async def _stop_page_load(page) -> None:
     except Exception:
         return
     try:
-        await page.evaluate(
-            """() => {
-                try { window.stop(); } catch (_) {}
-                return true;
-            }"""
+        await asyncio.wait_for(
+            page.evaluate(
+                """() => {
+                    try { window.stop(); } catch (_) {}
+                    return true;
+                }"""
+            ),
+            timeout=1.5,
         )
     except Exception:
         try:
-            await page.keyboard.press("Escape")
+            await asyncio.wait_for(page.keyboard.press("Escape"), timeout=1.0)
         except Exception:
             pass
 
@@ -1066,9 +1069,12 @@ async def run_feed_safety_precheck(
             except asyncio.TimeoutError as timeout_exc:
                 if page and not page.is_closed():
                     try:
-                        before_screenshot = await save_debug_screenshot(
-                            page,
-                            f"premium_precheck_timeout_{screenshot_suffix}",
+                        before_screenshot = await asyncio.wait_for(
+                            save_debug_screenshot(
+                                page,
+                                f"premium_precheck_timeout_{screenshot_suffix}",
+                            ),
+                            timeout=5.0,
                         )
                     except Exception:
                         pass
