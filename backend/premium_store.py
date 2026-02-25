@@ -583,6 +583,67 @@ class PremiumStore:
             self.save()
             return run
 
+    def recover_interrupted_running_cycles(self, reason: str = "interrupted_by_process_restart") -> List[Dict]:
+        """
+        Fail-close runs that were mid-cycle when a process stopped.
+
+        This prevents permanent scheduler stalls on `running` cycles and avoids
+        uncertain repost behavior after restarts/redeploys.
+        """
+        recovered: List[Dict] = []
+        with self._lock:
+            now = _utc_iso()
+            for run_id in self.state.get("run_order", []):
+                run = self.state.get("runs", {}).get(run_id)
+                if not run:
+                    continue
+                run_status = str(run.get("status") or "")
+                if run_status not in ("scheduled", "in_progress"):
+                    continue
+
+                running_cycles = [c for c in run.get("cycles", []) if str(c.get("status")) == "running"]
+                if not running_cycles:
+                    continue
+
+                interrupted_indexes: List[int] = []
+                for cycle in running_cycles:
+                    cycle["status"] = "failed"
+                    cycle["completed_at"] = now
+                    cycle["error"] = reason
+                    cycle.setdefault("results", []).append(
+                        {
+                            "type": "interrupted",
+                            "reason": reason,
+                            "at": now,
+                        }
+                    )
+                    interrupted_indexes.append(int(cycle.get("index", -1)))
+
+                previous_status = str(run.get("status") or "")
+                run["status"] = "failed"
+                run["error"] = reason
+                run["updated_at"] = now
+                run["completed_at"] = now
+                run["next_execute_at"] = None
+
+                profile_key = self._profile_key_for_run(run)
+                if previous_status != "queued":
+                    self._promote_next_queued_run_locked(profile_key)
+                self._recompute_profile_queue_locked(profile_key)
+
+                recovered.append(
+                    {
+                        "run_id": run_id,
+                        "profile_name": (run.get("run_spec") or {}).get("profile_name"),
+                        "interrupted_cycle_indexes": interrupted_indexes,
+                        "reason": reason,
+                    }
+                )
+
+            if recovered:
+                self.save()
+        return recovered
+
     def get_due_cycles(self, now: Optional[datetime] = None) -> List[Tuple[str, int, str]]:
         current = now or _utc_now()
         due: List[Tuple[str, int, str]] = []

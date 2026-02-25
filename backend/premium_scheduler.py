@@ -27,6 +27,14 @@ class PremiumScheduler:
         if self._task and not self._task.done():
             logger.info("Premium scheduler already running")
             return
+
+        recovered = self.store.recover_interrupted_running_cycles()
+        if recovered:
+            logger.warning(f"Premium scheduler startup recovered {len(recovered)} interrupted run(s)")
+            self.store.update_scheduler_state(
+                last_error=f"recovered_interrupted_runs={len(recovered)}",
+            )
+
         self._stop = False
         self.store.update_scheduler_state(is_running=True)
         self._task = asyncio.create_task(self._loop())

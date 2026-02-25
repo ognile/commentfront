@@ -160,3 +160,27 @@ def test_defer_cycle_reschedules_pending_with_reason(tmp_path):
 
     retry_dt = datetime.fromisoformat(retry_at.replace("Z", "+00:00"))
     assert retry_dt > datetime.now(timezone.utc)
+
+
+def test_recover_interrupted_running_cycles_fail_closes_and_promotes_queue(tmp_path):
+    store = PremiumStore(file_path=str(tmp_path / "premium_state.json"))
+    first = store.enqueue_or_create_run(run_spec=_run_spec(), created_by="tester")
+    second = store.enqueue_or_create_run(run_spec=_run_spec(), created_by="tester")
+
+    store.state["runs"][first["id"]]["status"] = "in_progress"
+    store.state["runs"][first["id"]]["cycles"][0]["status"] = "running"
+    store.state["runs"][first["id"]]["cycles"][0]["started_at"] = "2026-02-25T00:00:00Z"
+    store.save()
+
+    recovered = store.recover_interrupted_running_cycles()
+    assert len(recovered) == 1
+    assert recovered[0]["run_id"] == first["id"]
+
+    first_after = store.get_run(first["id"])
+    second_after = store.get_run(second["id"])
+    assert first_after["status"] == "failed"
+    assert first_after["error"] == "interrupted_by_process_restart"
+    assert first_after["cycles"][0]["status"] == "failed"
+    assert first_after["cycles"][0]["error"] == "interrupted_by_process_restart"
+    assert second_after["status"] == "scheduled"
+    assert second_after["queue_position"] == 0

@@ -190,3 +190,41 @@ def test_scheduler_tick_is_idempotent_for_same_due_cycle(tmp_path):
 
     updated_run = store.get_run(run["id"])
     assert updated_run["status"] == "completed"
+
+
+def test_scheduler_start_recovers_interrupted_running_cycle(tmp_path):
+    store = PremiumStore(file_path=str(tmp_path / "premium_state.json"))
+    store.upsert_profile_config(
+        "Vanessa Hines",
+        {
+            "character_profile": {"persona_description": "supportive community member"},
+            "content_policy": {"casing_mode": "natural_mixed"},
+            "execution_policy": {"enabled": True, "max_retries": 1, "stop_on_first_failure": True},
+        },
+    )
+    store.set_rules_snapshot({"version": "v_test", "negative_patterns": [], "vocabulary_guidance": [], "raw": {}})
+
+    run = store.create_run(run_spec=_run_spec(), created_by="tester")
+    store.state["runs"][run["id"]]["status"] = "in_progress"
+    store.state["runs"][run["id"]]["cycles"][0]["status"] = "running"
+    store.state["runs"][run["id"]]["cycles"][0]["started_at"] = "2026-02-25T00:00:00Z"
+    store.save()
+
+    orchestrator = PremiumOrchestrator(
+        store=store,
+        broadcast_update=None,
+        actions_module=FakeActions(),
+        content_module=FakeContent,
+        safety_module=FakeSafety,
+    )
+    scheduler = PremiumScheduler(store=store, orchestrator=orchestrator)
+
+    async def _run_start_stop():
+        await scheduler.start()
+        await scheduler.stop()
+
+    asyncio.run(_run_start_stop())
+    recovered_run = store.get_run(run["id"])
+    assert recovered_run["status"] == "failed"
+    assert recovered_run["error"] == "interrupted_by_process_restart"
+    assert recovered_run["cycles"][0]["status"] == "failed"
