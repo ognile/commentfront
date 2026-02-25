@@ -30,8 +30,8 @@ from queue_manager import near_duplicate_ratio
 
 logger = logging.getLogger("PremiumSafety")
 
-PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS = max(5000, int(os.getenv("PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS", "25000")))
-PRECHECK_NAVIGATION_TIMEOUT_SECONDS = max(30.0, float(os.getenv("PRECHECK_NAVIGATION_TIMEOUT_SECONDS", "180")))
+PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS = max(4000, int(os.getenv("PRECHECK_CANDIDATE_GOTO_TIMEOUT_MS", "12000")))
+PRECHECK_NAVIGATION_TIMEOUT_SECONDS = max(20.0, float(os.getenv("PRECHECK_NAVIGATION_TIMEOUT_SECONDS", "75")))
 
 
 def _utc_iso() -> str:
@@ -239,20 +239,20 @@ def _profile_candidate_urls(session: FacebookSession, profile_name: str) -> List
         seen.add(value)
         candidates.append(value)
 
-    if user_id:
-        _add(f"https://mbasic.facebook.com/profile.php?id={user_id}&v=timeline")
-        _add(f"https://mbasic.facebook.com/profile.php?id={user_id}")
-        _add(f"https://m.facebook.com/profile.php?id={user_id}&v=timeline")
-        _add(f"https://m.facebook.com/profile.php?id={user_id}")
-    _add("https://mbasic.facebook.com/me/?v=timeline")
-    _add("https://mbasic.facebook.com/me/")
     _add("https://m.facebook.com/me/?v=timeline")
     _add("https://m.facebook.com/me/")
+    _add("https://mbasic.facebook.com/me/?v=timeline")
+    _add("https://mbasic.facebook.com/me/")
+    if user_id:
+        _add(f"https://m.facebook.com/profile.php?id={user_id}&v=timeline")
+        _add(f"https://m.facebook.com/profile.php?id={user_id}")
+        _add(f"https://mbasic.facebook.com/profile.php?id={user_id}&v=timeline")
+        _add(f"https://mbasic.facebook.com/profile.php?id={user_id}")
     if slug:
-        _add(f"https://mbasic.facebook.com/{slug}?v=timeline")
-        _add(f"https://mbasic.facebook.com/{slug}")
         _add(f"https://m.facebook.com/{slug}?v=timeline")
         _add(f"https://m.facebook.com/{slug}")
+        _add(f"https://mbasic.facebook.com/{slug}?v=timeline")
+        _add(f"https://mbasic.facebook.com/{slug}")
     _add("https://mbasic.facebook.com/")
     _add("https://m.facebook.com/")
     return candidates

@@ -16,13 +16,14 @@ class _SessionStub:
         self.data = {"user_id": user_id}
 
 
-def test_profile_candidate_urls_prefers_direct_profile_first():
+def test_profile_candidate_urls_prefers_me_timeline_first():
     session = _SessionStub("12345")
     urls = _profile_candidate_urls(session, "Wanda Lobb")
-    assert urls[0] == "https://mbasic.facebook.com/profile.php?id=12345&v=timeline"
-    assert urls[1] == "https://mbasic.facebook.com/profile.php?id=12345"
-    assert urls[2] == "https://m.facebook.com/profile.php?id=12345&v=timeline"
-    assert urls[3] == "https://m.facebook.com/profile.php?id=12345"
+    assert urls[0] == "https://m.facebook.com/me/?v=timeline"
+    assert urls[1] == "https://m.facebook.com/me/"
+    assert urls[2] == "https://mbasic.facebook.com/me/?v=timeline"
+    assert urls[3] == "https://mbasic.facebook.com/me/"
+    assert "https://m.facebook.com/profile.php?id=12345&v=timeline" in urls
     assert "https://m.facebook.com/me/?v=timeline" in urls
     assert "https://mbasic.facebook.com/me/?v=timeline" in urls
 
