@@ -56,9 +56,12 @@ class UserManager:
             logger.error(f"Failed to save users: {e}")
 
     def _ensure_admin_exists(self):
-        """Create initial admin user if no users exist."""
-        if self.users:
+        """Create initial admin user if no users exist, or reset if forced."""
+        force_reset = os.getenv("FORCE_ADMIN_RESET", "").lower() == "true"
+        if self.users and not force_reset:
             return
+        if force_reset:
+            logger.info("FORCE_ADMIN_RESET detected — resetting admin user")
 
         admin_username = os.getenv("INITIAL_ADMIN_USERNAME", "admin")
         admin_password = os.getenv("INITIAL_ADMIN_PASSWORD")

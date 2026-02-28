@@ -16,3 +16,9 @@ __pycache__/
 node_modules/
 dist/
 .env
+# Runtime state files
+backend/users.json
+backend/campaign_queue.json
+backend/campaign_queue.json.bak
+backend/profile_state.json.bak
+backend/appeal_scheduler_state.json
