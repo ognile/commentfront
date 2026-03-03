@@ -306,6 +306,7 @@ def test_generation_prompt_is_top_level_isolated():
     assert "brand in play: Nuora" in prompt
     assert "OP anchor terms" in prompt
     assert "- bacteria" in prompt
+    assert "No engagement-bait CTAs" in prompt
 
 
 def test_detect_primary_brand_from_supporting_comments():
@@ -375,6 +376,12 @@ def test_nonorganic_brand_discovery_detection():
     assert campaign_ai._has_nonorganic_brand_discovery("that's why I switched to Nuora", "Nuora") is True
     assert campaign_ai._has_nonorganic_brand_discovery("I found Nuora from the comments above", "Nuora") is True
     assert campaign_ai._has_nonorganic_brand_discovery("Nuora helped because it targets root cause bacteria", "Nuora") is False
+
+
+def test_engagement_bait_cta_detection():
+    assert campaign_ai._is_engagement_bait_cta("Tag a friend who's still struggling") is True
+    assert campaign_ai._is_engagement_bait_cta("share this with your group") is True
+    assert campaign_ai._is_engagement_bait_cta("Nuora helped because it fixed my pH imbalance") is False
 
 
 def _fake_rules():

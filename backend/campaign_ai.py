@@ -558,6 +558,25 @@ def _has_nonorganic_brand_discovery(text: str, brand: Optional[str]) -> bool:
     return any(re.search(pattern, lowered) for pattern in patterns)
 
 
+def _is_engagement_bait_cta(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    patterns = [
+        r"\btag a friend\b",
+        r"\btag someone\b",
+        r"\bshare (this|it)\b",
+        r"\bdrop (a|your)\b",
+        r"\bcomment below\b",
+        r"\bfollow\b",
+        r"\bdm me\b",
+        r"\blink in bio\b",
+        r"\bsmash\b",
+        r"\bsubscribe\b",
+    ]
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
 def _tokenize_anchor_words(text: str) -> List[str]:
     tokens: List[str] = []
     for raw in re.findall(r"[A-Za-z0-9']+", str(text or "").lower()):
@@ -1382,6 +1401,9 @@ def _prepare_comment_pool(
         if not text:
             continue
 
+        if _is_engagement_bait_cta(text):
+            continue
+
         sanitized = sanitize_text_against_rules(text, rules_snapshot)
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
         if not sanitized:
@@ -1540,6 +1562,7 @@ Rules:
   - brand recommendations with mechanism/justification still needed: {brand_missing.get("justification", 0)} (overall target {brand_just_target})
 - For brand recommendations, include WHY it helped ("because", mechanism, root cause, reasoning), not only hype lines.
 - Do not use non-organic discovery phrasing like: "switched to {brand_name}", "found {brand_name}", "ordered {brand_name}", "link above".
+- No engagement-bait CTAs. never write lines like "tag a friend", "share this", "comment below", "follow", "dm me".
 - observed style baseline from corpus:
   - approx {int(round(ending_none * 100))}% no end punctuation
   - approx {int(round(ending_period * 100))}% period ending
@@ -1611,6 +1634,7 @@ Hard requirements:
 - At least {justification_count} comments must include mechanism/justification language ("because", root cause, why it helps).
 - Keep comments varied in length and voice.
 - Avoid duplicates or near-duplicates of existing comments.
+- no engagement-bait CTAs ("tag a friend", "share this", "comment below", "follow", "dm me").
 - No markdown, no numbering.
 
 OP post context:
@@ -1641,6 +1665,8 @@ def _prepare_brand_topup_pool(
     for raw in candidates:
         text = str(raw or "").strip()
         if not text:
+            continue
+        if _is_engagement_bait_cta(text):
             continue
         sanitized = sanitize_text_against_rules(text, rules_snapshot)
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
