@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -50,6 +51,9 @@ AI_COMMENT_MAX = 50
 DEFAULT_STYLE_PROFILE_PATH = str(_LOCAL_RULES_DIR / "campaign-ai-style-profile.json")
 STYLE_PROFILE_MIN_SAMPLE_SIZE = int(os.getenv("CAMPAIGN_AI_STYLE_PROFILE_MIN_SAMPLE_SIZE", "200"))
 STYLE_CACHE_TTL_SECONDS = int(os.getenv("CAMPAIGN_AI_STYLE_CACHE_TTL_SECONDS", "1800"))
+MIN_NORMAL_CASE_RATIO = float(os.getenv("CAMPAIGN_AI_MIN_NORMAL_CASE_RATIO", "0.2"))
+BRAND_RECOMMENDATION_RATIO = float(os.getenv("CAMPAIGN_AI_BRAND_RECOMMENDATION_RATIO", "0.35"))
+BRAND_JUSTIFICATION_RATIO = float(os.getenv("CAMPAIGN_AI_BRAND_JUSTIFICATION_RATIO", "0.6"))
 
 _STYLE_PROFILE_CACHE: Dict[str, Any] = {
     "profile": None,
@@ -437,6 +441,130 @@ def _comment_lane(text: str) -> str:
     return "supportive"
 
 
+def _canonical_brand(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower().replace(" ", "")
+    if lowered in {"mynuora", "nuora"}:
+        return "Nuora"
+    return raw
+
+
+def _detect_primary_brand(context_snapshot: Dict[str, Any], intent: str) -> Optional[str]:
+    override = _canonical_brand(os.getenv("CAMPAIGN_AI_BRAND_OVERRIDE", ""))
+    if override:
+        return override
+
+    texts: List[str] = [str(intent or "")]
+    op_post = context_snapshot.get("op_post") or {}
+    texts.append(str(op_post.get("text") or ""))
+    for item in context_snapshot.get("supporting_comments") or []:
+        texts.append(str((item or {}).get("text") or ""))
+
+    merged = "\n".join(texts)
+    lowered = merged.lower()
+    if "nuora" in lowered or "mynuora" in lowered:
+        return "Nuora"
+
+    match = re.search(
+        r"\bbrand\s+we\s+recommend\s+is\s+([A-Za-z][A-Za-z0-9_-]{2,30})\b",
+        merged,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return _canonical_brand(match.group(1))
+    return None
+
+
+def _mentions_brand(text: str, brand: Optional[str]) -> bool:
+    brand_value = _canonical_brand(brand or "")
+    if not brand_value:
+        return False
+    tokens = [re.escape(brand_value.lower())]
+    if brand_value.lower() == "nuora":
+        tokens.append("mynuora")
+    return bool(re.search(rf"\b({'|'.join(tokens)})\b", str(text or "").lower()))
+
+
+def _has_mechanism_explanation(text: str) -> bool:
+    return bool(
+        re.search(
+            (
+                r"\b(because|since|due to|which means|this is why|the reason|mechanism|root cause|"
+                r"biofilm|bacteria|pH|microbiome|enzyme|explains|works by)\b"
+            ),
+            str(text or ""),
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _brand_targets(
+    comment_count: int,
+    *,
+    brand: Optional[str],
+) -> Dict[str, Any]:
+    if not brand or comment_count <= 0:
+        return {
+            "brand": None,
+            "recommendation_target": 0,
+            "justification_target": 0,
+        }
+
+    recommendation_target = int(round(comment_count * BRAND_RECOMMENDATION_RATIO))
+    if comment_count >= 10:
+        recommendation_target = max(recommendation_target, 3)
+    recommendation_target = min(comment_count, max(1, recommendation_target))
+
+    justification_target = int(round(recommendation_target * BRAND_JUSTIFICATION_RATIO))
+    justification_target = min(recommendation_target, max(1, justification_target))
+
+    return {
+        "brand": brand,
+        "recommendation_target": recommendation_target,
+        "justification_target": justification_target,
+    }
+
+
+def _brand_counts(comments: List[str], brand: Optional[str]) -> Dict[str, int]:
+    recommendation_count = 0
+    justification_count = 0
+    for text in comments:
+        if not _mentions_brand(text, brand):
+            continue
+        recommendation_count += 1
+        if _has_mechanism_explanation(text):
+            justification_count += 1
+    return {
+        "recommendation_count": recommendation_count,
+        "justification_count": justification_count,
+    }
+
+
+def _missing_brand_targets(
+    comments: List[str],
+    brand_plan: Dict[str, Any],
+) -> Dict[str, int]:
+    brand = brand_plan.get("brand")
+    if not brand:
+        return {
+            "recommendation": 0,
+            "justification": 0,
+        }
+    counts = _brand_counts(comments, brand)
+    return {
+        "recommendation": max(
+            0,
+            int(brand_plan.get("recommendation_target", 0)) - int(counts.get("recommendation_count", 0)),
+        ),
+        "justification": max(
+            0,
+            int(brand_plan.get("justification_target", 0)) - int(counts.get("justification_count", 0)),
+        ),
+    }
+
+
 def _clamp_ratio(value: Any, default: float) -> float:
     try:
         numeric = float(value)
@@ -768,6 +896,12 @@ def _style_surface_targets(comment_count: int, style_profile: Dict[str, Any]) ->
         mention_target = max(mention_target, 1)
         lowercase_target = max(lowercase_target, 1)
 
+    uppercase_min = int(math.ceil(max(0.0, MIN_NORMAL_CASE_RATIO) * comment_count))
+    if comment_count >= 10:
+        uppercase_min = max(2, uppercase_min)
+    elif comment_count > 0:
+        uppercase_min = max(1, uppercase_min)
+
     return {
         "endings": endings_target,
         "reaction": max(0, reaction_target),
@@ -776,6 +910,7 @@ def _style_surface_targets(comment_count: int, style_profile: Dict[str, Any]) ->
         "alternative": max(0, alternative_target),
         "mention": max(0, mention_target),
         "lowercase_start": max(0, lowercase_target),
+        "uppercase_start_min": max(0, min(comment_count, uppercase_min)),
     }
 
 
@@ -953,6 +1088,8 @@ def _missing_surface_targets(
         key: max(0, int((target_surface.get("endings") or {}).get(key, 0)) - int((counters.get("endings") or {}).get(key, 0)))
         for key in ("none", "period", "question", "exclaim")
     }
+    accepted_count = len([x for x in accepted if str(x or "").strip()])
+    uppercase_count = max(0, accepted_count - int(counters.get("lowercase_start", 0)))
     return {
         "endings": ending_missing,
         "reaction": max(0, int(target_surface.get("reaction", 0)) - int(counters.get("reaction", 0))),
@@ -961,6 +1098,7 @@ def _missing_surface_targets(
         "alternative": max(0, int(target_surface.get("alternative", 0)) - int(counters.get("alternative", 0))),
         "mention": max(0, int(target_surface.get("mention", 0)) - int(counters.get("mention", 0))),
         "lowercase_start": max(0, int(target_surface.get("lowercase_start", 0)) - int(counters.get("lowercase_start", 0))),
+        "uppercase_start_min": max(0, int(target_surface.get("uppercase_start_min", 0)) - uppercase_count),
     }
 
 
@@ -1109,6 +1247,8 @@ def _prepare_comment_pool(
     target_mix: Dict[str, int],
     target_surface: Dict[str, Any],
     lane_targets: Dict[str, int],
+    brand_plan: Dict[str, Any],
+    brand_missing: Dict[str, int],
 ) -> List[str]:
     out: List[str] = []
     seen_base = [str(x).strip() for x in accepted + existing_comments if str(x).strip()]
@@ -1121,6 +1261,9 @@ def _prepare_comment_pool(
     for item in accepted:
         lane = _comment_lane(item)
         lane_counts[lane] = lane_counts.get(lane, 0) + 1
+    brand_name = str(brand_plan.get("brand") or "").strip() or None
+    brand_counts = _brand_counts(accepted, brand_name)
+    brand_reco_target = int(brand_plan.get("recommendation_target", 0) or 0)
 
     for raw in candidates:
         text = str(raw or "").strip()
@@ -1152,10 +1295,22 @@ def _prepare_comment_pool(
         if int(lane_counts.get(lane, 0)) >= int(lane_targets.get(lane, 0)) + 2:
             continue
 
+        # Soft brand guardrail: when we still need brand recommendations,
+        # reject a few non-brand candidates early in the attempt.
+        if brand_name and int(brand_missing.get("recommendation", 0)) > 0:
+            is_brand = _mentions_brand(sanitized, brand_name)
+            still_needed = brand_reco_target - int(brand_counts.get("recommendation_count", 0))
+            if not is_brand and still_needed > 0 and len(out) < still_needed:
+                continue
+
         out.append(sanitized)
         accepted_counts[bucket] += 1
         surface_counts["endings"][ending_key] = int(surface_counts["endings"].get(ending_key, 0)) + 1
         lane_counts[lane] = int(lane_counts.get(lane, 0)) + 1
+        if brand_name and _mentions_brand(sanitized, brand_name):
+            brand_counts["recommendation_count"] = int(brand_counts.get("recommendation_count", 0)) + 1
+            if _has_mechanism_explanation(sanitized):
+                brand_counts["justification_count"] = int(brand_counts.get("justification_count", 0)) + 1
 
     return out
 
@@ -1174,6 +1329,8 @@ def _build_generation_prompt(
     surface_missing: Dict[str, Any],
     lane_targets: Dict[str, int],
     lane_missing: Dict[str, int],
+    brand_plan: Dict[str, Any],
+    brand_missing: Dict[str, int],
 ) -> str:
     op_post = context_snapshot.get("op_post") or {}
 
@@ -1205,6 +1362,9 @@ def _build_generation_prompt(
     alternative_ratio = float(archetypes.get("alternative", 0.10))
     style_source = str(style_profile.get("source") or "unknown")
     style_sample_size = int(style_profile.get("sample_size") or 0)
+    brand_name = str(brand_plan.get("brand") or "").strip()
+    brand_target = int(brand_plan.get("recommendation_target", 0) or 0)
+    brand_just_target = int(brand_plan.get("justification_target", 0) or 0)
 
     return f"""
 You must generate exactly {comment_count} Facebook comments as strict JSON.
@@ -1242,6 +1402,13 @@ Rules:
   - question ending: need {(surface_missing.get("endings") or {}).get("question", 0)}
   - exclamation ending: need {(surface_missing.get("endings") or {}).get("exclaim", 0)}
   - lowercase starts: need {surface_missing.get("lowercase_start", 0)}
+  - normal case starts (uppercase first letter): need {surface_missing.get("uppercase_start_min", 0)}
+- Do not make everything lowercase. keep visible normal-case voices.
+- brand recommendation targets:
+  - brand in play: {brand_name if brand_name else "(none inferred)"}
+  - explicit brand recommendations still needed: {brand_missing.get("recommendation", 0)} (overall target {brand_target})
+  - brand recommendations with mechanism/justification still needed: {brand_missing.get("justification", 0)} (overall target {brand_just_target})
+- For brand recommendations, include WHY it helped ("because", mechanism, root cause, reasoning), not only hype lines.
 - observed style baseline from corpus:
   - approx {int(round(ending_none * 100))}% no end punctuation
   - approx {int(round(ending_period * 100))}% period ending
@@ -1286,6 +1453,103 @@ Attempt: {remaining_attempt}
 """.strip()
 
 
+def _build_brand_topup_prompt(
+    *,
+    context_snapshot: Dict[str, Any],
+    intent: str,
+    brand: str,
+    comment_count: int,
+    justification_count: int,
+    existing_comments: List[str],
+) -> str:
+    op_post = context_snapshot.get("op_post") or {}
+    op_text = str(op_post.get("text") or "").strip()
+    existing_lines = [f"- {item}" for item in existing_comments[:120]]
+    return f"""
+Generate exactly {comment_count} isolated top-level Facebook comments as strict JSON.
+
+Output format:
+{{"comments": ["...", "..."]}}
+
+Hard requirements:
+- Every comment must be a top-level comment to the OP post, not a reply to other comments.
+- Every comment must explicitly mention brand "{brand}".
+- At least {justification_count} comments must include mechanism/justification language ("because", root cause, why it helps).
+- Keep comments varied in length and voice.
+- Avoid duplicates or near-duplicates of existing comments.
+- No markdown, no numbering.
+
+OP post context:
+{op_text or "(no OP message available)"}
+
+Intent:
+{intent}
+
+Existing comments to avoid:
+{chr(10).join(existing_lines) if existing_lines else "(none)"}
+""".strip()
+
+
+def _prepare_brand_topup_pool(
+    *,
+    candidates: List[str],
+    existing_comments: List[str],
+    rules_snapshot: Dict,
+    brand: str,
+    recommendation_target: int,
+    justification_target: int,
+) -> List[str]:
+    out: List[str] = []
+    seen = [str(x).strip() for x in existing_comments if str(x).strip()]
+    recommendation_count = 0
+    justification_count = 0
+
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        sanitized = sanitize_text_against_rules(text, rules_snapshot)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        if not sanitized:
+            continue
+        validation = validate_text_against_rules(sanitized, rules_snapshot)
+        if not validation.get("ok"):
+            continue
+        if not _mentions_brand(sanitized, brand):
+            continue
+        if _is_near_duplicate(sanitized, seen + out):
+            continue
+
+        has_justification = _has_mechanism_explanation(sanitized)
+        if justification_count < justification_target and not has_justification and len(out) < justification_target:
+            continue
+
+        out.append(sanitized)
+        recommendation_count += 1
+        if has_justification:
+            justification_count += 1
+        if recommendation_count >= recommendation_target:
+            break
+
+    return out
+
+
+def _brand_replacement_indexes(comments: List[str], brand: str) -> List[int]:
+    non_brand = []
+    brand_without_why = []
+    for idx, text in enumerate(comments):
+        normalized = str(text or "").strip()
+        if not normalized:
+            non_brand.append(idx)
+            continue
+        if not _mentions_brand(normalized, brand):
+            non_brand.append(idx)
+            continue
+        if not _has_mechanism_explanation(normalized):
+            brand_without_why.append(idx)
+    return non_brand + brand_without_why
+
+
 def _strip_terminal_punctuation(text: str) -> str:
     stripped = re.sub(r"[.!?]+$", "", str(text or "").strip()).strip()
     return stripped or str(text or "").strip()
@@ -1297,6 +1561,16 @@ def _lowercase_first_alpha(text: str) -> str:
     for idx, ch in enumerate(chars):
         if ch.isalpha():
             chars[idx] = ch.lower()
+            break
+    return "".join(chars)
+
+
+def _uppercase_first_alpha(text: str) -> str:
+    raw = str(text or "")
+    chars = list(raw)
+    for idx, ch in enumerate(chars):
+        if ch.isalpha():
+            chars[idx] = ch.upper()
             break
     return "".join(chars)
 
@@ -1353,6 +1627,28 @@ def _apply_surface_variability(
             out[idx] = candidate
             need_lower -= 1
 
+    counters = _style_counters(out)
+    uppercase_min = int(target_surface.get("uppercase_start_min", 0) or 0)
+    lowercase_count = int(counters.get("lowercase_start", 0))
+    uppercase_count = max(0, len(out) - lowercase_count)
+    need_upper = max(0, uppercase_min - uppercase_count)
+    if need_upper > 0:
+        ranked_indexes = sorted(
+            [idx for idx, text in enumerate(out) if (_first_alpha_char(text) or "").islower()],
+            key=lambda i: _word_count(out[i]),
+            reverse=True,
+        )
+        for idx in ranked_indexes:
+            if need_upper <= 0:
+                break
+            candidate = _uppercase_first_alpha(out[idx])
+            if not candidate:
+                continue
+            if candidate in out[:idx] + out[idx + 1 :]:
+                continue
+            out[idx] = candidate
+            need_upper -= 1
+
     return out
 
 
@@ -1376,8 +1672,10 @@ async def generate_campaign_comments(
     target_mix = _style_mix_targets(count, style_profile)
     target_surface = _style_surface_targets(count, style_profile)
     lane_targets = _lane_targets(count, normalized_intent)
+    primary_brand = _detect_primary_brand(context_snapshot, normalized_intent)
+    brand_plan = _brand_targets(count, brand=primary_brand)
 
-    max_attempts = 4
+    max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         remaining = count - len(accepted)
         if remaining <= 0:
@@ -1385,6 +1683,7 @@ async def generate_campaign_comments(
         mix_missing = _missing_mix_targets(accepted, target_mix)
         surface_missing = _missing_surface_targets(accepted, target_surface)
         lane_missing = _missing_lane_targets(accepted, lane_targets)
+        brand_missing = _missing_brand_targets(accepted, brand_plan)
 
         prompt = _build_generation_prompt(
             context_snapshot=context_snapshot,
@@ -1399,6 +1698,8 @@ async def generate_campaign_comments(
             surface_missing=surface_missing,
             lane_targets=lane_targets,
             lane_missing=lane_missing,
+            brand_plan=brand_plan,
+            brand_missing=brand_missing,
         )
         response_text = await _call_claude(prompt)
         candidates = _extract_json_comments(response_text)
@@ -1410,13 +1711,15 @@ async def generate_campaign_comments(
             target_mix=target_mix,
             target_surface=target_surface,
             lane_targets=lane_targets,
+            brand_plan=brand_plan,
+            brand_missing=brand_missing,
         )
         accepted.extend(approved)
 
         logger.info(
             (
                 "Campaign AI generation attempt %s: received=%s approved=%s accumulated=%s "
-                "target=%s mix=%s surface=%s style_source=%s style_samples=%s"
+                "target=%s mix=%s surface=%s brand=%s brand_missing=%s style_source=%s style_samples=%s"
             ),
             attempt,
             len(candidates),
@@ -1425,6 +1728,8 @@ async def generate_campaign_comments(
             count,
             target_mix,
             target_surface,
+            brand_plan.get("brand"),
+            brand_missing,
             style_profile.get("source"),
             style_profile.get("sample_size"),
         )
@@ -1438,5 +1743,48 @@ async def generate_campaign_comments(
                 f"(requested={count}, generated={len(final_comments)})"
             ),
         )
+
+    # Targeted brand top-up: if a brand is inferred (e.g. Nuora), ensure enough explicit
+    # recommendations with justification without forcing this for brand-less contexts.
+    brand_name = str(brand_plan.get("brand") or "").strip()
+    if brand_name:
+        missing_brand = _missing_brand_targets(final_comments, brand_plan)
+        remediation_attempts = 2
+        for _ in range(remediation_attempts):
+            if int(missing_brand.get("recommendation", 0)) <= 0:
+                break
+            topup_prompt = _build_brand_topup_prompt(
+                context_snapshot=context_snapshot,
+                intent=normalized_intent,
+                brand=brand_name,
+                comment_count=int(missing_brand.get("recommendation", 0)),
+                justification_count=int(missing_brand.get("justification", 0)),
+                existing_comments=existing + final_comments,
+            )
+            topup_text = await _call_claude(topup_prompt)
+            topup_candidates = _extract_json_comments(topup_text)
+            replacements = _prepare_brand_topup_pool(
+                candidates=topup_candidates,
+                existing_comments=existing + final_comments,
+                rules_snapshot=rules_snapshot,
+                brand=brand_name,
+                recommendation_target=int(missing_brand.get("recommendation", 0)),
+                justification_target=int(missing_brand.get("justification", 0)),
+            )
+            if not replacements:
+                break
+
+            replace_indexes = _brand_replacement_indexes(final_comments, brand_name)
+            replace_cursor = 0
+            for replacement in replacements:
+                if replace_cursor >= len(replace_indexes):
+                    break
+                idx = replace_indexes[replace_cursor]
+                replace_cursor += 1
+                if replacement in final_comments[:idx] + final_comments[idx + 1 :]:
+                    continue
+                final_comments[idx] = replacement
+
+            missing_brand = _missing_brand_targets(final_comments, brand_plan)
 
     return _apply_surface_variability(final_comments, target_surface=target_surface)

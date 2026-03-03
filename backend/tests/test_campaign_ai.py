@@ -289,14 +289,71 @@ def test_generation_prompt_is_top_level_isolated():
             "alternative": 1,
             "mention": 0,
             "lowercase_start": 0,
+            "uppercase_start_min": 1,
         },
         lane_targets={"supportive": 2, "testimonial": 2, "alternative": 1, "contrarian": 0},
         lane_missing={"supportive": 2, "testimonial": 2, "alternative": 1, "contrarian": 0},
+        brand_plan={"brand": "Nuora", "recommendation_target": 2, "justification_target": 1},
+        brand_missing={"recommendation": 2, "justification": 1},
     )
 
     assert "Every output is an isolated TOP-LEVEL comment on the OP post" in prompt
     assert "Never write as a reply to another comment" in prompt
     assert "hidden supporting detail should not leak" not in prompt
+    assert "Do not make everything lowercase" in prompt
+    assert "brand in play: Nuora" in prompt
+
+
+def test_detect_primary_brand_from_supporting_comments():
+    brand = campaign_ai._detect_primary_brand(
+        {
+            "op_post": {"text": "need help"},
+            "supporting_comments": [
+                {"text": "brand we recommend is myNuora"},
+            ],
+        },
+        "support narrative",
+    )
+
+    assert brand == "Nuora"
+
+
+def test_brand_targets_for_10_comments():
+    plan = campaign_ai._brand_targets(10, brand="Nuora")
+    assert plan["brand"] == "Nuora"
+    assert plan["recommendation_target"] >= 3
+    assert plan["justification_target"] >= 1
+
+
+def test_apply_surface_variability_enforces_normal_case_min():
+    comments = [
+        "omg same",
+        "this is wild",
+        "i had this too",
+        "totally get this",
+        "been there",
+        "same here",
+        "makes sense",
+        "i get it",
+        "yes exactly",
+        "i feel this",
+    ]
+    adjusted = campaign_ai._apply_surface_variability(
+        comments,
+        target_surface={
+            "endings": {"none": 10, "period": 0, "question": 0, "exclaim": 0},
+            "lowercase_start": 2,
+            "uppercase_start_min": 2,
+        },
+    )
+
+    lower = 0
+    for text in adjusted:
+        first = campaign_ai._first_alpha_char(text)
+        if first and first.islower():
+            lower += 1
+    uppercase = len(adjusted) - lower
+    assert uppercase >= 2
 
 
 def _fake_rules():
