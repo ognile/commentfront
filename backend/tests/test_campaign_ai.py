@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from main import (
+    CampaignAIContextRequest,
     CampaignAIGenerateRequest,
     CampaignAIRegenerateOneRequest,
 )
@@ -61,6 +62,40 @@ async def _fake_context(_url: str):
         ],
         "source_meta": {"token_source": "FACEBOOK_PAGE_ACCESS_TOKEN"},
     }
+
+
+def test_campaign_ai_context_returns_snapshot(monkeypatch):
+    monkeypatch.setattr(main, "fetch_campaign_context", _fake_context)
+
+    result = asyncio.run(
+        main.campaign_ai_context(
+            CampaignAIContextRequest(url=VALID_URL),
+            current_user={"username": "tester"},
+        )
+    )
+
+    assert result["url"] == VALID_URL
+    assert result["op_post"]["id"] == "post_1"
+    assert len(result["supporting_comments"]) == 2
+    assert result["source_meta"]["token_source"] == "FACEBOOK_PAGE_ACCESS_TOKEN"
+
+
+def test_campaign_ai_context_propagates_campaign_ai_error(monkeypatch):
+    async def _raise_context_error(_url: str):
+        raise main.CampaignAIError(403, "context token missing")
+
+    monkeypatch.setattr(main, "fetch_campaign_context", _raise_context_error)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            main.campaign_ai_context(
+                CampaignAIContextRequest(url=VALID_URL),
+                current_user={"username": "tester"},
+            )
+        )
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "context token missing"
 
 
 def _fake_rules():

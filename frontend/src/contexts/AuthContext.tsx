@@ -2,6 +2,7 @@
  * Authentication Context for CommentBot
  * Provides auth state and methods throughout the app
  */
+/* eslint-disable react-refresh/only-export-components */
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import {

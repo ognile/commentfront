@@ -60,10 +60,9 @@ export function TagInput({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Reset highlighted index when filtered results change
-  useEffect(() => {
-    setHighlightedIndex(0);
-  }, [filteredTags.length, showCreateOption]);
+  const effectiveHighlightedIndex = totalItems === 0
+    ? -1
+    : Math.min(highlightedIndex, totalItems - 1);
 
   const handleSelectTag = (tag: string) => {
     onTagAdd(tag);
@@ -85,8 +84,8 @@ export function TagInput({
       setHighlightedIndex(prev => Math.max(prev - 1, 0));
     } else if (e.key === 'Enter' && isOpen) {
       e.preventDefault();
-      if (highlightedIndex < filteredTags.length) {
-        handleSelectTag(filteredTags[highlightedIndex]);
+      if (effectiveHighlightedIndex >= 0 && effectiveHighlightedIndex < filteredTags.length) {
+        handleSelectTag(filteredTags[effectiveHighlightedIndex]);
       } else if (showCreateOption) {
         handleSelectTag(normalizedSearch);
       }
@@ -171,7 +170,7 @@ export function TagInput({
                       className={cn(
                         "px-3 py-2 cursor-pointer",
                         size === 'sm' ? 'text-xs' : 'text-sm',
-                        highlightedIndex === i
+                        effectiveHighlightedIndex === i
                           ? 'bg-[rgba(51,51,51,0.08)]'
                           : 'hover:bg-[rgba(51,51,51,0.05)]'
                       )}
@@ -186,7 +185,7 @@ export function TagInput({
                         "px-3 py-2 cursor-pointer text-[#666666] border-t border-[rgba(0,0,0,0.1)]",
                         "flex items-center gap-1",
                         size === 'sm' ? 'text-xs' : 'text-sm',
-                        highlightedIndex === filteredTags.length
+                        effectiveHighlightedIndex === filteredTags.length
                           ? 'bg-[rgba(51,51,51,0.08)]'
                           : 'hover:bg-[rgba(51,51,51,0.05)]'
                       )}
