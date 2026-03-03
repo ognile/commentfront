@@ -948,6 +948,10 @@ def _extract_json_comments(raw_text: str) -> List[str]:
     if not payload_text:
         raise CampaignAIError(502, "Claude output is empty")
 
+    # Handle fenced payloads.
+    payload_text = re.sub(r"^```(?:json)?\s*", "", payload_text, flags=re.IGNORECASE)
+    payload_text = re.sub(r"\s*```$", "", payload_text).strip()
+
     parsed = None
     try:
         parsed = json.loads(payload_text)
@@ -973,6 +977,20 @@ def _extract_json_comments(raw_text: str) -> List[str]:
                 parsed = None
 
     if not isinstance(parsed, dict):
+        # Last-chance fallback: parse line-oriented plain text/bullets.
+        candidates: List[str] = []
+        for line in payload_text.splitlines():
+            text = str(line or "").strip()
+            text = re.sub(r"^[\-\*\d\)\.\s]+", "", text).strip()
+            if not text:
+                continue
+            if text.lower() in {"comments", "comments:", "output", "output:"}:
+                continue
+            if len(text) < 2:
+                continue
+            candidates.append(text)
+        if candidates:
+            return candidates
         raise CampaignAIError(502, "Claude output is not valid JSON object")
 
     comments = parsed.get("comments")
