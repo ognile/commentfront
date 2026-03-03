@@ -265,6 +265,7 @@ def test_lane_targets_enable_contrarian_when_intent_requests_debate():
 
 
 def test_generation_prompt_is_top_level_isolated():
+    op_anchors = ["pee", "smell", "bacteria", "boric", "acid", "probiotics"]
     prompt = campaign_ai._build_generation_prompt(
         context_snapshot={
             "op_post": {"text": "I keep dealing with this issue every week"},
@@ -295,6 +296,7 @@ def test_generation_prompt_is_top_level_isolated():
         lane_missing={"supportive": 2, "testimonial": 2, "alternative": 1, "contrarian": 0},
         brand_plan={"brand": "Nuora", "recommendation_target": 2, "justification_target": 1},
         brand_missing={"recommendation": 2, "justification": 1},
+        op_anchors=op_anchors,
     )
 
     assert "Every output is an isolated TOP-LEVEL comment on the OP post" in prompt
@@ -302,6 +304,8 @@ def test_generation_prompt_is_top_level_isolated():
     assert "hidden supporting detail should not leak" not in prompt
     assert "Do not make everything lowercase" in prompt
     assert "brand in play: Nuora" in prompt
+    assert "OP anchor terms" in prompt
+    assert "- bacteria" in prompt
 
 
 def test_detect_primary_brand_from_supporting_comments():
@@ -354,6 +358,23 @@ def test_apply_surface_variability_enforces_normal_case_min():
             lower += 1
     uppercase = len(adjusted) - lower
     assert uppercase >= 2
+
+
+def test_op_anchor_tokens_and_matching():
+    anchors = campaign_ai._op_anchor_tokens(
+        "Is pee smell actually bacteria? Because boric acid and probiotics havent helped"
+    )
+    assert "pee" in anchors
+    assert "smell" in anchors
+    assert "bacteria" in anchors
+    assert campaign_ai._is_op_anchored("Nuora helped my smell issue", anchors) is True
+    assert campaign_ai._is_op_anchored("does this work if I was on antibiotics twice", anchors) is False
+
+
+def test_nonorganic_brand_discovery_detection():
+    assert campaign_ai._has_nonorganic_brand_discovery("that's why I switched to Nuora", "Nuora") is True
+    assert campaign_ai._has_nonorganic_brand_discovery("I found Nuora from the comments above", "Nuora") is True
+    assert campaign_ai._has_nonorganic_brand_discovery("Nuora helped because it targets root cause bacteria", "Nuora") is False
 
 
 def _fake_rules():

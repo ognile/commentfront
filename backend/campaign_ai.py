@@ -62,6 +62,62 @@ _STYLE_PROFILE_CACHE: Dict[str, Any] = {
     "source_mtime": 0.0,
 }
 
+_ANCHOR_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "have",
+    "has",
+    "had",
+    "are",
+    "was",
+    "were",
+    "just",
+    "only",
+    "really",
+    "very",
+    "what",
+    "why",
+    "when",
+    "where",
+    "which",
+    "who",
+    "how",
+    "does",
+    "did",
+    "can",
+    "could",
+    "would",
+    "should",
+    "been",
+    "your",
+    "you",
+    "yours",
+    "about",
+    "into",
+    "over",
+    "under",
+    "after",
+    "before",
+    "because",
+    "than",
+    "then",
+    "also",
+    "some",
+    "any",
+    "more",
+    "less",
+    "same",
+    "help",
+    "helped",
+    "havent",
+    "haven't",
+}
+
 
 class CampaignAIError(Exception):
     """Structured application error for AI campaign flows."""
@@ -485,6 +541,54 @@ def _mentions_brand(text: str, brand: Optional[str]) -> bool:
     if brand_value.lower() == "nuora":
         tokens.append("mynuora")
     return bool(re.search(rf"\b({'|'.join(tokens)})\b", str(text or "").lower()))
+
+
+def _has_nonorganic_brand_discovery(text: str, brand: Optional[str]) -> bool:
+    brand_value = _canonical_brand(brand or "")
+    if not brand_value:
+        return False
+    lowered = str(text or "").lower()
+    brand_pattern = r"(?:nuora|mynuora)" if brand_value.lower() == "nuora" else re.escape(brand_value.lower())
+    patterns = [
+        rf"\b(switch(?:ed|ing)? to|swapped to|moved to)\s+{brand_pattern}\b",
+        rf"\b(found|discovered|came across|saw|ordered|bought|got)\s+{brand_pattern}\b",
+        rf"\b(link|comments?|thread|above)\b[\w\s,.-]{{0,40}}{brand_pattern}\b",
+        rf"\b{brand_pattern}\b[\w\s,.-]{{0,40}}\b(link|comments?|thread|above)\b",
+    ]
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _tokenize_anchor_words(text: str) -> List[str]:
+    tokens: List[str] = []
+    for raw in re.findall(r"[A-Za-z0-9']+", str(text or "").lower()):
+        token = raw.strip("'")
+        if len(token) < 3:
+            continue
+        if token in _ANCHOR_STOPWORDS:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _op_anchor_tokens(op_text: str) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for token in _tokenize_anchor_words(op_text):
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _is_op_anchored(comment_text: str, op_anchors: List[str]) -> bool:
+    if not op_anchors:
+        return True
+    lower = str(comment_text or "").lower()
+    for token in op_anchors:
+        if re.search(rf"\b{re.escape(token)}\b", lower):
+            return True
+    return False
 
 
 def _has_mechanism_explanation(text: str) -> bool:
@@ -1249,6 +1353,8 @@ def _prepare_comment_pool(
     lane_targets: Dict[str, int],
     brand_plan: Dict[str, Any],
     brand_missing: Dict[str, int],
+    op_anchors: List[str],
+    max_unanchored_reactions: int,
 ) -> List[str]:
     out: List[str] = []
     seen_base = [str(x).strip() for x in accepted + existing_comments if str(x).strip()]
@@ -1264,6 +1370,12 @@ def _prepare_comment_pool(
     brand_name = str(brand_plan.get("brand") or "").strip() or None
     brand_counts = _brand_counts(accepted, brand_name)
     brand_reco_target = int(brand_plan.get("recommendation_target", 0) or 0)
+    unanchored_reactions = 0
+    for item in accepted:
+        if _is_op_anchored(item, op_anchors):
+            continue
+        if _infer_archetype(item) == "reaction" and _word_count(item) <= 3:
+            unanchored_reactions += 1
 
     for raw in candidates:
         text = str(raw or "").strip()
@@ -1295,6 +1407,17 @@ def _prepare_comment_pool(
         if int(lane_counts.get(lane, 0)) >= int(lane_targets.get(lane, 0)) + 2:
             continue
 
+        if brand_name and _has_nonorganic_brand_discovery(sanitized, brand_name):
+            continue
+
+        anchored = _is_op_anchored(sanitized, op_anchors)
+        is_reaction = _infer_archetype(sanitized) == "reaction" and _word_count(sanitized) <= 3
+        if not anchored:
+            if not is_reaction:
+                continue
+            if unanchored_reactions >= max_unanchored_reactions:
+                continue
+
         # Soft brand guardrail: when we still need brand recommendations,
         # reject a few non-brand candidates early in the attempt.
         if brand_name and int(brand_missing.get("recommendation", 0)) > 0:
@@ -1307,6 +1430,8 @@ def _prepare_comment_pool(
         accepted_counts[bucket] += 1
         surface_counts["endings"][ending_key] = int(surface_counts["endings"].get(ending_key, 0)) + 1
         lane_counts[lane] = int(lane_counts.get(lane, 0)) + 1
+        if not anchored and is_reaction:
+            unanchored_reactions += 1
         if brand_name and _mentions_brand(sanitized, brand_name):
             brand_counts["recommendation_count"] = int(brand_counts.get("recommendation_count", 0)) + 1
             if _has_mechanism_explanation(sanitized):
@@ -1331,6 +1456,7 @@ def _build_generation_prompt(
     lane_missing: Dict[str, int],
     brand_plan: Dict[str, Any],
     brand_missing: Dict[str, int],
+    op_anchors: List[str],
 ) -> str:
     op_post = context_snapshot.get("op_post") or {}
 
@@ -1365,6 +1491,7 @@ def _build_generation_prompt(
     brand_name = str(brand_plan.get("brand") or "").strip()
     brand_target = int(brand_plan.get("recommendation_target", 0) or 0)
     brand_just_target = int(brand_plan.get("justification_target", 0) or 0)
+    op_anchor_lines = [f"- {token}" for token in op_anchors[:20]]
 
     return f"""
 You must generate exactly {comment_count} Facebook comments as strict JSON.
@@ -1381,6 +1508,9 @@ Rules:
 - Every output is an isolated TOP-LEVEL comment on the OP post.
 - Never write as a reply to another comment. no "as someone said above", no "this thread explained", no direct back-and-forth.
 - Only use information available from OP text + user intent. Do not inject extra specifics from hidden context.
+- Think of the writer as someone who just read the OP and clicked comment.
+- Keep each comment anchored to OP topic words or symptoms. no off-topic detours.
+- Do not introduce random new conditions/treatments not implied by OP.
 - Vary lengths aggressively:
   - short (<=4 words): target {mix_missing.get("short", 0)} still needed (overall target {mix_targets.get("short", 0)})
   - medium (5-24 words): target {mix_missing.get("medium", 0)} still needed (overall target {mix_targets.get("medium", 0)})
@@ -1409,6 +1539,7 @@ Rules:
   - explicit brand recommendations still needed: {brand_missing.get("recommendation", 0)} (overall target {brand_target})
   - brand recommendations with mechanism/justification still needed: {brand_missing.get("justification", 0)} (overall target {brand_just_target})
 - For brand recommendations, include WHY it helped ("because", mechanism, root cause, reasoning), not only hype lines.
+- Do not use non-organic discovery phrasing like: "switched to {brand_name}", "found {brand_name}", "ordered {brand_name}", "link above".
 - observed style baseline from corpus:
   - approx {int(round(ending_none * 100))}% no end punctuation
   - approx {int(round(ending_period * 100))}% period ending
@@ -1433,6 +1564,9 @@ OP post context:
 
 Supporting comments:
 (intentionally not provided: outputs must be isolated top-level OP comments)
+
+OP anchor terms (must stay close to these themes):
+{chr(10).join(op_anchor_lines) if op_anchor_lines else "(none)"}
 
 User intent:
 {intent}
@@ -1669,6 +1803,9 @@ async def generate_campaign_comments(
     existing = [str(item).strip() for item in (existing_comments or []) if str(item).strip()]
     accepted: List[str] = []
     style_profile = await fetch_campaign_style_profile(context_snapshot)
+    op_text = str((context_snapshot.get("op_post") or {}).get("text") or "").strip()
+    op_anchors = _op_anchor_tokens(op_text)
+    max_unanchored_reactions = 2 if count >= 10 else (1 if count >= 5 else 0)
     target_mix = _style_mix_targets(count, style_profile)
     target_surface = _style_surface_targets(count, style_profile)
     lane_targets = _lane_targets(count, normalized_intent)
@@ -1700,6 +1837,7 @@ async def generate_campaign_comments(
             lane_missing=lane_missing,
             brand_plan=brand_plan,
             brand_missing=brand_missing,
+            op_anchors=op_anchors,
         )
         response_text = await _call_claude(prompt)
         candidates = _extract_json_comments(response_text)
@@ -1713,6 +1851,8 @@ async def generate_campaign_comments(
             lane_targets=lane_targets,
             brand_plan=brand_plan,
             brand_missing=brand_missing,
+            op_anchors=op_anchors,
+            max_unanchored_reactions=max_unanchored_reactions,
         )
         accepted.extend(approved)
 
