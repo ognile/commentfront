@@ -104,18 +104,12 @@ def test_campaign_ai_context_propagates_campaign_ai_error(monkeypatch):
     assert exc.value.detail == "context token missing"
 
 
-def test_resolve_post_id_uses_html_story_id_for_pfbid(monkeypatch):
-    async def _fake_extract_story_id(_url: str):
-        return "122164258202821207"
-
-    async def _unexpected_graph(*_args, **_kwargs):
-        raise AssertionError("graph url crawling should be skipped when html story id is available")
-
-    monkeypatch.setattr(campaign_ai, "_extract_story_id_from_permalink_html", _fake_extract_story_id)
-    monkeypatch.setattr(campaign_ai, "_graph_get", _unexpected_graph)
-
+def test_resolve_post_id_uses_direct_story_fbid_reference():
     resolved = asyncio.run(campaign_ai._resolve_post_id(PFBID_URL, "token"))
-    assert resolved == "61574636237654_122164258202821207"
+    assert resolved == (
+        "61574636237654_"
+        "pfbid02iUeBP7zaMfL7hyzKtLXHo2c2Bi7SyYe9gQkq6ptPJioqYEdX6nWPGgoUDy86EKxJl"
+    )
 
 
 def test_fetch_context_allows_url_owner_mismatch(monkeypatch):

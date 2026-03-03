@@ -217,13 +217,8 @@ async def _resolve_post_id(url: str, token: str) -> str:
     page_id = str((query.get("id") or [""])[0]).strip()
     story_fbid = str((query.get("story_fbid") or [""])[0]).strip()
 
-    if page_id and story_fbid.isdigit():
-        return f"{page_id}_{story_fbid}"
-
     if page_id and story_fbid:
-        html_story_id = await _extract_story_id_from_permalink_html(url)
-        if html_story_id:
-            return f"{page_id}_{html_story_id}"
+        return f"{page_id}_{story_fbid}"
 
     root = await _graph_get(
         "",
