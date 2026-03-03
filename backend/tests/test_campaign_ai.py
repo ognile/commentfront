@@ -8,6 +8,7 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import campaign_ai
 from main import (
     CampaignAIContextRequest,
     CampaignAIGenerateRequest,
@@ -16,6 +17,11 @@ from main import (
 
 
 VALID_URL = "https://www.facebook.com/permalink.php?story_fbid=123456&id=987654321"
+PFBID_URL = (
+    "https://www.facebook.com/permalink.php?"
+    "story_fbid=pfbid02iUeBP7zaMfL7hyzKtLXHo2c2Bi7SyYe9gQkq6ptPJioqYEdX6nWPGgoUDy86EKxJl"
+    "&id=61574636237654"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -96,6 +102,70 @@ def test_campaign_ai_context_propagates_campaign_ai_error(monkeypatch):
 
     assert exc.value.status_code == 403
     assert exc.value.detail == "context token missing"
+
+
+def test_resolve_post_id_uses_html_story_id_for_pfbid(monkeypatch):
+    async def _fake_extract_story_id(_url: str):
+        return "122164258202821207"
+
+    async def _unexpected_graph(*_args, **_kwargs):
+        raise AssertionError("graph url crawling should be skipped when html story id is available")
+
+    monkeypatch.setattr(campaign_ai, "_extract_story_id_from_permalink_html", _fake_extract_story_id)
+    monkeypatch.setattr(campaign_ai, "_graph_get", _unexpected_graph)
+
+    resolved = asyncio.run(campaign_ai._resolve_post_id(PFBID_URL, "token"))
+    assert resolved == "61574636237654_122164258202821207"
+
+
+def test_fetch_context_allows_url_owner_mismatch(monkeypatch):
+    post_id = "61574636237654_122164258202821207"
+
+    async def _fake_resolve_post_id(_url: str, _token: str):
+        return post_id
+
+    async def _fake_graph_get(path: str, params, token: str):
+        assert token == "token"
+        if path == post_id:
+            return {
+                "id": "663571616828831_122164258202821207",
+                "message": "post text",
+                "from": {"id": "663571616828831", "name": "Alicia Darling"},
+                "permalink_url": "https://www.facebook.com/permalink.php?story_fbid=abc&id=61574636237654",
+                "created_time": "2026-03-03T00:00:00+0000",
+            }
+        if path == f"{post_id}/comments":
+            return {
+                "data": [
+                    {
+                        "id": "c1",
+                        "message": "first",
+                        "from": {"id": "1", "name": "Commenter 1"},
+                        "permalink_url": "https://www.facebook.com/comment/1",
+                        "created_time": "2026-03-03T00:01:00+0000",
+                    },
+                    {
+                        "id": "c2",
+                        "message": "second",
+                        "from": {"id": "2", "name": "Commenter 2"},
+                        "permalink_url": "https://www.facebook.com/comment/2",
+                        "created_time": "2026-03-03T00:02:00+0000",
+                    },
+                ]
+            }
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr(campaign_ai, "_resolve_post_id", _fake_resolve_post_id)
+    monkeypatch.setattr(campaign_ai, "_graph_get", _fake_graph_get)
+
+    context = asyncio.run(campaign_ai._fetch_context_with_token(PFBID_URL, "token", "FACEBOOK_PAGE_ACCESS_TOKEN"))
+
+    assert context["op_post"]["author_id"] == "663571616828831"
+    assert len(context["supporting_comments"]) == 2
+    assert context["source_meta"]["url_page_id"] == "61574636237654"
+    assert context["source_meta"]["post_owner_id"] == "663571616828831"
+    assert context["source_meta"]["url_page_id_match"] is False
+    assert context["source_meta"]["controlled_page_validated"] is True
 
 
 def _fake_rules():

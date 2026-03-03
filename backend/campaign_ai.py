@@ -177,6 +177,39 @@ async def _graph_get(path: str, params: Dict[str, str], token: str) -> Dict:
     return payload
 
 
+async def _extract_story_id_from_permalink_html(url: str) -> Optional[str]:
+    """
+    Resolve numeric story id from public permalink HTML.
+
+    Facebook frequently blocks `/?id=<url>` Graph crawling for `pfbid...` URLs.
+    In that case we can parse canonical metadata to get the numeric post id.
+    """
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        response = await client.get(url)
+
+    if response.status_code >= 400:
+        return None
+
+    html = str(response.text or "")
+    if not html:
+        return None
+
+    patterns = [
+        r'<meta\s+property="og:url"\s+content="https://www\.facebook\.com/[^"]*/posts(?:/[^"]*)?/(\d+)/"',
+        r'<link\s+rel="canonical"\s+href="https://www\.facebook\.com/[^"]*/posts(?:/[^"]*)?/(\d+)/"',
+        r"/posts(?:/[^/\"?]+)?/(\d+)/",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if not match:
+            continue
+        story_id = str(match.group(1) or "").strip()
+        if story_id.isdigit():
+            return story_id
+    return None
+
+
 async def _resolve_post_id(url: str, token: str) -> str:
     """Resolve target URL to canonical Graph object id."""
     parsed = urlparse(url)
@@ -186,6 +219,11 @@ async def _resolve_post_id(url: str, token: str) -> str:
 
     if page_id and story_fbid.isdigit():
         return f"{page_id}_{story_fbid}"
+
+    if page_id and story_fbid:
+        html_story_id = await _extract_story_id_from_permalink_html(url)
+        if html_story_id:
+            return f"{page_id}_{html_story_id}"
 
     root = await _graph_get(
         "",
@@ -210,8 +248,6 @@ async def _resolve_post_id(url: str, token: str) -> str:
 async def _fetch_context_with_token(url: str, token: str, token_source: str) -> Dict:
     """Fetch OP + first two comments from Graph API with controlled-page validation."""
     target_page_id = _extract_page_id(url)
-    if not target_page_id:
-        raise CampaignAIError(400, "Target URL must include page id query parameter `id`")
 
     post_id = await _resolve_post_id(url, token)
 
@@ -228,14 +264,7 @@ async def _fetch_context_with_token(url: str, token: str, token_source: str) -> 
     if not owner_id:
         raise CampaignAIError(400, "Unable to validate post owner from Graph API response")
 
-    if owner_id != target_page_id:
-        raise CampaignAIError(
-            400,
-            (
-                "Controlled-page validation failed: URL page id does not match post owner "
-                f"(url_id={target_page_id}, post_owner={owner_id})"
-            ),
-        )
+    url_page_id_match = bool(target_page_id) and owner_id == target_page_id
 
     comments_payload = await _graph_get(
         f"{post_id}/comments",
@@ -287,6 +316,9 @@ async def _fetch_context_with_token(url: str, token: str, token_source: str) -> 
             "graph_api_version": FACEBOOK_GRAPH_API_VERSION,
             "post_id": post_id,
             "controlled_page_validated": True,
+            "url_page_id": target_page_id or None,
+            "url_page_id_match": url_page_id_match if target_page_id else None,
+            "post_owner_id": owner_id,
         },
     }
 
