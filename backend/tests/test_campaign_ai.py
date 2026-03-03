@@ -254,6 +254,51 @@ def test_fetch_campaign_style_profile_falls_back_to_context(monkeypatch):
     assert int(profile["sample_size"]) >= 2
 
 
+def test_lane_targets_enable_contrarian_when_intent_requests_debate():
+    targets = campaign_ai._lane_targets(
+        10,
+        "support narrative but add rage bait and contrarian hot take comments",
+    )
+
+    assert targets["contrarian"] >= 2
+    assert sum(targets.values()) == 10
+
+
+def test_generation_prompt_is_top_level_isolated():
+    prompt = campaign_ai._build_generation_prompt(
+        context_snapshot={
+            "op_post": {"text": "I keep dealing with this issue every week"},
+            "supporting_comments": [
+                {"text": "hidden supporting detail should not leak"},
+                {"text": "another supporting detail"},
+            ],
+        },
+        intent="support the OP and suggest one alternative",
+        comment_count=5,
+        existing_comments=[],
+        rules_snapshot={"negative_patterns": [], "vocabulary_guidance": []},
+        remaining_attempt=1,
+        style_profile=campaign_ai._default_style_profile(),
+        mix_targets={"short": 1, "medium": 3, "long": 1},
+        mix_missing={"short": 1, "medium": 3, "long": 1},
+        surface_missing={
+            "endings": {"none": 2, "period": 1, "question": 1, "exclaim": 1},
+            "reaction": 1,
+            "testimonial": 1,
+            "question": 1,
+            "alternative": 1,
+            "mention": 0,
+            "lowercase_start": 0,
+        },
+        lane_targets={"supportive": 2, "testimonial": 2, "alternative": 1, "contrarian": 0},
+        lane_missing={"supportive": 2, "testimonial": 2, "alternative": 1, "contrarian": 0},
+    )
+
+    assert "Every output is an isolated TOP-LEVEL comment on the OP post" in prompt
+    assert "Never write as a reply to another comment" in prompt
+    assert "hidden supporting detail should not leak" not in prompt
+
+
 def _fake_rules():
     return {
         "version": "rules_v1",

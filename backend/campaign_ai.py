@@ -408,6 +408,35 @@ def _infer_archetype(text: str) -> str:
     return "supportive"
 
 
+def _is_contrarian_comment(text: str) -> bool:
+    low = str(text or "").strip().lower()
+    if not low:
+        return False
+    # Mild contrarian/rage-bait signals that spark discussion without attacking the OP.
+    patterns = [
+        r"\b(not buying|sounds like placebo|placebo|overhyped|idk about this|too good to be true|doubt)\b",
+        r"\b(doesn't work for everyone|not for everyone|did nothing for me|didn't work for me)\b",
+        r"\b(you sure|are we sure|how is this different)\b",
+    ]
+    if low.startswith(("nah", "idk", "hot take")):
+        return True
+    return any(re.search(pattern, low) for pattern in patterns)
+
+
+def _comment_lane(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return "supportive"
+    if _is_contrarian_comment(normalized):
+        return "contrarian"
+    archetype = _infer_archetype(normalized)
+    if archetype == "testimonial":
+        return "testimonial"
+    if archetype == "alternative":
+        return "alternative"
+    return "supportive"
+
+
 def _clamp_ratio(value: Any, default: float) -> float:
     try:
         numeric = float(value)
@@ -799,6 +828,62 @@ def _style_counters(comments: List[str]) -> Dict[str, Any]:
     return counters
 
 
+def _lane_targets(comment_count: int, intent: str) -> Dict[str, int]:
+    base = {
+        "testimonial": 0,
+        "alternative": 0,
+        "contrarian": 0,
+        "supportive": 0,
+    }
+    if comment_count <= 0:
+        return base
+
+    base["testimonial"] = max(1, int(round(comment_count * 0.25))) if comment_count >= 4 else 0
+    base["alternative"] = max(1, int(round(comment_count * 0.15))) if comment_count >= 6 else 0
+
+    lowered_intent = str(intent or "").lower()
+    wants_debate = any(
+        token in lowered_intent
+        for token in (
+            "rage bait",
+            "ragebait",
+            "contrarian",
+            "debate",
+            "hot take",
+            "polariz",
+            "controvers",
+        )
+    )
+    if wants_debate:
+        base["contrarian"] = 2 if comment_count >= 10 else 1
+        if comment_count >= 20:
+            base["contrarian"] = 3
+    elif comment_count >= 15:
+        base["contrarian"] = 1
+
+    allocated = base["testimonial"] + base["alternative"] + base["contrarian"]
+    if allocated > comment_count:
+        overflow = allocated - comment_count
+        for key in ("alternative", "contrarian", "testimonial"):
+            while overflow > 0 and base[key] > 0:
+                base[key] -= 1
+                overflow -= 1
+
+    base["supportive"] = max(0, comment_count - (base["testimonial"] + base["alternative"] + base["contrarian"]))
+    return base
+
+
+def _missing_lane_targets(
+    accepted: List[str],
+    targets: Dict[str, int],
+) -> Dict[str, int]:
+    counts = {"supportive": 0, "testimonial": 0, "alternative": 0, "contrarian": 0}
+    for text in accepted:
+        lane = _comment_lane(text)
+        counts[lane] = counts.get(lane, 0) + 1
+    return {key: max(0, int(targets.get(key, 0)) - int(counts.get(key, 0))) for key in counts}
+
+
 async def fetch_campaign_style_profile(context_snapshot: Dict[str, Any]) -> Dict[str, Any]:
     now = time.time()
     profile_path = _style_profile_path()
@@ -1023,6 +1108,7 @@ def _prepare_comment_pool(
     rules_snapshot: Dict,
     target_mix: Dict[str, int],
     target_surface: Dict[str, Any],
+    lane_targets: Dict[str, int],
 ) -> List[str]:
     out: List[str] = []
     seen_base = [str(x).strip() for x in accepted + existing_comments if str(x).strip()]
@@ -1031,6 +1117,10 @@ def _prepare_comment_pool(
         accepted_counts[_length_bucket(item)] += 1
     surface_counts = _style_counters(accepted)
     ending_targets = target_surface.get("endings") or {}
+    lane_counts = {"supportive": 0, "testimonial": 0, "alternative": 0, "contrarian": 0}
+    for item in accepted:
+        lane = _comment_lane(item)
+        lane_counts[lane] = lane_counts.get(lane, 0) + 1
 
     for raw in candidates:
         text = str(raw or "").strip()
@@ -1058,9 +1148,14 @@ def _prepare_comment_pool(
         if int(surface_counts["endings"].get(ending_key, 0)) >= int(ending_targets.get(ending_key, 0)) + 2:
             continue
 
+        lane = _comment_lane(sanitized)
+        if int(lane_counts.get(lane, 0)) >= int(lane_targets.get(lane, 0)) + 2:
+            continue
+
         out.append(sanitized)
         accepted_counts[bucket] += 1
         surface_counts["endings"][ending_key] = int(surface_counts["endings"].get(ending_key, 0)) + 1
+        lane_counts[lane] = int(lane_counts.get(lane, 0)) + 1
 
     return out
 
@@ -1077,16 +1172,12 @@ def _build_generation_prompt(
     mix_targets: Dict[str, int],
     mix_missing: Dict[str, int],
     surface_missing: Dict[str, Any],
+    lane_targets: Dict[str, int],
+    lane_missing: Dict[str, int],
 ) -> str:
     op_post = context_snapshot.get("op_post") or {}
-    support = context_snapshot.get("supporting_comments") or []
 
     op_text = str(op_post.get("text") or "").strip()
-    support_lines = []
-    for idx, item in enumerate(support[:2]):
-        text = str((item or {}).get("text") or "").strip()
-        if text:
-            support_lines.append(f"- comment {idx + 1}: {text}")
 
     negative_patterns = rules_snapshot.get("negative_patterns") or []
     vocab_patterns = rules_snapshot.get("vocabulary_guidance") or []
@@ -1127,10 +1218,18 @@ Rules:
 - Match real organic Facebook style from ad comments. Avoid uniform writing.
 - the batch must feel like an ecosystem written by different people, not one author.
 - Keep messy human variance: some fragments, some lowercase starts, not every comment polished.
+- Every output is an isolated TOP-LEVEL comment on the OP post.
+- Never write as a reply to another comment. no "as someone said above", no "this thread explained", no direct back-and-forth.
+- Only use information available from OP text + user intent. Do not inject extra specifics from hidden context.
 - Vary lengths aggressively:
   - short (<=4 words): target {mix_missing.get("short", 0)} still needed (overall target {mix_targets.get("short", 0)})
   - medium (5-24 words): target {mix_missing.get("medium", 0)} still needed (overall target {mix_targets.get("medium", 0)})
   - long (>=25 words): target {mix_missing.get("long", 0)} still needed (overall target {mix_targets.get("long", 0)})
+- top-level lane mix (still needed this attempt):
+  - supportive/validation comments: need {lane_missing.get("supportive", 0)} (overall target {lane_targets.get("supportive", 0)})
+  - testimonial comments: need {lane_missing.get("testimonial", 0)} (overall target {lane_targets.get("testimonial", 0)})
+  - alternative-solution comments: need {lane_missing.get("alternative", 0)} (overall target {lane_targets.get("alternative", 0)})
+  - mild contrarian/rage-bait comments: need {lane_missing.get("contrarian", 0)} (overall target {lane_targets.get("contrarian", 0)})
 - ecosystem role mix (still needed this attempt):
   - reaction micro-comments (1-3 words): need {surface_missing.get("reaction", 0)}
   - testimonial comments (first-person experience): need {surface_missing.get("testimonial", 0)}
@@ -1156,6 +1255,7 @@ Rules:
   - approx {int(round(question_ratio * 100))}% question comments
   - approx {int(round(alternative_ratio * 100))}% alternative-solution comments
 - Never make all comments sentence-perfect.
+- If using contrarian/rage-bait comments, keep them mild and engagement-oriented, not abusive.
 - Avoid policy-banned wording listed below.
 - Do not include numbering or labels.
 - Do not repeat or paraphrase too closely to existing comments.
@@ -1165,7 +1265,7 @@ OP post context:
 {op_text or "(no OP message available)"}
 
 Supporting comments:
-{chr(10).join(support_lines) if support_lines else "(none)"}
+(intentionally not provided: outputs must be isolated top-level OP comments)
 
 User intent:
 {intent}
@@ -1275,6 +1375,7 @@ async def generate_campaign_comments(
     style_profile = await fetch_campaign_style_profile(context_snapshot)
     target_mix = _style_mix_targets(count, style_profile)
     target_surface = _style_surface_targets(count, style_profile)
+    lane_targets = _lane_targets(count, normalized_intent)
 
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
@@ -1283,6 +1384,7 @@ async def generate_campaign_comments(
             break
         mix_missing = _missing_mix_targets(accepted, target_mix)
         surface_missing = _missing_surface_targets(accepted, target_surface)
+        lane_missing = _missing_lane_targets(accepted, lane_targets)
 
         prompt = _build_generation_prompt(
             context_snapshot=context_snapshot,
@@ -1295,6 +1397,8 @@ async def generate_campaign_comments(
             mix_targets=target_mix,
             mix_missing=mix_missing,
             surface_missing=surface_missing,
+            lane_targets=lane_targets,
+            lane_missing=lane_missing,
         )
         response_text = await _call_claude(prompt)
         candidates = _extract_json_comments(response_text)
@@ -1305,6 +1409,7 @@ async def generate_campaign_comments(
             rules_snapshot=rules_snapshot,
             target_mix=target_mix,
             target_surface=target_surface,
+            lane_targets=lane_targets,
         )
         accepted.extend(approved)
 
