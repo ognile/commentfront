@@ -1,0 +1,82 @@
+{
+  "source": "ads_maker_comment_corpus_snapshot",
+  "sample_size": 15571,
+  "length_distribution": {
+    "short": 0.174876,
+    "medium": 0.59675,
+    "long": 0.228373
+  },
+  "endings": {
+    "none": 0.504271,
+    "period": 0.26453,
+    "question": 0.126967,
+    "exclaim": 0.104232
+  },
+  "first_char_lower_ratio": 0.019652,
+  "mention_ratio": 0.001028,
+  "testimonial_ratio": 0.392589,
+  "archetype_distribution": {
+    "reaction": 0.117847,
+    "supportive": 0.291439,
+    "question": 0.189647,
+    "testimonial": 0.388157,
+    "alternative": 0.012909
+  },
+  "examples": [
+    "same",
+    "facts",
+    "so true",
+    "wait what",
+    "this is wild",
+    "i tried this and it actually helped",
+    "not gonna lie this makes sense",
+    "anyone else seeing results from this?",
+    "can you share exactly how you did it?",
+    "tagging @maria because we were just talking about this",
+    "i was skeptical at first, but after a week i noticed a real difference and kept going",
+    "this is the first explanation that actually connects the dots for me",
+    "for me the turning point was changing one small habit and staying consistent, not adding ten new things at once",
+    "i had a different approach that worked better for me, might be worth testing as an alternative",
+    "this deserves more attention",
+    "lowkey needed this today",
+    "been there",
+    "same thing happened to me, i thought i was the only one",
+    "if this works for you keep it simple and stick with it",
+    "quick win for me was starting small and tracking it for a few days",
+    "you can also try a different route if this one feels too heavy",
+    "this sounds too polished lol but the idea is solid",
+    "i usually never comment but this one was actually useful",
+    "can someone break this down in plain language?"
+  ],
+  "source_meta": {
+    "built_at_utc": "2026-03-03T16:00:42.215763Z",
+    "inputs": {
+      "assessment_file": "comment_assessment_2026-02-16.json",
+      "review_files": [
+        "comment_review_2026-03-02_1134.json",
+        "comment_review_2026-03-02_1141.json",
+        "comment_review_2026-03-02_1431.json"
+      ]
+    },
+    "filters": {
+      "assessment_allowed_categories": [
+        "neutral",
+        "positive",
+        "question"
+      ],
+      "review_blocked_classifications": [
+        "anti_ad",
+        "competitor",
+        "off_topic_products",
+        "spam"
+      ],
+      "dedupe": "lowercase_exact"
+    },
+    "counts": {
+      "raw_comments": 17515,
+      "deduped_comments": 15603,
+      "review_comments_added": 1569
+    },
+    "examples_curated_for_cross-topic_prompting": true
+  }
+}

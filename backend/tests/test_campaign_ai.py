@@ -47,6 +47,14 @@ def isolate_queue_and_drafts(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(main, "broadcast_update", _noop_broadcast)
+    campaign_ai._STYLE_PROFILE_CACHE.update(
+        {
+            "profile": None,
+            "loaded_at_ts": 0.0,
+            "source_path": "",
+            "source_mtime": 0.0,
+        }
+    )
 
     yield
 
@@ -55,6 +63,14 @@ def isolate_queue_and_drafts(tmp_path, monkeypatch):
     main.queue_manager.campaigns = {}
     main.queue_manager.history = []
     main.draft_manager.drafts = {}
+    campaign_ai._STYLE_PROFILE_CACHE.update(
+        {
+            "profile": None,
+            "loaded_at_ts": 0.0,
+            "source_path": "",
+            "source_mtime": 0.0,
+        }
+    )
 
 
 async def _fake_context(_url: str):
@@ -160,6 +176,82 @@ def test_fetch_context_allows_url_owner_mismatch(monkeypatch):
     assert context["source_meta"]["post_owner_id"] == "663571616828831"
     assert context["source_meta"]["url_page_id_match"] is False
     assert context["source_meta"]["controlled_page_validated"] is True
+
+
+def test_style_mix_targets_handles_single_comment():
+    targets = campaign_ai._style_mix_targets(
+        1,
+        {
+            "length_distribution": {
+                "short": 0.34,
+                "medium": 0.33,
+                "long": 0.33,
+            }
+        },
+    )
+
+    assert sum(targets.values()) == 1
+    assert all(value >= 0 for value in targets.values())
+
+
+def test_fetch_campaign_style_profile_prefers_snapshot_file(tmp_path, monkeypatch):
+    style_file = tmp_path / "style.json"
+    style_file.write_text(
+        """
+        {
+          "source": "snapshot",
+          "sample_size": 500,
+          "length_distribution": {"short": 0.2, "medium": 0.5, "long": 0.3},
+          "endings": {"none": 0.5, "period": 0.2, "question": 0.2, "exclaim": 0.1},
+          "first_char_lower_ratio": 0.08,
+          "mention_ratio": 0.05,
+          "testimonial_ratio": 0.3,
+          "archetype_distribution": {
+            "reaction": 0.2,
+            "supportive": 0.3,
+            "question": 0.2,
+            "testimonial": 0.2,
+            "alternative": 0.1
+          },
+          "examples": ["same", "facts"]
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CAMPAIGN_AI_STYLE_PROFILE_PATH", str(style_file))
+
+    profile = asyncio.run(
+        campaign_ai.fetch_campaign_style_profile(
+            {
+                "supporting_comments": [
+                    {"text": "fallback one"},
+                    {"text": "fallback two"},
+                ]
+            }
+        )
+    )
+
+    assert profile["source"] == "snapshot"
+    assert profile["sample_size"] == 500
+    assert profile["examples"] == ["same", "facts"]
+
+
+def test_fetch_campaign_style_profile_falls_back_to_context(monkeypatch):
+    monkeypatch.setenv("CAMPAIGN_AI_STYLE_PROFILE_PATH", "/tmp/definitely-missing-style-profile.json")
+
+    profile = asyncio.run(
+        campaign_ai.fetch_campaign_style_profile(
+            {
+                "supporting_comments": [
+                    {"text": "same here"},
+                    {"text": "i tried this and it helped"},
+                ]
+            }
+        )
+    )
+
+    assert profile["source"] == "context_fallback"
+    assert int(profile["sample_size"]) >= 2
 
 
 def _fake_rules():

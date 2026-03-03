@@ -15,8 +15,9 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -45,6 +46,17 @@ DEFAULT_VOCAB_GUIDANCE_PATH = str(_LOCAL_RULES_DIR / "campaign-ai-vocabulary-gui
 
 AI_COMMENT_MIN = 10
 AI_COMMENT_MAX = 50
+
+DEFAULT_STYLE_PROFILE_PATH = str(_LOCAL_RULES_DIR / "campaign-ai-style-profile.json")
+STYLE_PROFILE_MIN_SAMPLE_SIZE = int(os.getenv("CAMPAIGN_AI_STYLE_PROFILE_MIN_SAMPLE_SIZE", "200"))
+STYLE_CACHE_TTL_SECONDS = int(os.getenv("CAMPAIGN_AI_STYLE_CACHE_TTL_SECONDS", "1800"))
+
+_STYLE_PROFILE_CACHE: Dict[str, Any] = {
+    "profile": None,
+    "loaded_at_ts": 0.0,
+    "source_path": "",
+    "source_mtime": 0.0,
+}
 
 
 class CampaignAIError(Exception):
@@ -344,6 +356,529 @@ async def fetch_campaign_context(url: str) -> Dict:
     )
 
 
+def _word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9']+", str(text or "")))
+
+
+def _length_bucket(text: str) -> str:
+    words = _word_count(text)
+    if words <= 4:
+        return "short"
+    if words >= 25:
+        return "long"
+    return "medium"
+
+
+def _first_alpha_char(text: str) -> str:
+    for ch in str(text or ""):
+        if ch.isalpha():
+            return ch
+    return ""
+
+
+def _ending_bucket(text: str) -> str:
+    stripped = str(text or "").rstrip()
+    if stripped.endswith("."):
+        return "period"
+    if stripped.endswith("?"):
+        return "question"
+    if stripped.endswith("!"):
+        return "exclaim"
+    return "none"
+
+
+def _infer_archetype(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return "supportive"
+
+    words = _word_count(raw)
+    if words <= 3:
+        return "reaction"
+
+    if re.search(r"\b(i|i'm|ive|i've|me|my|we|our|us|myself)\b", raw, flags=re.IGNORECASE):
+        return "testimonial"
+
+    if "?" in raw or re.search(r"\b(anyone|how|what|why|where|when|does|did|can|could)\b", raw, flags=re.IGNORECASE):
+        return "question"
+
+    if re.search(r"\b(try|instead|another|personally|you could|what helped|alternative)\b", raw, flags=re.IGNORECASE):
+        return "alternative"
+
+    return "supportive"
+
+
+def _clamp_ratio(value: Any, default: float) -> float:
+    try:
+        numeric = float(value)
+    except Exception:
+        numeric = float(default)
+    return max(0.0, min(1.0, numeric))
+
+
+def _normalize_distribution(
+    raw: Any,
+    *,
+    keys: List[str],
+    default: Dict[str, float],
+) -> Dict[str, float]:
+    source = raw if isinstance(raw, dict) else {}
+    out: Dict[str, float] = {}
+    total = 0.0
+    for key in keys:
+        value = _clamp_ratio(source.get(key), default.get(key, 0.0))
+        out[key] = value
+        total += value
+
+    if total <= 0:
+        out = {k: float(default.get(k, 0.0)) for k in keys}
+        total = sum(out.values())
+
+    if total <= 0:
+        return {k: 1.0 / len(keys) for k in keys}
+
+    return {k: out[k] / total for k in keys}
+
+
+def _allocate_targets(
+    total: int,
+    *,
+    weights: Dict[str, float],
+    minima: Optional[Dict[str, int]] = None,
+) -> Dict[str, int]:
+    keys = list(weights.keys())
+    if total <= 0:
+        return {k: 0 for k in keys}
+
+    minima = minima or {}
+    normalized_weights = _normalize_distribution(
+        weights,
+        keys=keys,
+        default={k: 1.0 / max(1, len(keys)) for k in keys},
+    )
+
+    targets = {k: max(0, int(minima.get(k, 0))) for k in keys}
+    assigned = sum(targets.values())
+
+    if assigned > total:
+        # Trim low-priority buckets first if minima over-allocate.
+        for key in sorted(keys, key=lambda k: normalized_weights[k]):
+            while assigned > total and targets[key] > 0:
+                targets[key] -= 1
+                assigned -= 1
+
+    remaining = total - assigned
+    if remaining <= 0:
+        return targets
+
+    fractional: List[Tuple[float, str]] = []
+    for key in keys:
+        exact = remaining * normalized_weights[key]
+        base = int(exact)
+        targets[key] += base
+        fractional.append((exact - base, key))
+
+    assigned = sum(targets.values())
+    leftover = total - assigned
+    if leftover > 0:
+        for _, key in sorted(fractional, reverse=True):
+            if leftover <= 0:
+                break
+            targets[key] += 1
+            leftover -= 1
+    return targets
+
+
+def _default_style_profile() -> Dict[str, Any]:
+    return {
+        "source": "defaults",
+        "sample_size": 0,
+        "length_distribution": {"short": 0.35, "medium": 0.45, "long": 0.20},
+        "endings": {"none": 0.50, "period": 0.25, "question": 0.15, "exclaim": 0.10},
+        "first_char_lower_ratio": 0.08,
+        "mention_ratio": 0.05,
+        "testimonial_ratio": 0.30,
+        "archetype_distribution": {
+            "reaction": 0.18,
+            "supportive": 0.30,
+            "question": 0.20,
+            "testimonial": 0.22,
+            "alternative": 0.10,
+        },
+        "examples": [],
+        "source_meta": {},
+    }
+
+
+def _normalize_style_profile(raw: Any) -> Dict[str, Any]:
+    profile = _default_style_profile()
+    if not isinstance(raw, dict):
+        return profile
+
+    sample_size = 0
+    try:
+        sample_size = max(0, int(raw.get("sample_size") or 0))
+    except Exception:
+        sample_size = 0
+
+    normalized = {
+        "source": str(raw.get("source") or profile["source"]),
+        "sample_size": sample_size,
+        "length_distribution": _normalize_distribution(
+            raw.get("length_distribution"),
+            keys=["short", "medium", "long"],
+            default=profile["length_distribution"],
+        ),
+        "endings": _normalize_distribution(
+            raw.get("endings"),
+            keys=["none", "period", "question", "exclaim"],
+            default=profile["endings"],
+        ),
+        "first_char_lower_ratio": _clamp_ratio(
+            raw.get("first_char_lower_ratio"),
+            profile["first_char_lower_ratio"],
+        ),
+        "mention_ratio": _clamp_ratio(raw.get("mention_ratio"), profile["mention_ratio"]),
+        "testimonial_ratio": _clamp_ratio(
+            raw.get("testimonial_ratio"),
+            profile["testimonial_ratio"],
+        ),
+        "archetype_distribution": _normalize_distribution(
+            raw.get("archetype_distribution"),
+            keys=["reaction", "supportive", "question", "testimonial", "alternative"],
+            default=profile["archetype_distribution"],
+        ),
+        "examples": [],
+        "source_meta": raw.get("source_meta") if isinstance(raw.get("source_meta"), dict) else {},
+    }
+
+    examples: List[str] = []
+    for item in raw.get("examples") or []:
+        text = re.sub(r"\s+", " ", str(item or "")).strip()
+        if not text:
+            continue
+        examples.append(text)
+        if len(examples) >= 24:
+            break
+    normalized["examples"] = examples
+    return normalized
+
+
+def _build_style_profile_from_comments(
+    comments: List[str],
+    *,
+    source: str,
+    source_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    profile = _default_style_profile()
+    profile["source"] = source
+    profile["source_meta"] = dict(source_meta or {})
+
+    cleaned: List[str] = []
+    for raw in comments:
+        text = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not text:
+            continue
+        if _word_count(text) == 0:
+            continue
+        cleaned.append(text)
+
+    if not cleaned:
+        return profile
+
+    total = len(cleaned)
+    length_counts = {"short": 0, "medium": 0, "long": 0}
+    ending_counts = {"none": 0, "period": 0, "question": 0, "exclaim": 0}
+    mention_count = 0
+    testimonial_count = 0
+    first_char_lower_count = 0
+    archetype_counts = {
+        "reaction": 0,
+        "supportive": 0,
+        "question": 0,
+        "testimonial": 0,
+        "alternative": 0,
+    }
+
+    for text in cleaned:
+        bucket = _length_bucket(text)
+        length_counts[bucket] += 1
+
+        ending_counts[_ending_bucket(text)] += 1
+
+        if "@" in text:
+            mention_count += 1
+        if re.search(r"\b(i|i'm|ive|i've|me|my|we|our|us|myself)\b", text, flags=re.IGNORECASE):
+            testimonial_count += 1
+
+        first = _first_alpha_char(text)
+        if first and first.islower():
+            first_char_lower_count += 1
+
+        archetype_counts[_infer_archetype(text)] += 1
+
+    examples: List[str] = []
+    for bucket in ("short", "medium", "long"):
+        for text in cleaned:
+            if _length_bucket(text) != bucket:
+                continue
+            examples.append(text)
+            if len(examples) >= 12:
+                break
+        if len(examples) >= 12:
+            break
+
+    profile.update(
+        {
+            "sample_size": total,
+            "length_distribution": {
+                "short": length_counts["short"] / total,
+                "medium": length_counts["medium"] / total,
+                "long": length_counts["long"] / total,
+            },
+            "endings": {
+                "none": ending_counts["none"] / total,
+                "period": ending_counts["period"] / total,
+                "question": ending_counts["question"] / total,
+                "exclaim": ending_counts["exclaim"] / total,
+            },
+            "first_char_lower_ratio": first_char_lower_count / total,
+            "mention_ratio": mention_count / total,
+            "testimonial_ratio": testimonial_count / total,
+            "archetype_distribution": {
+                "reaction": archetype_counts["reaction"] / total,
+                "supportive": archetype_counts["supportive"] / total,
+                "question": archetype_counts["question"] / total,
+                "testimonial": archetype_counts["testimonial"] / total,
+                "alternative": archetype_counts["alternative"] / total,
+            },
+            "examples": examples,
+        }
+    )
+    return _normalize_style_profile(profile)
+
+
+def _style_profile_path() -> str:
+    return str(
+        os.getenv("CAMPAIGN_AI_STYLE_PROFILE_PATH", DEFAULT_STYLE_PROFILE_PATH)
+    ).strip() or DEFAULT_STYLE_PROFILE_PATH
+
+
+def _load_style_profile_from_disk(path: str) -> Optional[Dict[str, Any]]:
+    style_path = Path(path)
+    if not style_path.exists():
+        return None
+    try:
+        raw = json.loads(style_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Campaign AI style profile load failed (%s): %s", path, exc)
+        return None
+    return _normalize_style_profile(raw)
+
+
+def _style_mix_targets(comment_count: int, style_profile: Dict[str, Any]) -> Dict[str, int]:
+    dist = style_profile.get("length_distribution") or {}
+    minima = {"short": 0, "medium": 0, "long": 0}
+    if comment_count >= 4:
+        minima["short"] = 1
+    if comment_count >= 6:
+        minima["long"] = 1
+    if comment_count >= 10:
+        minima["short"] = 2
+        minima["long"] = 2
+
+    return _allocate_targets(
+        comment_count,
+        weights={
+            "short": float(dist.get("short", 0.35)),
+            "medium": float(dist.get("medium", 0.45)),
+            "long": float(dist.get("long", 0.20)),
+        },
+        minima=minima,
+    )
+
+
+def _style_surface_targets(comment_count: int, style_profile: Dict[str, Any]) -> Dict[str, Any]:
+    endings = style_profile.get("endings") or {}
+    archetypes = style_profile.get("archetype_distribution") or {}
+
+    ending_minima = {"none": 0, "period": 0, "question": 0, "exclaim": 0}
+    if comment_count >= 8:
+        ending_minima["none"] = 2
+        ending_minima["question"] = 1
+    if comment_count >= 10:
+        ending_minima["none"] = 3
+        ending_minima["exclaim"] = 1
+
+    endings_target = _allocate_targets(
+        comment_count,
+        weights={
+            "none": float(endings.get("none", 0.5)),
+            "period": float(endings.get("period", 0.25)),
+            "question": float(endings.get("question", 0.15)),
+            "exclaim": float(endings.get("exclaim", 0.10)),
+        },
+        minima=ending_minima,
+    )
+
+    reaction_target = int(round(comment_count * float(archetypes.get("reaction", 0.18))))
+    testimonial_target = int(round(comment_count * float(style_profile.get("testimonial_ratio", 0.30))))
+    question_target = int(round(comment_count * float(archetypes.get("question", 0.20))))
+    alternative_target = int(round(comment_count * float(archetypes.get("alternative", 0.10))))
+    mention_target = int(round(comment_count * float(style_profile.get("mention_ratio", 0.05))))
+    lowercase_target = int(round(comment_count * float(style_profile.get("first_char_lower_ratio", 0.08))))
+
+    if comment_count >= 8:
+        reaction_target = max(reaction_target, 1)
+        testimonial_target = max(testimonial_target, 1)
+        question_target = max(question_target, 1)
+        alternative_target = max(alternative_target, 1)
+    if comment_count >= 10:
+        reaction_target = max(reaction_target, 2)
+        testimonial_target = max(testimonial_target, 2)
+        mention_target = max(mention_target, 1)
+        lowercase_target = max(lowercase_target, 1)
+
+    return {
+        "endings": endings_target,
+        "reaction": max(0, reaction_target),
+        "testimonial": max(0, testimonial_target),
+        "question": max(0, question_target),
+        "alternative": max(0, alternative_target),
+        "mention": max(0, mention_target),
+        "lowercase_start": max(0, lowercase_target),
+    }
+
+
+def _missing_mix_targets(
+    accepted: List[str],
+    target_mix: Dict[str, int],
+) -> Dict[str, int]:
+    counts = {"short": 0, "medium": 0, "long": 0}
+    for text in accepted:
+        counts[_length_bucket(text)] += 1
+    return {
+        "short": max(0, int(target_mix.get("short", 0)) - counts["short"]),
+        "medium": max(0, int(target_mix.get("medium", 0)) - counts["medium"]),
+        "long": max(0, int(target_mix.get("long", 0)) - counts["long"]),
+    }
+
+
+def _style_counters(comments: List[str]) -> Dict[str, Any]:
+    endings = {"none": 0, "period": 0, "question": 0, "exclaim": 0}
+    counters = {
+        "reaction": 0,
+        "testimonial": 0,
+        "question": 0,
+        "alternative": 0,
+        "mention": 0,
+        "lowercase_start": 0,
+    }
+    for text in comments:
+        normalized = str(text or "").strip()
+        if not normalized:
+            continue
+        endings[_ending_bucket(normalized)] += 1
+        archetype = _infer_archetype(normalized)
+        if archetype in counters:
+            counters[archetype] += 1
+        if "@" in normalized:
+            counters["mention"] += 1
+        first = _first_alpha_char(normalized)
+        if first and first.islower():
+            counters["lowercase_start"] += 1
+        if "?" in normalized:
+            counters["question"] += 1
+        if re.search(r"\b(try|instead|another|personally|you could|what helped|alternative)\b", normalized, flags=re.IGNORECASE):
+            counters["alternative"] += 1
+        if re.search(r"\b(i|i'm|ive|i've|me|my|we|our|us|myself)\b", normalized, flags=re.IGNORECASE):
+            counters["testimonial"] += 1
+        if _word_count(normalized) <= 3:
+            counters["reaction"] += 1
+    counters["endings"] = endings
+    return counters
+
+
+async def fetch_campaign_style_profile(context_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    now = time.time()
+    profile_path = _style_profile_path()
+    source_mtime = 0.0
+    try:
+        source_mtime = Path(profile_path).stat().st_mtime
+    except Exception:
+        source_mtime = 0.0
+
+    cached_profile = _STYLE_PROFILE_CACHE.get("profile")
+    cache_still_valid = (
+        isinstance(cached_profile, dict)
+        and _STYLE_PROFILE_CACHE.get("source_path") == profile_path
+        and float(_STYLE_PROFILE_CACHE.get("source_mtime", 0.0)) == source_mtime
+        and (now - float(_STYLE_PROFILE_CACHE.get("loaded_at_ts", 0.0))) <= STYLE_CACHE_TTL_SECONDS
+    )
+    if cache_still_valid:
+        return cached_profile
+
+    loaded = _load_style_profile_from_disk(profile_path)
+    if loaded and int(loaded.get("sample_size") or 0) >= STYLE_PROFILE_MIN_SAMPLE_SIZE:
+        _STYLE_PROFILE_CACHE.update(
+            {
+                "profile": loaded,
+                "loaded_at_ts": now,
+                "source_path": profile_path,
+                "source_mtime": source_mtime,
+            }
+        )
+        return loaded
+
+    support = context_snapshot.get("supporting_comments") or []
+    fallback_comments = [
+        str((item or {}).get("text") or "").strip()
+        for item in support
+        if str((item or {}).get("text") or "").strip()
+    ]
+    profile = _build_style_profile_from_comments(
+        fallback_comments,
+        source="context_fallback",
+        source_meta={
+            "reason": "style_profile_unavailable_or_small",
+            "profile_path": profile_path,
+        },
+    )
+    if int(profile.get("sample_size") or 0) == 0:
+        profile = _default_style_profile()
+        profile["source_meta"] = {"reason": "no_style_samples_available", "profile_path": profile_path}
+
+    _STYLE_PROFILE_CACHE.update(
+        {
+            "profile": profile,
+            "loaded_at_ts": now,
+            "source_path": profile_path,
+            "source_mtime": source_mtime,
+        }
+    )
+    return profile
+
+
+def _missing_surface_targets(
+    accepted: List[str],
+    target_surface: Dict[str, Any],
+) -> Dict[str, Any]:
+    counters = _style_counters(accepted)
+    ending_missing = {
+        key: max(0, int((target_surface.get("endings") or {}).get(key, 0)) - int((counters.get("endings") or {}).get(key, 0)))
+        for key in ("none", "period", "question", "exclaim")
+    }
+    return {
+        "endings": ending_missing,
+        "reaction": max(0, int(target_surface.get("reaction", 0)) - int(counters.get("reaction", 0))),
+        "testimonial": max(0, int(target_surface.get("testimonial", 0)) - int(counters.get("testimonial", 0))),
+        "question": max(0, int(target_surface.get("question", 0)) - int(counters.get("question", 0))),
+        "alternative": max(0, int(target_surface.get("alternative", 0)) - int(counters.get("alternative", 0))),
+        "mention": max(0, int(target_surface.get("mention", 0)) - int(counters.get("mention", 0))),
+        "lowercase_start": max(0, int(target_surface.get("lowercase_start", 0)) - int(counters.get("lowercase_start", 0))),
+    }
+
+
 def _extract_response_text(payload: Dict) -> str:
     blocks = payload.get("content") if isinstance(payload, dict) else None
     if not isinstance(blocks, list):
@@ -468,9 +1003,16 @@ def _prepare_comment_pool(
     accepted: List[str],
     existing_comments: List[str],
     rules_snapshot: Dict,
+    target_mix: Dict[str, int],
+    target_surface: Dict[str, Any],
 ) -> List[str]:
     out: List[str] = []
     seen_base = [str(x).strip() for x in accepted + existing_comments if str(x).strip()]
+    accepted_counts = {"short": 0, "medium": 0, "long": 0}
+    for item in accepted:
+        accepted_counts[_length_bucket(item)] += 1
+    surface_counts = _style_counters(accepted)
+    ending_targets = target_surface.get("endings") or {}
 
     for raw in candidates:
         text = str(raw or "").strip()
@@ -489,7 +1031,18 @@ def _prepare_comment_pool(
         if _is_near_duplicate(sanitized, seen_base + out):
             continue
 
+        bucket = _length_bucket(sanitized)
+        # Soft control: avoid one bucket consuming almost the entire set.
+        if accepted_counts[bucket] >= int(target_mix.get(bucket, 0)) + 2:
+            continue
+
+        ending_key = _ending_bucket(sanitized)
+        if int(surface_counts["endings"].get(ending_key, 0)) >= int(ending_targets.get(ending_key, 0)) + 2:
+            continue
+
         out.append(sanitized)
+        accepted_counts[bucket] += 1
+        surface_counts["endings"][ending_key] = int(surface_counts["endings"].get(ending_key, 0)) + 1
 
     return out
 
@@ -502,6 +1055,10 @@ def _build_generation_prompt(
     existing_comments: List[str],
     rules_snapshot: Dict,
     remaining_attempt: int,
+    style_profile: Dict[str, Any],
+    mix_targets: Dict[str, int],
+    mix_missing: Dict[str, int],
+    surface_missing: Dict[str, Any],
 ) -> str:
     op_post = context_snapshot.get("op_post") or {}
     support = context_snapshot.get("supporting_comments") or []
@@ -523,6 +1080,22 @@ def _build_generation_prompt(
         forbidden_lines.append(f"- {phrase}")
 
     existing_lines = [f"- {item}" for item in existing_comments[:80]]
+    style_examples = [f"- {item}" for item in (style_profile.get("examples") or [])[:12]]
+    endings = style_profile.get("endings") or {}
+    archetypes = style_profile.get("archetype_distribution") or {}
+    ending_none = float(endings.get("none", 0.50))
+    ending_period = float(endings.get("period", 0.25))
+    ending_question = float(endings.get("question", 0.15))
+    ending_exclaim = float(endings.get("exclaim", 0.10))
+    first_char_lower_ratio = float(style_profile.get("first_char_lower_ratio", 0.08))
+    testimonial_ratio = float(style_profile.get("testimonial_ratio", 0.30))
+    mention_ratio = float(style_profile.get("mention_ratio", 0.05))
+    reaction_ratio = float(archetypes.get("reaction", 0.18))
+    supportive_ratio = float(archetypes.get("supportive", 0.30))
+    question_ratio = float(archetypes.get("question", 0.20))
+    alternative_ratio = float(archetypes.get("alternative", 0.10))
+    style_source = str(style_profile.get("source") or "unknown")
+    style_sample_size = int(style_profile.get("sample_size") or 0)
 
     return f"""
 You must generate exactly {comment_count} Facebook comments as strict JSON.
@@ -532,13 +1105,43 @@ Output format (must be valid JSON only, no markdown):
 
 Rules:
 - Return exactly {comment_count} unique comments.
-- Use natural human language.
 - Keep comments relevant to the OP post and user intent.
-- Include variety in length and tone (short, supportive, perspective, testimonial-like).
+- Match real organic Facebook style from ad comments. Avoid uniform writing.
+- the batch must feel like an ecosystem written by different people, not one author.
+- Keep messy human variance: some fragments, some lowercase starts, not every comment polished.
+- Vary lengths aggressively:
+  - short (<=4 words): target {mix_missing.get("short", 0)} still needed (overall target {mix_targets.get("short", 0)})
+  - medium (5-24 words): target {mix_missing.get("medium", 0)} still needed (overall target {mix_targets.get("medium", 0)})
+  - long (>=25 words): target {mix_missing.get("long", 0)} still needed (overall target {mix_targets.get("long", 0)})
+- ecosystem role mix (still needed this attempt):
+  - reaction micro-comments (1-3 words): need {surface_missing.get("reaction", 0)}
+  - testimonial comments (first-person experience): need {surface_missing.get("testimonial", 0)}
+  - question comments: need {surface_missing.get("question", 0)}
+  - alternative-solution comments (e.g. "try X", "what helped me"): need {surface_missing.get("alternative", 0)}
+  - mention/tag-style comments: need {surface_missing.get("mention", 0)}
+- punctuation/casing mix (still needed this attempt):
+  - no end punctuation: need {(surface_missing.get("endings") or {}).get("none", 0)}
+  - period ending: need {(surface_missing.get("endings") or {}).get("period", 0)}
+  - question ending: need {(surface_missing.get("endings") or {}).get("question", 0)}
+  - exclamation ending: need {(surface_missing.get("endings") or {}).get("exclaim", 0)}
+  - lowercase starts: need {surface_missing.get("lowercase_start", 0)}
+- observed style baseline from corpus:
+  - approx {int(round(ending_none * 100))}% no end punctuation
+  - approx {int(round(ending_period * 100))}% period ending
+  - approx {int(round(ending_question * 100))}% question ending
+  - approx {int(round(ending_exclaim * 100))}% exclamation ending
+  - approx {int(round(first_char_lower_ratio * 100))}% start with lowercase first letter
+  - approx {int(round(testimonial_ratio * 100))}% first-person experiential comments
+  - approx {int(round(mention_ratio * 100))}% include a direct mention/tag style
+  - approx {int(round(reaction_ratio * 100))}% reaction micro-comments
+  - approx {int(round(supportive_ratio * 100))}% supportive comments
+  - approx {int(round(question_ratio * 100))}% question comments
+  - approx {int(round(alternative_ratio * 100))}% alternative-solution comments
+- Never make all comments sentence-perfect.
 - Avoid policy-banned wording listed below.
-- Do not include numbering, labels, hashtags, or emoji-only comments.
-- Keep each comment concise (1-2 sentences max; short comments allowed).
+- Do not include numbering or labels.
 - Do not repeat or paraphrase too closely to existing comments.
+- Never include markdown.
 
 OP post context:
 {op_text or "(no OP message available)"}
@@ -552,11 +1155,87 @@ User intent:
 Existing comments to avoid (exact/near duplicates):
 {chr(10).join(existing_lines) if existing_lines else "(none)"}
 
+Real ad comment style examples (learn cadence, inconsistency, roughness):
+{chr(10).join(style_examples) if style_examples else "(none)"}
+
+Style profile source: {style_source}
+Style profile sample size: {style_sample_size}
+
 Forbidden words/patterns:
 {chr(10).join(forbidden_lines) if forbidden_lines else "(none)"}
 
 Attempt: {remaining_attempt}
 """.strip()
+
+
+def _strip_terminal_punctuation(text: str) -> str:
+    stripped = re.sub(r"[.!?]+$", "", str(text or "").strip()).strip()
+    return stripped or str(text or "").strip()
+
+
+def _lowercase_first_alpha(text: str) -> str:
+    raw = str(text or "")
+    chars = list(raw)
+    for idx, ch in enumerate(chars):
+        if ch.isalpha():
+            chars[idx] = ch.lower()
+            break
+    return "".join(chars)
+
+
+def _apply_surface_variability(
+    comments: List[str],
+    *,
+    target_surface: Dict[str, Any],
+) -> List[str]:
+    if not comments:
+        return comments
+
+    out = [str(x).strip() for x in comments if str(x).strip()]
+    if not out:
+        return comments
+
+    counters = _style_counters(out)
+    ending_targets = target_surface.get("endings") or {}
+
+    need_none = max(0, int(ending_targets.get("none", 0)) - int((counters.get("endings") or {}).get("none", 0)))
+    if need_none > 0:
+        ranked_indexes = sorted(
+            [idx for idx, text in enumerate(out) if _ending_bucket(text) in {"period", "question", "exclaim"}],
+            key=lambda i: _word_count(out[i]),
+        )
+        for idx in ranked_indexes:
+            if need_none <= 0:
+                break
+            candidate = _strip_terminal_punctuation(out[idx])
+            if not candidate:
+                continue
+            if candidate in out[:idx] + out[idx + 1 :]:
+                continue
+            out[idx] = candidate
+            need_none -= 1
+
+    counters = _style_counters(out)
+    need_lower = max(
+        0,
+        int(target_surface.get("lowercase_start", 0)) - int(counters.get("lowercase_start", 0)),
+    )
+    if need_lower > 0:
+        for idx, text in enumerate(out):
+            if need_lower <= 0:
+                break
+            first = _first_alpha_char(text)
+            if not first or first.islower():
+                continue
+            candidate = _lowercase_first_alpha(text)
+            if not candidate:
+                continue
+            if candidate in out[:idx] + out[idx + 1 :]:
+                continue
+            out[idx] = candidate
+            need_lower -= 1
+
+    return out
 
 
 async def generate_campaign_comments(
@@ -575,12 +1254,17 @@ async def generate_campaign_comments(
 
     existing = [str(item).strip() for item in (existing_comments or []) if str(item).strip()]
     accepted: List[str] = []
+    style_profile = await fetch_campaign_style_profile(context_snapshot)
+    target_mix = _style_mix_targets(count, style_profile)
+    target_surface = _style_surface_targets(count, style_profile)
 
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         remaining = count - len(accepted)
         if remaining <= 0:
             break
+        mix_missing = _missing_mix_targets(accepted, target_mix)
+        surface_missing = _missing_surface_targets(accepted, target_surface)
 
         prompt = _build_generation_prompt(
             context_snapshot=context_snapshot,
@@ -589,6 +1273,10 @@ async def generate_campaign_comments(
             existing_comments=existing + accepted,
             rules_snapshot=rules_snapshot,
             remaining_attempt=attempt,
+            style_profile=style_profile,
+            mix_targets=target_mix,
+            mix_missing=mix_missing,
+            surface_missing=surface_missing,
         )
         response_text = await _call_claude(prompt)
         candidates = _extract_json_comments(response_text)
@@ -597,16 +1285,25 @@ async def generate_campaign_comments(
             accepted=accepted,
             existing_comments=existing,
             rules_snapshot=rules_snapshot,
+            target_mix=target_mix,
+            target_surface=target_surface,
         )
         accepted.extend(approved)
 
         logger.info(
-            "Campaign AI generation attempt %s: received=%s approved=%s accumulated=%s target=%s",
+            (
+                "Campaign AI generation attempt %s: received=%s approved=%s accumulated=%s "
+                "target=%s mix=%s surface=%s style_source=%s style_samples=%s"
+            ),
             attempt,
             len(candidates),
             len(approved),
             len(accepted),
             count,
+            target_mix,
+            target_surface,
+            style_profile.get("source"),
+            style_profile.get("sample_size"),
         )
 
     final_comments = accepted[:count]
@@ -619,4 +1316,4 @@ async def generate_campaign_comments(
             ),
         )
 
-    return final_comments
+    return _apply_surface_variability(final_comments, target_surface=target_surface)
