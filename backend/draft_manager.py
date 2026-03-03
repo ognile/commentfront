@@ -16,6 +16,7 @@ from queue_manager import canonicalize_campaign_jobs
 
 
 logger = logging.getLogger("DraftManager")
+_UNSET = object()
 
 
 class DraftManager:
@@ -80,6 +81,7 @@ class DraftManager:
         filter_tags: Optional[List[str]],
         enable_warmup: bool,
         username: str,
+        ai_metadata: Optional[dict] = None,
     ) -> dict:
         now = datetime.utcnow().isoformat()
         canonical_jobs = self._normalize_jobs(comments=comments, jobs=jobs)
@@ -99,6 +101,8 @@ class DraftManager:
             "created_by": username,
             "updated_by": username,
         }
+        if ai_metadata is not None:
+            draft["ai_metadata"] = ai_metadata
         self.drafts[draft_id] = draft
         self.save()
         return draft
@@ -114,6 +118,7 @@ class DraftManager:
         filter_tags: Optional[List[str]],
         enable_warmup: bool,
         username: str,
+        ai_metadata=_UNSET,
     ) -> Optional[dict]:
         existing = self.drafts.get(draft_id)
         if not existing:
@@ -134,6 +139,11 @@ class DraftManager:
                 "updated_by": username,
             }
         )
+        if ai_metadata is not _UNSET:
+            if ai_metadata is None:
+                existing.pop("ai_metadata", None)
+            else:
+                existing["ai_metadata"] = ai_metadata
         self.save()
         return existing
 

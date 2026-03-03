@@ -116,6 +116,7 @@ interface CampaignDraft {
   url: string;
   comments: string[];
   jobs?: Array<Record<string, unknown>>;
+  ai_metadata?: Record<string, unknown>;
   duration_minutes: number;
   filter_tags?: string[];
   enable_warmup?: boolean;
@@ -123,6 +124,35 @@ interface CampaignDraft {
   updated_at: string;
   created_by: string;
   updated_by: string;
+}
+
+interface CampaignAIContextSnapshot {
+  context_id: string;
+  url: string;
+  op_post?: {
+    id?: string;
+    text?: string;
+    author_name?: string | null;
+    author_id?: string | null;
+    permalink_url?: string | null;
+    created_time?: string | null;
+    page_id?: string | null;
+  };
+  supporting_comments?: Array<{
+    id?: string | null;
+    text?: string;
+    author_name?: string | null;
+    author_id?: string | null;
+    permalink_url?: string | null;
+    created_time?: string | null;
+  }>;
+  source_meta?: Record<string, unknown>;
+}
+
+interface CampaignAIRulesSummary {
+  version?: string;
+  negative_patterns_count?: number;
+  vocabulary_count?: number;
 }
 
 interface LiveStatus {
@@ -344,6 +374,17 @@ function App() {
 
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
+  const [campaignInputMode, setCampaignInputMode] = useState<'manual' | 'ai'>('manual');
+  const [aiIntent, setAiIntent] = useState('');
+  const [aiCommentCount, setAiCommentCount] = useState(10);
+  const [aiContextSnapshot, setAiContextSnapshot] = useState<CampaignAIContextSnapshot | null>(null);
+  const [aiRulesSummary, setAiRulesSummary] = useState<CampaignAIRulesSummary | null>(null);
+  const [aiModel, setAiModel] = useState<string>('');
+  const [aiComments, setAiComments] = useState<string[]>([]);
+  const [aiContextLoading, setAiContextLoading] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiRegeneratingAll, setAiRegeneratingAll] = useState(false);
+  const [aiRegeneratingIndex, setAiRegeneratingIndex] = useState<number | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [appealStatuses, setAppealStatuses] = useState<Map<string, AppealStatusEntry>>(new Map());
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -996,6 +1037,12 @@ function App() {
     .map(c => c.trim())
     .filter(Boolean);
 
+  const syncAiCommentsToComposer = (nextComments: string[]) => {
+    const normalized = nextComments.map(c => c.trim());
+    setAiComments(normalized);
+    setComments(normalized.join('\n'));
+  };
+
   const fetchSessions = async () => {
     try {
       setSessionsLoading(true);
@@ -1359,6 +1406,158 @@ function App() {
     });
   };
 
+  const fetchAiCampaignContext = async () => {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
+      toast.error('Please enter a URL first');
+      return;
+    }
+
+    setAiContextLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaign-ai/context`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ url: trimmedUrl })
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to fetch AI context'));
+      }
+      const data = await res.json();
+      setAiContextSnapshot(data);
+      toast.success('AI context fetched');
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to fetch AI context'));
+    } finally {
+      setAiContextLoading(false);
+    }
+  };
+
+  const generateAiComments = async () => {
+    if (!url.trim()) {
+      toast.error('Please enter a URL first');
+      return;
+    }
+    if (!aiContextSnapshot) {
+      toast.error('Fetch context before generating comments');
+      return;
+    }
+    if (aiContextSnapshot.url && aiContextSnapshot.url !== url.trim()) {
+      toast.error('URL changed after context fetch. Fetch context again.');
+      return;
+    }
+    if (!aiIntent.trim()) {
+      toast.error('Please provide your intent');
+      return;
+    }
+
+    const nextCount = Math.max(10, Math.min(50, Number(aiCommentCount) || 10));
+    setAiCommentCount(nextCount);
+    setAiGenerating(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaign-ai/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({
+          url: url.trim(),
+          intent: aiIntent.trim(),
+          comment_count: nextCount,
+          duration_minutes: campaignDuration,
+          filter_tags: campaignFilterTags.length > 0 ? campaignFilterTags : null,
+          enable_warmup: enableWarmup,
+          draft_id: activeDraftId || null,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to generate comments'));
+      }
+      const data = await res.json();
+      const generated = Array.isArray(data.comments) ? data.comments.map((c: unknown) => String(c)) : [];
+      syncAiCommentsToComposer(generated);
+      if (data.context_snapshot) setAiContextSnapshot(data.context_snapshot);
+      if (data.rules_summary) setAiRulesSummary(data.rules_summary);
+      if (typeof data.model === 'string') setAiModel(data.model);
+      if (typeof data.draft_id === 'string' && data.draft_id) {
+        setActiveDraftId(data.draft_id);
+        setDraftSaveStatus('saved');
+      }
+      toast.success(`Generated ${generated.length} comments`);
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to generate comments'));
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
+  const regenerateSingleAiComment = async (index: number) => {
+    if (!activeDraftId) {
+      toast.error('Generate comments first to create a draft');
+      return;
+    }
+    setAiRegeneratingIndex(index);
+    try {
+      const res = await fetch(`${API_BASE}/campaign-ai/drafts/${activeDraftId}/regenerate-one`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ index }),
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to regenerate comment'));
+      }
+      const data = await res.json();
+      const regenerated = Array.isArray(data.comments) ? data.comments.map((c: unknown) => String(c)) : [];
+      syncAiCommentsToComposer(regenerated);
+      if (data.rules_summary) setAiRulesSummary(data.rules_summary);
+      if (typeof data.model === 'string') setAiModel(data.model);
+      if (typeof data.draft_id === 'string' && data.draft_id) {
+        setActiveDraftId(data.draft_id);
+      }
+      setDraftSaveStatus('saved');
+      toast.success('Comment regenerated');
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to regenerate comment'));
+    } finally {
+      setAiRegeneratingIndex(null);
+    }
+  };
+
+  const regenerateAllAiComments = async () => {
+    if (!activeDraftId) {
+      toast.error('Generate comments first to create a draft');
+      return;
+    }
+    setAiRegeneratingAll(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaign-ai/drafts/${activeDraftId}/regenerate-all`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders() },
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to regenerate all comments'));
+      }
+      const data = await res.json();
+      const regenerated = Array.isArray(data.comments) ? data.comments.map((c: unknown) => String(c)) : [];
+      syncAiCommentsToComposer(regenerated);
+      if (data.rules_summary) setAiRulesSummary(data.rules_summary);
+      if (typeof data.model === 'string') setAiModel(data.model);
+      if (typeof data.draft_id === 'string' && data.draft_id) {
+        setActiveDraftId(data.draft_id);
+      }
+      setDraftSaveStatus('saved');
+      toast.success(`Regenerated ${regenerated.length} comments`);
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to regenerate all comments'));
+    } finally {
+      setAiRegeneratingAll(false);
+    }
+  };
+
+  const updateAiCommentText = (index: number, value: string) => {
+    const next = [...aiComments];
+    next[index] = value;
+    syncAiCommentsToComposer(next);
+  };
+
   const saveDraftFromComposer = async (
     options: { silent?: boolean; forceDraftId?: string | null } = {}
   ): Promise<CampaignDraft | null> => {
@@ -1515,8 +1714,31 @@ function App() {
             .filter(Boolean)
         : [];
     setComments(lines.join('\n'));
+    setAiComments(lines);
     setCampaignDuration(Math.max(10, Math.min(1440, Number(draft.duration_minutes) || 30)));
     setCampaignFilterTags(Array.isArray(draft.filter_tags) ? draft.filter_tags : []);
+    setAiCommentCount(Math.max(10, Math.min(50, lines.length || 10)));
+
+    const aiMeta = draft.ai_metadata && typeof draft.ai_metadata === 'object'
+      ? draft.ai_metadata as Record<string, unknown>
+      : null;
+    if (aiMeta) {
+      setCampaignInputMode('ai');
+      setAiIntent(String(aiMeta.intent || ''));
+      const contextSnapshot = aiMeta.context_snapshot;
+      if (contextSnapshot && typeof contextSnapshot === 'object') {
+        setAiContextSnapshot(contextSnapshot as CampaignAIContextSnapshot);
+      }
+      setAiModel(String(aiMeta.model || ''));
+      const rulesVersion = String(aiMeta.rules_snapshot_version || '');
+      setAiRulesSummary(rulesVersion ? { version: rulesVersion } : null);
+    } else {
+      setCampaignInputMode('manual');
+      setAiIntent('');
+      setAiContextSnapshot(null);
+      setAiRulesSummary(null);
+      setAiModel('');
+    }
     setDraftSaveStatus('saved');
 
     window.setTimeout(() => {
@@ -2708,17 +2930,175 @@ function App() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Comments (one per line)</Label>
-                  <Textarea
-                    value={comments}
-                    onChange={(e) => setComments(e.target.value)}
-                    placeholder="Comment 1&#10;Comment 2&#10;Comment 3"
-                    className="min-h-[150px] bg-white"
-                  />
-                  <p className="text-xs text-[#999999]">
-                    {sessions.filter(s => s.valid).length} profiles available. Same profile can comment on different posts.
-                  </p>
+                  <Label>Campaign Input Mode</Label>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={campaignInputMode === 'manual' ? 'default' : 'outline'}
+                      onClick={() => setCampaignInputMode('manual')}
+                    >
+                      Manual
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={campaignInputMode === 'ai' ? 'default' : 'outline'}
+                      onClick={() => setCampaignInputMode('ai')}
+                    >
+                      AI Interview
+                    </Button>
+                  </div>
                 </div>
+
+                {campaignInputMode === 'manual' ? (
+                  <div className="space-y-2">
+                    <Label>Comments (one per line)</Label>
+                    <Textarea
+                      value={comments}
+                      onChange={(e) => setComments(e.target.value)}
+                      placeholder="Comment 1&#10;Comment 2&#10;Comment 3"
+                      className="min-h-[150px] bg-white"
+                    />
+                    <p className="text-xs text-[#999999]">
+                      {sessions.filter(s => s.valid).length} profiles available. Same profile can comment on different posts.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4 rounded-lg border border-[rgba(0,0,0,0.1)] p-4 bg-[rgba(51,51,51,0.02)]">
+                    <div className="space-y-2">
+                      <Label>1. Fetch Context</Label>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={fetchAiCampaignContext}
+                          disabled={!url.trim() || aiContextLoading}
+                        >
+                          {aiContextLoading ? (
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          ) : (
+                            <Search className="w-4 h-4 mr-2" />
+                          )}
+                          {aiContextLoading ? 'Fetching...' : 'Fetch Post Context'}
+                        </Button>
+                        {aiContextSnapshot && (
+                          <Badge variant="secondary">Context ready</Badge>
+                        )}
+                      </div>
+                    </div>
+
+                    {aiContextSnapshot && (
+                      <div className="rounded-md border border-[rgba(0,0,0,0.1)] bg-white p-3 space-y-2">
+                        <p className="text-xs font-medium text-[#666666]">Context Snapshot</p>
+                        <p className="text-sm text-[#111111] whitespace-pre-wrap">
+                          {aiContextSnapshot.op_post?.text || '(no post text found)'}
+                        </p>
+                        {(aiContextSnapshot.supporting_comments || []).length > 0 && (
+                          <div className="space-y-1">
+                            {(aiContextSnapshot.supporting_comments || []).slice(0, 2).map((comment, idx) => (
+                              <p key={`${comment.id || idx}`} className="text-xs text-[#444444] whitespace-pre-wrap">
+                                {idx + 1}. {comment.text || '(empty comment)'}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      <Label>2. What is your intent?</Label>
+                      <Textarea
+                        value={aiIntent}
+                        onChange={(e) => setAiIntent(e.target.value)}
+                        placeholder="Explain the mission and what these comments should achieve..."
+                        className="min-h-[120px] bg-white"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>3. Comment Count</Label>
+                      <Input
+                        type="number"
+                        min={10}
+                        max={50}
+                        value={aiCommentCount}
+                        onChange={(e) => {
+                          const val = Math.max(10, Math.min(50, Number(e.target.value) || 10));
+                          setAiCommentCount(val);
+                        }}
+                        className="w-24 bg-white"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Button
+                        type="button"
+                        onClick={generateAiComments}
+                        disabled={aiGenerating || !aiContextSnapshot || !aiIntent.trim()}
+                      >
+                        {aiGenerating ? (
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : (
+                          <Star className="w-4 h-4 mr-2" />
+                        )}
+                        {aiGenerating ? 'Generating...' : 'Generate Comments'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={regenerateAllAiComments}
+                        disabled={aiRegeneratingAll || !activeDraftId || aiComments.length === 0}
+                      >
+                        {aiRegeneratingAll ? (
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : (
+                          <RefreshCw className="w-4 h-4 mr-2" />
+                        )}
+                        {aiRegeneratingAll ? 'Regenerating...' : 'Regenerate All'}
+                      </Button>
+                      {aiModel && (
+                        <Badge variant="outline" className="text-xs">
+                          {aiModel}
+                        </Badge>
+                      )}
+                      {aiRulesSummary?.version && (
+                        <Badge variant="outline" className="text-xs">
+                          rules {aiRulesSummary.version}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {aiComments.length > 0 && (
+                      <div className="space-y-3">
+                        <Label>4. Review and Edit</Label>
+                        {aiComments.map((comment, idx) => (
+                          <div key={`ai-comment-${idx}`} className="flex gap-2 items-start">
+                            <span className="text-xs text-[#999999] pt-2 w-5">{idx + 1}</span>
+                            <Textarea
+                              value={comment}
+                              onChange={(e) => updateAiCommentText(idx, e.target.value)}
+                              className="min-h-[72px] bg-white"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => regenerateSingleAiComment(idx)}
+                              disabled={aiRegeneratingIndex === idx || !activeDraftId}
+                            >
+                              {aiRegeneratingIndex === idx ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3 h-3" />
+                              )}
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <Label>Campaign Duration</Label>
@@ -2776,7 +3156,7 @@ function App() {
                 <div className="flex flex-wrap items-center gap-3">
                   <Button
                     onClick={publishNow}
-                    disabled={!url || !comments || addingToQueue || queueState.pending_count >= queueState.max_pending}
+                    disabled={!url || parseCommentsInput(comments).length === 0 || addingToQueue || queueState.pending_count >= queueState.max_pending}
                   >
                     {addingToQueue ? (
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />

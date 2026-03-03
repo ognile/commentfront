@@ -19,6 +19,7 @@ MAX_CONCURRENT = 5
 import logging
 import os
 import hashlib
+import re
 
 # API Key for programmatic access (Claude testing, CI/CD, etc.)
 # Set via CLAUDE_API_KEY environment variable
@@ -69,6 +70,14 @@ from premium_rules import build_rules_snapshot, load_rule_texts_from_paths
 from premium_store import get_premium_store
 from premium_orchestrator import PremiumOrchestrator
 from premium_scheduler import PremiumScheduler
+from campaign_ai import (
+    CampaignAIError,
+    fetch_campaign_context,
+    load_campaign_rules_snapshot,
+    generate_campaign_comments,
+    summarize_rules,
+    ensure_comment_count,
+)
 
 # Setup Logging - JSON structured logs for production, readable logs for dev
 class JSONFormatter(logging.Formatter):
@@ -2522,6 +2531,24 @@ class DraftRequest(BaseModel):
     enable_warmup: bool = True
 
 
+class CampaignAIContextRequest(BaseModel):
+    url: str
+
+
+class CampaignAIGenerateRequest(BaseModel):
+    url: str
+    intent: str
+    comment_count: int = 10
+    duration_minutes: int = 30
+    filter_tags: Optional[List[str]] = None
+    enable_warmup: bool = True
+    draft_id: Optional[str] = None
+
+
+class CampaignAIRegenerateOneRequest(BaseModel):
+    index: int
+
+
 class DebugQueueValidateRequest(BaseModel):
     url: str
     comments: Optional[List[str]] = None
@@ -2995,6 +3022,248 @@ async def publish_draft(draft_id: str, current_user: dict = Depends(get_current_
         },
     )
     return response_payload
+
+
+def _next_ai_metadata(
+    *,
+    intent: str,
+    context_snapshot: Dict,
+    rules_snapshot: Dict,
+    previous: Optional[Dict] = None,
+    increment_regeneration: bool = False,
+) -> Dict:
+    previous_meta = dict(previous or {})
+    regenerate_count = int(previous_meta.get("regenerate_count", 0) or 0)
+    if increment_regeneration:
+        regenerate_count += 1
+    return {
+        "intent": str(intent or "").strip(),
+        "model": os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6"),
+        "context_snapshot": context_snapshot,
+        "generated_at": datetime.utcnow().isoformat(),
+        "regenerate_count": regenerate_count,
+        "rules_snapshot_version": str(rules_snapshot.get("version") or ""),
+    }
+
+
+@app.post("/campaign-ai/context")
+async def campaign_ai_context(
+    request: CampaignAIContextRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Fetch OP post + first two comments for AI campaign planning."""
+    try:
+        return await fetch_campaign_context(request.url)
+    except CampaignAIError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except Exception as exc:
+        logger.error(f"Campaign AI context fetch failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Campaign AI context fetch failed: {exc}") from exc
+
+
+@app.post("/campaign-ai/generate")
+async def campaign_ai_generate(
+    request: CampaignAIGenerateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Generate campaign comments from fetched context + user intent and persist as draft."""
+    try:
+        comment_count = ensure_comment_count(request.comment_count)
+        context_snapshot = await fetch_campaign_context(request.url)
+        rules_snapshot = load_campaign_rules_snapshot()
+        generated_comments = await generate_campaign_comments(
+            context_snapshot=context_snapshot,
+            intent=request.intent,
+            comment_count=comment_count,
+            rules_snapshot=rules_snapshot,
+            existing_comments=None,
+        )
+
+        draft_id = str(request.draft_id or "").strip() or None
+        if draft_id:
+            existing_draft = draft_manager.get_draft(draft_id)
+            if not existing_draft:
+                raise HTTPException(status_code=404, detail="Draft not found")
+            ai_metadata = _next_ai_metadata(
+                intent=request.intent,
+                context_snapshot=context_snapshot,
+                rules_snapshot=rules_snapshot,
+                previous=existing_draft.get("ai_metadata") or {},
+                increment_regeneration=False,
+            )
+            draft = draft_manager.update_draft(
+                draft_id,
+                url=request.url,
+                comments=generated_comments,
+                jobs=None,
+                duration_minutes=int(request.duration_minutes),
+                filter_tags=request.filter_tags,
+                enable_warmup=bool(request.enable_warmup),
+                username=current_user["username"],
+                ai_metadata=ai_metadata,
+            )
+            if not draft:
+                raise HTTPException(status_code=404, detail="Draft not found")
+            await broadcast_update("draft_updated", draft)
+        else:
+            ai_metadata = _next_ai_metadata(
+                intent=request.intent,
+                context_snapshot=context_snapshot,
+                rules_snapshot=rules_snapshot,
+                previous={},
+                increment_regeneration=False,
+            )
+            draft = draft_manager.create_draft(
+                url=request.url,
+                comments=generated_comments,
+                jobs=None,
+                duration_minutes=int(request.duration_minutes),
+                filter_tags=request.filter_tags,
+                enable_warmup=bool(request.enable_warmup),
+                username=current_user["username"],
+                ai_metadata=ai_metadata,
+            )
+            await broadcast_update("draft_created", draft)
+
+        return {
+            "draft_id": draft["id"],
+            "comments": draft.get("comments", []),
+            "context_snapshot": context_snapshot,
+            "rules_summary": summarize_rules(rules_snapshot),
+            "model": os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6"),
+            "draft": draft,
+        }
+    except CampaignAIError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@app.post("/campaign-ai/drafts/{draft_id}/regenerate-one")
+async def campaign_ai_regenerate_one(
+    draft_id: str,
+    request: CampaignAIRegenerateOneRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Regenerate one comment by index while preserving draft persistence."""
+    draft = draft_manager.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    comments = [str(c).strip() for c in (draft.get("comments") or []) if str(c).strip()]
+    if not comments:
+        raise HTTPException(status_code=400, detail="Draft has no comments to regenerate")
+    if request.index < 0 or request.index >= len(comments):
+        raise HTTPException(status_code=400, detail=f"index out of range: {request.index}")
+
+    ai_metadata = dict(draft.get("ai_metadata") or {})
+    intent = str(ai_metadata.get("intent") or "").strip()
+    context_snapshot = ai_metadata.get("context_snapshot")
+    if not intent or not isinstance(context_snapshot, dict):
+        raise HTTPException(status_code=400, detail="Draft is missing ai_metadata.intent or ai_metadata.context_snapshot")
+
+    try:
+        rules_snapshot = load_campaign_rules_snapshot()
+        existing = comments[:request.index] + comments[request.index + 1 :]
+        replacement = await generate_campaign_comments(
+            context_snapshot=context_snapshot,
+            intent=intent,
+            comment_count=1,
+            rules_snapshot=rules_snapshot,
+            existing_comments=existing,
+        )
+        comments[request.index] = replacement[0]
+        next_meta = _next_ai_metadata(
+            intent=intent,
+            context_snapshot=context_snapshot,
+            rules_snapshot=rules_snapshot,
+            previous=ai_metadata,
+            increment_regeneration=True,
+        )
+        updated = draft_manager.update_draft(
+            draft_id,
+            url=draft.get("url", ""),
+            comments=comments,
+            jobs=None,
+            duration_minutes=int(draft.get("duration_minutes") or 30),
+            filter_tags=draft.get("filter_tags"),
+            enable_warmup=bool(draft.get("enable_warmup", True)),
+            username=current_user["username"],
+            ai_metadata=next_meta,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        await broadcast_update("draft_updated", updated)
+        return {
+            "draft_id": updated["id"],
+            "comments": updated.get("comments", []),
+            "context_snapshot": context_snapshot,
+            "rules_summary": summarize_rules(rules_snapshot),
+            "model": next_meta.get("model"),
+            "draft": updated,
+        }
+    except CampaignAIError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@app.post("/campaign-ai/drafts/{draft_id}/regenerate-all")
+async def campaign_ai_regenerate_all(
+    draft_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Regenerate all comments for an AI draft while preserving context + intent."""
+    draft = draft_manager.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    existing_comments = [str(c).strip() for c in (draft.get("comments") or []) if str(c).strip()]
+    if not existing_comments:
+        raise HTTPException(status_code=400, detail="Draft has no comments to regenerate")
+
+    ai_metadata = dict(draft.get("ai_metadata") or {})
+    intent = str(ai_metadata.get("intent") or "").strip()
+    context_snapshot = ai_metadata.get("context_snapshot")
+    if not intent or not isinstance(context_snapshot, dict):
+        raise HTTPException(status_code=400, detail="Draft is missing ai_metadata.intent or ai_metadata.context_snapshot")
+
+    try:
+        rules_snapshot = load_campaign_rules_snapshot()
+        regenerated = await generate_campaign_comments(
+            context_snapshot=context_snapshot,
+            intent=intent,
+            comment_count=len(existing_comments),
+            rules_snapshot=rules_snapshot,
+            existing_comments=None,
+        )
+        next_meta = _next_ai_metadata(
+            intent=intent,
+            context_snapshot=context_snapshot,
+            rules_snapshot=rules_snapshot,
+            previous=ai_metadata,
+            increment_regeneration=True,
+        )
+        updated = draft_manager.update_draft(
+            draft_id,
+            url=draft.get("url", ""),
+            comments=regenerated,
+            jobs=None,
+            duration_minutes=int(draft.get("duration_minutes") or 30),
+            filter_tags=draft.get("filter_tags"),
+            enable_warmup=bool(draft.get("enable_warmup", True)),
+            username=current_user["username"],
+            ai_metadata=next_meta,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        await broadcast_update("draft_updated", updated)
+        return {
+            "draft_id": updated["id"],
+            "comments": updated.get("comments", []),
+            "context_snapshot": context_snapshot,
+            "rules_summary": summarize_rules(rules_snapshot),
+            "model": next_meta.get("model"),
+            "draft": updated,
+        }
+    except CampaignAIError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @app.post("/debug/queue/validate")
