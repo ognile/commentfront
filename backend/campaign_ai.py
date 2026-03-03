@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -38,8 +39,9 @@ from queue_manager import NEAR_DUPLICATE_THRESHOLD, near_duplicate_ratio
 
 logger = logging.getLogger("CampaignAI")
 
-DEFAULT_NEGATIVE_PATTERNS_PATH = "/Users/nikitalienov/Documents/writing/.claude/rules/negative-patterns.md"
-DEFAULT_VOCAB_GUIDANCE_PATH = "/Users/nikitalienov/Documents/writing/.claude/rules/vocabulary-guidance.md"
+_LOCAL_RULES_DIR = Path(__file__).resolve().parent / "rules"
+DEFAULT_NEGATIVE_PATTERNS_PATH = str(_LOCAL_RULES_DIR / "campaign-ai-negative-patterns.md")
+DEFAULT_VOCAB_GUIDANCE_PATH = str(_LOCAL_RULES_DIR / "campaign-ai-vocabulary-guidance.md")
 
 AI_COMMENT_MIN = 10
 AI_COMMENT_MAX = 50
