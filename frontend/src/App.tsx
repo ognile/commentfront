@@ -445,6 +445,9 @@ function App() {
   const [draftSaveStatus, setDraftSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const draftAutosaveTimerRef = useRef<number | null>(null);
   const loadingDraftIntoFormRef = useRef(false);
+  const draftSaveInFlightRef = useRef<Promise<CampaignDraft | null> | null>(null);
+  const fetchQueueRef = useRef<(() => Promise<void>) | null>(null);
+  const fetchDraftsRef = useRef<(() => Promise<void>) | null>(null);
 
   // Campaign details modal state
   const [selectedCampaign, setSelectedCampaign] = useState<QueuedCampaign | null>(null);
@@ -649,7 +652,13 @@ function App() {
                 break;
 
               case 'draft_updated':
-                setDrafts(prev => prev.map(d => (d.id === update.data.id ? update.data : d)));
+                setDrafts(prev => {
+                  const existingIndex = prev.findIndex(d => d.id === update.data.id);
+                  if (existingIndex === -1) {
+                    return [update.data, ...prev];
+                  }
+                  return prev.map(d => (d.id === update.data.id ? update.data : d));
+                });
                 break;
 
               case 'draft_deleted':
@@ -666,11 +675,17 @@ function App() {
 
               case 'queue_campaign_added':
                 // New campaign added by any user
-                setQueueState(prev => ({
-                  ...prev,
-                  pending_count: prev.pending_count + 1,
-                  pending: [...prev.pending, update.data]
-                }));
+                setQueueState(prev => {
+                  const exists = prev.pending.some(c => c.id === update.data.id);
+                  const pending = exists
+                    ? prev.pending.map(c => (c.id === update.data.id ? { ...c, ...update.data } : c))
+                    : [...prev.pending, update.data];
+                  return {
+                    ...prev,
+                    pending_count: pending.length,
+                    pending
+                  };
+                });
                 break;
 
               case 'queue_campaign_removed':
@@ -1058,11 +1073,75 @@ function App() {
     .map(c => c.trim())
     .filter(Boolean);
 
+  const fetchWithTimeout = async (resource: string, init: RequestInit, timeoutMs: number): Promise<Response> => {
+    const controller = new AbortController();
+    const externalSignal = init.signal;
+    const onAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(resource, { ...init, signal: controller.signal });
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'AbortError') {
+        if (externalSignal?.aborted) {
+          throw error;
+        }
+        throw new Error(`Request timed out after ${Math.ceil(timeoutMs / 1000)}s`);
+      }
+      throw error;
+    } finally {
+      if (externalSignal) {
+        externalSignal.removeEventListener('abort', onAbort);
+      }
+      window.clearTimeout(timeoutId);
+    }
+  };
+
   const syncAiCommentsToComposer = (nextComments: string[]) => {
     const normalized = nextComments.map(c => c.trim());
     setAiComments(normalized);
     setComments(normalized.join('\n'));
   };
+
+  const upsertDraftLocally = useCallback((draft: CampaignDraft) => {
+    setDrafts(prev => {
+      const without = prev.filter(existing => existing.id !== draft.id);
+      return [draft, ...without];
+    });
+    setDraftsLoading(false);
+  }, []);
+
+  const removeDraftLocally = useCallback((draftId: string) => {
+    setDrafts(prev => prev.filter(existing => existing.id !== draftId));
+    setDraftsLoading(false);
+  }, []);
+
+  const upsertPendingCampaignLocally = useCallback((campaignLike: unknown) => {
+    if (!campaignLike || typeof campaignLike !== 'object') return;
+    const campaign = campaignLike as QueuedCampaign;
+    const campaignId = String(campaign.id || '').trim();
+    if (!campaignId) return;
+
+    setQueueState(prev => {
+      const exists = prev.pending.some(item => item.id === campaignId);
+      const pending = exists
+        ? prev.pending.map(item => (item.id === campaignId ? { ...item, ...campaign } : item))
+        : [...prev.pending, campaign];
+
+      return {
+        ...prev,
+        pending,
+        pending_count: pending.length
+      };
+    });
+    setQueueLoading(false);
+  }, []);
 
   const fetchSessions = async () => {
     try {
@@ -1225,6 +1304,11 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    fetchQueueRef.current = fetchQueue;
+    fetchDraftsRef.current = fetchDrafts;
+  });
+
   const fetchGeminiObservations = async () => {
     try {
       setLoadingObservations(true);
@@ -1317,6 +1401,16 @@ function App() {
     fetchAiProducts({ silent: true });
     fetchPremiumStatus();
   }, []);
+
+  // Resilience path: if websocket is down, keep queue/drafts fresh without manual refresh.
+  useEffect(() => {
+    if (liveStatus.connected) return;
+    const interval = window.setInterval(() => {
+      void fetchQueueRef.current?.();
+      void fetchDraftsRef.current?.();
+    }, 6000);
+    return () => window.clearInterval(interval);
+  }, [liveStatus.connected]);
 
   useEffect(() => {
     if (campaignInputMode !== 'ai') return;
@@ -1595,12 +1689,12 @@ function App() {
     setAiContextLoading(true);
     setAiContextError(null);
     try {
-      const res = await fetch(`${API_BASE}/campaign-ai/context`, {
+      const res = await fetchWithTimeout(`${API_BASE}/campaign-ai/context`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ url: trimmedUrl }),
         signal: controller.signal,
-      });
+      }, 45000);
       if (!res.ok) {
         throw new Error(await parseApiError(res, 'Failed to fetch AI context'));
       }
@@ -1649,8 +1743,9 @@ function App() {
     const nextCount = Math.max(10, Math.min(50, Number(aiCommentCount) || 10));
     setAiCommentCount(nextCount);
     setAiGenerating(true);
+    const generateToastId = toast.loading('Generating comments...');
     try {
-      const res = await fetch(`${API_BASE}/campaign-ai/generate`, {
+      const res = await fetchWithTimeout(`${API_BASE}/campaign-ai/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -1661,7 +1756,7 @@ function App() {
           enable_warmup: enableWarmup,
           draft_id: activeDraftId || null,
         }),
-      });
+      }, 120000);
       if (!res.ok) {
         throw new Error(await parseApiError(res, 'Failed to generate comments'));
       }
@@ -1678,9 +1773,12 @@ function App() {
         setActiveDraftId(data.draft_id);
         setDraftSaveStatus('saved');
       }
-      toast.success(`Generated ${generated.length} comments`);
+      if (data?.draft && typeof data.draft === 'object') {
+        upsertDraftLocally(data.draft as CampaignDraft);
+      }
+      toast.success(`Generated ${generated.length} comments`, { id: generateToastId });
     } catch (error) {
-      toast.error(normalizeErrorMessage(error, 'Failed to generate comments'));
+      toast.error(normalizeErrorMessage(error, 'Failed to generate comments'), { id: generateToastId });
     } finally {
       setAiGenerating(false);
     }
@@ -1708,6 +1806,9 @@ function App() {
       if (typeof data.model === 'string') setAiModel(data.model);
       if (typeof data.draft_id === 'string' && data.draft_id) {
         setActiveDraftId(data.draft_id);
+      }
+      if (data?.draft && typeof data.draft === 'object') {
+        upsertDraftLocally(data.draft as CampaignDraft);
       }
       setDraftSaveStatus('saved');
       toast.success('Comment regenerated');
@@ -1740,6 +1841,9 @@ function App() {
       if (typeof data.draft_id === 'string' && data.draft_id) {
         setActiveDraftId(data.draft_id);
       }
+      if (data?.draft && typeof data.draft === 'object') {
+        upsertDraftLocally(data.draft as CampaignDraft);
+      }
       setDraftSaveStatus('saved');
       toast.success(`Regenerated ${regenerated.length} comments`);
     } catch (error) {
@@ -1758,37 +1862,54 @@ function App() {
   const saveDraftFromComposer = async (
     options: { silent?: boolean; forceDraftId?: string | null } = {}
   ): Promise<CampaignDraft | null> => {
+    if (draftSaveInFlightRef.current) {
+      return draftSaveInFlightRef.current;
+    }
+
     const { silent = false, forceDraftId } = options;
     const payload = buildComposerPayload();
     const targetDraftId = forceDraftId ?? activeDraftId;
     const endpoint = targetDraftId ? `${API_BASE}/drafts/${targetDraftId}` : `${API_BASE}/drafts`;
     const method = targetDraftId ? 'PUT' : 'POST';
+    const toastId = silent ? null : toast.loading(targetDraftId ? 'Saving draft...' : 'Creating draft...');
 
-    setSavingDraft(true);
+    const requestPromise: Promise<CampaignDraft | null> = (async () => {
+      setSavingDraft(true);
+      try {
+        const res = await fetchWithTimeout(endpoint, {
+          method,
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify(payload)
+        }, 30000);
+        if (!res.ok) {
+          throw new Error(await parseApiError(res, 'Failed to save draft'));
+        }
+        const draft = await res.json();
+        setActiveDraftId(draft.id);
+        setDraftSaveStatus('saved');
+        upsertDraftLocally(draft as CampaignDraft);
+        if (toastId) {
+          toast.success(targetDraftId ? 'Draft updated' : 'Draft saved', { id: toastId });
+        }
+        return draft as CampaignDraft;
+      } catch (error) {
+        setDraftSaveStatus('error');
+        if (toastId) {
+          toast.error(normalizeErrorMessage(error, 'Failed to save draft'), { id: toastId });
+        }
+        return null;
+      } finally {
+        setSavingDraft(false);
+      }
+    })();
+
+    draftSaveInFlightRef.current = requestPromise;
     try {
-      const res = await fetch(endpoint, {
-        method,
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) {
-        throw new Error(await parseApiError(res, 'Failed to save draft'));
-      }
-      const draft = await res.json();
-      setActiveDraftId(draft.id);
-      setDraftSaveStatus('saved');
-      if (!silent) {
-        toast.success(targetDraftId ? 'Draft updated' : 'Draft saved');
-      }
-      return draft;
-    } catch (error) {
-      setDraftSaveStatus('error');
-      if (!silent) {
-        toast.error(normalizeErrorMessage(error, 'Failed to save draft'));
-      }
-      return null;
+      return await requestPromise;
     } finally {
-      setSavingDraft(false);
+      if (draftSaveInFlightRef.current === requestPromise) {
+        draftSaveInFlightRef.current = null;
+      }
     }
   };
 
@@ -1808,6 +1929,7 @@ function App() {
     }
 
     setPublishingDraftId(draftId);
+    const publishToastId = toast.loading('Publishing draft...');
     try {
       if (activeDraftId === draftId) {
         if (draftAutosaveTimerRef.current !== null) {
@@ -1820,17 +1942,21 @@ function App() {
         }
       }
 
-      const res = await fetch(`${API_BASE}/drafts/${draftId}/publish`, {
+      const res = await fetchWithTimeout(`${API_BASE}/drafts/${draftId}/publish`, {
         method: 'POST',
         headers: getAuthHeaders()
-      });
+      }, 45000);
       if (!res.ok) {
         throw new Error(await parseApiError(res, 'Failed to publish draft'));
       }
 
       const data = await res.json();
       showQueueWarnings(data.warnings);
-      toast.success('Draft published to queue');
+      if (data?.campaign) {
+        upsertPendingCampaignLocally(data.campaign);
+      }
+      removeDraftLocally(draftId);
+      toast.success('Draft published to queue', { id: publishToastId });
 
       if (clearComposer) {
         setActiveDraftId(null);
@@ -1841,7 +1967,7 @@ function App() {
 
       return true;
     } catch (error) {
-      toast.error(normalizeErrorMessage(error, 'Failed to publish draft'));
+      toast.error(normalizeErrorMessage(error, 'Failed to publish draft'), { id: publishToastId });
       return false;
     } finally {
       setPublishingDraftId(null);
@@ -1874,25 +2000,35 @@ function App() {
         const published = await publishDraftCampaign(activeDraftId, true);
         if (!published) return;
       } else {
-        const res = await fetch(`${API_BASE}/queue`, {
+        const publishToastId = toast.loading('Publishing campaign...');
+        const res = await fetchWithTimeout(`${API_BASE}/queue`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify(payload)
-        });
-        if (!res.ok) {
-          throw new Error(await parseApiError(res, 'Failed to add campaign to queue'));
-        }
+        }, 45000);
+        try {
+          if (!res.ok) {
+            throw new Error(await parseApiError(res, 'Failed to add campaign to queue'));
+          }
 
-        const data = await res.json();
-        showQueueWarnings(data.warnings);
-        setUrl('');
-        setComments('');
-        toast.success(
-          `Added campaign with ${payload.comments.length} comments to queue${campaignFilterTags.length > 0 ? ` (filtered by: ${campaignFilterTags.join(', ')})` : ''}`
-        );
+          const data = await res.json();
+          showQueueWarnings(data.warnings);
+          upsertPendingCampaignLocally(data);
+          setUrl('');
+          setComments('');
+          toast.success(
+            `Added campaign with ${payload.comments.length} comments to queue${campaignFilterTags.length > 0 ? ` (filtered by: ${campaignFilterTags.join(', ')})` : ''}`,
+            { id: publishToastId }
+          );
+        } catch (error) {
+          toast.error(normalizeErrorMessage(error, 'Failed to publish campaign'), { id: publishToastId });
+          throw error;
+        }
       }
     } catch (error) {
-      toast.error(normalizeErrorMessage(error, 'Failed to publish campaign'));
+      if (activeDraftId) {
+        toast.error(normalizeErrorMessage(error, 'Failed to publish campaign'));
+      }
     } finally {
       setAddingToQueue(false);
     }
@@ -1959,6 +2095,7 @@ function App() {
       if (!res.ok) {
         throw new Error(await parseApiError(res, 'Failed to delete draft'));
       }
+      removeDraftLocally(draftId);
       if (activeDraftId === draftId) {
         setActiveDraftId(null);
         setDraftSaveStatus('idle');
