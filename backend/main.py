@@ -50,6 +50,7 @@ from fb_session import FacebookSession, list_saved_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
 from draft_manager import DraftManager
+from campaign_ai_product_store import get_campaign_ai_product_store
 from queue_manager import (
     CampaignQueueManager,
     canonicalize_campaign_jobs,
@@ -166,6 +167,9 @@ queue_manager = CampaignQueueManager()
 
 # Initialize shared draft manager
 draft_manager = DraftManager()
+
+# Initialize campaign AI product preset store
+campaign_ai_product_store = get_campaign_ai_product_store()
 
 # Initialize premium automation components
 premium_store = get_premium_store()
@@ -2537,9 +2541,8 @@ class CampaignAIContextRequest(BaseModel):
 
 class CampaignAIGenerateRequest(BaseModel):
     url: str
-    intent: str
+    product_id: str
     comment_count: int = 10
-    duration_minutes: int = 30
     filter_tags: Optional[List[str]] = None
     enable_warmup: bool = True
     draft_id: Optional[str] = None
@@ -2547,6 +2550,17 @@ class CampaignAIGenerateRequest(BaseModel):
 
 class CampaignAIRegenerateOneRequest(BaseModel):
     index: int
+
+
+class CampaignAIProductRequest(BaseModel):
+    name: str
+    prompt: str
+
+
+class CampaignAIProductUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    prompt: Optional[str] = None
+    active: Optional[bool] = None
 
 
 class DebugQueueValidateRequest(BaseModel):
@@ -3024,26 +3038,139 @@ async def publish_draft(draft_id: str, current_user: dict = Depends(get_current_
     return response_payload
 
 
+AI_CAMPAIGN_DEFAULT_DURATION_MINUTES = 30
+
+
 def _next_ai_metadata(
     *,
-    intent: str,
+    product_id: str,
+    product_name: str,
+    product_prompt_snapshot: str,
     context_snapshot: Dict,
     rules_snapshot: Dict,
     previous: Optional[Dict] = None,
     increment_regeneration: bool = False,
 ) -> Dict:
+    methodology_version = "campaign_ai_url_only_product_v1"
     previous_meta = dict(previous or {})
     regenerate_count = int(previous_meta.get("regenerate_count", 0) or 0)
     if increment_regeneration:
         regenerate_count += 1
-    return {
-        "intent": str(intent or "").strip(),
+
+    payload = {
+        "product_id": str(product_id or "").strip(),
+        "product_name": str(product_name or "").strip(),
+        "product_prompt_snapshot": str(product_prompt_snapshot or "").strip(),
+        "methodology_version": methodology_version,
         "model": os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6"),
         "context_snapshot": context_snapshot,
         "generated_at": datetime.utcnow().isoformat(),
         "regenerate_count": regenerate_count,
         "rules_snapshot_version": str(rules_snapshot.get("version") or ""),
     }
+    # Backward compatibility: preserve legacy intent when it already exists.
+    legacy_intent = str(previous_meta.get("intent") or "").strip()
+    if legacy_intent:
+        payload["intent"] = legacy_intent
+    return payload
+
+
+def _resolve_ai_product_snapshot(ai_metadata: Dict) -> Dict[str, str]:
+    """Resolve product snapshot for generation with legacy fallback support."""
+    product_id = str(ai_metadata.get("product_id") or "").strip()
+    product_name = str(ai_metadata.get("product_name") or "").strip()
+    product_prompt_snapshot = str(ai_metadata.get("product_prompt_snapshot") or "").strip()
+
+    if product_id and (not product_name or not product_prompt_snapshot):
+        stored = campaign_ai_product_store.get_product(product_id, include_inactive=True)
+        if stored:
+            if not product_name:
+                product_name = str(stored.get("name") or "").strip()
+            if not product_prompt_snapshot:
+                product_prompt_snapshot = str(stored.get("prompt") or "").strip()
+
+    legacy_intent = str(ai_metadata.get("intent") or "").strip()
+    if not product_prompt_snapshot and legacy_intent:
+        product_prompt_snapshot = legacy_intent
+
+    if not product_name:
+        prompt_lower = product_prompt_snapshot.lower()
+        if "nuora" in prompt_lower or "mynuora" in prompt_lower:
+            product_name = "Nuora"
+        else:
+            product_name = "selected product"
+
+    return {
+        "product_id": product_id,
+        "product_name": product_name,
+        "product_prompt_snapshot": product_prompt_snapshot,
+    }
+
+
+@app.get("/campaign-ai/products")
+async def campaign_ai_list_products(current_user: dict = Depends(get_current_user)) -> Dict:
+    """List active product presets and current user's last selection."""
+    products = campaign_ai_product_store.list_products(include_inactive=False)
+    last_product_id = campaign_ai_product_store.get_last_product_id(current_user["username"])
+    if last_product_id and not any(str(item.get("id")) == last_product_id for item in products):
+        last_product_id = None
+    return {
+        "products": products,
+        "last_product_id": last_product_id,
+    }
+
+
+@app.post("/campaign-ai/products")
+async def campaign_ai_create_product(
+    request: CampaignAIProductRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Create campaign AI product preset."""
+    try:
+        product = campaign_ai_product_store.create_product(
+            name=request.name,
+            prompt=request.prompt,
+            username=current_user["username"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"product": product}
+
+
+@app.put("/campaign-ai/products/{product_id}")
+async def campaign_ai_update_product(
+    product_id: str,
+    request: CampaignAIProductUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Update campaign AI product preset."""
+    if request.name is None and request.prompt is None and request.active is None:
+        raise HTTPException(status_code=400, detail="Provide at least one field to update")
+    try:
+        product = campaign_ai_product_store.update_product(
+            product_id,
+            name=request.name,
+            prompt=request.prompt,
+            active=request.active,
+            username=current_user["username"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return {"product": product}
+
+
+@app.delete("/campaign-ai/products/{product_id}")
+async def campaign_ai_delete_product(
+    product_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Soft-delete campaign AI product preset by marking it inactive."""
+    ok = campaign_ai_product_store.deactivate_product(product_id, username=current_user["username"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return {"success": True, "product_id": product_id}
 
 
 @app.post("/campaign-ai/context")
@@ -3066,14 +3193,24 @@ async def campaign_ai_generate(
     request: CampaignAIGenerateRequest,
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
-    """Generate campaign comments from fetched context + user intent and persist as draft."""
+    """Generate campaign comments from URL context + selected product preset and persist as draft."""
     try:
         comment_count = ensure_comment_count(request.comment_count)
+        product_id = str(request.product_id or "").strip()
+        if not product_id:
+            raise HTTPException(status_code=400, detail="product_id is required")
+
+        product = campaign_ai_product_store.get_product(product_id, include_inactive=False)
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
         context_snapshot = await fetch_campaign_context(request.url)
         rules_snapshot = load_campaign_rules_snapshot()
+        campaign_ai_product_store.set_last_product_id(current_user["username"], product_id)
         generated_comments = await generate_campaign_comments(
             context_snapshot=context_snapshot,
-            intent=request.intent,
+            product_name=str(product.get("name") or ""),
+            product_prompt=str(product.get("prompt") or ""),
             comment_count=comment_count,
             rules_snapshot=rules_snapshot,
             existing_comments=None,
@@ -3085,7 +3222,9 @@ async def campaign_ai_generate(
             if not existing_draft:
                 raise HTTPException(status_code=404, detail="Draft not found")
             ai_metadata = _next_ai_metadata(
-                intent=request.intent,
+                product_id=product_id,
+                product_name=str(product.get("name") or ""),
+                product_prompt_snapshot=str(product.get("prompt") or ""),
                 context_snapshot=context_snapshot,
                 rules_snapshot=rules_snapshot,
                 previous=existing_draft.get("ai_metadata") or {},
@@ -3096,7 +3235,7 @@ async def campaign_ai_generate(
                 url=request.url,
                 comments=generated_comments,
                 jobs=None,
-                duration_minutes=int(request.duration_minutes),
+                duration_minutes=AI_CAMPAIGN_DEFAULT_DURATION_MINUTES,
                 filter_tags=request.filter_tags,
                 enable_warmup=bool(request.enable_warmup),
                 username=current_user["username"],
@@ -3107,7 +3246,9 @@ async def campaign_ai_generate(
             await broadcast_update("draft_updated", draft)
         else:
             ai_metadata = _next_ai_metadata(
-                intent=request.intent,
+                product_id=product_id,
+                product_name=str(product.get("name") or ""),
+                product_prompt_snapshot=str(product.get("prompt") or ""),
                 context_snapshot=context_snapshot,
                 rules_snapshot=rules_snapshot,
                 previous={},
@@ -3117,7 +3258,7 @@ async def campaign_ai_generate(
                 url=request.url,
                 comments=generated_comments,
                 jobs=None,
-                duration_minutes=int(request.duration_minutes),
+                duration_minutes=AI_CAMPAIGN_DEFAULT_DURATION_MINUTES,
                 filter_tags=request.filter_tags,
                 enable_warmup=bool(request.enable_warmup),
                 username=current_user["username"],
@@ -3131,6 +3272,10 @@ async def campaign_ai_generate(
             "context_snapshot": context_snapshot,
             "rules_summary": summarize_rules(rules_snapshot),
             "model": os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6"),
+            "product": {
+                "id": product_id,
+                "name": str(product.get("name") or ""),
+            },
             "draft": draft,
         }
     except CampaignAIError as exc:
@@ -3155,24 +3300,27 @@ async def campaign_ai_regenerate_one(
         raise HTTPException(status_code=400, detail=f"index out of range: {request.index}")
 
     ai_metadata = dict(draft.get("ai_metadata") or {})
-    intent = str(ai_metadata.get("intent") or "").strip()
     context_snapshot = ai_metadata.get("context_snapshot")
-    if not intent or not isinstance(context_snapshot, dict):
-        raise HTTPException(status_code=400, detail="Draft is missing ai_metadata.intent or ai_metadata.context_snapshot")
+    if not isinstance(context_snapshot, dict):
+        raise HTTPException(status_code=400, detail="Draft is missing ai_metadata.context_snapshot")
+    product_snapshot = _resolve_ai_product_snapshot(ai_metadata)
 
     try:
         rules_snapshot = load_campaign_rules_snapshot()
         existing = comments[:request.index] + comments[request.index + 1 :]
         replacement = await generate_campaign_comments(
             context_snapshot=context_snapshot,
-            intent=intent,
+            product_name=product_snapshot.get("product_name") or "",
+            product_prompt=product_snapshot.get("product_prompt_snapshot") or "",
             comment_count=1,
             rules_snapshot=rules_snapshot,
             existing_comments=existing,
         )
         comments[request.index] = replacement[0]
         next_meta = _next_ai_metadata(
-            intent=intent,
+            product_id=product_snapshot.get("product_id") or "",
+            product_name=product_snapshot.get("product_name") or "",
+            product_prompt_snapshot=product_snapshot.get("product_prompt_snapshot") or "",
             context_snapshot=context_snapshot,
             rules_snapshot=rules_snapshot,
             previous=ai_metadata,
@@ -3198,6 +3346,10 @@ async def campaign_ai_regenerate_one(
             "context_snapshot": context_snapshot,
             "rules_summary": summarize_rules(rules_snapshot),
             "model": next_meta.get("model"),
+            "product": {
+                "id": product_snapshot.get("product_id"),
+                "name": product_snapshot.get("product_name"),
+            },
             "draft": updated,
         }
     except CampaignAIError as exc:
@@ -3209,7 +3361,7 @@ async def campaign_ai_regenerate_all(
     draft_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
-    """Regenerate all comments for an AI draft while preserving context + intent."""
+    """Regenerate all comments for an AI draft while preserving context + product snapshot."""
     draft = draft_manager.get_draft(draft_id)
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
@@ -3219,22 +3371,25 @@ async def campaign_ai_regenerate_all(
         raise HTTPException(status_code=400, detail="Draft has no comments to regenerate")
 
     ai_metadata = dict(draft.get("ai_metadata") or {})
-    intent = str(ai_metadata.get("intent") or "").strip()
     context_snapshot = ai_metadata.get("context_snapshot")
-    if not intent or not isinstance(context_snapshot, dict):
-        raise HTTPException(status_code=400, detail="Draft is missing ai_metadata.intent or ai_metadata.context_snapshot")
+    if not isinstance(context_snapshot, dict):
+        raise HTTPException(status_code=400, detail="Draft is missing ai_metadata.context_snapshot")
+    product_snapshot = _resolve_ai_product_snapshot(ai_metadata)
 
     try:
         rules_snapshot = load_campaign_rules_snapshot()
         regenerated = await generate_campaign_comments(
             context_snapshot=context_snapshot,
-            intent=intent,
+            product_name=product_snapshot.get("product_name") or "",
+            product_prompt=product_snapshot.get("product_prompt_snapshot") or "",
             comment_count=len(existing_comments),
             rules_snapshot=rules_snapshot,
             existing_comments=None,
         )
         next_meta = _next_ai_metadata(
-            intent=intent,
+            product_id=product_snapshot.get("product_id") or "",
+            product_name=product_snapshot.get("product_name") or "",
+            product_prompt_snapshot=product_snapshot.get("product_prompt_snapshot") or "",
             context_snapshot=context_snapshot,
             rules_snapshot=rules_snapshot,
             previous=ai_metadata,
@@ -3260,6 +3415,10 @@ async def campaign_ai_regenerate_all(
             "context_snapshot": context_snapshot,
             "rules_summary": summarize_rules(rules_snapshot),
             "model": next_meta.get("model"),
+            "product": {
+                "id": product_snapshot.get("product_id"),
+                "name": product_snapshot.get("product_name"),
+            },
             "draft": updated,
         }
     except CampaignAIError as exc:

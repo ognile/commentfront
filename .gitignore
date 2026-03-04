@@ -22,3 +22,4 @@ backend/campaign_queue.json
 backend/campaign_queue.json.bak
 backend/profile_state.json.bak
 backend/appeal_scheduler_state.json
+backend/campaign_ai_products.json

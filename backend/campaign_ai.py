@@ -521,12 +521,16 @@ def _canonical_brand(value: str) -> str:
     return raw
 
 
-def _detect_primary_brand(context_snapshot: Dict[str, Any], intent: str) -> Optional[str]:
+def _detect_primary_brand(
+    context_snapshot: Dict[str, Any],
+    product_name: str,
+    product_prompt: str,
+) -> Optional[str]:
     override = _canonical_brand(os.getenv("CAMPAIGN_AI_BRAND_OVERRIDE", ""))
     if override:
         return override
 
-    texts: List[str] = [str(intent or "")]
+    texts: List[str] = [str(product_name or ""), str(product_prompt or "")]
     op_post = context_snapshot.get("op_post") or {}
     texts.append(str(op_post.get("text") or ""))
     for item in context_snapshot.get("supporting_comments") or []:
@@ -1167,7 +1171,7 @@ def _style_counters(comments: List[str]) -> Dict[str, Any]:
     return counters
 
 
-def _lane_targets(comment_count: int, intent: str) -> Dict[str, int]:
+def _lane_targets(comment_count: int, strategy_hint: str) -> Dict[str, int]:
     base = {
         "testimonial": 0,
         "alternative": 0,
@@ -1180,7 +1184,7 @@ def _lane_targets(comment_count: int, intent: str) -> Dict[str, int]:
     base["testimonial"] = max(1, int(round(comment_count * 0.25))) if comment_count >= 4 else 0
     base["alternative"] = max(1, int(round(comment_count * 0.15))) if comment_count >= 6 else 0
 
-    lowered_intent = str(intent or "").lower()
+    lowered_intent = str(strategy_hint or "").lower()
     wants_debate = any(
         token in lowered_intent
         for token in (
@@ -1548,7 +1552,8 @@ def _prepare_comment_pool(
 def _build_generation_prompt(
     *,
     context_snapshot: Dict,
-    intent: str,
+    product_name: str,
+    product_prompt: str,
     comment_count: int,
     existing_comments: List[str],
     rules_snapshot: Dict,
@@ -1594,6 +1599,8 @@ def _build_generation_prompt(
     style_source = str(style_profile.get("source") or "unknown")
     style_sample_size = int(style_profile.get("sample_size") or 0)
     brand_name = str(brand_plan.get("brand") or "").strip()
+    normalized_product_name = str(product_name or "").strip() or "(unnamed product)"
+    normalized_product_prompt = str(product_prompt or "").strip() or "(no product prompt configured)"
     brand_target = int(brand_plan.get("recommendation_target", 0) or 0)
     brand_just_target = int(brand_plan.get("justification_target", 0) or 0)
     op_anchor_lines = [f"- {token}" for token in op_anchors[:20]]
@@ -1606,13 +1613,13 @@ Output format (must be valid JSON only, no markdown):
 
 Rules:
 - Return exactly {comment_count} unique comments.
-- Keep comments relevant to the OP post and user intent.
+- Keep comments relevant to the OP post and selected product context.
 - Match real organic Facebook style from ad comments. Avoid uniform writing.
 - the batch must feel like an ecosystem written by different people, not one author.
 - Keep messy human variance: some fragments, some lowercase starts, not every comment polished.
 - Every output is an isolated TOP-LEVEL comment on the OP post.
 - Never write as a reply to another comment. no "as someone said above", no "this thread explained", no direct back-and-forth.
-- Only use information available from OP text + user intent. Do not inject extra specifics from hidden context.
+- Only use information available from OP text + selected product context. Do not inject extra specifics from hidden context.
 - Think of the writer as someone who just read the OP and clicked comment.
 - Keep each comment anchored to OP topic words or symptoms. no off-topic detours.
 - Do not introduce random new conditions/treatments not implied by OP.
@@ -1676,8 +1683,10 @@ Supporting comments:
 OP anchor terms (must stay close to these themes):
 {chr(10).join(op_anchor_lines) if op_anchor_lines else "(none)"}
 
-User intent:
-{intent}
+Selected product:
+- name: {normalized_product_name}
+- context:
+{normalized_product_prompt}
 
 Existing comments to avoid (exact/near duplicates):
 {chr(10).join(existing_lines) if existing_lines else "(none)"}
@@ -1698,7 +1707,8 @@ Attempt: {remaining_attempt}
 def _build_brand_topup_prompt(
     *,
     context_snapshot: Dict[str, Any],
-    intent: str,
+    product_name: str,
+    product_prompt: str,
     brand: str,
     comment_count: int,
     justification_count: int,
@@ -1707,6 +1717,8 @@ def _build_brand_topup_prompt(
     op_post = context_snapshot.get("op_post") or {}
     op_text = str(op_post.get("text") or "").strip()
     existing_lines = [f"- {item}" for item in existing_comments[:120]]
+    normalized_product_name = str(product_name or "").strip() or "(unnamed product)"
+    normalized_product_prompt = str(product_prompt or "").strip() or "(no product prompt configured)"
     return f"""
 Generate exactly {comment_count} isolated top-level Facebook comments as strict JSON.
 
@@ -1726,8 +1738,10 @@ Hard requirements:
 OP post context:
 {op_text or "(no OP message available)"}
 
-Intent:
-{intent}
+Selected product:
+- name: {normalized_product_name}
+- context:
+{normalized_product_prompt}
 
 Existing comments to avoid:
 {chr(10).join(existing_lines) if existing_lines else "(none)"}
@@ -1903,16 +1917,16 @@ def _apply_surface_variability(
 async def generate_campaign_comments(
     *,
     context_snapshot: Dict,
-    intent: str,
+    product_name: str,
+    product_prompt: str,
     comment_count: int,
     rules_snapshot: Dict,
     existing_comments: Optional[List[str]] = None,
 ) -> List[str]:
     """Generate sanitized, deduplicated comments using strict Claude model."""
     count = ensure_comment_count(comment_count, strict_bounds=False)
-    normalized_intent = str(intent or "").strip()
-    if not normalized_intent:
-        raise CampaignAIError(400, "intent is required")
+    normalized_product_name = str(product_name or "").strip() or "selected product"
+    normalized_product_prompt = str(product_prompt or "").strip()
 
     existing = [str(item).strip() for item in (existing_comments or []) if str(item).strip()]
     accepted: List[str] = []
@@ -1922,8 +1936,12 @@ async def generate_campaign_comments(
     max_unanchored_reactions = 2 if count >= 10 else (1 if count >= 5 else 0)
     target_mix = _style_mix_targets(count, style_profile)
     target_surface = _style_surface_targets(count, style_profile)
-    lane_targets = _lane_targets(count, normalized_intent)
-    primary_brand = _detect_primary_brand(context_snapshot, normalized_intent)
+    lane_targets = _lane_targets(count, normalized_product_prompt)
+    primary_brand = _detect_primary_brand(
+        context_snapshot,
+        normalized_product_name,
+        normalized_product_prompt,
+    )
     brand_plan = _brand_targets(count, brand=primary_brand)
 
     max_attempts = 5
@@ -1938,7 +1956,8 @@ async def generate_campaign_comments(
 
         prompt = _build_generation_prompt(
             context_snapshot=context_snapshot,
-            intent=normalized_intent,
+            product_name=normalized_product_name,
+            product_prompt=normalized_product_prompt,
             comment_count=remaining,
             existing_comments=existing + accepted,
             rules_snapshot=rules_snapshot,
@@ -2009,7 +2028,8 @@ async def generate_campaign_comments(
                 break
             topup_prompt = _build_brand_topup_prompt(
                 context_snapshot=context_snapshot,
-                intent=normalized_intent,
+                product_name=normalized_product_name,
+                product_prompt=normalized_product_prompt,
                 brand=brand_name,
                 comment_count=int(missing_brand.get("recommendation", 0)),
                 justification_count=int(missing_brand.get("justification", 0)),

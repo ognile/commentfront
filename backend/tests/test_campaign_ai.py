@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import re
 import sys
 from pathlib import Path
@@ -13,6 +14,8 @@ import campaign_ai
 from main import (
     CampaignAIContextRequest,
     CampaignAIGenerateRequest,
+    CampaignAIProductRequest,
+    CampaignAIProductUpdateRequest,
     CampaignAIRegenerateOneRequest,
 )
 
@@ -29,6 +32,8 @@ PFBID_URL = (
 def isolate_queue_and_drafts(tmp_path, monkeypatch):
     old_queue_path = main.queue_manager.file_path
     old_draft_path = main.draft_manager.file_path
+    old_product_path = main.campaign_ai_product_store.file_path
+    old_product_state = copy.deepcopy(main.campaign_ai_product_store.state)
 
     main.queue_manager.file_path = str(tmp_path / "campaign_queue.json")
     main.queue_manager.campaigns = {}
@@ -43,6 +48,10 @@ def isolate_queue_and_drafts(tmp_path, monkeypatch):
     main.draft_manager.file_path = str(tmp_path / "campaign_drafts.json")
     main.draft_manager.drafts = {}
     main.draft_manager.save()
+
+    main.campaign_ai_product_store.file_path = str(tmp_path / "campaign_ai_products.json")
+    main.campaign_ai_product_store.state = main.campaign_ai_product_store._empty_state()
+    main.campaign_ai_product_store._seed_defaults_if_needed()
 
     async def _noop_broadcast(*_args, **_kwargs):
         return None
@@ -61,6 +70,8 @@ def isolate_queue_and_drafts(tmp_path, monkeypatch):
 
     main.queue_manager.file_path = old_queue_path
     main.draft_manager.file_path = old_draft_path
+    main.campaign_ai_product_store.file_path = old_product_path
+    main.campaign_ai_product_store.state = old_product_state
     main.queue_manager.campaigns = {}
     main.queue_manager.history = []
     main.draft_manager.drafts = {}
@@ -305,7 +316,8 @@ def test_generation_prompt_is_top_level_isolated():
                 {"text": "another supporting detail"},
             ],
         },
-        intent="support the OP and suggest one alternative",
+        product_name="nuora vaginal gummy",
+        product_prompt="focus on vaginal microbiome and pH explanation",
         comment_count=5,
         existing_comments=[],
         rules_snapshot={"negative_patterns": [], "vocabulary_guidance": []},
@@ -339,6 +351,8 @@ def test_generation_prompt_is_top_level_isolated():
     assert "OP anchor terms" in prompt
     assert "- bacteria" in prompt
     assert "No engagement-bait CTAs" in prompt
+    assert "Selected product:" in prompt
+    assert "User intent:" not in prompt
 
 
 def test_detect_primary_brand_from_supporting_comments():
@@ -349,6 +363,7 @@ def test_detect_primary_brand_from_supporting_comments():
                 {"text": "brand we recommend is myNuora"},
             ],
         },
+        "nuora vaginal gummy",
         "support narrative",
     )
 
@@ -424,9 +439,18 @@ def _fake_rules():
     }
 
 
-async def _fake_generate(*, context_snapshot, intent, comment_count, rules_snapshot, existing_comments=None):
+async def _fake_generate(
+    *,
+    context_snapshot,
+    product_name,
+    product_prompt,
+    comment_count,
+    rules_snapshot,
+    existing_comments=None,
+):
     assert isinstance(context_snapshot, dict)
-    assert isinstance(intent, str)
+    assert isinstance(product_name, str)
+    assert isinstance(product_prompt, str)
     assert isinstance(rules_snapshot, dict)
     assert existing_comments is None or isinstance(existing_comments, list)
     return [f"generated comment {i + 1}" for i in range(comment_count)]
@@ -437,11 +461,11 @@ def test_campaign_ai_generate_creates_draft_with_metadata(monkeypatch):
     monkeypatch.setattr(main, "load_campaign_rules_snapshot", _fake_rules)
     monkeypatch.setattr(main, "generate_campaign_comments", _fake_generate)
 
+    product = main.campaign_ai_product_store.list_products(include_inactive=False)[0]
     request = CampaignAIGenerateRequest(
         url=VALID_URL,
-        intent="support this narrative with social proof",
+        product_id=product["id"],
         comment_count=10,
-        duration_minutes=30,
         filter_tags=["team-a"],
         enable_warmup=True,
     )
@@ -452,8 +476,12 @@ def test_campaign_ai_generate_creates_draft_with_metadata(monkeypatch):
     draft = main.draft_manager.get_draft(result["draft_id"])
     assert draft is not None
     assert draft["comments"][0] == "generated comment 1"
-    assert draft["ai_metadata"]["intent"] == request.intent
+    assert draft["duration_minutes"] == 30
+    assert draft["ai_metadata"]["product_id"] == product["id"]
+    assert draft["ai_metadata"]["product_name"] == product["name"]
+    assert draft["ai_metadata"]["product_prompt_snapshot"] == product["prompt"]
     assert draft["ai_metadata"]["rules_snapshot_version"] == "rules_v1"
+    assert draft["ai_metadata"]["methodology_version"] == "campaign_ai_url_only_product_v1"
     assert draft["ai_metadata"]["regenerate_count"] == 0
 
 
@@ -462,6 +490,7 @@ def test_campaign_ai_generate_updates_existing_draft(monkeypatch):
     monkeypatch.setattr(main, "load_campaign_rules_snapshot", _fake_rules)
     monkeypatch.setattr(main, "generate_campaign_comments", _fake_generate)
 
+    product = main.campaign_ai_product_store.list_products(include_inactive=False)[0]
     existing = main.draft_manager.create_draft(
         url=VALID_URL,
         comments=["old"],
@@ -471,7 +500,9 @@ def test_campaign_ai_generate_updates_existing_draft(monkeypatch):
         enable_warmup=True,
         username="tester",
         ai_metadata={
-            "intent": "old intent",
+            "product_id": product["id"],
+            "product_name": product["name"],
+            "product_prompt_snapshot": product["prompt"],
             "model": "claude-sonnet-4-6",
             "context_snapshot": {"context_id": "old"},
             "generated_at": "2026-01-01T00:00:00",
@@ -482,9 +513,8 @@ def test_campaign_ai_generate_updates_existing_draft(monkeypatch):
 
     request = CampaignAIGenerateRequest(
         url=VALID_URL,
-        intent="new intent",
+        product_id=product["id"],
         comment_count=10,
-        duration_minutes=45,
         filter_tags=["team-b"],
         enable_warmup=True,
         draft_id=existing["id"],
@@ -495,18 +525,19 @@ def test_campaign_ai_generate_updates_existing_draft(monkeypatch):
     assert result["draft_id"] == existing["id"]
     updated = main.draft_manager.get_draft(existing["id"])
     assert updated is not None
-    assert updated["duration_minutes"] == 45
+    assert updated["duration_minutes"] == 30
     assert updated["filter_tags"] == ["team-b"]
-    assert updated["ai_metadata"]["intent"] == "new intent"
+    assert updated["ai_metadata"]["product_id"] == product["id"]
+    assert updated["ai_metadata"]["product_name"] == product["name"]
     assert updated["ai_metadata"]["regenerate_count"] == 7
 
 
 def test_campaign_ai_generate_rejects_invalid_comment_count():
+    product = main.campaign_ai_product_store.list_products(include_inactive=False)[0]
     request = CampaignAIGenerateRequest(
         url=VALID_URL,
-        intent="test",
+        product_id=product["id"],
         comment_count=9,
-        duration_minutes=30,
         filter_tags=None,
         enable_warmup=True,
     )
@@ -518,17 +549,107 @@ def test_campaign_ai_generate_rejects_invalid_comment_count():
     assert "comment_count must be between" in str(exc.value.detail)
 
 
+def test_campaign_ai_generate_rejects_empty_product_id(monkeypatch):
+    monkeypatch.setattr(main, "fetch_campaign_context", _fake_context)
+    monkeypatch.setattr(main, "load_campaign_rules_snapshot", _fake_rules)
+    monkeypatch.setattr(main, "generate_campaign_comments", _fake_generate)
+
+    request = CampaignAIGenerateRequest(
+        url=VALID_URL,
+        product_id="",
+        comment_count=10,
+        filter_tags=None,
+        enable_warmup=True,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(main.campaign_ai_generate(request, current_user={"username": "tester"}))
+
+    assert exc.value.status_code == 400
+    assert "product_id is required" in str(exc.value.detail)
+
+
+def test_campaign_ai_generate_updates_last_used_product(monkeypatch):
+    monkeypatch.setattr(main, "fetch_campaign_context", _fake_context)
+    monkeypatch.setattr(main, "load_campaign_rules_snapshot", _fake_rules)
+    monkeypatch.setattr(main, "generate_campaign_comments", _fake_generate)
+
+    products = main.campaign_ai_product_store.list_products(include_inactive=False)
+    selected = products[-1]
+    request = CampaignAIGenerateRequest(
+        url=VALID_URL,
+        product_id=selected["id"],
+        comment_count=10,
+        filter_tags=None,
+        enable_warmup=True,
+    )
+
+    asyncio.run(main.campaign_ai_generate(request, current_user={"username": "tester"}))
+    listed = asyncio.run(main.campaign_ai_list_products(current_user={"username": "tester"}))
+    assert listed["last_product_id"] == selected["id"]
+
+
+def test_campaign_ai_products_crud_and_list():
+    listed = asyncio.run(main.campaign_ai_list_products(current_user={"username": "tester"}))
+    assert len(listed["products"]) >= 2
+    assert listed["last_product_id"] is None
+
+    created = asyncio.run(
+        main.campaign_ai_create_product(
+            CampaignAIProductRequest(
+                name="custom product",
+                prompt="custom long prompt",
+            ),
+            current_user={"username": "tester"},
+        )
+    )["product"]
+    assert created["name"] == "custom product"
+
+    updated = asyncio.run(
+        main.campaign_ai_update_product(
+            created["id"],
+            CampaignAIProductUpdateRequest(
+                name="custom product v2",
+                prompt="updated prompt",
+                active=True,
+            ),
+            current_user={"username": "tester"},
+        )
+    )["product"]
+    assert updated["name"] == "custom product v2"
+    assert updated["prompt"] == "updated prompt"
+
+    deleted = asyncio.run(
+        main.campaign_ai_delete_product(
+            created["id"],
+            current_user={"username": "tester"},
+        )
+    )
+    assert deleted["success"] is True
+
+
 def test_campaign_ai_regenerate_one_updates_only_target_index(monkeypatch):
     captured = {}
 
-    async def fake_generate_one(*, context_snapshot, intent, comment_count, rules_snapshot, existing_comments=None):
+    async def fake_generate_one(
+        *,
+        context_snapshot,
+        product_name,
+        product_prompt,
+        comment_count,
+        rules_snapshot,
+        existing_comments=None,
+    ):
         captured["existing_comments"] = list(existing_comments or [])
         assert comment_count == 1
+        assert isinstance(product_name, str)
+        assert isinstance(product_prompt, str)
         return ["replacement comment"]
 
     monkeypatch.setattr(main, "load_campaign_rules_snapshot", _fake_rules)
     monkeypatch.setattr(main, "generate_campaign_comments", fake_generate_one)
 
+    product = main.campaign_ai_product_store.list_products(include_inactive=False)[0]
     draft = main.draft_manager.create_draft(
         url=VALID_URL,
         comments=["first", "second", "third"],
@@ -538,7 +659,9 @@ def test_campaign_ai_regenerate_one_updates_only_target_index(monkeypatch):
         enable_warmup=True,
         username="tester",
         ai_metadata={
-            "intent": "align to mission",
+            "product_id": product["id"],
+            "product_name": product["name"],
+            "product_prompt_snapshot": product["prompt"],
             "model": "claude-sonnet-4-6",
             "context_snapshot": {"context_id": "ctx_1", "op_post": {"text": "hello"}},
             "generated_at": "2026-01-01T00:00:00",
@@ -563,13 +686,24 @@ def test_campaign_ai_regenerate_one_updates_only_target_index(monkeypatch):
 
 
 def test_campaign_ai_regenerate_all_replaces_full_list(monkeypatch):
-    async def fake_generate_all(*, context_snapshot, intent, comment_count, rules_snapshot, existing_comments=None):
+    async def fake_generate_all(
+        *,
+        context_snapshot,
+        product_name,
+        product_prompt,
+        comment_count,
+        rules_snapshot,
+        existing_comments=None,
+    ):
         assert comment_count == 3
+        assert isinstance(product_name, str)
+        assert isinstance(product_prompt, str)
         return ["new 1", "new 2", "new 3"]
 
     monkeypatch.setattr(main, "load_campaign_rules_snapshot", _fake_rules)
     monkeypatch.setattr(main, "generate_campaign_comments", fake_generate_all)
 
+    product = main.campaign_ai_product_store.list_products(include_inactive=False)[0]
     draft = main.draft_manager.create_draft(
         url=VALID_URL,
         comments=["old 1", "old 2", "old 3"],
@@ -579,7 +713,9 @@ def test_campaign_ai_regenerate_all_replaces_full_list(monkeypatch):
         enable_warmup=True,
         username="tester",
         ai_metadata={
-            "intent": "align to mission",
+            "product_id": product["id"],
+            "product_name": product["name"],
+            "product_prompt_snapshot": product["prompt"],
             "model": "claude-sonnet-4-6",
             "context_snapshot": {"context_id": "ctx_1", "op_post": {"text": "hello"}},
             "generated_at": "2026-01-01T00:00:00",
@@ -594,3 +730,45 @@ def test_campaign_ai_regenerate_all_replaces_full_list(monkeypatch):
     refreshed = main.draft_manager.get_draft(draft["id"])
     assert refreshed is not None
     assert refreshed["ai_metadata"]["regenerate_count"] == 3
+
+
+def test_campaign_ai_regenerate_all_supports_legacy_intent_metadata(monkeypatch):
+    captured = {}
+
+    async def fake_generate_legacy(
+        *,
+        context_snapshot,
+        product_name,
+        product_prompt,
+        comment_count,
+        rules_snapshot,
+        existing_comments=None,
+    ):
+        captured["product_name"] = product_name
+        captured["product_prompt"] = product_prompt
+        return [f"legacy {i + 1}" for i in range(comment_count)]
+
+    monkeypatch.setattr(main, "load_campaign_rules_snapshot", _fake_rules)
+    monkeypatch.setattr(main, "generate_campaign_comments", fake_generate_legacy)
+
+    draft = main.draft_manager.create_draft(
+        url=VALID_URL,
+        comments=["old 1", "old 2"],
+        jobs=None,
+        duration_minutes=30,
+        filter_tags=None,
+        enable_warmup=True,
+        username="tester",
+        ai_metadata={
+            "intent": "legacy product guidance text",
+            "model": "claude-sonnet-4-6",
+            "context_snapshot": {"context_id": "ctx_legacy", "op_post": {"text": "hello"}},
+            "generated_at": "2026-01-01T00:00:00",
+            "regenerate_count": 0,
+            "rules_snapshot_version": "rules_v1",
+        },
+    )
+
+    result = asyncio.run(main.campaign_ai_regenerate_all(draft["id"], current_user={"username": "tester"}))
+    assert result["comments"] == ["legacy 1", "legacy 2"]
+    assert captured["product_prompt"] == "legacy product guidance text"

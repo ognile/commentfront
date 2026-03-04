@@ -155,6 +155,17 @@ interface CampaignAIRulesSummary {
   vocabulary_count?: number;
 }
 
+interface CampaignAIProduct {
+  id: string;
+  name: string;
+  prompt: string;
+  active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  created_by?: string;
+  updated_by?: string;
+}
+
 interface LiveStatus {
   connected: boolean;
   currentStep: string;
@@ -375,9 +386,9 @@ function App() {
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
   const [campaignInputMode, setCampaignInputMode] = useState<'manual' | 'ai'>('manual');
-  const [aiIntent, setAiIntent] = useState('');
   const [aiCommentCount, setAiCommentCount] = useState(10);
   const [aiContextSnapshot, setAiContextSnapshot] = useState<CampaignAIContextSnapshot | null>(null);
+  const [aiContextError, setAiContextError] = useState<string | null>(null);
   const [aiRulesSummary, setAiRulesSummary] = useState<CampaignAIRulesSummary | null>(null);
   const [aiModel, setAiModel] = useState<string>('');
   const [aiComments, setAiComments] = useState<string[]>([]);
@@ -385,6 +396,16 @@ function App() {
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiRegeneratingAll, setAiRegeneratingAll] = useState(false);
   const [aiRegeneratingIndex, setAiRegeneratingIndex] = useState<number | null>(null);
+  const [aiProducts, setAiProducts] = useState<CampaignAIProduct[]>([]);
+  const [selectedAiProductId, setSelectedAiProductId] = useState<string>('');
+  const [aiProductsLoading, setAiProductsLoading] = useState(false);
+  const [productEditorOpen, setProductEditorOpen] = useState(false);
+  const [editableProductName, setEditableProductName] = useState('');
+  const [editableProductPrompt, setEditableProductPrompt] = useState('');
+  const [savingAiProduct, setSavingAiProduct] = useState(false);
+  const [creatingAiProduct, setCreatingAiProduct] = useState(false);
+  const aiContextDebounceRef = useRef<number | null>(null);
+  const aiContextAbortRef = useRef<AbortController | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [appealStatuses, setAppealStatuses] = useState<Map<string, AppealStatusEntry>>(new Map());
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -1293,8 +1314,15 @@ function App() {
     fetchAppealStatuses();
     fetchQueue();
     fetchDrafts();
+    fetchAiProducts({ silent: true });
     fetchPremiumStatus();
   }, []);
+
+  useEffect(() => {
+    if (campaignInputMode !== 'ai') return;
+    if (aiProducts.length > 0) return;
+    fetchAiProducts({ silent: true });
+  }, [campaignInputMode, aiProducts.length]);
 
   // Tier 2: Background loading - load after critical data, during idle time
   useEffect(() => {
@@ -1342,8 +1370,48 @@ function App() {
       if (draftAutosaveTimerRef.current !== null) {
         window.clearTimeout(draftAutosaveTimerRef.current);
       }
+      if (aiContextDebounceRef.current !== null) {
+        window.clearTimeout(aiContextDebounceRef.current);
+      }
+      if (aiContextAbortRef.current) {
+        aiContextAbortRef.current.abort();
+      }
     };
   }, []);
+
+  useEffect(() => {
+    const selected = aiProducts.find((item) => item.id === selectedAiProductId);
+    if (!selected) return;
+    setEditableProductName(selected.name || '');
+    setEditableProductPrompt(selected.prompt || '');
+  }, [selectedAiProductId, aiProducts]);
+
+  useEffect(() => {
+    if (campaignInputMode !== 'ai') return;
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
+      setAiContextSnapshot(null);
+      setAiContextError(null);
+      return;
+    }
+    if (aiContextSnapshot?.url === trimmedUrl) {
+      return;
+    }
+    if (aiContextDebounceRef.current !== null) {
+      window.clearTimeout(aiContextDebounceRef.current);
+    }
+    aiContextDebounceRef.current = window.setTimeout(() => {
+      void fetchAiCampaignContext({ urlOverride: trimmedUrl, silent: true });
+      aiContextDebounceRef.current = null;
+    }, 700);
+
+    return () => {
+      if (aiContextDebounceRef.current !== null) {
+        window.clearTimeout(aiContextDebounceRef.current);
+        aiContextDebounceRef.current = null;
+      }
+    };
+  }, [campaignInputMode, url]);
 
   // Filter sessions by search query, status, and selected tags (AND logic)
   const filteredSessions = useMemo(() => {
@@ -1392,7 +1460,7 @@ function App() {
   const buildComposerPayload = () => ({
     url: url.trim(),
     comments: parseCommentsInput(comments),
-    duration_minutes: campaignDuration,
+    duration_minutes: campaignInputMode === 'ai' ? 30 : campaignDuration,
     filter_tags: campaignFilterTags.length > 0 ? campaignFilterTags : null,
     enable_warmup: enableWarmup
   });
@@ -1406,29 +1474,156 @@ function App() {
     });
   };
 
-  const fetchAiCampaignContext = async () => {
-    const trimmedUrl = url.trim();
+  const fetchAiProducts = async (options: { silent?: boolean; preferProductId?: string } = {}) => {
+    const { silent = false, preferProductId } = options;
+    setAiProductsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaign-ai/products`, {
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to fetch AI products'));
+      }
+      const data = await res.json();
+      const products = Array.isArray(data.products) ? data.products as CampaignAIProduct[] : [];
+      setAiProducts(products);
+
+      const availableIds = new Set(products.map((p) => String(p.id)));
+      const requested = String(preferProductId || '').trim();
+      const current = String(selectedAiProductId || '').trim();
+      const lastUsed = String(data.last_product_id || '').trim();
+      const fallback = products[0]?.id || '';
+      const nextSelected =
+        (requested && availableIds.has(requested) && requested) ||
+        (current && availableIds.has(current) && current) ||
+        (lastUsed && availableIds.has(lastUsed) && lastUsed) ||
+        fallback ||
+        '';
+      setSelectedAiProductId(nextSelected);
+    } catch (error) {
+      if (!silent) {
+        toast.error(normalizeErrorMessage(error, 'Failed to fetch AI products'));
+      }
+    } finally {
+      setAiProductsLoading(false);
+    }
+  };
+
+  const saveSelectedAiProduct = async () => {
+    const productId = selectedAiProductId.trim();
+    if (!productId) {
+      toast.error('Select a product first');
+      return;
+    }
+    if (!editableProductName.trim() || !editableProductPrompt.trim()) {
+      toast.error('Product name and prompt are required');
+      return;
+    }
+    setSavingAiProduct(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaign-ai/products/${productId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({
+          name: editableProductName.trim(),
+          prompt: editableProductPrompt.trim(),
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to save product'));
+      }
+      await fetchAiProducts({ silent: true, preferProductId: productId });
+      toast.success('Product saved');
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to save product'));
+    } finally {
+      setSavingAiProduct(false);
+    }
+  };
+
+  const createAiProduct = async () => {
+    if (!editableProductName.trim() || !editableProductPrompt.trim()) {
+      toast.error('Product name and prompt are required');
+      return;
+    }
+    setCreatingAiProduct(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaign-ai/products`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({
+          name: editableProductName.trim(),
+          prompt: editableProductPrompt.trim(),
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to create product'));
+      }
+      const data = await res.json();
+      const createdId = String(data?.product?.id || '').trim();
+      await fetchAiProducts({ silent: true, preferProductId: createdId });
+      setProductEditorOpen(false);
+      toast.success('Product created');
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to create product'));
+    } finally {
+      setCreatingAiProduct(false);
+    }
+  };
+
+  const fetchAiCampaignContext = async (options: { urlOverride?: string; silent?: boolean } = {}) => {
+    const trimmedUrl = (options.urlOverride ?? url).trim();
+    const silent = Boolean(options.silent);
     if (!trimmedUrl) {
-      toast.error('Please enter a URL first');
+      if (!silent) toast.error('Please enter a URL first');
+      setAiContextSnapshot(null);
+      setAiContextError(null);
+      return;
+    }
+    if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
+      return;
+    }
+    if (aiContextSnapshot?.url === trimmedUrl) {
       return;
     }
 
+    if (aiContextAbortRef.current) {
+      aiContextAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    aiContextAbortRef.current = controller;
     setAiContextLoading(true);
+    setAiContextError(null);
     try {
       const res = await fetch(`${API_BASE}/campaign-ai/context`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ url: trimmedUrl })
+        body: JSON.stringify({ url: trimmedUrl }),
+        signal: controller.signal,
       });
       if (!res.ok) {
         throw new Error(await parseApiError(res, 'Failed to fetch AI context'));
       }
       const data = await res.json();
       setAiContextSnapshot(data);
-      toast.success('AI context fetched');
+      setAiContextError(null);
+      if (!silent) {
+        toast.success('AI context fetched');
+      }
     } catch (error) {
-      toast.error(normalizeErrorMessage(error, 'Failed to fetch AI context'));
+      if ((error as { name?: string })?.name === 'AbortError') {
+        return;
+      }
+      const message = normalizeErrorMessage(error, 'Failed to fetch AI context');
+      setAiContextSnapshot(null);
+      setAiContextError(message);
+      if (!silent) {
+        toast.error(message);
+      }
     } finally {
+      if (aiContextAbortRef.current === controller) {
+        aiContextAbortRef.current = null;
+      }
       setAiContextLoading(false);
     }
   };
@@ -1446,8 +1641,8 @@ function App() {
       toast.error('URL changed after context fetch. Fetch context again.');
       return;
     }
-    if (!aiIntent.trim()) {
-      toast.error('Please provide your intent');
+    if (!selectedAiProductId.trim()) {
+      toast.error('Select a product first');
       return;
     }
 
@@ -1460,9 +1655,8 @@ function App() {
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           url: url.trim(),
-          intent: aiIntent.trim(),
+          product_id: selectedAiProductId,
           comment_count: nextCount,
-          duration_minutes: campaignDuration,
           filter_tags: campaignFilterTags.length > 0 ? campaignFilterTags : null,
           enable_warmup: enableWarmup,
           draft_id: activeDraftId || null,
@@ -1477,6 +1671,9 @@ function App() {
       if (data.context_snapshot) setAiContextSnapshot(data.context_snapshot);
       if (data.rules_summary) setAiRulesSummary(data.rules_summary);
       if (typeof data.model === 'string') setAiModel(data.model);
+      if (typeof data?.product?.id === 'string' && data.product.id) {
+        setSelectedAiProductId(data.product.id);
+      }
       if (typeof data.draft_id === 'string' && data.draft_id) {
         setActiveDraftId(data.draft_id);
         setDraftSaveStatus('saved');
@@ -1724,7 +1921,11 @@ function App() {
       : null;
     if (aiMeta) {
       setCampaignInputMode('ai');
-      setAiIntent(String(aiMeta.intent || ''));
+      const productId = String(aiMeta.product_id || '').trim();
+      if (productId) {
+        setSelectedAiProductId(productId);
+        void fetchAiProducts({ silent: true, preferProductId: productId });
+      }
       const contextSnapshot = aiMeta.context_snapshot;
       if (contextSnapshot && typeof contextSnapshot === 'object') {
         setAiContextSnapshot(contextSnapshot as CampaignAIContextSnapshot);
@@ -1734,8 +1935,8 @@ function App() {
       setAiRulesSummary(rulesVersion ? { version: rulesVersion } : null);
     } else {
       setCampaignInputMode('manual');
-      setAiIntent('');
       setAiContextSnapshot(null);
+      setAiContextError(null);
       setAiRulesSummary(null);
       setAiModel('');
     }
@@ -2967,23 +3168,13 @@ function App() {
                 ) : (
                   <div className="space-y-4 rounded-lg border border-[rgba(0,0,0,0.1)] p-4 bg-[rgba(51,51,51,0.02)]">
                     <div className="space-y-2">
-                      <Label>1. Fetch Context</Label>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={fetchAiCampaignContext}
-                          disabled={!url.trim() || aiContextLoading}
-                        >
-                          {aiContextLoading ? (
-                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          ) : (
-                            <Search className="w-4 h-4 mr-2" />
-                          )}
-                          {aiContextLoading ? 'Fetching...' : 'Fetch Post Context'}
-                        </Button>
-                        {aiContextSnapshot && (
-                          <Badge variant="secondary">Context ready</Badge>
+                      <Label>1. Post Context</Label>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge variant={aiContextSnapshot ? 'secondary' : 'outline'}>
+                          {aiContextLoading ? 'Fetching context...' : aiContextSnapshot ? 'Context ready' : 'Waiting for URL'}
+                        </Badge>
+                        {aiContextError && (
+                          <span className="text-xs text-red-600">{aiContextError}</span>
                         )}
                       </div>
                     </div>
@@ -3007,13 +3198,73 @@ function App() {
                     )}
 
                     <div className="space-y-2">
-                      <Label>2. What is your intent?</Label>
-                      <Textarea
-                        value={aiIntent}
-                        onChange={(e) => setAiIntent(e.target.value)}
-                        placeholder="Explain the mission and what these comments should achieve..."
-                        className="min-h-[120px] bg-white"
-                      />
+                      <Label>2. Product</Label>
+                      <div className="flex items-center gap-2">
+                        <Select
+                          value={selectedAiProductId}
+                          onValueChange={setSelectedAiProductId}
+                          disabled={aiProductsLoading || aiProducts.length === 0}
+                        >
+                          <SelectTrigger className="bg-white">
+                            <SelectValue placeholder={aiProductsLoading ? 'Loading products...' : 'Select product'} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {aiProducts.map((product) => (
+                              <SelectItem key={product.id} value={product.id}>
+                                {product.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setProductEditorOpen((prev) => !prev)}
+                        >
+                          {productEditorOpen ? 'Close Editor' : 'Edit Product'}
+                        </Button>
+                      </div>
+                      {productEditorOpen && (
+                        <div className="space-y-2 rounded-md border border-[rgba(0,0,0,0.1)] bg-white p-3">
+                          <Input
+                            value={editableProductName}
+                            onChange={(e) => setEditableProductName(e.target.value)}
+                            placeholder="Product name"
+                            className="bg-white"
+                          />
+                          <Textarea
+                            value={editableProductPrompt}
+                            onChange={(e) => setEditableProductPrompt(e.target.value)}
+                            placeholder="Long product methodology prompt..."
+                            className="min-h-[140px] bg-white"
+                          />
+                          <div className="flex items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={saveSelectedAiProduct}
+                              disabled={savingAiProduct || !selectedAiProductId}
+                            >
+                              {savingAiProduct ? (
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              ) : null}
+                              Save Selected
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={createAiProduct}
+                              disabled={creatingAiProduct}
+                            >
+                              {creatingAiProduct ? (
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              ) : (
+                                <Plus className="w-4 h-4 mr-2" />
+                              )}
+                              Create New
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="space-y-2">
@@ -3035,7 +3286,7 @@ function App() {
                       <Button
                         type="button"
                         onClick={generateAiComments}
-                        disabled={aiGenerating || !aiContextSnapshot || !aiIntent.trim()}
+                        disabled={aiGenerating || !aiContextSnapshot || !selectedAiProductId}
                       >
                         {aiGenerating ? (
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -3100,28 +3351,30 @@ function App() {
                   </div>
                 )}
 
-                <div className="space-y-2">
-                  <Label>Campaign Duration</Label>
-                  <div className="flex items-center gap-4">
-                    <Input
-                      type="number"
-                      min={10}
-                      max={1440}
-                      value={campaignDuration}
-                      onChange={(e) => {
-                        const val = Math.max(10, Math.min(1440, Number(e.target.value) || 10));
-                        setCampaignDuration(val);
-                      }}
-                      className="w-24 bg-white"
-                    />
-                    <span className="text-sm text-[#666666]">
-                      minutes ({formatDuration(campaignDuration)})
-                    </span>
+                {campaignInputMode !== 'ai' && (
+                  <div className="space-y-2">
+                    <Label>Campaign Duration</Label>
+                    <div className="flex items-center gap-4">
+                      <Input
+                        type="number"
+                        min={10}
+                        max={1440}
+                        value={campaignDuration}
+                        onChange={(e) => {
+                          const val = Math.max(10, Math.min(1440, Number(e.target.value) || 10));
+                          setCampaignDuration(val);
+                        }}
+                        className="w-24 bg-white"
+                      />
+                      <span className="text-sm text-[#666666]">
+                        minutes ({formatDuration(campaignDuration)})
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#999999]">
+                      Comments will be spread across this time (10 min - 24 hours)
+                    </p>
                   </div>
-                  <p className="text-xs text-[#999999]">
-                    Comments will be spread across this time (10 min - 24 hours)
-                  </p>
-                </div>
+                )}
 
                 {/* Tag Filter for Campaign */}
                 <div className="space-y-2">
