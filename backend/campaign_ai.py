@@ -51,6 +51,7 @@ AI_COMMENT_MAX = 50
 DEFAULT_STYLE_PROFILE_PATH = str(_LOCAL_RULES_DIR / "campaign-ai-style-profile.json")
 STYLE_PROFILE_MIN_SAMPLE_SIZE = int(os.getenv("CAMPAIGN_AI_STYLE_PROFILE_MIN_SAMPLE_SIZE", "200"))
 STYLE_CACHE_TTL_SECONDS = int(os.getenv("CAMPAIGN_AI_STYLE_CACHE_TTL_SECONDS", "1800"))
+NORMAL_CASE_RATIO_FLOOR = 0.20
 MIN_NORMAL_CASE_RATIO = float(os.getenv("CAMPAIGN_AI_MIN_NORMAL_CASE_RATIO", "0.2"))
 BRAND_RECOMMENDATION_RATIO = float(os.getenv("CAMPAIGN_AI_BRAND_RECOMMENDATION_RATIO", "0.35"))
 BRAND_JUSTIFICATION_RATIO = float(os.getenv("CAMPAIGN_AI_BRAND_JUSTIFICATION_RATIO", "0.6"))
@@ -117,6 +118,19 @@ _ANCHOR_STOPWORDS = {
     "havent",
     "haven't",
 }
+
+_MENTION_FALLBACK_LAST_NAMES = (
+    "Lobb",
+    "Nair",
+    "Lopez",
+    "Miller",
+    "Ramos",
+    "Silva",
+    "Khan",
+    "Carter",
+    "Bennett",
+    "Dawson",
+)
 
 
 class CampaignAIError(Exception):
@@ -568,6 +582,7 @@ def _is_engagement_bait_cta(text: str) -> bool:
         r"\bshare (this|it)\b",
         r"\bdrop (a|your)\b",
         r"\bcomment below\b",
+        r"\btagging\b",
         r"\bfollow\b",
         r"\bdm me\b",
         r"\blink in bio\b",
@@ -575,6 +590,71 @@ def _is_engagement_bait_cta(text: str) -> bool:
         r"\bsubscribe\b",
     ]
     return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _normalize_handle_to_full_name(raw_handle: str) -> str:
+    handle = str(raw_handle or "").strip()
+    if not handle:
+        return ""
+
+    normalized = re.sub(r"[@._-]+", " ", handle)
+    parts = [token for token in re.findall(r"[A-Za-z]+", normalized) if token]
+    if not parts:
+        return ""
+
+    parts = parts[:2]
+    if len(parts) == 1:
+        digest = hashlib.sha1(parts[0].lower().encode("utf-8")).hexdigest()
+        idx = int(digest[:8], 16) % len(_MENTION_FALLBACK_LAST_NAMES)
+        parts.append(_MENTION_FALLBACK_LAST_NAMES[idx])
+
+    titled = [token[:1].upper() + token[1:].lower() for token in parts]
+    return " ".join(titled)
+
+
+def _normalize_name_mentions(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+
+    def _replace_handle(match: re.Match[str]) -> str:
+        first = str(match.group(1) or "").strip()
+        second = str(match.group(2) or "").strip()
+        joined = " ".join([part for part in (first, second) if part])
+        if first.lower() in {"nuora", "mynuora"}:
+            return "Nuora"
+        converted = _normalize_handle_to_full_name(joined)
+        return converted or joined or first
+
+    normalized = re.sub(
+        r"@([A-Za-z][A-Za-z0-9._-]{0,31})(?:\s+([A-Za-z][A-Za-z0-9._-]{0,31}))?",
+        _replace_handle,
+        normalized,
+    )
+    # Convert "tagging X Y" style into direct name mention.
+    normalized = re.sub(
+        r"\btagging\s+([A-Z][a-z]{1,24}\s+[A-Z][a-z]{1,24})\b",
+        r"\1",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"\btag\s+([A-Z][a-z]{1,24}\s+[A-Z][a-z]{1,24})\b",
+        r"\1",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def _has_name_style_mention(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if "@" in raw:
+        return True
+    return bool(re.search(r"\b[A-Z][a-z]{1,24}\s+[A-Z][a-z]{1,24}\b", raw))
 
 
 def _tokenize_anchor_words(text: str) -> List[str]:
@@ -886,7 +966,7 @@ def _build_style_profile_from_comments(
 
         ending_counts[_ending_bucket(text)] += 1
 
-        if "@" in text:
+        if _has_name_style_mention(text):
             mention_count += 1
         if re.search(r"\b(i|i'm|ive|i've|me|my|we|our|us|myself)\b", text, flags=re.IGNORECASE):
             testimonial_count += 1
@@ -1019,7 +1099,8 @@ def _style_surface_targets(comment_count: int, style_profile: Dict[str, Any]) ->
         mention_target = max(mention_target, 1)
         lowercase_target = max(lowercase_target, 1)
 
-    uppercase_min = int(math.ceil(max(0.0, MIN_NORMAL_CASE_RATIO) * comment_count))
+    effective_normal_case_ratio = max(float(MIN_NORMAL_CASE_RATIO), float(NORMAL_CASE_RATIO_FLOOR))
+    uppercase_min = int(math.ceil(max(0.0, effective_normal_case_ratio) * comment_count))
     if comment_count >= 10:
         uppercase_min = max(2, uppercase_min)
     elif comment_count > 0:
@@ -1069,7 +1150,7 @@ def _style_counters(comments: List[str]) -> Dict[str, Any]:
         archetype = _infer_archetype(normalized)
         if archetype in counters:
             counters[archetype] += 1
-        if "@" in normalized:
+        if _has_name_style_mention(normalized):
             counters["mention"] += 1
         first = _first_alpha_char(normalized)
         if first and first.islower():
@@ -1406,6 +1487,8 @@ def _prepare_comment_pool(
 
         sanitized = sanitize_text_against_rules(text, rules_snapshot)
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        sanitized = _normalize_name_mentions(sanitized)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
         if not sanitized:
             continue
 
@@ -1547,7 +1630,7 @@ Rules:
   - testimonial comments (first-person experience): need {surface_missing.get("testimonial", 0)}
   - question comments: need {surface_missing.get("question", 0)}
   - alternative-solution comments (e.g. "try X", "what helped me"): need {surface_missing.get("alternative", 0)}
-  - mention/tag-style comments: need {surface_missing.get("mention", 0)}
+  - name-mention comments: need {surface_missing.get("mention", 0)} (if used, mention as "First Last" only)
 - punctuation/casing mix (still needed this attempt):
   - no end punctuation: need {(surface_missing.get("endings") or {}).get("none", 0)}
   - period ending: need {(surface_missing.get("endings") or {}).get("period", 0)}
@@ -1556,6 +1639,8 @@ Rules:
   - lowercase starts: need {surface_missing.get("lowercase_start", 0)}
   - normal case starts (uppercase first letter): need {surface_missing.get("uppercase_start_min", 0)}
 - Do not make everything lowercase. keep visible normal-case voices.
+- hard floor: at least {max(1, int(math.ceil(max(float(MIN_NORMAL_CASE_RATIO), float(NORMAL_CASE_RATIO_FLOOR)) * comment_count)))} comments must start with normal case (uppercase first letter).
+- if you mention a person, write plain name only like "Wanda Lobb". never use "@", "tag", or "tagging".
 - brand recommendation targets:
   - brand in play: {brand_name if brand_name else "(none inferred)"}
   - explicit brand recommendations still needed: {brand_missing.get("recommendation", 0)} (overall target {brand_target})
@@ -1570,7 +1655,7 @@ Rules:
   - approx {int(round(ending_exclaim * 100))}% exclamation ending
   - approx {int(round(first_char_lower_ratio * 100))}% start with lowercase first letter
   - approx {int(round(testimonial_ratio * 100))}% first-person experiential comments
-  - approx {int(round(mention_ratio * 100))}% include a direct mention/tag style
+  - approx {int(round(mention_ratio * 100))}% include a direct name-mention style
   - approx {int(round(reaction_ratio * 100))}% reaction micro-comments
   - approx {int(round(supportive_ratio * 100))}% supportive comments
   - approx {int(round(question_ratio * 100))}% question comments
@@ -1635,6 +1720,7 @@ Hard requirements:
 - Keep comments varied in length and voice.
 - Avoid duplicates or near-duplicates of existing comments.
 - no engagement-bait CTAs ("tag a friend", "share this", "comment below", "follow", "dm me").
+- if mentioning a person, use plain "First Last" text only; never use "@" or "tagging".
 - No markdown, no numbering.
 
 OP post context:
@@ -1669,6 +1755,8 @@ def _prepare_brand_topup_pool(
         if _is_engagement_bait_cta(text):
             continue
         sanitized = sanitize_text_against_rules(text, rules_snapshot)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        sanitized = _normalize_name_mentions(sanitized)
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
         if not sanitized:
             continue

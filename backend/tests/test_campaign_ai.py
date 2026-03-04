@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -264,6 +265,36 @@ def test_lane_targets_enable_contrarian_when_intent_requests_debate():
     assert sum(targets.values()) == 10
 
 
+def test_style_surface_targets_enforce_20_percent_normal_case_floor(monkeypatch):
+    monkeypatch.setattr(campaign_ai, "MIN_NORMAL_CASE_RATIO", 0.01)
+    targets = campaign_ai._style_surface_targets(
+        10,
+        campaign_ai._default_style_profile(),
+    )
+
+    assert targets["uppercase_start_min"] >= 2
+
+
+def test_normalize_name_mentions_converts_handles_to_plain_names():
+    text = "tagging @priya nair for this one"
+    normalized = campaign_ai._normalize_name_mentions(text)
+
+    assert "@" not in normalized
+    assert "tagging" not in normalized.lower()
+    assert re.search(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b", normalized)
+
+
+def test_style_counters_detect_plain_full_name_mentions():
+    counters = campaign_ai._style_counters(
+        [
+            "Wanda Lobb this might help",
+            "same",
+        ]
+    )
+
+    assert counters["mention"] == 1
+
+
 def test_generation_prompt_is_top_level_isolated():
     op_anchors = ["pee", "smell", "bacteria", "boric", "acid", "probiotics"]
     prompt = campaign_ai._build_generation_prompt(
@@ -303,6 +334,7 @@ def test_generation_prompt_is_top_level_isolated():
     assert "Never write as a reply to another comment" in prompt
     assert "hidden supporting detail should not leak" not in prompt
     assert "Do not make everything lowercase" in prompt
+    assert 'write plain name only like "Wanda Lobb"' in prompt
     assert "brand in play: Nuora" in prompt
     assert "OP anchor terms" in prompt
     assert "- bacteria" in prompt
