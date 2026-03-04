@@ -9,6 +9,7 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import profile_manager
 from main import AddToQueueRequest, DraftRequest
 
 
@@ -223,3 +224,42 @@ def test_inflight_submit_clicked_recovery_marks_uncertain_no_repost(monkeypatch)
     assert recovery_result["success"] is False
     assert recovery_result["recovered_from_inflight"] is True
 
+
+def test_test_campaign_duplicate_guard_blocks_history_conflict(monkeypatch):
+    class FakeProfileManager:
+        def get_eligible_profiles(self, **_kwargs):
+            return ["profile_a"]
+
+        def mark_profile_used(self, **_kwargs):
+            return None
+
+        def mark_profile_restricted(self, **_kwargs):
+            return None
+
+    main.queue_manager.history = [
+        {
+            "id": "historical_campaign",
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [{"job_index": 0, "text": "shared duplicate text", "success": True}],
+        }
+    ]
+    monkeypatch.setattr(profile_manager, "get_profile_manager", lambda: FakeProfileManager())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            main.run_test_campaign(
+                main.TestCampaignRequest(
+                    url=VALID_URL,
+                    comments=["shared duplicate text"],
+                    filter_tags=None,
+                    enable_warmup=True,
+                ),
+                current_user={"username": "tester"},
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert isinstance(exc_info.value.detail, dict)
+    assert exc_info.value.detail.get("message") == "duplicate_text_guard blocked test campaign"
+    assert exc_info.value.detail.get("duplicate_conflicts")

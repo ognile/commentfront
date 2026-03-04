@@ -2621,6 +2621,35 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
     from gemini_vision import set_observation_context
 
     profile_manager = get_profile_manager()
+    canonical_jobs = _build_queue_jobs(comments=request.comments, jobs=None)
+    validation = _validate_queue_jobs(
+        url=request.url,
+        jobs=canonical_jobs,
+        include_duplicate_guard=True,
+    )
+    if not validation["valid"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Test campaign validation failed",
+                "errors": validation["errors"],
+                "target_comment_matches": validation["target_comment_matches"],
+                "duplicate_conflicts": validation["duplicate_conflicts"],
+            },
+        )
+    if validation.get("duplicate_conflicts"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "duplicate_text_guard blocked test campaign",
+                "errors": [validation.get("duplicate_warning")],
+                "duplicate_conflicts": validation["duplicate_conflicts"],
+                "dedupe_window_days": validation["dedupe_window_days"],
+                "near_duplicate_threshold": validation["near_duplicate_threshold"],
+            },
+        )
+
+    comments_payload = [str(job.get("text", "")).strip() for job in canonical_jobs if str(job.get("text", "")).strip()]
 
     # If specific profile requested, validate it's eligible
     if request.profile_name:
@@ -2639,12 +2668,12 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
                     status_code=400,
                     detail=f"Profile '{request.profile_name}' is not eligible (may be restricted or have invalid cookies)"
                 )
-        assigned_profiles = [request.profile_name] * len(request.comments)
+        assigned_profiles = [request.profile_name] * len(comments_payload)
     else:
         # Use UNIFIED selection (handles cookies, tags, restrictions, LRU by success)
         assigned_profiles = profile_manager.get_eligible_profiles(
             filter_tags=request.filter_tags,
-            count=len(request.comments)
+            count=len(comments_payload)
         )
 
     if not assigned_profiles:
@@ -2653,10 +2682,10 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
         else:
             raise HTTPException(status_code=400, detail="No eligible profiles available")
 
-    if len(assigned_profiles) < len(request.comments):
-        logger.warning(f"[TEST] Only {len(assigned_profiles)} profiles for {len(request.comments)} comments")
+    if len(assigned_profiles) < len(comments_payload):
+        logger.warning(f"[TEST] Only {len(assigned_profiles)} profiles for {len(comments_payload)} comments")
 
-    total_jobs = min(len(request.comments), len(assigned_profiles))
+    total_jobs = min(len(comments_payload), len(assigned_profiles))
     test_id = f"test_{datetime.now().strftime('%H%M%S')}"
 
     logger.info(f"[TEST-CAMPAIGN] Starting {test_id}: {total_jobs} comments, warmup={request.enable_warmup}")
@@ -2670,7 +2699,7 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
 
     results = []
 
-    for job_idx, (profile_name, comment) in enumerate(zip(assigned_profiles, request.comments[:total_jobs])):
+    for job_idx, (profile_name, comment) in enumerate(zip(assigned_profiles, comments_payload[:total_jobs])):
         logger.info(f"[TEST-CAMPAIGN] Job {job_idx + 1}/{total_jobs}: {profile_name}")
 
         await broadcast_update("test_job_start", {
