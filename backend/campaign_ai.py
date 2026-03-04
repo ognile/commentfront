@@ -1549,6 +1549,54 @@ def _prepare_comment_pool(
     return out
 
 
+def _prepare_comment_pool_relaxed(
+    *,
+    candidates: List[str],
+    accepted: List[str],
+    existing_comments: List[str],
+    rules_snapshot: Dict,
+    brand_name: Optional[str],
+) -> List[str]:
+    """
+    Relaxed fallback pool used only when strict passes cannot fill requested count.
+
+    Keeps core safety constraints (rule compliance, dedupe, no engagement bait),
+    but drops strict surface/lane/mix pressure to avoid hard 502 underproduction.
+    """
+    out: List[str] = []
+    seen_base = [str(x).strip() for x in accepted + existing_comments if str(x).strip()]
+    normalized_brand = str(brand_name or "").strip() or None
+
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+
+        if _is_engagement_bait_cta(text):
+            continue
+
+        sanitized = sanitize_text_against_rules(text, rules_snapshot)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        sanitized = _normalize_name_mentions(sanitized)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        if not sanitized:
+            continue
+
+        validation = validate_text_against_rules(sanitized, rules_snapshot)
+        if not validation.get("ok"):
+            continue
+
+        if normalized_brand and _has_nonorganic_brand_discovery(sanitized, normalized_brand):
+            continue
+
+        if _is_near_duplicate(sanitized, seen_base + out):
+            continue
+
+        out.append(sanitized)
+
+    return out
+
+
 def _build_generation_prompt(
     *,
     context_snapshot: Dict,
@@ -2006,6 +2054,56 @@ async def generate_campaign_comments(
             style_profile.get("source"),
             style_profile.get("sample_size"),
         )
+
+    if len(accepted) < count:
+        recovery_attempts = 3
+        for recovery_attempt in range(1, recovery_attempts + 1):
+            remaining = count - len(accepted)
+            if remaining <= 0:
+                break
+
+            mix_missing = _missing_mix_targets(accepted, target_mix)
+            surface_missing = _missing_surface_targets(accepted, target_surface)
+            lane_missing = _missing_lane_targets(accepted, lane_targets)
+            brand_missing = _missing_brand_targets(accepted, brand_plan)
+            prompt = _build_generation_prompt(
+                context_snapshot=context_snapshot,
+                product_name=normalized_product_name,
+                product_prompt=normalized_product_prompt,
+                comment_count=remaining,
+                existing_comments=existing + accepted,
+                rules_snapshot=rules_snapshot,
+                remaining_attempt=max_attempts + recovery_attempt,
+                style_profile=style_profile,
+                mix_targets=target_mix,
+                mix_missing=mix_missing,
+                surface_missing=surface_missing,
+                lane_targets=lane_targets,
+                lane_missing=lane_missing,
+                brand_plan=brand_plan,
+                brand_missing=brand_missing,
+                op_anchors=op_anchors,
+            )
+            response_text = await _call_claude(prompt)
+            candidates = _extract_json_comments(response_text)
+            approved = _prepare_comment_pool_relaxed(
+                candidates=candidates,
+                accepted=accepted,
+                existing_comments=existing,
+                rules_snapshot=rules_snapshot,
+                brand_name=str(brand_plan.get("brand") or "").strip() or None,
+            )
+            accepted.extend(approved)
+            logger.info(
+                (
+                    "Campaign AI recovery attempt %s: received=%s approved=%s accumulated=%s target=%s"
+                ),
+                recovery_attempt,
+                len(candidates),
+                len(approved),
+                len(accepted),
+                count,
+            )
 
     final_comments = accepted[:count]
     if len(final_comments) != count:

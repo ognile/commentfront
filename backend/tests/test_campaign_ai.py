@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import re
 import sys
 from pathlib import Path
@@ -429,6 +430,57 @@ def test_engagement_bait_cta_detection():
     assert campaign_ai._is_engagement_bait_cta("Tag a friend who's still struggling") is True
     assert campaign_ai._is_engagement_bait_cta("share this with your group") is True
     assert campaign_ai._is_engagement_bait_cta("Nuora helped because it fixed my pH imbalance") is False
+
+
+def test_generate_campaign_comments_uses_relaxed_recovery_when_strict_underfills(monkeypatch):
+    call_cursor = {"value": 0}
+
+    async def fake_call_claude(prompt: str) -> str:
+        match = re.search(r"exactly\s+(\d+)", prompt, flags=re.IGNORECASE)
+        assert match is not None
+        count = int(match.group(1))
+        start = call_cursor["value"]
+        call_cursor["value"] += count
+        return json.dumps(
+            {
+                "comments": [
+                    f"Recovery comment {i + 1 + start} about smell and probiotics"
+                    for i in range(count)
+                ]
+            }
+        )
+
+    # Simulate strict filtering rejecting everything, forcing recovery path.
+    monkeypatch.setattr(campaign_ai, "_prepare_comment_pool", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        campaign_ai,
+        "_prepare_comment_pool_relaxed",
+        lambda **kwargs: [str(x) for x in kwargs.get("candidates", [])],
+    )
+    monkeypatch.setattr(campaign_ai, "_call_claude", fake_call_claude)
+    monkeypatch.setattr(
+        campaign_ai,
+        "fetch_campaign_style_profile",
+        lambda _context: asyncio.sleep(0, result=campaign_ai._default_style_profile()),
+    )
+
+    generated = asyncio.run(
+        campaign_ai.generate_campaign_comments(
+            context_snapshot={
+                "op_post": {
+                    "text": "Is pee smell actually bacteria? boric acid and probiotics havent helped",
+                },
+                "supporting_comments": [],
+            },
+            product_name="nuora vaginal gummy",
+            product_prompt="supports vaginal microbiome balance",
+            comment_count=10,
+            rules_snapshot={"negative_patterns": [], "vocabulary_guidance": []},
+            existing_comments=None,
+        )
+    )
+
+    assert len(generated) == 10
 
 
 def _fake_rules():
