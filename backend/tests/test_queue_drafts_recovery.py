@@ -263,3 +263,60 @@ def test_test_campaign_duplicate_guard_blocks_history_conflict(monkeypatch):
     assert isinstance(exc_info.value.detail, dict)
     assert exc_info.value.detail.get("message") == "duplicate_text_guard blocked test campaign"
     assert exc_info.value.detail.get("duplicate_conflicts")
+
+
+def test_auto_retry_success_marks_job_exhausted_to_prevent_repost():
+    campaign_id = "campaign_auto_retry_fix"
+    main.queue_manager.history = [
+        {
+            "id": campaign_id,
+            "status": "completed",
+            "url": VALID_URL,
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [
+                {
+                    "job_index": 0,
+                    "text": "same text",
+                    "comment": "same text",
+                    "success": False,
+                }
+            ],
+            "auto_retry": {
+                "status": "scheduled",
+                "current_round": 0,
+                "max_rounds": 4,
+                "next_retry_at": datetime.utcnow().isoformat(),
+                "schedule_seconds": [300, 1800, 7200, 21600],
+                "failed_jobs": [
+                    {
+                        "job_index": 0,
+                        "comment": "same text",
+                        "excluded_profiles": [],
+                        "last_profile": "profile_old",
+                        "exhausted": False,
+                    }
+                ],
+            },
+        }
+    ]
+
+    main.queue_manager.record_retry_attempt(
+        campaign_id=campaign_id,
+        job_index=0,
+        profile="profile_new",
+        round_num=0,
+        success=True,
+        error=None,
+        was_restriction=False,
+    )
+
+    updated = main.queue_manager.get_campaign_from_history(campaign_id)
+    assert updated is not None
+    failed_job = updated["auto_retry"]["failed_jobs"][0]
+    assert failed_job["exhausted"] is True
+    assert failed_job["last_profile"] == "profile_new"
+    remaining = [fj for fj in updated["auto_retry"]["failed_jobs"] if not fj.get("exhausted")]
+    assert remaining == []

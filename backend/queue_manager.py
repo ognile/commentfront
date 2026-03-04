@@ -888,6 +888,9 @@ class CampaignQueueManager:
                 if was_restriction:
                     if profile not in fj.get("excluded_profiles", []):
                         fj.setdefault("excluded_profiles", []).append(profile)
+                # Successful retry resolves this job; prevent reposting in later rounds.
+                if success:
+                    fj["exhausted"] = True
                 # Update last_profile
                 fj["last_profile"] = profile
                 break
