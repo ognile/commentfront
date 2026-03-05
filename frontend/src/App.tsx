@@ -15,6 +15,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AdminTab } from '@/components/admin/AdminTab'
 import { ProfileHealthConsole } from '@/components/analytics/ProfileHealthConsole'
+import { CampaignReliabilityAuditCard, type CampaignReliabilityAuditReport } from '@/components/analytics/CampaignReliabilityAuditCard'
 import { API_BASE, WS_BASE } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
 import { PearlBackground } from '@/components/PearlBackground'
@@ -450,6 +451,9 @@ function App() {
     history: []
   });
   const [queueLoading, setQueueLoading] = useState(true);
+  const [campaignAudit, setCampaignAudit] = useState<CampaignReliabilityAuditReport | null>(null);
+  const [campaignAuditLoading, setCampaignAuditLoading] = useState(true);
+  const [campaignAuditError, setCampaignAuditError] = useState<string | null>(null);
   const [addingToQueue, setAddingToQueue] = useState(false);
   const [drafts, setDrafts] = useState<CampaignDraft[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(true);
@@ -462,6 +466,7 @@ function App() {
   const loadingDraftIntoFormRef = useRef(false);
   const draftSaveInFlightRef = useRef<Promise<CampaignDraft | null> | null>(null);
   const fetchQueueRef = useRef<(() => Promise<void>) | null>(null);
+  const fetchCampaignAuditRef = useRef<(() => Promise<void>) | null>(null);
   const fetchDraftsRef = useRef<(() => Promise<void>) | null>(null);
 
   // Campaign details modal state
@@ -653,6 +658,7 @@ function App() {
                 // Full state sync on connect or reconnect
                 setQueueState(update.data);
                 setQueueLoading(false);
+                void fetchCampaignAuditRef.current?.();
                 break;
 
               case 'drafts_state_sync':
@@ -761,6 +767,7 @@ function App() {
                   ...prev,
                   currentStep: `Completed: ${update.data.success}/${update.data.total} successful`
                 }));
+                void fetchCampaignAuditRef.current?.();
                 break;
 
               case 'queue_campaign_failed':
@@ -790,6 +797,7 @@ function App() {
                   currentStep: `Failed: ${update.data.error}`
                 }));
                 toast.error(`Campaign failed: ${update.data.error}`);
+                void fetchCampaignAuditRef.current?.();
                 break;
 
               case 'queue_campaign_cancelled':
@@ -813,6 +821,7 @@ function App() {
                     history: [updatedCampaign, ...prev.history].slice(0, 100)
                   };
                 });
+                void fetchCampaignAuditRef.current?.();
                 break;
 
               case 'queue_campaign_retry_complete':
@@ -849,6 +858,7 @@ function App() {
                     last_retry_at: new Date().toISOString()
                   } : null);
                 }
+                void fetchCampaignAuditRef.current?.();
                 break;
 
               // Auto-retry events
@@ -882,6 +892,7 @@ function App() {
                 }
                 if (update.type === 'auto_retry_complete') {
                   toast.info(`Auto-retry ${update.data.final_status}`);
+                  void fetchCampaignAuditRef.current?.();
                 }
                 break;
 
@@ -938,6 +949,7 @@ function App() {
               case 'bulk_retry_all_campaign_complete':
                 toast.success(`Campaign ${update.data.campaign_id?.slice(0, 8)}: ${update.data.jobs_succeeded} recovered, ${update.data.jobs_exhausted} exhausted`);
                 fetchQueue();
+                void fetchCampaignAuditRef.current?.();
                 break;
               case 'bulk_retry_all_complete':
                 setIsRetryingAll(false);
@@ -950,6 +962,7 @@ function App() {
                   }
                 }
                 fetchQueue();
+                void fetchCampaignAuditRef.current?.();
                 break;
 
               // Legacy queue events (for backward compatibility during transition)
@@ -1306,6 +1319,26 @@ function App() {
     }
   };
 
+  const fetchCampaignReliabilityAudit = useCallback(async () => {
+    try {
+      setCampaignAuditLoading(true);
+      setCampaignAuditError(null);
+      const res = await fetch(`${API_BASE}/queue/reliability-audit?lookback_days=2&min_total_count=6`, {
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) {
+        throw new Error(await parseApiError(res, 'Failed to fetch campaign reliability audit'));
+      }
+      const data = await res.json();
+      setCampaignAudit(data);
+    } catch (error) {
+      console.error('Failed to fetch campaign reliability audit:', error);
+      setCampaignAuditError(normalizeErrorMessage(error, 'Failed to fetch campaign reliability audit'));
+    } finally {
+      setCampaignAuditLoading(false);
+    }
+  }, [parseApiError]);
+
   const fetchDrafts = async () => {
     try {
       setDraftsLoading(true);
@@ -1322,8 +1355,9 @@ function App() {
 
   useEffect(() => {
     fetchQueueRef.current = fetchQueue;
+    fetchCampaignAuditRef.current = fetchCampaignReliabilityAudit;
     fetchDraftsRef.current = fetchDrafts;
-  });
+  }, [fetchCampaignReliabilityAudit]);
 
   const fetchGeminiObservations = useCallback(async () => {
     try {
@@ -1509,10 +1543,11 @@ function App() {
     void fetchTags();
     void fetchAppealStatuses();
     void fetchQueue();
+    void fetchCampaignReliabilityAudit();
     void fetchDrafts();
     void fetchAiProducts({ silent: true });
     void fetchPremiumStatus();
-  }, [fetchAppealStatuses]);
+  }, [fetchAppealStatuses, fetchCampaignReliabilityAudit]);
 
   // Resilience path: if websocket is down, keep queue/drafts fresh without manual refresh.
   useEffect(() => {
@@ -2912,6 +2947,9 @@ function App() {
 
   // Sessions tab auto-refresh when switching to it
   useEffect(() => {
+    if (activeTab === 'campaign') {
+      void fetchCampaignReliabilityAudit();
+    }
     if (activeTab === 'sessions') {
       void fetchSessions();
     }
@@ -2922,7 +2960,15 @@ function App() {
       void fetchGeminiObservations();
       void refreshAnalyticsHealth();
     }
-  }, [activeTab, fetchGeminiObservations, refreshAnalyticsHealth]);
+  }, [activeTab, fetchCampaignReliabilityAudit, fetchGeminiObservations, refreshAnalyticsHealth]);
+
+  useEffect(() => {
+    if (activeTab !== 'campaign') return;
+    const interval = window.setInterval(() => {
+      void fetchCampaignAuditRef.current?.();
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, [activeTab]);
 
   useEffect(() => {
     if (activeTab !== 'analytics') return;
@@ -3905,6 +3951,13 @@ function App() {
                 )}
               </CardContent>
             </Card>
+
+            <CampaignReliabilityAuditCard
+              report={campaignAudit}
+              loading={campaignAuditLoading}
+              error={campaignAuditError}
+              onRefresh={() => { void fetchCampaignReliabilityAudit(); }}
+            />
 
             {/* Campaign History */}
             {queueState.history.length > 0 && (

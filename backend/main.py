@@ -3678,6 +3678,55 @@ async def get_queue_history(
     return queue_manager.get_history(limit=min(limit, 100))
 
 
+async def build_queue_reliability_audit_response(
+    *,
+    lookback_days: int = 2,
+    min_total_count: int = 6,
+) -> Dict:
+    """Build an operator-focused reliability audit for recent completed queue campaigns."""
+    from campaign_reliability_audit import build_campaign_reliability_audit
+    from profile_manager import get_profile_manager
+
+    pm = get_profile_manager()
+    analytics_summary = pm.get_analytics_summary()
+    appeal_profiles = []
+    for name, state in pm.get_all_profiles().items():
+        appeal_state = state.get("appeal_status", "none")
+        if state.get("status") == "restricted" or appeal_state not in ("none", None):
+            appeal_profiles.append({
+                "profile_name": name,
+                "status": state.get("status"),
+                "appeal_status": appeal_state,
+                "appeal_attempts": state.get("appeal_attempts", 0),
+                "appeal_last_attempt_at": state.get("appeal_last_attempt_at"),
+                "appeal_last_result": state.get("appeal_last_result"),
+                "appeal_last_error": state.get("appeal_last_error"),
+                "restriction_reason": state.get("restriction_reason"),
+                "restriction_expires_at": state.get("restriction_expires_at"),
+            })
+
+    return build_campaign_reliability_audit(
+        history=queue_manager.get_history(limit=100),
+        analytics_summary=analytics_summary,
+        appeal_status={"profiles": appeal_profiles, "total": len(appeal_profiles)},
+        health_deep=await health_deep(),
+        lookback_days=lookback_days,
+        min_total_count=min_total_count,
+    )
+
+
+@app.get("/queue/reliability-audit")
+async def get_queue_reliability_audit(
+    lookback_days: int = Query(default=2, ge=1, le=14),
+    min_total_count: int = Query(default=6, ge=1, le=100),
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    return await build_queue_reliability_audit_response(
+        lookback_days=lookback_days,
+        min_total_count=min_total_count,
+    )
+
+
 @app.post("/queue/{campaign_id}/retry")
 async def retry_campaign_job(
     campaign_id: str,
