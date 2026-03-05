@@ -1828,16 +1828,16 @@ async def health_deep():
     except Exception as e:
         checks["disk"] = {"error": str(e)}
 
-    # 4. Queue status
+    # 4. Queue status (read-only against live in-memory manager)
     try:
-        queue_mgr = CampaignQueueManager()
-        queue_mgr.load()
-        pending_count = queue_mgr.count_pending()
-        processor_running = queue_mgr.is_processor_running()
+        pending_count = queue_manager.count_pending()
+        processor_running = queue_manager.is_processor_running()
+        current_campaign_id = queue_manager.processor_state.get("current_campaign_id")
         checks["queue"] = {
             "pending": pending_count,
             "processor_running": processor_running,
-            "total_campaigns": len(queue_mgr.campaigns)
+            "total_campaigns": len(queue_manager.campaigns),
+            "current_campaign_id": current_campaign_id,
         }
     except Exception as e:
         checks["queue"] = {"error": str(e)}
@@ -1865,11 +1865,41 @@ async def health_deep():
         proxies = proxy_mgr.list_proxies()
         recent_failures = sum(
             1 for p in proxies
-            if p.get("health_status") == "failed"
+            if p.get("health_status") in ("failed", "unhealthy")
         )
+        runtime_proxy_url = get_system_proxy()
+        runtime_source = "none"
+        default_proxy = proxy_mgr.get_default_proxy()
+        if default_proxy and default_proxy.get("url"):
+            runtime_source = "default"
+        elif os.getenv("PROXY_URL"):
+            runtime_source = "env"
+
+        runtime = {
+            "configured": bool(runtime_proxy_url),
+            "healthy": None,
+            "ip": None,
+            "response_ms": None,
+            "error": None,
+            "source": runtime_source,
+        }
+        if runtime_proxy_url:
+            runtime_health = await check_proxy_health()
+            runtime = {
+                "configured": True,
+                "healthy": runtime_health.get("healthy"),
+                "ip": runtime_health.get("ip"),
+                "response_ms": runtime_health.get("response_ms"),
+                "error": runtime_health.get("error"),
+                "source": runtime_source,
+            }
+            if runtime.get("healthy") is False:
+                overall = "degraded"
+
         checks["proxy"] = {
             "total": len(proxies),
-            "recent_failures": recent_failures
+            "recent_failures": recent_failures,
+            "runtime": runtime,
         }
     except Exception as e:
         checks["proxy"] = {"error": str(e)}
@@ -1924,29 +1954,23 @@ async def get_analytics_summary(current_user: dict = Depends(get_current_user)):
 
 @app.get("/analytics/profiles")
 async def get_all_profile_analytics(current_user: dict = Depends(get_current_user)):
-    """Get analytics for profiles that have been used (usage_count > 0)."""
+    """Get analytics for all session-backed profiles."""
     from profile_manager import get_profile_manager
     from fb_session import list_saved_sessions
     pm = get_profile_manager()
-
-    # Build display name lookup from sessions (normalized_name -> display_name)
-    sessions = list_saved_sessions()
-    display_names = {}
-    for s in sessions:
-        display_name = s.get("profile_name", "")
-        normalized = display_name.replace(" ", "_").replace("/", "_").lower()
-        display_names[normalized] = display_name
+    pm.refresh_from_sessions()
 
     profiles = []
-    for profile_name in pm.get_all_profiles():
-        analytics = pm.get_profile_analytics(profile_name)
-        if analytics and analytics.get("usage_count", 0) > 0:
-            # Add pretty display name from session data
-            analytics["display_name"] = display_names.get(profile_name, profile_name)
-            profiles.append(analytics)
+    for session in list_saved_sessions():
+        raw_name = session.get("profile_name") or ""
+        normalized = raw_name.replace(" ", "_").replace("/", "_").lower()
+        analytics = pm.get_profile_analytics(normalized)
+        if not analytics:
+            continue
+        analytics["display_name"] = session.get("display_name") or raw_name or normalized
+        profiles.append(analytics)
 
-    # Sort by last_used_at (most recent first)
-    profiles.sort(key=lambda p: p.get("last_used_at") or "", reverse=True)
+    profiles.sort(key=lambda p: p.get("display_name") or p.get("profile_name") or "")
     return {"profiles": profiles}
 
 
@@ -1957,25 +1981,41 @@ async def get_profile_analytics(
 ):
     """Get detailed analytics for a single profile."""
     from profile_manager import get_profile_manager
+    from fb_session import list_saved_sessions
     pm = get_profile_manager()
+    pm.refresh_from_sessions()
 
     analytics = pm.get_profile_analytics(profile_name)
     if not analytics:
         raise HTTPException(status_code=404, detail="Profile not found")
+    display_name = analytics["profile_name"]
+    for session in list_saved_sessions():
+        raw_name = session.get("profile_name") or ""
+        normalized = raw_name.replace(" ", "_").replace("/", "_").lower()
+        if normalized == analytics["profile_name"]:
+            display_name = session.get("display_name") or raw_name or analytics["profile_name"]
+            break
+    analytics["display_name"] = display_name
     return analytics
 
 
 @app.post("/analytics/profiles/{profile_name}/unblock")
 async def unblock_profile(
     profile_name: str,
-    reset_stats: bool = Query(default=True, description="Reset usage stats to prevent auto-burn re-trigger"),
+    reset_stats: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
-    """Manually unblock a restricted profile. Resets stats by default to prevent auto-burn."""
+    """Manually unblock a restricted profile. Keeps stats by default so the profile stays visible in analytics."""
     from profile_manager import get_profile_manager
     pm = get_profile_manager()
 
-    pm.unblock_profile(profile_name, reset_stats=reset_stats)
+    pm.unblock_profile(
+        profile_name,
+        reset_stats=reset_stats,
+        recovery_event="manual_unblock",
+        recovery_state="resolved",
+        recovery_details={"reset_stats": reset_stats, "actor": current_user.get("username")},
+    )
     return {"success": True, "profile_name": profile_name}
 
 
@@ -6537,13 +6577,21 @@ async def batch_appeal_endpoint(
 @app.post("/appeals/single")
 async def appeal_single_endpoint(
     request: AppealSingleRequest,
-    api_key: str = Header(None, alias="X-API-Key")
+    current_user: dict = Depends(get_current_user)
 ) -> Dict:
     """Appeal a single restricted profile."""
-    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    from appeal_manager import appeal_single_profile
+    from appeal_manager import appeal_single_profile, get_profile_busy_reason
+    busy_reason = get_profile_busy_reason(request.profile_name)
+    if busy_reason:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "busy",
+                "profile_name": request.profile_name,
+                "message": f"Profile is currently {busy_reason.replace('_', ' ')}",
+                "reason": busy_reason,
+            },
+        )
     return await appeal_single_profile(request.profile_name)
 
 
@@ -6579,13 +6627,21 @@ class VerifyProfileRequest(BaseModel):
 @app.post("/appeals/verify")
 async def verify_single_endpoint(
     request: VerifyProfileRequest,
-    api_key: str = Header(None, alias="X-API-Key")
+    current_user: dict = Depends(get_current_user)
 ) -> Dict:
     """Verify if a profile's restriction is still active on Facebook. Auto-unblocks if resolved."""
-    if not api_key or not CLAUDE_API_KEY or api_key != CLAUDE_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    from appeal_manager import verify_single_profile
+    from appeal_manager import verify_single_profile, get_profile_busy_reason
+    busy_reason = get_profile_busy_reason(request.profile_name)
+    if busy_reason:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "busy",
+                "profile_name": request.profile_name,
+                "message": f"Profile is currently {busy_reason.replace('_', ' ')}",
+                "reason": busy_reason,
+            },
+        )
     return await verify_single_profile(request.profile_name)
 
 

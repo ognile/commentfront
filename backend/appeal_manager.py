@@ -7,7 +7,7 @@ Handles verification, scenario detection, retries, and state tracking.
 import asyncio
 import logging
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("AppealManager")
 
@@ -91,6 +91,42 @@ ACTIVE_SIGNALS = ["active: restriction active"]
 IN_REVIEW_SIGNALS = ["in_review:", "appeal already submitted", "already in review"]
 
 
+def _normalize_profile_name(name: str) -> str:
+    return name.replace(" ", "_").replace("/", "_").lower()
+
+
+def _collect_busy_profiles(skip_profiles: Optional[List[str]] = None) -> Dict[str, str]:
+    """Return restricted-profile busy reasons sourced from explicit skips, queue use, or reservation."""
+    from profile_manager import get_profile_manager
+
+    busy: Dict[str, str] = {}
+    for profile_name in skip_profiles or []:
+        busy[_normalize_profile_name(profile_name)] = "in_use"
+
+    try:
+        import main
+        for campaign in main.queue_manager.campaigns.values():
+            if campaign.get("status") != "processing":
+                continue
+            current_profile = campaign.get("current_profile")
+            if current_profile:
+                busy.setdefault(_normalize_profile_name(current_profile), "in_use")
+    except Exception:
+        pass
+
+    pm = get_profile_manager()
+    for profile_name in pm.get_all_profiles():
+        if pm.is_reserved(profile_name):
+            busy.setdefault(_normalize_profile_name(profile_name), "reserved")
+
+    return busy
+
+
+def get_profile_busy_reason(profile_name: str, skip_profiles: Optional[List[str]] = None) -> Optional[str]:
+    """Return a busy reason if the profile is currently in use or reserved."""
+    return _collect_busy_profiles(skip_profiles).get(_normalize_profile_name(profile_name))
+
+
 def _scan_steps_for_signals(result: Dict, signals: List[str]) -> bool:
     """Check if any agent step contains any of the given signal strings."""
     for step in result.get("steps", []):
@@ -161,16 +197,33 @@ async def verify_single_profile(profile_name: str) -> Dict[str, Any]:
         action_taken = "none"
 
         if verified_status.startswith("RESOLVED"):
-            pm.unblock_profile(profile_name)
+            pm.unblock_profile(
+                profile_name,
+                recovery_event="verify_auto_unblock",
+                recovery_state="resolved",
+                recovery_details={"verified_status": verified_status, "steps_used": steps_used},
+            )
             remove_session_tag(profile_name, "appeal_pending")
             action_taken = "auto_unblocked"
             logger.info(f"{prefix} {verified_status} -> auto-unblocked")
         elif verified_status.startswith("IN_REVIEW"):
             pm.update_appeal_state(profile_name, "task_completed")
+            pm.record_recovery_event(
+                profile_name,
+                event="verify_in_review",
+                state="in_review",
+                details={"verified_status": verified_status, "steps_used": steps_used},
+            )
             append_session_tag(profile_name, "appeal_pending")
             action_taken = "marked_in_review"
             logger.info(f"{prefix} {verified_status} -> marked in_review")
         elif verified_status.startswith("ACTIVE"):
+            pm.record_recovery_event(
+                profile_name,
+                event="verify_confirmed_restricted",
+                state="restricted",
+                details={"verified_status": verified_status, "steps_used": steps_used},
+            )
             action_taken = "confirmed_restricted"
             logger.info(f"{prefix} {verified_status} -> still restricted")
         elif verified_status.startswith("UNKNOWN"):
@@ -178,6 +231,13 @@ async def verify_single_profile(profile_name: str) -> Dict[str, Any]:
             logger.info(f"{prefix} Status unclear, running comment check fallback")
             action_taken, verified_status = await _comment_check_fallback(profile_name, pm)
         else:
+            pm.record_recovery_event(
+                profile_name,
+                event="verify_unexpected_status",
+                state="needs_followup",
+                details={"verified_status": verified_status, "steps_used": steps_used},
+            )
+            action_taken = "needs_followup"
             logger.warning(f"{prefix} Unexpected status: {verified_status}")
 
         return {
@@ -188,8 +248,14 @@ async def verify_single_profile(profile_name: str) -> Dict[str, Any]:
         }
 
     except Exception as e:
+        pm.record_recovery_event(
+            profile_name,
+            event="verify_error",
+            state="needs_followup",
+            details={"error": str(e)},
+        )
         logger.error(f"{prefix} Exception: {e}")
-        return {"profile_name": profile_name, "verified_status": f"ERROR: {e}", "action_taken": "none"}
+        return {"profile_name": profile_name, "verified_status": f"ERROR: {e}", "action_taken": "needs_followup"}
 
 
 async def _comment_check_fallback(profile_name: str, pm) -> tuple:
@@ -203,19 +269,42 @@ async def _comment_check_fallback(profile_name: str, pm) -> tuple:
         status = _parse_verify_status(result)
 
         if "CAN_COMMENT" in status.upper():
-            pm.unblock_profile(profile_name)
+            pm.unblock_profile(
+                profile_name,
+                recovery_event="comment_check_auto_unblock",
+                recovery_state="resolved",
+                recovery_details={"verified_status": status},
+            )
             remove_session_tag(profile_name, "appeal_pending")
             logger.info(f"{prefix} Comment check: can comment -> auto-unblocked")
             return "auto_unblocked", "RESOLVED: comment check passed - can comment"
         elif "BLOCKED" in status.upper():
+            pm.record_recovery_event(
+                profile_name,
+                event="comment_check_confirmed_restricted",
+                state="restricted",
+                details={"verified_status": status},
+            )
             logger.info(f"{prefix} Comment check: blocked -> confirmed restricted")
             return "confirmed_restricted", "ACTIVE: comment check confirmed restriction"
         else:
+            pm.record_recovery_event(
+                profile_name,
+                event="verify_followup_required",
+                state="needs_followup",
+                details={"verified_status": status},
+            )
             logger.info(f"{prefix} Comment check: unclear -> keeping as restricted")
-            return "unclear", "UNKNOWN: comment check inconclusive"
+            return "needs_followup", "UNKNOWN: comment check inconclusive"
     except Exception as e:
+        pm.record_recovery_event(
+            profile_name,
+            event="verify_followup_required",
+            state="needs_followup",
+            details={"error": str(e), "source": "comment_check"},
+        )
         logger.error(f"{prefix} Comment check exception: {e}")
-        return "error", f"ERROR: comment check failed: {e}"
+        return "needs_followup", f"ERROR: comment check failed: {e}"
 
 
 async def appeal_single_profile(profile_name: str) -> Dict[str, Any]:
@@ -238,12 +327,23 @@ async def appeal_single_profile(profile_name: str) -> Dict[str, Any]:
     if scenario == "checkpoint":
         error = "Account checkpoint - manual CAPTCHA solve required"
         pm.update_appeal_state(profile_name, "task_failed", error=error)
+        pm.record_recovery_event(
+            profile_name,
+            event="appeal_checkpoint_blocked",
+            state="checkpoint",
+            details={"error": error},
+        )
         append_session_tag(profile_name, "needs_captcha")
         logger.warning(f"{prefix} {error}")
         return {"profile_name": profile_name, "success": False, "scenario": scenario, "error": error}
 
     if scenario == "expired":
-        pm.unblock_profile(profile_name)
+        pm.unblock_profile(
+            profile_name,
+            recovery_event="appeal_expired_unblock",
+            recovery_state="resolved",
+            recovery_details={"scenario": scenario},
+        )
         logger.info(f"{prefix} Restriction expired - auto-unblocked")
         return {"profile_name": profile_name, "success": True, "scenario": scenario, "final_status": "auto_unblocked"}
 
@@ -257,7 +357,12 @@ async def appeal_single_profile(profile_name: str) -> Dict[str, Any]:
         # Check for restriction-resolved signals (priority)
         if _scan_steps_for_signals(result, RESOLVED_SIGNALS):
             from fb_session import remove_session_tag
-            pm.unblock_profile(profile_name)
+            pm.unblock_profile(
+                profile_name,
+                recovery_event="appeal_resolved",
+                recovery_state="resolved",
+                recovery_details={"steps_used": steps_used},
+            )
             remove_session_tag(profile_name, "appeal_pending")
             logger.info(f"{prefix} Restriction resolved during appeal - auto-unblocked")
             return {
@@ -271,19 +376,43 @@ async def appeal_single_profile(profile_name: str) -> Dict[str, Any]:
 
         if final_status == "task_completed" or already_in_review:
             pm.update_appeal_state(profile_name, "task_completed", steps_used=steps_used)
+            pm.record_recovery_event(
+                profile_name,
+                event="appeal_submitted" if final_status == "task_completed" else "appeal_already_in_review",
+                state="in_review",
+                details={"already_in_review": already_in_review, "steps_used": steps_used},
+            )
             append_session_tag(profile_name, "appeal_pending")
             logger.info(f"{prefix} Appeal submitted (already_in_review={already_in_review})")
         elif final_status == "task_failed":
             error = _extract_failure_reason(result)
             pm.update_appeal_state(profile_name, "task_failed", error=error, steps_used=steps_used)
+            pm.record_recovery_event(
+                profile_name,
+                event="appeal_failed",
+                state="needs_followup",
+                details={"error": error, "steps_used": steps_used},
+            )
             logger.warning(f"{prefix} Appeal failed: {error}")
         elif final_status == "max_steps_reached":
             error = "Max steps reached without completing appeal"
             pm.update_appeal_state(profile_name, "max_steps_reached", error=error, steps_used=steps_used)
+            pm.record_recovery_event(
+                profile_name,
+                event="appeal_max_steps",
+                state="needs_followup",
+                details={"error": error, "steps_used": steps_used},
+            )
             logger.warning(f"{prefix} {error}")
         else:
             error = f"Unexpected status: {final_status}"
             pm.update_appeal_state(profile_name, "error", error=error, steps_used=steps_used)
+            pm.record_recovery_event(
+                profile_name,
+                event="appeal_error",
+                state="needs_followup",
+                details={"error": error, "steps_used": steps_used},
+            )
             logger.error(f"{prefix} {error}")
 
         return {
@@ -296,6 +425,12 @@ async def appeal_single_profile(profile_name: str) -> Dict[str, Any]:
     except Exception as e:
         error_msg = str(e)
         pm.update_appeal_state(profile_name, "error", error=error_msg)
+        pm.record_recovery_event(
+            profile_name,
+            event="appeal_error",
+            state="needs_followup",
+            details={"error": error_msg},
+        )
         logger.error(f"{prefix} Exception: {error_msg}")
         return {"profile_name": profile_name, "success": False, "scenario": scenario, "error": error_msg}
 
@@ -317,40 +452,69 @@ async def _verify_all_restricted_inner(skip_profiles: List[str] = None) -> Dict[
     batch_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     logger.info(f"[VERIFY_ALL:{batch_id}] Starting verification")
 
-    skip_set = set(skip_profiles or [])
-    restricted = [
+    all_restricted = [
         name for name, state in pm.get_all_profiles().items()
-        if state.get("status") == "restricted" and name not in skip_set
+        if state.get("status") == "restricted"
     ]
-    if skip_set:
-        logger.info(f"[VERIFY_ALL:{batch_id}] Skipping {len(skip_set)} profiles in use")
-    logger.info(f"[VERIFY_ALL:{batch_id}] Found {len(restricted)} restricted profiles")
+    busy_profiles = _collect_busy_profiles(skip_profiles)
+    busy_results = []
+    restricted = []
+    for name in all_restricted:
+        busy_reason = busy_profiles.get(_normalize_profile_name(name))
+        if busy_reason:
+            busy_results.append({
+                "profile_name": name,
+                "verified_status": f"BUSY: profile {busy_reason.replace('_', ' ')}",
+                "action_taken": "busy_skipped",
+                "busy_reason": busy_reason,
+            })
+            continue
+        restricted.append(name)
 
-    if not restricted:
-        return {"batch_id": batch_id, "total": 0, "results": [], "message": "No restricted profiles"}
+    if busy_results:
+        logger.info(f"[VERIFY_ALL:{batch_id}] Skipping {len(busy_results)} busy restricted profiles")
+    logger.info(f"[VERIFY_ALL:{batch_id}] Found {len(all_restricted)} restricted profiles")
 
-    tasks = [verify_single_profile(p) for p in restricted]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    if not all_restricted:
+        return {"batch_id": batch_id, "total": 0, "busy_skipped": 0, "results": [], "message": "No restricted profiles"}
 
-    parsed = []
-    for r in results:
-        if isinstance(r, Exception):
-            parsed.append({"profile_name": "unknown", "verified_status": f"ERROR: {r}", "action_taken": "none"})
-        else:
-            parsed.append(r)
+    parsed = list(busy_results)
+    if restricted:
+        tasks = [verify_single_profile(p) for p in restricted]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for idx, r in enumerate(results):
+            if isinstance(r, Exception):
+                profile_name = restricted[idx]
+                pm.record_recovery_event(
+                    profile_name,
+                    event="verify_error",
+                    state="needs_followup",
+                    details={"error": str(r), "source": "verify_all_gather"},
+                )
+                parsed.append({
+                    "profile_name": profile_name,
+                    "verified_status": f"ERROR: {r}",
+                    "action_taken": "needs_followup",
+                })
+            else:
+                parsed.append(r)
 
     unblocked = sum(1 for r in parsed if r.get("action_taken") == "auto_unblocked")
     in_review = sum(1 for r in parsed if r.get("action_taken") == "marked_in_review")
     still_restricted = sum(1 for r in parsed if r.get("action_taken") == "confirmed_restricted")
+    needs_followup = sum(1 for r in parsed if r.get("action_taken") == "needs_followup")
+    busy_skipped = sum(1 for r in parsed if r.get("action_taken") == "busy_skipped")
 
     summary = {
-        "batch_id": batch_id, "total": len(restricted),
+        "batch_id": batch_id, "total": len(all_restricted),
         "unblocked": unblocked, "in_review": in_review,
-        "still_restricted": still_restricted, "results": parsed,
+        "still_restricted": still_restricted, "needs_followup": needs_followup,
+        "busy_skipped": busy_skipped, "results": parsed,
     }
     logger.info(
         f"[VERIFY_ALL:{batch_id}] Done: {unblocked} unblocked, {in_review} in_review, "
-        f"{still_restricted} still restricted"
+        f"{still_restricted} still restricted, {needs_followup} needs follow-up, {busy_skipped} busy skipped"
     )
     return summary
 
@@ -384,19 +548,40 @@ async def _batch_appeal_all_inner(
     # Reset exhausted profiles so they can be re-verified
     for name, state in pm.get_all_profiles().items():
         if state.get("status") == "restricted" and state.get("appeal_status") == "exhausted":
-            pm.update_appeal_state(name, "none")
+            pm.reset_appeal_state(name, reason="batch_retry_window_reset")
             logger.info(f"[APPEAL_BATCH:{batch_id}] Reset exhausted profile: {name}")
 
     # Get all restricted profiles (skip profiles currently in use)
-    skip_set = set(skip_profiles or [])
+    busy_profiles = _collect_busy_profiles(skip_profiles)
     restricted = {
         name: state for name, state in pm.get_all_profiles().items()
-        if state.get("status") == "restricted" and name not in skip_set
+        if state.get("status") == "restricted"
     }
+    busy_results = []
+    for name in list(restricted.keys()):
+        busy_reason = busy_profiles.get(_normalize_profile_name(name))
+        if not busy_reason:
+            continue
+        busy_results.append({
+            "profile_name": name,
+            "success": False,
+            "scenario": "busy_skipped",
+            "final_status": "busy_skipped",
+            "error": f"Profile {busy_reason.replace('_', ' ')}",
+        })
+        restricted.pop(name, None)
+
+    all_results.extend(busy_results)
     logger.info(f"[APPEAL_BATCH:{batch_id}] Found {len(restricted)} restricted profiles")
 
     if not restricted:
-        return {"batch_id": batch_id, "total_profiles": 0, "results": [], "message": "No restricted profiles found"}
+        return {
+            "batch_id": batch_id,
+            "total_profiles": len(busy_results),
+            "busy_skipped": len(busy_results),
+            "results": all_results,
+            "message": "No non-busy restricted profiles found",
+        }
 
     # Categorize by scenario (expired/checkpoint handled immediately)
     expired = []
@@ -434,9 +619,22 @@ async def _batch_appeal_all_inner(
         verify_results = await asyncio.gather(*verify_tasks, return_exceptions=True)
 
         profiles_to_appeal = []
-        for vr in verify_results:
+        for idx, vr in enumerate(verify_results):
             if isinstance(vr, Exception):
-                profiles_to_appeal.append(comment_restriction[verify_results.index(vr)])
+                profile_name = comment_restriction[idx]
+                pm.record_recovery_event(
+                    profile_name,
+                    event="verify_error",
+                    state="needs_followup",
+                    details={"error": str(vr), "source": "batch_verify_gather"},
+                )
+                all_results.append({
+                    "profile_name": profile_name,
+                    "success": False,
+                    "scenario": "verify_needs_followup",
+                    "final_status": "needs_followup",
+                    "verified_status": f"ERROR: {vr}",
+                })
                 continue
             status = vr.get("verified_status", "")
             action = vr.get("action_taken", "")
@@ -491,6 +689,8 @@ async def _batch_appeal_all_inner(
         "total_profiles": len(unique_profiles),
         "total_attempts": len(all_results),
         "rounds": round_num,
+        "busy_skipped": len(busy_results),
+        "needs_followup": sum(1 for r in all_results if r.get("final_status") == "needs_followup"),
         "scenarios": {
             "expired": len(expired), "checkpoint": len(checkpoint),
             "comment_restriction": len(comment_restriction),

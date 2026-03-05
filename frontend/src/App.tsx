@@ -14,6 +14,7 @@ import { Toaster, toast } from 'sonner'
 import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AdminTab } from '@/components/admin/AdminTab'
+import { ProfileHealthConsole } from '@/components/analytics/ProfileHealthConsole'
 import { API_BASE, WS_BASE } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
 import { PearlBackground } from '@/components/PearlBackground'
@@ -244,11 +245,22 @@ interface GeminiObservation {
 
 interface ProfileAnalytics {
   profile_name: string;
+  display_name?: string;
   status: string;
+  is_reserved: boolean;
   last_used_at: string | null;
   usage_count: number;
   restriction_expires_at: string | null;
   restriction_reason: string | null;
+  recovery_state?: string;
+  recovery_last_event?: string | null;
+  recovery_last_event_at?: string | null;
+  recovery_history?: Array<{
+    timestamp: string;
+    event: string;
+    state: string;
+    details?: Record<string, unknown>;
+  }>;
   total_comments: number;
   success_rate: number;
   daily_stats: Record<string, { comments: number; success: number; failed: number }>;
@@ -287,11 +299,13 @@ interface AppealSchedulerStatus {
   enabled: boolean;
   interval_hours: number;
   last_run_at: string | null;
+  last_completed_at: string | null;
   next_run_at: string | null;
+  busy_skipped: number;
   last_results: {
-    verify_phase?: { total: number; unblocked: number; in_review: number; still_restricted: number; error?: string };
+    verify_phase?: { total: number; unblocked: number; in_review: number; still_restricted: number; needs_followup: number; busy_skipped?: number; error?: string };
     appeal_phase?: { total: number; succeeded: number; failed: number; error?: string };
-    per_profile?: Array<{ name: string; phase: string; status: string; action: string; error?: string }>;
+    per_profile?: Array<{ name: string; phase: string; status: string; action: string; error?: string; busy_reason?: string }>;
   } | null;
   run_history: Array<{
     run_at: string;
@@ -299,6 +313,7 @@ interface AppealSchedulerStatus {
     verify: Record<string, unknown>;
     appeal: Record<string, unknown>;
     profile_count: number;
+    busy_skipped?: number;
   }>;
 }
 
@@ -507,6 +522,7 @@ function App() {
   const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<AppealSchedulerStatus | null>(null);
   const [schedulerRunning, setSchedulerRunning] = useState(false);
+  const [profileActionKey, setProfileActionKey] = useState<string | null>(null);
   const [premiumStatus, setPremiumStatus] = useState<PremiumStatusPayload | null>(null);
   const [premiumLoading, setPremiumLoading] = useState(false);
 
@@ -883,11 +899,11 @@ function App() {
               // Appeal scheduler events
               case 'appeal_scheduler_start':
                 toast.info('Appeal scheduler started');
+                void fetchSchedulerStatus();
                 break;
               case 'appeal_scheduler_complete':
                 toast.success('Appeal scheduler completed');
-                // Auto-refresh scheduler status
-                fetchSchedulerStatus();
+                void refreshAnalyticsHealth();
                 break;
 
               // Premium automation events
@@ -1158,7 +1174,7 @@ function App() {
     }
   };
 
-  const fetchAppealStatuses = async () => {
+  const fetchAppealStatuses = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/appeals/status`, { headers: getAuthHeaders() });
       if (!res.ok) return;
@@ -1171,9 +1187,9 @@ function App() {
     } catch {
       // Silently fail - appeal status is supplementary
     }
-  };
+  }, []);
 
-  const fetchSchedulerStatus = async () => {
+  const fetchSchedulerStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/appeals/scheduler/status`, { headers: getAuthHeaders() });
       if (!res.ok) return;
@@ -1182,7 +1198,7 @@ function App() {
     } catch {
       // Silently fail
     }
-  };
+  }, []);
 
   const fetchPremiumStatus = async () => {
     try {
@@ -1210,7 +1226,7 @@ function App() {
         toast.warning('Appeal batch already running');
       } else {
         toast.success('Appeal scheduler run completed');
-        fetchSchedulerStatus();
+        await Promise.all([fetchSchedulerStatus(), fetchProfileAnalytics(), fetchAppealStatuses()]);
       }
     } catch {
       toast.error('Failed to run appeal scheduler');
@@ -1309,7 +1325,7 @@ function App() {
     fetchDraftsRef.current = fetchDrafts;
   });
 
-  const fetchGeminiObservations = async () => {
+  const fetchGeminiObservations = useCallback(async () => {
     try {
       setLoadingObservations(true);
       const res = await fetch(`${API_BASE}/debug/gemini-logs?limit=50`, { headers: getAuthHeaders() });
@@ -1322,7 +1338,7 @@ function App() {
     } finally {
       setLoadingObservations(false);
     }
-  };
+  }, []);
 
   const clearGeminiObservations = async () => {
     try {
@@ -1339,7 +1355,7 @@ function App() {
     }
   };
 
-  const fetchProfileAnalytics = async () => {
+  const fetchProfileAnalytics = useCallback(async () => {
     try {
       setLoadingAnalytics(true);
       const [summaryRes, profilesRes] = await Promise.all([
@@ -1361,46 +1377,142 @@ function App() {
     } finally {
       setLoadingAnalytics(false);
     }
-  };
+  }, []);
 
-  const unblockProfile = async (profileName: string) => {
+  const refreshAnalyticsHealth = useCallback(async () => {
+    await Promise.all([fetchProfileAnalytics(), fetchSchedulerStatus(), fetchAppealStatuses()]);
+  }, [fetchAppealStatuses, fetchProfileAnalytics, fetchSchedulerStatus]);
+
+  const isProfileActionRunning = useCallback(
+    (profileName: string, action: 'verify' | 'appeal' | 'unblock' | 'restrict') =>
+      profileActionKey === `${profileName}:${action}`,
+    [profileActionKey],
+  );
+
+  const unblockProfile = useCallback(async (profileName: string) => {
+    const actionKey = `${profileName}:unblock`;
+    setProfileActionKey(actionKey);
     try {
       const res = await fetch(`${API_BASE}/analytics/profiles/${encodeURIComponent(profileName)}/unblock`, {
         method: 'POST',
         headers: getAuthHeaders()
       });
-      if (!res.ok) throw new Error('Failed to unblock profile');
+      if (!res.ok) {
+        toast.error(await parseApiError(res, 'Failed to unblock profile'));
+        return;
+      }
       toast.success(`Unblocked ${profileName}`);
-      fetchProfileAnalytics();
-    } catch {
-      toast.error('Failed to unblock profile');
+      await refreshAnalyticsHealth();
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to unblock profile'));
+    } finally {
+      setProfileActionKey(prev => prev === actionKey ? null : prev);
     }
-  };
+  }, [parseApiError, refreshAnalyticsHealth]);
 
-  const restrictProfile = async (profileName: string, hours: number = 24) => {
+  const restrictProfile = useCallback(async (profileName: string, hours: number = 24) => {
+    const actionKey = `${profileName}:restrict`;
+    setProfileActionKey(actionKey);
     try {
       const res = await fetch(`${API_BASE}/analytics/profiles/${encodeURIComponent(profileName)}/restrict?hours=${hours}&reason=manual`, {
         method: 'POST',
         headers: getAuthHeaders()
       });
-      if (!res.ok) throw new Error('Failed to restrict profile');
+      if (!res.ok) {
+        toast.error(await parseApiError(res, 'Failed to restrict profile'));
+        return;
+      }
       toast.success(`Restricted ${profileName} for ${hours}h`);
-      fetchProfileAnalytics();
-    } catch {
-      toast.error('Failed to restrict profile');
+      await refreshAnalyticsHealth();
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to restrict profile'));
+    } finally {
+      setProfileActionKey(prev => prev === actionKey ? null : prev);
     }
-  };
+  }, [parseApiError, refreshAnalyticsHealth]);
+
+  const verifyRestrictedProfile = useCallback(async (profileName: string) => {
+    const actionKey = `${profileName}:verify`;
+    setProfileActionKey(actionKey);
+    try {
+      const res = await fetch(`${API_BASE}/appeals/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ profile_name: profileName }),
+      });
+      if (!res.ok) {
+        const message = await parseApiError(res, 'Failed to verify restriction status');
+        if (res.status === 409) {
+          toast.warning(message);
+        } else {
+          toast.error(message);
+        }
+        return;
+      }
+      const data = await res.json();
+      if (data.action_taken === 'auto_unblocked') {
+        toast.success(`${profileName} is usable again`);
+      } else if (data.action_taken === 'marked_in_review') {
+        toast.success(`${profileName} already has an appeal in review`);
+      } else if (data.action_taken === 'confirmed_restricted') {
+        toast.warning(`${profileName} is still restricted`);
+      } else {
+        toast.warning(`${profileName} needs follow-up`);
+      }
+      await refreshAnalyticsHealth();
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to verify restriction status'));
+    } finally {
+      setProfileActionKey(prev => prev === actionKey ? null : prev);
+    }
+  }, [parseApiError, refreshAnalyticsHealth]);
+
+  const appealRestrictedProfile = useCallback(async (profileName: string) => {
+    const actionKey = `${profileName}:appeal`;
+    setProfileActionKey(actionKey);
+    try {
+      const res = await fetch(`${API_BASE}/appeals/single`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ profile_name: profileName }),
+      });
+      if (!res.ok) {
+        const message = await parseApiError(res, 'Failed to submit appeal');
+        if (res.status === 409) {
+          toast.warning(message);
+        } else {
+          toast.error(message);
+        }
+        return;
+      }
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.final_status === 'auto_unblocked'
+          ? `${profileName} is usable again`
+          : `Appeal submitted for ${profileName}`);
+      } else if (data.scenario === 'checkpoint') {
+        toast.warning(`${profileName} needs manual checkpoint resolution`);
+      } else {
+        toast.warning(data.error || `${profileName} still needs follow-up`);
+      }
+      await refreshAnalyticsHealth();
+    } catch (error) {
+      toast.error(normalizeErrorMessage(error, 'Failed to submit appeal'));
+    } finally {
+      setProfileActionKey(prev => prev === actionKey ? null : prev);
+    }
+  }, [parseApiError, refreshAnalyticsHealth]);
 
   // Tier 1: Critical path - load immediately for Campaign tab
   useEffect(() => {
-    fetchSessions();
-    fetchTags();
-    fetchAppealStatuses();
-    fetchQueue();
-    fetchDrafts();
-    fetchAiProducts({ silent: true });
-    fetchPremiumStatus();
-  }, []);
+    void fetchSessions();
+    void fetchTags();
+    void fetchAppealStatuses();
+    void fetchQueue();
+    void fetchDrafts();
+    void fetchAiProducts({ silent: true });
+    void fetchPremiumStatus();
+  }, [fetchAppealStatuses]);
 
   // Resilience path: if websocket is down, keep queue/drafts fresh without manual refresh.
   useEffect(() => {
@@ -2284,6 +2396,14 @@ function App() {
     return date.toLocaleDateString();
   };
 
+  const schedulerIsStale = useMemo(() => {
+    if (!schedulerStatus?.last_completed_at) return false;
+    const lastCompletedAt = new Date(schedulerStatus.last_completed_at).getTime();
+    if (Number.isNaN(lastCompletedAt)) return false;
+    const staleAfterMs = ((schedulerStatus.interval_hours || 24) * 60 + 10) * 60 * 1000;
+    return Date.now() - lastCompletedAt > staleAfterMs;
+  }, [schedulerStatus]);
+
   const deleteSession = async (profileName: string) => {
     if (!confirm(`Delete session "${profileName}"? This cannot be undone.`)) return;
 
@@ -2793,12 +2913,24 @@ function App() {
   // Sessions tab auto-refresh when switching to it
   useEffect(() => {
     if (activeTab === 'sessions') {
-      fetchSessions();
+      void fetchSessions();
     }
     if (activeTab === 'premium') {
-      fetchPremiumStatus();
+      void fetchPremiumStatus();
     }
-  }, [activeTab]);
+    if (activeTab === 'analytics') {
+      void fetchGeminiObservations();
+      void refreshAnalyticsHealth();
+    }
+  }, [activeTab, fetchGeminiObservations, refreshAnalyticsHealth]);
+
+  useEffect(() => {
+    if (activeTab !== 'analytics') return;
+    const interval = window.setInterval(() => {
+      void refreshAnalyticsHealth();
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, [activeTab, refreshAnalyticsHealth]);
 
   // ============================================================================
   // Remote Control Functions
@@ -3238,7 +3370,7 @@ function App() {
             <TabsTrigger value="premium" onClick={() => { fetchPremiumStatus(); }}>
               Premium
             </TabsTrigger>
-            <TabsTrigger value="analytics" onClick={() => { fetchGeminiObservations(); fetchProfileAnalytics(); fetchSchedulerStatus(); }}>
+            <TabsTrigger value="analytics" onClick={() => { void fetchGeminiObservations(); void refreshAnalyticsHealth(); }}>
               <BarChart3 className="w-4 h-4 mr-1" />
               Analytics
             </TabsTrigger>
@@ -4901,6 +5033,16 @@ function App() {
                     {schedulerStatus?.enabled && (
                       <Badge variant="outline" className="bg-green-50 text-green-700 text-xs">Enabled</Badge>
                     )}
+                    {schedulerStatus?.busy_skipped ? (
+                      <Badge variant="outline" className="bg-[#f4f4f4] text-[#555555] text-xs">
+                        {schedulerStatus.busy_skipped} busy skipped
+                      </Badge>
+                    ) : null}
+                    {schedulerIsStale && (
+                      <Badge variant="outline" className="bg-amber-50 text-amber-700 text-xs border-amber-200">
+                        Stale
+                      </Badge>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
@@ -4927,11 +5069,17 @@ function App() {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
                       <div>
                         <div className="text-xs text-[#999999]">Last Run</div>
                         <div className="font-medium">
                           {schedulerStatus.last_run_at ? formatRelativeTime(schedulerStatus.last_run_at) : 'Never'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-[#999999]">Last Completed</div>
+                        <div className="font-medium">
+                          {schedulerStatus.last_completed_at ? formatRelativeTime(schedulerStatus.last_completed_at) : 'Never'}
                         </div>
                       </div>
                       <div>
@@ -4950,9 +5098,18 @@ function App() {
                             <div className="text-xs text-[#999999]">Still Restricted</div>
                             <div className="font-medium text-red-500">{schedulerStatus.last_results.verify_phase.still_restricted || 0}</div>
                           </div>
+                          <div>
+                            <div className="text-xs text-[#999999]">Needs Follow-up</div>
+                            <div className="font-medium text-amber-600">{schedulerStatus.last_results.verify_phase.needs_followup || 0}</div>
+                          </div>
                         </>
                       )}
                     </div>
+                    {schedulerIsStale && schedulerStatus.last_completed_at && (
+                      <div className="text-xs text-amber-700">
+                        Scheduler state is stale. Last completed {formatRelativeTime(schedulerStatus.last_completed_at)}.
+                      </div>
+                    )}
                     {schedulerStatus.last_results?.appeal_phase && !schedulerStatus.last_results.appeal_phase.error && (
                       <div className="text-xs text-[#666666]">
                         Appeals: {schedulerStatus.last_results.appeal_phase.succeeded || 0} succeeded, {schedulerStatus.last_results.appeal_phase.failed || 0} failed
@@ -4966,9 +5123,16 @@ function App() {
                         <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
                           {schedulerStatus.last_results.per_profile.map((p, i) => (
                             <div key={i} className="text-xs flex items-center gap-2">
-                              <span className={p.action === 'auto_unblocked' ? 'text-green-600' : p.action === 'confirmed_restricted' ? 'text-red-500' : 'text-[#666666]'}>
+                              <span className={p.action === 'auto_unblocked'
+                                ? 'text-green-600'
+                                : p.action === 'confirmed_restricted'
+                                  ? 'text-red-500'
+                                  : p.action === 'needs_followup'
+                                    ? 'text-amber-700'
+                                    : 'text-[#666666]'}>
                                 {p.name}: {p.action}
                               </span>
+                              {p.busy_reason && <span className="text-[#999999]">({p.busy_reason})</span>}
                               {p.error && <span className="text-red-400">({p.error})</span>}
                             </div>
                           ))}
@@ -4980,155 +5144,18 @@ function App() {
               </CardContent>
             </Card>
 
-            {/* Profile Usage Table */}
-            <Card>
-              <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <User className="w-5 h-5" />
-                    Profile Usage Tracker
-                  </CardTitle>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => fetchProfileAnalytics()}
-                    disabled={loadingAnalytics}
-                  >
-                    {loadingAnalytics ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                    Refresh
-                  </Button>
-                </div>
-                <p className="text-sm text-[#666666] mt-2">
-                  Profiles are rotated using LRU (least recently used first) to prevent overuse.
-                </p>
-              </CardHeader>
-              <CardContent className="pt-4">
-                {loadingAnalytics ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-[#999999]" />
-                    <span className="ml-2 text-[#666666]">Loading profile stats...</span>
-                  </div>
-                ) : profileAnalytics.length === 0 ? (
-                  <div className="text-center py-8 text-[#999999]">
-                    <User className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                    <p>No profile data yet.</p>
-                    <p className="text-sm">Run a campaign to see usage stats.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2 max-h-[400px] overflow-y-auto">
-                    {profileAnalytics.map((profile) => {
-                      const isExpanded = expandedProfile === profile.profile_name;
-                      const isRestricted = profile.status === 'restricted';
-
-                      return (
-                        <div
-                          key={profile.profile_name}
-                          className={`border rounded-lg p-3 cursor-pointer transition-colors ${
-                            isExpanded ? 'bg-[rgba(51,51,51,0.04)]' : 'hover:bg-[rgba(51,51,51,0.02)]'
-                          }`}
-                          onClick={() => setExpandedProfile(isExpanded ? null : profile.profile_name)}
-                        >
-                          {/* Profile Row */}
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              {isRestricted ? (
-                                <div className="w-2 h-2 rounded-full bg-red-500" />
-                              ) : (
-                                <div className="w-2 h-2 rounded-full bg-green-500" />
-                              )}
-                              <span className="font-medium">{profile.profile_name}</span>
-                              {isRestricted && (
-                                <Badge variant="destructive" className="text-xs">
-                                  Restricted
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-4 text-sm text-[#666666]">
-                              <span>{profile.usage_count} uses</span>
-                              <span>{profile.success_rate.toFixed(0)}% success</span>
-                              <span>
-                                {profile.last_used_at
-                                  ? new Date(profile.last_used_at).toLocaleDateString()
-                                  : 'Never used'}
-                              </span>
-                              <ChevronRight
-                                className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Expanded Content */}
-                          {isExpanded && (
-                            <div className="mt-3 pt-3 border-t space-y-3">
-                              {/* Actions */}
-                              <div className="flex gap-2">
-                                {isRestricted ? (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={(e) => { e.stopPropagation(); unblockProfile(profile.profile_name); }}
-                                  >
-                                    <CheckCircle className="w-4 h-4 mr-1" />
-                                    Unblock
-                                  </Button>
-                                ) : (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={(e) => { e.stopPropagation(); restrictProfile(profile.profile_name, 24); }}
-                                  >
-                                    <XCircle className="w-4 h-4 mr-1" />
-                                    Restrict 24h
-                                  </Button>
-                                )}
-                              </div>
-
-                              {/* Restriction Info */}
-                              {isRestricted && profile.restriction_expires_at && (
-                                <div className="text-sm text-red-600">
-                                  Expires: {new Date(profile.restriction_expires_at).toLocaleString()}
-                                  {profile.restriction_reason && ` (${profile.restriction_reason})`}
-                                </div>
-                              )}
-
-                              {/* Recent History */}
-                              {profile.usage_history && profile.usage_history.length > 0 && (
-                                <div>
-                                  <p className="text-xs font-medium text-[#666666] mb-2">Recent Activity:</p>
-                                  <div className="space-y-1">
-                                    {profile.usage_history.slice(0, 5).map((entry, idx) => (
-                                      <div key={idx} className="flex items-center gap-2 text-xs">
-                                        {entry.success ? (
-                                          <CheckCircle className="w-3 h-3 text-green-500" />
-                                        ) : (
-                                          <XCircle className="w-3 h-3 text-red-500" />
-                                        )}
-                                        <span className="text-[#999999]">
-                                          {new Date(entry.timestamp).toLocaleString()}
-                                        </span>
-                                        {entry.comment && (
-                                          <span className="truncate max-w-[200px]">
-                                            "{entry.comment}"
-                                          </span>
-                                        )}
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <ProfileHealthConsole
+              profiles={profileAnalytics}
+              loading={loadingAnalytics}
+              expandedProfile={expandedProfile}
+              onExpandProfile={setExpandedProfile}
+              onRefresh={() => { void refreshAnalyticsHealth(); }}
+              onVerify={(profileName) => { void verifyRestrictedProfile(profileName); }}
+              onAppeal={(profileName) => { void appealRestrictedProfile(profileName); }}
+              onUnblock={(profileName) => { void unblockProfile(profileName); }}
+              onRestrict={(profileName, hours) => { void restrictProfile(profileName, hours); }}
+              isActionRunning={isProfileActionRunning}
+            />
 
             {/* Gemini Observations Card */}
             <Card>

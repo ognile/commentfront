@@ -5,13 +5,12 @@ Uses LRU (Least Recently Used) strategy to rotate profiles.
 """
 
 import asyncio
-import json
+import copy
 import logging
 import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Set
-from dataclasses import dataclass, asdict
-from pathlib import Path
+from dataclasses import dataclass
 
 logger = logging.getLogger("ProfileManager")
 
@@ -52,6 +51,41 @@ class ProfileManager:
         self._reserve_lock = asyncio.Lock()
         self._load_state()
         self._sync_with_sessions()
+
+    def _default_profile_state(self) -> Dict[str, Any]:
+        """Default persisted state for a profile."""
+        return {
+            "last_used_at": None,
+            "usage_count": 0,
+            "status": "active",
+            "restriction_expires_at": None,
+            "restriction_reason": None,
+            "restriction_count": 0,
+            "daily_stats": {},
+            "usage_history": [],
+            "failure_breakdown": {},
+            "restriction_history": [],
+            "appeal_status": "none",
+            "appeal_attempts": 0,
+            "appeal_last_attempt_at": None,
+            "appeal_last_result": None,
+            "appeal_last_error": None,
+            "appeal_history": [],
+            "recovery_state": "none",
+            "recovery_last_event": None,
+            "recovery_last_event_at": None,
+            "recovery_history": [],
+        }
+
+    def _ensure_profile(self, profile_name: str) -> Dict[str, Any]:
+        """Ensure a normalized profile state exists and includes all expected keys."""
+        normalized = self._normalize_name(profile_name)
+        profile = self.state["profiles"].setdefault(normalized, {})
+        defaults = self._default_profile_state()
+        for key, value in defaults.items():
+            if key not in profile or (profile[key] is None and isinstance(value, (dict, list))):
+                profile[key] = copy.deepcopy(value)
+        return profile
 
     async def reserve_profile(self, profile_name: str) -> bool:
         """Reserve a profile for exclusive browser use. Returns False if already reserved."""
@@ -102,16 +136,10 @@ class ProfileManager:
             for session_file in session_files:
                 profile_name = session_file.replace(".json", "")
                 if profile_name not in self.state["profiles"]:
-                    self.state["profiles"][profile_name] = {
-                        "last_used_at": None,
-                        "usage_count": 0,
-                        "status": "active",
-                        "restriction_expires_at": None,
-                        "restriction_reason": None,
-                        "daily_stats": {},
-                        "usage_history": []
-                    }
+                    self.state["profiles"][profile_name] = self._default_profile_state()
                     logger.info(f"Added new profile to state: {profile_name}")
+                else:
+                    self._ensure_profile(profile_name)
 
             # Remove profiles that no longer have session files
             profiles_to_remove = []
@@ -129,6 +157,10 @@ class ProfileManager:
 
         except Exception as e:
             logger.error(f"Failed to sync with sessions: {e}")
+
+    def refresh_from_sessions(self):
+        """Public wrapper to resync state with session files."""
+        self._sync_with_sessions()
 
     def get_profile_state(self, profile_name: str) -> Optional[Dict]:
         """Get state for a specific profile."""
@@ -268,11 +300,51 @@ class ProfileManager:
 
     def _clear_restriction(self, profile_name: str):
         """Clear restriction on a profile (internal use for auto-expiry)."""
-        if profile_name in self.state["profiles"]:
-            self.state["profiles"][profile_name]["status"] = "active"
-            self.state["profiles"][profile_name]["restriction_expires_at"] = None
-            self.state["profiles"][profile_name]["restriction_reason"] = None
-            logger.info(f"Auto-unblocked profile {profile_name} (restriction expired)")
+        normalized = self._normalize_name(profile_name)
+        if normalized in self.state["profiles"]:
+            profile = self._ensure_profile(normalized)
+            profile["status"] = "active"
+            profile["restriction_expires_at"] = None
+            profile["restriction_reason"] = None
+            self.record_recovery_event(
+                normalized,
+                event="restriction_expired",
+                state="resolved",
+                details={"source": "expiry"},
+                save=False,
+            )
+            logger.info(f"Auto-unblocked profile {normalized} (restriction expired)")
+            self._save_state()
+
+    def record_recovery_event(
+        self,
+        profile_name: str,
+        event: str,
+        state: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        timestamp: Optional[str] = None,
+        save: bool = True,
+    ):
+        """Persist the last recovery event plus a short rolling history."""
+        profile = self._ensure_profile(profile_name)
+        event_time = timestamp or (datetime.utcnow().isoformat() + "Z")
+        profile["recovery_last_event"] = event
+        profile["recovery_last_event_at"] = event_time
+        if state:
+            profile["recovery_state"] = state
+
+        entry = {
+            "timestamp": event_time,
+            "event": event,
+            "state": state or profile.get("recovery_state", "none"),
+        }
+        if details:
+            entry["details"] = details
+
+        profile["recovery_history"].append(entry)
+        profile["recovery_history"] = profile["recovery_history"][-20:]
+
+        if save:
             self._save_state()
 
     def mark_profile_used(
@@ -298,18 +370,7 @@ class ProfileManager:
                 - None: Success or unknown failure
         """
         normalized = self._normalize_name(profile_name)
-        if normalized not in self.state["profiles"]:
-            self.state["profiles"][normalized] = {
-                "last_used_at": None,
-                "usage_count": 0,
-                "status": "active",
-                "restriction_expires_at": None,
-                "restriction_reason": None,
-                "daily_stats": {},
-                "usage_history": [],
-                "failure_breakdown": {}
-            }
-
+        self._ensure_profile(normalized)
         now = datetime.utcnow()
         profile = self.state["profiles"][normalized]
 
@@ -386,15 +447,7 @@ class ProfileManager:
             reason: Reason for restriction
         """
         normalized = self._normalize_name(profile_name)
-        if normalized not in self.state["profiles"]:
-            self.state["profiles"][normalized] = {
-                "last_used_at": None,
-                "usage_count": 0,
-                "status": "active",
-                "daily_stats": {},
-                "usage_history": []
-            }
-
+        self._ensure_profile(normalized)
         now = datetime.utcnow()
         profile = self.state["profiles"][normalized]
 
@@ -429,18 +482,32 @@ class ProfileManager:
             "restriction_count": restriction_count
         })
         profile["restriction_history"] = profile["restriction_history"][-10:]
+        self.record_recovery_event(
+            normalized,
+            event="restriction_marked",
+            state="restricted",
+            details={"reason": reason, "duration_hours": hours, "restriction_count": restriction_count},
+            save=False,
+        )
 
         logger.warning(f"Restricted profile {normalized} for {hours}h (reason: {reason}, offense #{restriction_count})")
         self._save_state()
 
-    def unblock_profile(self, profile_name: str, reset_stats: bool = False):
+    def unblock_profile(
+        self,
+        profile_name: str,
+        reset_stats: bool = False,
+        recovery_event: str = "manual_unblock",
+        recovery_state: str = "resolved",
+        recovery_details: Optional[Dict[str, Any]] = None,
+    ):
         """Manually unblock a restricted profile. Resets restriction_count and appeal state.
         If reset_stats=True, also resets usage_count and daily_stats to prevent auto-burn re-trigger."""
         normalized = self._normalize_name(profile_name)
         if normalized not in self.state["profiles"]:
             return
 
-        profile = self.state["profiles"][normalized]
+        profile = self._ensure_profile(normalized)
         profile["status"] = "active"
         profile["restriction_expires_at"] = None
         profile["restriction_reason"] = None
@@ -448,6 +515,8 @@ class ProfileManager:
         # Reset appeal state
         profile["appeal_status"] = "none"
         profile["appeal_attempts"] = 0
+        profile["appeal_last_attempt_at"] = None
+        profile["appeal_last_result"] = None
         profile["appeal_last_error"] = None
 
         if reset_stats:
@@ -457,6 +526,46 @@ class ProfileManager:
             logger.info(f"Unblocked profile: {normalized} (restriction_count + appeal + usage stats reset)")
         else:
             logger.info(f"Unblocked profile: {normalized} (restriction_count + appeal state reset)")
+        self.record_recovery_event(
+            normalized,
+            event=recovery_event,
+            state=recovery_state,
+            details=recovery_details,
+            save=False,
+        )
+        self._save_state()
+
+    def reset_appeal_state(self, profile_name: str, reason: str = "retry_window_reset"):
+        """Clear exhausted/failed appeal state without incrementing attempts."""
+        normalized = self._normalize_name(profile_name)
+        if normalized not in self.state["profiles"]:
+            return
+
+        profile = self._ensure_profile(normalized)
+        profile["appeal_status"] = "none"
+        profile["appeal_attempts"] = 0
+        profile["appeal_last_attempt_at"] = None
+        profile["appeal_last_result"] = None
+        profile["appeal_last_error"] = None
+        now = datetime.utcnow().isoformat() + "Z"
+        profile["appeal_history"].append({
+            "timestamp": now,
+            "result": "reset",
+            "error": None,
+            "steps_used": 0,
+            "attempt": 0,
+            "reason": reason,
+        })
+        profile["appeal_history"] = profile["appeal_history"][-10:]
+        self.record_recovery_event(
+            normalized,
+            event="appeal_reset",
+            state="restricted" if profile.get("status") == "restricted" else "none",
+            details={"reason": reason},
+            timestamp=now,
+            save=False,
+        )
+        logger.info(f"Appeal state reset for {normalized} (reason: {reason})")
         self._save_state()
 
     def extend_restriction(self, profile_name: str, additional_hours: int):
@@ -496,6 +605,13 @@ class ProfileManager:
                             profile["status"] = "active"
                             profile["restriction_expires_at"] = None
                             profile["restriction_reason"] = None
+                            self.record_recovery_event(
+                                profile_name,
+                                event="restriction_expired",
+                                state="resolved",
+                                details={"source": "expiry_check"},
+                                save=False,
+                            )
                             logger.info(f"Auto-unblocked profile {profile_name} (restriction expired)")
                             changed = True
                     except Exception as e:
@@ -506,6 +622,7 @@ class ProfileManager:
 
     def get_analytics_summary(self) -> Dict:
         """Get summary analytics for all profiles."""
+        self.refresh_from_sessions()
         self._check_restriction_expiry()
 
         today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -557,7 +674,9 @@ class ProfileManager:
 
     def get_profile_analytics(self, profile_name: str) -> Optional[Dict]:
         """Get detailed analytics for a single profile."""
-        profile = self.state["profiles"].get(profile_name)
+        self._check_restriction_expiry()
+        normalized = self._normalize_name(profile_name)
+        profile = self.state["profiles"].get(normalized)
         if not profile:
             return None
 
@@ -567,7 +686,7 @@ class ProfileManager:
         total_success = sum(s.get("success", 0) for s in daily_stats.values())
 
         return {
-            "profile_name": profile_name,
+            "profile_name": normalized,
             "status": profile.get("status", "active"),
             "last_used_at": profile.get("last_used_at"),
             "usage_count": profile.get("usage_count", 0),
@@ -579,6 +698,11 @@ class ProfileManager:
             "daily_stats": daily_stats,
             "usage_history": profile.get("usage_history", [])[-10:],  # Last 10
             "restriction_history": profile.get("restriction_history", []),
+            "is_reserved": self.is_reserved(normalized),
+            "recovery_state": profile.get("recovery_state", "none"),
+            "recovery_last_event": profile.get("recovery_last_event"),
+            "recovery_last_event_at": profile.get("recovery_last_event_at"),
+            "recovery_history": profile.get("recovery_history", [])[-10:],
             # Appeal tracking
             "appeal_status": profile.get("appeal_status", "none"),
             "appeal_attempts": profile.get("appeal_attempts", 0),

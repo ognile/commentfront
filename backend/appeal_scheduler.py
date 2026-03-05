@@ -4,11 +4,10 @@ Runs every 24h by default. State persisted to survive deployments.
 """
 
 import asyncio
-import json
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Optional
 
 logger = logging.getLogger("AppealScheduler")
 
@@ -36,7 +35,9 @@ class AppealScheduler:
             "enabled": True,
             "interval_hours": DEFAULT_INTERVAL_HOURS,
             "last_run_at": None,
+            "last_completed_at": None,
             "next_run_at": None,
+            "busy_skipped": 0,
             "last_results": None,
             "run_history": []
         }
@@ -115,9 +116,11 @@ class AppealScheduler:
     async def _run_batch(self):
         """Run verify-all then appeal active restrictions."""
         from appeal_manager import verify_all_restricted, batch_appeal_all
+        from profile_manager import get_profile_manager
 
         logger.info("[SCHEDULER] Starting scheduled appeal batch")
         self.state["last_run_at"] = datetime.utcnow().isoformat()
+        pm = get_profile_manager()
 
         skip_profiles = self._get_active_campaign_profiles()
         if skip_profiles:
@@ -137,7 +140,8 @@ class AppealScheduler:
             "started_at": self.state["last_run_at"],
             "verify_phase": None,
             "appeal_phase": None,
-            "per_profile": []
+            "per_profile": [],
+            "busy_skipped": 0,
         }
 
         # Phase 1: Verify
@@ -152,15 +156,33 @@ class AppealScheduler:
                 "total": verify_result.get("total", 0),
                 "unblocked": verify_result.get("unblocked", 0),
                 "in_review": verify_result.get("in_review", 0),
-                "still_restricted": verify_result.get("still_restricted", 0)
+                "still_restricted": verify_result.get("still_restricted", 0),
+                "needs_followup": verify_result.get("needs_followup", 0),
+                "busy_skipped": verify_result.get("busy_skipped", 0),
             }
+            results["busy_skipped"] = verify_result.get("busy_skipped", 0)
             for r in verify_result.get("results", []):
                 results["per_profile"].append({
                     "name": r.get("profile_name"),
                     "phase": "verify",
                     "status": r.get("verified_status", "unknown"),
-                    "action": r.get("action_taken", "none")
+                    "action": r.get("action_taken", "none"),
+                    "busy_reason": r.get("busy_reason"),
                 })
+                if r.get("action_taken") == "needs_followup":
+                    pm.record_recovery_event(
+                        r.get("profile_name"),
+                        event="scheduler_followup_queued",
+                        state="needs_followup",
+                        details={"verified_status": r.get("verified_status")},
+                    )
+                elif r.get("action_taken") == "busy_skipped":
+                    pm.record_recovery_event(
+                        r.get("profile_name"),
+                        event="scheduler_busy_skipped",
+                        state="needs_followup",
+                        details={"busy_reason": r.get("busy_reason")},
+                    )
         except Exception as e:
             logger.error(f"[SCHEDULER] Verify phase error: {e}")
             results["verify_phase"] = {"error": str(e)}
@@ -195,8 +217,10 @@ class AppealScheduler:
             logger.info("[SCHEDULER] No still-restricted profiles, skipping appeal phase")
 
         # Save results
-        self.state["last_results"] = results
         results["completed_at"] = datetime.utcnow().isoformat()
+        self.state["last_completed_at"] = results["completed_at"]
+        self.state["busy_skipped"] = results.get("busy_skipped", 0)
+        self.state["last_results"] = results
 
         # Add to run history (keep last MAX_HISTORY)
         history_entry = {
@@ -204,7 +228,8 @@ class AppealScheduler:
             "completed_at": results["completed_at"],
             "verify": results["verify_phase"],
             "appeal": results["appeal_phase"],
-            "profile_count": len(results["per_profile"])
+            "profile_count": len(results["per_profile"]),
+            "busy_skipped": results.get("busy_skipped", 0),
         }
         self.state.setdefault("run_history", []).insert(0, history_entry)
         self.state["run_history"] = self.state["run_history"][:MAX_HISTORY]
@@ -240,7 +265,9 @@ class AppealScheduler:
             "enabled": self.state.get("enabled", True),
             "interval_hours": self.state.get("interval_hours", DEFAULT_INTERVAL_HOURS),
             "last_run_at": self.state.get("last_run_at"),
+            "last_completed_at": self.state.get("last_completed_at"),
             "next_run_at": self.state.get("next_run_at"),
+            "busy_skipped": self.state.get("busy_skipped", 0),
             "last_results": self.state.get("last_results"),
             "run_history": self.state.get("run_history", [])
         }
