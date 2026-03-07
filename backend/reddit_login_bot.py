@@ -178,11 +178,12 @@ async def login_reddit(
 
             page.on("request", _capture_request)
 
-            logger.info(f"[{profile_name}] starting reddit login with human-like interaction")
-            await page.goto("https://www.reddit.com/login/", wait_until="domcontentloaded", timeout=45000)
+            # Use old.reddit.com login form — no reCAPTCHA Enterprise
+            logger.info(f"[{profile_name}] navigating to old.reddit.com/login")
+            await page.goto("https://old.reddit.com/login", wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_timeout(2000)
             await _dismiss_cookie_banner(page)
-            logger.info(f"[{profile_name}] login page loaded: {page.url}")
+            logger.info(f"[{profile_name}] old reddit login page: {page.url}")
             await save_debug_screenshot(page, f"reddit_login_page_{profile_name}")
 
             await _broadcast(
@@ -191,75 +192,46 @@ async def login_reddit(
                 {"profile_name": profile_name, "step": "submitting_credentials"},
             )
 
-            # Generate OTP upfront since these accounts have 2FA
-            otp_code = ""
+            # Fill old.reddit.com login form
+            # Old reddit uses: input#user_login[name="user"], input#passwd_login[name="passwd"]
+            OLD_USER_SELECTORS = [
+                '#user_login',
+                'input[name="user"]',
+                'input[id="user_login"]',
+            ]
+            OLD_PASS_SELECTORS = [
+                '#passwd_login',
+                'input[name="passwd"]',
+                'input[id="passwd_login"]',
+                'input[type="password"]',
+            ]
+            OLD_SUBMIT_SELECTORS = [
+                '#login-button',
+                'button[type="submit"]',
+                'button:has-text("log in")',
+            ]
+
+            # Check if old.reddit.com actually shows a login form or redirected
+            page_text = ""
             try:
-                manager = CredentialManager()
-                otp_data = manager.generate_otp(
-                    credential.get("credential_id") or credential.get("uid"),
-                    platform="reddit",
-                )
-                if otp_data.get("valid") and otp_data.get("code"):
-                    otp_code = otp_data["code"]
-                    logger.info(f"[{profile_name}] generated OTP for login")
-            except Exception as otp_err:
-                logger.warning(f"[{profile_name}] OTP generation failed: {otp_err}")
+                page_text = await page.locator("body").inner_text()
+            except Exception:
+                pass
+            logger.info(f"[{profile_name}] page text preview: {page_text[:200]}")
 
-            # Call Reddit's shreddit login API directly to bypass reCAPTCHA
-            # The CSRF token is set as a cookie when the login page loads
-            login_result = await page.evaluate(
-                """async (data) => {
-                    try {
-                        // Extract CSRF token from cookie
-                        const csrf = document.cookie.split(';')
-                            .map(c => c.trim().split('='))
-                            .find(([k]) => k === 'csrf_token');
-                        const csrfToken = csrf ? csrf[1] : '';
+            # Try to fill the form
+            user_filled = await _fill_first(page, OLD_USER_SELECTORS, str(login_identifier))
+            pass_filled = await _fill_first(page, OLD_PASS_SELECTORS, str(password))
+            logger.info(f"[{profile_name}] old form fill: user={user_filled} pass={pass_filled}")
 
-                        // First try login without captcha
-                        const form = new URLSearchParams();
-                        form.append('username', data.username);
-                        form.append('password', data.password);
-                        form.append('csrf_token', csrfToken);
-                        if (data.otp) form.append('otp', data.otp);
+            if not user_filled or not pass_filled:
+                # Old reddit form not found — try the API from this page context
+                logger.info(f"[{profile_name}] old form not found, trying /api/login via page fetch")
+                await dump_interactive_elements(page, f"OLD REDDIT LOGIN FORM {profile_name}")
 
-                        const resp = await fetch('/svc/shreddit/account/login', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/x-www-form-urlencoded',
-                            },
-                            body: form.toString(),
-                            credentials: 'include',
-                        });
-                        const text = await resp.text();
-                        return {
-                            ok: resp.ok,
-                            status: resp.status,
-                            body: text.substring(0, 2000),
-                            csrf: csrfToken.substring(0, 10) + '...',
-                            redirected: resp.redirected,
-                            url: resp.url,
-                        };
-                    } catch (e) {
-                        return {ok: false, error: e.message};
-                    }
-                }""",
-                {"username": str(login_identifier), "password": str(password), "otp": otp_code},
-            )
-            logger.info(f"[{profile_name}] shreddit login: status={login_result.get('status')} ok={login_result.get('ok')} url={login_result.get('url')} body={str(login_result.get('body', ''))[:500]}")
-
-            if login_result.get("error"):
-                logger.error(f"[{profile_name}] shreddit fetch error: {login_result['error']}")
-                raise RuntimeError(f"Reddit login API error: {login_result['error']}")
-
-            # Check if login succeeded (200/302 to home) or needs OTP
-            status = login_result.get("status", 0)
-            body = str(login_result.get("body", ""))
-
-            if status == 400 and "TWO_FA" in body.upper():
-                # Need OTP - generate and retry
-                if not otp_code:
-                    logger.info(f"[{profile_name}] 2FA required, generating OTP")
+                # Generate OTP
+                otp_code = ""
+                try:
                     manager = CredentialManager()
                     otp_data = manager.generate_otp(
                         credential.get("credential_id") or credential.get("uid"),
@@ -267,38 +239,58 @@ async def login_reddit(
                     )
                     if otp_data.get("valid") and otp_data.get("code"):
                         otp_code = otp_data["code"]
-                    else:
-                        raise RuntimeError(f"OTP generation failed: {otp_data}")
-                    # Retry with OTP
-                    login_result = await page.evaluate(
-                        """async (data) => {
-                            try {
-                                const csrf = document.cookie.split(';')
-                                    .map(c => c.trim().split('='))
-                                    .find(([k]) => k === 'csrf_token');
-                                const csrfToken = csrf ? csrf[1] : '';
-                                const form = new URLSearchParams();
-                                form.append('username', data.username);
-                                form.append('password', data.password);
-                                form.append('csrf_token', csrfToken);
-                                form.append('otp', data.otp);
-                                const resp = await fetch('/svc/shreddit/account/login', {
-                                    method: 'POST',
-                                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                                    body: form.toString(),
-                                    credentials: 'include',
-                                });
-                                const text = await resp.text();
-                                return {ok: resp.ok, status: resp.status, body: text.substring(0, 2000), url: resp.url};
-                            } catch (e) {
-                                return {ok: false, error: e.message};
-                            }
-                        }""",
-                        {"username": str(login_identifier), "password": str(password), "otp": otp_code},
-                    )
-                    logger.info(f"[{profile_name}] shreddit login+OTP: status={login_result.get('status')} body={str(login_result.get('body', ''))[:500]}")
+                except Exception:
+                    pass
 
-            # Reload page to pick up session cookies
+                api_result = await page.evaluate(
+                    """async (data) => {
+                        try {
+                            const form = new URLSearchParams();
+                            form.append('user', data.username);
+                            form.append('passwd', data.password);
+                            form.append('api_type', 'json');
+                            form.append('rem', 'true');
+                            if (data.otp) form.append('otp', data.otp);
+                            const resp = await fetch('/api/login/' + data.username, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/x-www-form-urlencoded',
+                                },
+                                body: form.toString(),
+                                credentials: 'include',
+                            });
+                            const text = await resp.text();
+                            let json = null;
+                            try { json = JSON.parse(text); } catch(e) {}
+                            return {ok: resp.ok, status: resp.status, body: text.substring(0, 2000), data: json};
+                        } catch (e) {
+                            return {ok: false, error: e.message};
+                        }
+                    }""",
+                    {"username": str(login_identifier), "password": str(password), "otp": otp_code},
+                )
+                logger.info(f"[{profile_name}] old API login: status={api_result.get('status')} body={str(api_result.get('body', ''))[:500]}")
+            else:
+                # Submit the old reddit form
+                await save_debug_screenshot(page, f"reddit_form_filled_{profile_name}")
+                submit_clicked = await _click_first(page, OLD_SUBMIT_SELECTORS, timeout_ms=5000)
+                if not submit_clicked:
+                    try:
+                        await page.locator(OLD_PASS_SELECTORS[0]).press("Enter")
+                    except Exception:
+                        pass
+                logger.info(f"[{profile_name}] old form submitted (button={submit_clicked})")
+                await page.wait_for_timeout(5000)
+                await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
+                logger.info(f"[{profile_name}] after old submit URL: {page.url}")
+
+                # Handle OTP if prompted
+                otp_handled = await _handle_otp(page, credential)
+                if otp_handled:
+                    logger.info(f"[{profile_name}] OTP submitted on old reddit")
+                    await page.wait_for_timeout(3000)
+
+            # Navigate to www.reddit.com to pick up cross-domain session
             await page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_timeout(2500)
             await _dismiss_cookie_banner(page)
@@ -310,12 +302,12 @@ async def login_reddit(
             cookie_names = [c.get("name") for c in all_cookies]
             logger.info(f"[{profile_name}] cookies after login: {cookie_names}")
 
-            auth_names = {"reddit_session"}
-            if not (auth_names & set(cookie_names)):
-                # token_v2 might be the auth cookie on new reddit
-                if "token_v2" not in cookie_names:
-                    await save_debug_screenshot(page, f"reddit_login_failed_{profile_name}")
-                    raise RuntimeError(f"Reddit auth cookies missing. cookies: {cookie_names}")
+            if not await _wait_for_auth_cookies(context, timeout_ms=10000):
+                all_cookies2 = await context.cookies()
+                cookie_names2 = [c.get("name") for c in all_cookies2]
+                logger.error(f"[{profile_name}] auth cookies missing. cookies: {cookie_names2}")
+                await save_debug_screenshot(page, f"reddit_login_failed_{profile_name}")
+                raise RuntimeError(f"Reddit auth cookies not created. cookies: {cookie_names2}")
 
             try:
                 await _click_first(page, LOGIN["modal_close"], timeout_ms=2000)
