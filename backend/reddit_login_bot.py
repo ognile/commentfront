@@ -164,63 +164,117 @@ async def login_reddit(
                 "reddit_session_progress",
                 {"profile_name": profile_name, "step": "opening_login"},
             )
-            await page.goto("https://www.reddit.com/login/", wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(2000)
-            await _dismiss_cookie_banner(page)
-            logger.info(f"[{profile_name}] login page loaded: {page.url}")
-            await save_debug_screenshot(page, f"reddit_login_page_{profile_name}")
 
-            filled_user = await _fill_first(page, LOGIN["username_input"], str(login_identifier))
-            filled_password = await _fill_first(page, LOGIN["password_input"], str(password))
-            logger.info(f"[{profile_name}] form fill: user={filled_user} pass={filled_password} identifier={login_identifier[:3]}***")
-            if not filled_user or not filled_password:
-                await save_debug_screenshot(page, f"reddit_login_inputs_missing_{profile_name}")
-                await dump_interactive_elements(page, "REDDIT LOGIN INPUTS NOT FOUND")
-                raise RuntimeError("Failed to locate Reddit login inputs")
+            # Use old.reddit.com API login to bypass reCAPTCHA on modern login page
+            logger.info(f"[{profile_name}] using old.reddit.com API login")
+            await page.goto("https://old.reddit.com/", wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(1500)
+            await _dismiss_cookie_banner(page)
 
             await _broadcast(
                 broadcast_callback,
                 "reddit_session_progress",
                 {"profile_name": profile_name, "step": "submitting_credentials"},
             )
-            try:
-                await page.locator(LOGIN["password_input"][0]).press("Enter")
-            except Exception:
-                await _click_first(page, LOGIN["submit_button"], timeout_ms=4000)
 
-            await page.wait_for_timeout(4000)
-            await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
-            current_url_after = page.url
-            logger.info(f"[{profile_name}] after submit URL: {current_url_after}")
+            # Call Reddit's JSON login API directly from page context
+            api_result = await page.evaluate(
+                """async (data) => {
+                    try {
+                        const form = new URLSearchParams();
+                        form.append('user', data.username);
+                        form.append('passwd', data.password);
+                        form.append('api_type', 'json');
+                        form.append('rem', 'true');
+                        const resp = await fetch('/api/login/' + data.username, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                            body: form.toString(),
+                            credentials: 'include',
+                        });
+                        const json = await resp.json();
+                        return {ok: resp.ok, status: resp.status, data: json};
+                    } catch (e) {
+                        return {ok: false, error: e.message};
+                    }
+                }""",
+                {"username": str(login_identifier), "password": str(password)},
+            )
+            logger.info(f"[{profile_name}] API login response: status={api_result.get('status')} errors={api_result.get('data', {}).get('json', {}).get('errors', [])}")
 
-            # Check for login error messages
-            try:
-                body_text = await page.locator("body").inner_text()
-                if "something went wrong" in body_text.lower() or "incorrect" in body_text.lower():
-                    logger.warning(f"[{profile_name}] login error on page: {body_text[:300]}")
-                    await dump_interactive_elements(page, f"REDDIT LOGIN ERROR for {profile_name}")
-            except Exception:
-                pass
+            api_json = (api_result.get("data") or {}).get("json", {})
+            api_errors = api_json.get("errors", [])
+            api_errors_str = str(api_errors)
 
-            otp_handled = await _handle_otp(page, credential)
-            if otp_handled:
-                logger.info(f"[{profile_name}] OTP submitted, waiting for auth cookies")
-                await save_debug_screenshot(page, f"reddit_after_otp_{profile_name}")
-            else:
-                logger.info(f"[{profile_name}] no OTP prompt detected")
+            # Check if 2FA is required (Reddit returns WRONG_OTP or similar when 2FA is enabled)
+            needs_otp = any(
+                any(kw in str(err).upper() for kw in ("WRONG_OTP", "TWO_FA", "BAD_OTP", "OTP", "2FA"))
+                for err in api_errors
+            )
+            if api_errors and not needs_otp:
+                error_msg = "; ".join(str(e) for e in api_errors)
+                logger.error(f"[{profile_name}] Reddit API login errors: {error_msg}")
+                await save_debug_screenshot(page, f"reddit_api_login_error_{profile_name}")
+                raise RuntimeError(f"Reddit API login failed: {error_msg}")
 
-            # Log all cookie names for debugging
+            if needs_otp:
+                logger.info(f"[{profile_name}] 2FA required, generating OTP")
+                manager = CredentialManager()
+                otp_data = manager.generate_otp(
+                    credential.get("credential_id") or credential.get("uid"),
+                    platform="reddit",
+                )
+                if not otp_data.get("valid") or not otp_data.get("code"):
+                    raise RuntimeError(f"Failed to generate Reddit OTP: {otp_data.get('error')}")
+                # Retry login with OTP
+                api_result = await page.evaluate(
+                    """async (data) => {
+                        try {
+                            const form = new URLSearchParams();
+                            form.append('user', data.username);
+                            form.append('passwd', data.password);
+                            form.append('api_type', 'json');
+                            form.append('rem', 'true');
+                            form.append('otp', data.otp);
+                            const resp = await fetch('/api/login/' + data.username, {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                                body: form.toString(),
+                                credentials: 'include',
+                            });
+                            const json = await resp.json();
+                            return {ok: resp.ok, status: resp.status, data: json};
+                        } catch (e) {
+                            return {ok: false, error: e.message};
+                        }
+                    }""",
+                    {"username": str(login_identifier), "password": str(password), "otp": otp_data["code"]},
+                )
+                logger.info(f"[{profile_name}] API login+OTP response: status={api_result.get('status')} errors={api_result.get('data', {}).get('json', {}).get('errors', [])}")
+                otp_errors = (api_result.get("data") or {}).get("json", {}).get("errors", [])
+                if otp_errors:
+                    raise RuntimeError(f"Reddit API login+OTP failed: {otp_errors}")
+
+            # Log cookies after API login
             all_cookies = await context.cookies()
             cookie_names = [c.get("name") for c in all_cookies]
-            logger.info(f"[{profile_name}] cookies after login: {cookie_names}")
+            logger.info(f"[{profile_name}] cookies after API login: {cookie_names}")
 
-            if not await _wait_for_auth_cookies(context, timeout_ms=15000):
-                all_cookies2 = await context.cookies()
-                cookie_names2 = [c.get("name") for c in all_cookies2]
-                logger.error(f"[{profile_name}] auth cookies missing. all cookies: {cookie_names2}")
+            # Navigate to new reddit to pick up cross-domain session
+            await page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(2500)
+            await _dismiss_cookie_banner(page)
+            await save_debug_screenshot(page, f"reddit_after_login_{profile_name}")
+            logger.info(f"[{profile_name}] new reddit home URL: {page.url}")
+
+            # Final cookie check
+            all_cookies = await context.cookies()
+            cookie_names = [c.get("name") for c in all_cookies]
+            logger.info(f"[{profile_name}] cookies after new reddit: {cookie_names}")
+            auth_names = {"token_v2", "reddit_session"}
+            if not (auth_names & set(cookie_names)):
                 await save_debug_screenshot(page, f"reddit_login_failed_{profile_name}")
-                await dump_interactive_elements(page, "REDDIT LOGIN AUTH COOKIES MISSING")
-                raise RuntimeError("Reddit auth cookies were not created after login submission")
+                raise RuntimeError(f"Reddit auth cookies missing after API login. cookies: {cookie_names}")
 
             try:
                 await _click_first(page, LOGIN["modal_close"], timeout_ms=2000)
