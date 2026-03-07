@@ -35,26 +35,37 @@ def _credential_label(credential: dict) -> str:
     return str(credential.get("username") or credential.get("uid") or credential.get("credential_id") or "reddit")
 
 
-def _choose_reference_facebook_session(
+def _reference_facebook_session_candidates(
     preferred_session_id: Optional[str] = None,
     *,
     credential_label: Optional[str] = None,
-) -> str:
+) -> list[str]:
     if preferred_session_id:
         session = FacebookSession(preferred_session_id)
         if not session.load() or not session.has_valid_cookies():
             raise RuntimeError(f"Reference Facebook session '{preferred_session_id}' is unavailable or invalid")
-        return preferred_session_id
+        return [preferred_session_id]
 
     candidates = [str(item.get("profile_name")) for item in list_saved_sessions() if item.get("has_valid_cookies")]
     if candidates:
         candidates = sorted(candidates)
         if credential_label:
-            index = int(hashlib.md5(str(credential_label).encode()).hexdigest(), 16) % len(candidates)
-            return candidates[index]
-        return candidates[0]
+            start_index = int(hashlib.md5(str(credential_label).encode()).hexdigest(), 16) % len(candidates)
+            return candidates[start_index:] + candidates[:start_index]
+        return candidates
 
     raise RuntimeError("No valid Facebook sessions available for Reddit reference audit")
+
+
+def _choose_reference_facebook_session(
+    preferred_session_id: Optional[str] = None,
+    *,
+    credential_label: Optional[str] = None,
+) -> str:
+    return _reference_facebook_session_candidates(
+        preferred_session_id,
+        credential_label=credential_label,
+    )[0]
 
 
 async def _capture_checkpoint(
@@ -726,11 +737,34 @@ async def create_session_from_credentials(
                 "step": "bootstrap_retry_reference_identity",
             },
         )
-        return await login_reddit_from_reference_facebook_identity(
-            credential=credential,
-            persist_session=True,
-            target_profile_name=result.get("profile_name") or credential.get("profile_name") or f"reddit_{credential.get('uid')}",
-        )
+        bootstrap_errors = []
+        for reference_session_id in _reference_facebook_session_candidates(
+            credential_label=_credential_label(credential)
+        )[:5]:
+            bootstrap_result = await login_reddit_from_reference_facebook_identity(
+                credential=credential,
+                reference_session_id=reference_session_id,
+                persist_session=True,
+                target_profile_name=result.get("profile_name") or credential.get("profile_name") or f"reddit_{credential.get('uid')}",
+            )
+            if bootstrap_result.get("success"):
+                return bootstrap_result
+            bootstrap_errors.append(
+                {
+                    "reference_session_id": reference_session_id,
+                    "error": bootstrap_result.get("error"),
+                    "failure_bucket": bootstrap_result.get("failure_bucket"),
+                }
+            )
+            logger.warning(
+                "Reddit bootstrap retry via %s failed for %s: %s",
+                reference_session_id,
+                credential_uid,
+                bootstrap_result.get("error"),
+            )
+
+        result["bootstrap_errors"] = bootstrap_errors
+        return result
 
     return result
 

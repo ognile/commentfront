@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from reddit_login_bot import (
     _audit_has_user_interaction_failure,
     _choose_reference_facebook_session,
+    _reference_facebook_session_candidates,
     _goto_in_authenticated_context,
     _wait_for_authenticated_surface,
     _wait_for_otp_resolution,
@@ -131,7 +132,7 @@ def test_wait_for_otp_resolution_returns_when_otp_input_disappears():
     ) is True
 
 
-def test_choose_reference_facebook_session_is_deterministic_per_credential():
+def test_reference_facebook_session_candidates_are_deterministic_per_credential():
     sessions = [
         {"profile_name": "amber", "has_valid_cookies": True},
         {"profile_name": "adele", "has_valid_cookies": True},
@@ -139,11 +140,13 @@ def test_choose_reference_facebook_session_is_deterministic_per_credential():
     ]
 
     with patch("reddit_login_bot.list_saved_sessions", return_value=sessions):
-        selected = _choose_reference_facebook_session(None, credential_label="reddit::Neera_Allvere")
-        repeated = _choose_reference_facebook_session(None, credential_label="reddit::Neera_Allvere")
+        selected = _reference_facebook_session_candidates(None, credential_label="reddit::Neera_Allvere")
+        repeated = _reference_facebook_session_candidates(None, credential_label="reddit::Neera_Allvere")
+        first = _choose_reference_facebook_session(None, credential_label="reddit::Neera_Allvere")
 
-    assert selected in {"adele", "amber", "betty"}
+    assert set(selected) == {"adele", "amber", "betty"}
     assert selected == repeated
+    assert first == selected[0]
 
 
 def test_audit_has_user_interaction_failure_reads_response_body_preview():
