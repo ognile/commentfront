@@ -132,7 +132,8 @@ async def login_reddit(
     profile_name = credential.get("profile_name") or f"reddit_{credential.get('uid')}"
     session = RedditSession(profile_name)
     fingerprint = session.get_device_fingerprint()
-    login_identifier = credential.get("email") or credential.get("username") or credential.get("uid")
+    # Reddit login: prefer username over email (email login may trigger CAPTCHA more often)
+    login_identifier = credential.get("username") or credential.get("uid") or credential.get("email")
     password = credential.get("password")
 
     if not login_identifier or not password:
@@ -189,7 +190,17 @@ async def login_reddit(
 
             await page.wait_for_timeout(4000)
             await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
-            logger.info(f"[{profile_name}] after submit URL: {page.url}")
+            current_url_after = page.url
+            logger.info(f"[{profile_name}] after submit URL: {current_url_after}")
+
+            # Check for login error messages
+            try:
+                body_text = await page.locator("body").inner_text()
+                if "something went wrong" in body_text.lower() or "incorrect" in body_text.lower():
+                    logger.warning(f"[{profile_name}] login error on page: {body_text[:300]}")
+                    await dump_interactive_elements(page, f"REDDIT LOGIN ERROR for {profile_name}")
+            except Exception:
+                pass
 
             otp_handled = await _handle_otp(page, credential)
             if otp_handled:
