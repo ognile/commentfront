@@ -303,6 +303,8 @@ async def _run_reddit_login_flow(
     session: RedditSession,
     bootstrap_source_session_id: Optional[str] = None,
     cookie_blocklist_domains: Optional[list[str]] = None,
+    login_navigation_timeout_ms: int = 45000,
+    login_navigation_attempts: int = 3,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "success": False,
@@ -322,7 +324,13 @@ async def _run_reddit_login_flow(
     logger.info(f"[{profile_name}] navigating to reddit.com/login")
     if audit:
         audit.record_event("goto_login_start", target_url="https://www.reddit.com/login")
-    await _goto_with_retry(page, "https://www.reddit.com/login", profile_name=profile_name)
+    await _goto_with_retry(
+        page,
+        "https://www.reddit.com/login",
+        profile_name=profile_name,
+        timeout=login_navigation_timeout_ms,
+        attempts=login_navigation_attempts,
+    )
     await page.wait_for_timeout(2000)
     await _dismiss_cookie_banner(page)
     logger.info(f"[{profile_name}] reddit login page: {page.url}")
@@ -661,6 +669,8 @@ async def login_reddit_from_reference_facebook_identity(
                 session=session,
                 bootstrap_source_session_id=chosen_session_id if persist_session else None,
                 cookie_blocklist_domains=BOOTSTRAP_COOKIE_BLOCKLIST if persist_session else None,
+                login_navigation_timeout_ms=15000 if persist_session else 45000,
+                login_navigation_attempts=1 if persist_session else 3,
             )
             result.update(
                 {
