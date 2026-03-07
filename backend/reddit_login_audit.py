@@ -2,6 +2,7 @@
 Structured audit helpers for Reddit login investigation.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -222,18 +223,20 @@ class RedditLoginAudit:
                 if not self._request_relevant(request, lowered):
                     return
                 self._response_count += 1
-                self.data["responses"].append(
-                    {
-                        "idx": self._response_count,
-                        "ts": _now_iso(),
-                        "url": response.url,
-                        "status": response.status,
-                        "status_text": response.status_text,
-                        "from_service_worker": response.from_service_worker,
-                        "resource_type": request.resource_type,
-                        "is_navigation_request": request.is_navigation_request(),
-                    }
-                )
+                record = {
+                    "idx": self._response_count,
+                    "ts": _now_iso(),
+                    "url": response.url,
+                    "status": response.status,
+                    "status_text": response.status_text,
+                    "from_service_worker": response.from_service_worker,
+                    "resource_type": request.resource_type,
+                    "is_navigation_request": request.is_navigation_request(),
+                }
+                self.data["responses"].append(record)
+                if self._response_body_relevant(lowered):
+                    asyncio.create_task(self._enrich_response_record(response, record))
+                self.flush()
             except Exception as exc:
                 logger.debug(f"failed to capture reddit audit response: {exc}")
 
@@ -336,6 +339,20 @@ class RedditLoginAudit:
         return {key: lowered.get(key) for key in keep if key in lowered}
 
     @staticmethod
+    def _trim_response_headers(headers: Dict[str, Any]) -> Dict[str, Any]:
+        keep = (
+            "cache-control",
+            "content-length",
+            "content-type",
+            "retry-after",
+            "set-cookie",
+            "x-reddit-loid",
+            "x-ua-compatible",
+        )
+        lowered = {str(k).lower(): v for k, v in dict(headers or {}).items()}
+        return {key: lowered.get(key) for key in keep if key in lowered}
+
+    @staticmethod
     def _request_relevant(request, lowered_url: str) -> bool:
         if request.is_navigation_request():
             return True
@@ -352,6 +369,34 @@ class RedditLoginAudit:
             "auth",
         )
         return any(marker in lowered_url for marker in markers)
+
+    @staticmethod
+    def _response_body_relevant(lowered_url: str) -> bool:
+        markers = (
+            "/svc/shreddit/account/login",
+            "/svc/shreddit/account/login/otp",
+            "/svc/shreddit/graphql",
+            "/svc/shreddit/partial/",
+        )
+        return any(marker in lowered_url for marker in markers)
+
+    async def _enrich_response_record(self, response, record: Dict[str, Any]) -> None:
+        try:
+            text = await response.text()
+        except Exception as exc:
+            record["body_read_error"] = str(exc)
+            self.flush()
+            return
+
+        record["headers"] = self._trim_response_headers(response.headers)
+        record["body_preview"] = self._normalize_body_preview(text)
+        self.flush()
+
+    @staticmethod
+    def _normalize_body_preview(text: Any, limit: int = 1200) -> str:
+        if text is None:
+            return ""
+        return re.sub(r"\s+", " ", str(text))[:limit]
 
     @staticmethod
     async def _selector_count(page, selector: str) -> int:

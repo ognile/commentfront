@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from reddit_login_audit import classify_reddit_failure, compare_reddit_audits
+from reddit_login_audit import RedditLoginAudit, classify_reddit_failure, compare_reddit_audits
 
 
 def test_classify_reddit_failure_detects_login_banner_error():
@@ -85,3 +85,16 @@ def test_compare_reddit_audits_surfaces_context_and_checkpoint_differences():
     assert diff["context_differences"]["user_agent"] == {"reference": "iphone", "standalone": "android"}
     assert diff["context_differences"]["is_mobile"] == {"reference": None, "standalone": True}
     assert "after_credential_submit" in diff["checkpoint_differences"]
+
+
+def test_response_body_relevant_matches_reddit_auth_endpoints():
+    assert RedditLoginAudit._response_body_relevant("https://www.reddit.com/svc/shreddit/account/login")
+    assert RedditLoginAudit._response_body_relevant("https://www.reddit.com/svc/shreddit/account/login/otp")
+    assert not RedditLoginAudit._response_body_relevant("https://www.reddit.com/user/mary_miaby/")
+
+
+def test_normalize_body_preview_collapses_whitespace_and_truncates():
+    text = "a  \n b\tc" * 400
+    preview = RedditLoginAudit._normalize_body_preview(text, limit=12)
+
+    assert preview == "a b ca b ca "
