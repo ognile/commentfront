@@ -70,6 +70,10 @@ from reddit_login_bot import (
 )
 from reddit_bot import run_reddit_action
 from reddit_mission_store import RedditMissionScheduler, RedditMissionStore
+from reddit_rollout import (
+    execute_reddit_bulk_session_rollout,
+    load_reddit_rollout_report,
+)
 from name_dedupe_workflow import build_dedupe_plan, apply_dedupe_plan
 from premium_models import (
     PremiumProfileConfig,
@@ -194,6 +198,7 @@ premium_scheduler = PremiumScheduler(
 # Initialize Reddit mission store/scheduler (runner wired below once helpers exist)
 reddit_mission_store = RedditMissionStore()
 reddit_mission_scheduler: Optional[RedditMissionScheduler] = None
+reddit_bulk_rollout_tasks: Dict[str, asyncio.Task] = {}
 
 # =========================================================================
 # Media Store (ephemeral file-backed storage for queue jobs)
@@ -1516,6 +1521,15 @@ class RedditSessionInfo(BaseModel):
 class RedditSessionCreateRequest(BaseModel):
     credential_id: str
     proxy_id: Optional[str] = None
+
+
+class RedditSessionBulkCreateRequest(BaseModel):
+    lines: List[str]
+    fixture: bool = True
+    proxy_id: Optional[str] = None
+    source_label: Optional[str] = None
+    max_create_attempts: int = 2
+    wait_for_completion: bool = False
 
 
 class RedditReferenceLoginRequest(BaseModel):
@@ -5397,6 +5411,15 @@ def _resolve_effective_proxy(proxy_id: Optional[str] = None) -> Optional[str]:
     return proxy_url
 
 
+def _get_active_reddit_bulk_rollout() -> Optional[tuple[str, asyncio.Task]]:
+    for run_id, task in list(reddit_bulk_rollout_tasks.items()):
+        if task.done():
+            reddit_bulk_rollout_tasks.pop(run_id, None)
+            continue
+        return run_id, task
+    return None
+
+
 def _resolve_reddit_action_media_path(image_id: Optional[str]) -> Optional[str]:
     if not image_id:
         return None
@@ -5561,6 +5584,116 @@ async def create_reddit_session_endpoint(
         },
     )
     return result
+
+
+@app.post("/reddit/sessions/bulk-create")
+async def bulk_create_reddit_sessions_endpoint(
+    request: RedditSessionBulkCreateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    proxy_url = _resolve_effective_proxy(request.proxy_id)
+    if not proxy_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot create Reddit sessions: no proxy configured. Configure a default proxy or PROXY_URL.",
+        )
+
+    normalized_lines = [str(line or "").strip() for line in list(request.lines or []) if str(line or "").strip()]
+    if not normalized_lines:
+        raise HTTPException(status_code=400, detail="lines is required")
+
+    active = _get_active_reddit_bulk_rollout()
+    if active:
+        active_run_id, _task = active
+        raise HTTPException(
+            status_code=409,
+            detail=f"Reddit bulk session rollout already in progress: {active_run_id}",
+        )
+
+    async def broadcast_callback(update_type: str, data: dict):
+        await broadcast_update(update_type, data)
+
+    if request.wait_for_completion:
+        run_id = f"{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+        return await execute_reddit_bulk_session_rollout(
+            run_id=run_id,
+            lines=normalized_lines,
+            proxy_url=proxy_url,
+            proxy_source="proxy_id" if request.proxy_id else ("env" if get_system_proxy() else "runtime"),
+            fixture=request.fixture,
+            source_label=request.source_label,
+            max_create_attempts=request.max_create_attempts,
+            broadcast_callback=broadcast_callback,
+            credential_manager=credential_manager,
+        )
+
+    run_id = f"{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+    task = asyncio.create_task(
+        execute_reddit_bulk_session_rollout(
+            run_id=run_id,
+            lines=normalized_lines,
+            proxy_url=proxy_url,
+            proxy_source="proxy_id" if request.proxy_id else ("env" if get_system_proxy() else "runtime"),
+            fixture=request.fixture,
+            source_label=request.source_label,
+            max_create_attempts=request.max_create_attempts,
+            broadcast_callback=broadcast_callback,
+            credential_manager=credential_manager,
+        )
+    )
+    task.set_name(f"reddit_bulk_rollout_{run_id}")
+    reddit_bulk_rollout_tasks[run_id] = task
+
+    def _cleanup_bulk_rollout_task(completed_task: asyncio.Task, task_key: str = run_id) -> None:
+        reddit_bulk_rollout_tasks.pop(task_key, None)
+
+    task.add_done_callback(_cleanup_bulk_rollout_task)
+
+    await broadcast_update(
+        "reddit_bulk_create_dispatched",
+        {
+            "run_id": run_id,
+            "line_count": len(normalized_lines),
+            "source_label": request.source_label,
+        },
+    )
+    return {
+        "success": True,
+        "status": "dispatched",
+        "run_id": run_id,
+        "line_count": len(normalized_lines),
+        "source_label": request.source_label,
+        "report_status_url": f"/reddit/sessions/bulk-create/{run_id}",
+    }
+
+
+@app.get("/reddit/sessions/bulk-create/{run_id}")
+async def get_reddit_bulk_create_report_endpoint(
+    run_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    report = load_reddit_rollout_report(run_id)
+    if report:
+        return report
+
+    active = reddit_bulk_rollout_tasks.get(run_id)
+    if active and not active.done():
+        return {
+            "run_id": run_id,
+            "status": "running",
+            "results": [],
+            "summary": {
+                "total_accounts": 0,
+                "imported_accounts": 0,
+                "create_success_count": 0,
+                "test_success_count": 0,
+                "action_success_count": 0,
+                "active_sessions_count": 0,
+                "blocked_accounts_count": 0,
+            },
+        }
+
+    raise HTTPException(status_code=404, detail=f"Reddit bulk rollout report not found: {run_id}")
 
 
 @app.post("/reddit/debug/reference-login")
