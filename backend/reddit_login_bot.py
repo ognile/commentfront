@@ -169,17 +169,14 @@ async def login_reddit(
             login_requests = []
 
             def _capture_request(request):
-                url = request.url.lower()
-                if any(kw in url for kw in ("login", "auth", "captcha", "recaptcha", "svc/shreddit")):
-                    login_requests.append({"url": request.url, "method": request.method, "post_data": (request.post_data or "")[:500]})
-
-            def _capture_response(response):
-                url = response.url.lower()
-                if any(kw in url for kw in ("login", "auth", "svc/shreddit")):
-                    login_requests.append({"url": response.url, "status": response.status, "type": "response"})
+                try:
+                    url = request.url.lower()
+                    if any(kw in url for kw in ("login", "auth", "captcha", "recaptcha", "svc/shreddit")):
+                        login_requests.append({"url": request.url, "method": request.method, "post_data": (request.post_data or "")[:500]})
+                except Exception:
+                    pass
 
             page.on("request", _capture_request)
-            page.on("response", _capture_response)
 
             logger.info(f"[{profile_name}] starting reddit login with human-like interaction")
             await page.goto("https://www.reddit.com/login/", wait_until="domcontentloaded", timeout=45000)
