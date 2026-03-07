@@ -80,6 +80,19 @@ async def _log_auth_state(context, profile_name: str):
     return cookie_names
 
 
+async def _has_auth_cookies(context) -> bool:
+    cookies = await context.cookies()
+    names = {str(cookie.get("name") or "") for cookie in cookies}
+    return bool({"token_v2", "reddit_session"} & names)
+
+
+async def _login_inputs_present(page: Page) -> bool:
+    try:
+        return await page.locator('input[name="username"], input[name="password"]').count() > 0
+    except Exception:
+        return False
+
+
 async def _goto_with_retry(
     page: Page,
     url: str,
@@ -101,6 +114,54 @@ async def _goto_with_retry(
                 raise
             await page.wait_for_timeout(1500 * attempt)
     raise last_exc
+
+
+async def _wait_for_authenticated_surface(page: Page, context, *, profile_name: str, timeout_ms: int = 15000) -> bool:
+    elapsed = 0
+    step_ms = 1000
+
+    while elapsed <= timeout_ms:
+        current_url = page.url.lower()
+        login_inputs = await _login_inputs_present(page)
+        auth_cookies = await _has_auth_cookies(context)
+
+        if auth_cookies and not login_inputs:
+            logger.info(
+                f"[{profile_name}] authenticated surface detected via cookies on {page.url}"
+            )
+            return True
+
+        if "/login" not in current_url and not login_inputs:
+            logger.info(
+                f"[{profile_name}] authenticated surface detected via url transition to {page.url}"
+            )
+            return True
+
+        await page.wait_for_timeout(step_ms)
+        elapsed += step_ms
+
+    logger.warning(f"[{profile_name}] post-login surface did not settle within {timeout_ms}ms")
+    return False
+
+
+async def _goto_in_authenticated_context(context, page: Page, url: str, *, profile_name: str) -> Page:
+    try:
+        await _goto_with_retry(page, url, profile_name=profile_name)
+        return page
+    except Exception as exc:
+        if "ERR_EMPTY_RESPONSE" not in str(exc):
+            raise
+
+        logger.warning(
+            f"[{profile_name}] navigation to {url} failed on current page after auth; retrying in fresh page"
+        )
+        fresh_page = await context.new_page()
+        await _goto_with_retry(fresh_page, url, profile_name=profile_name)
+        try:
+            await page.close()
+        except Exception:
+            pass
+        return fresh_page
 
 
 async def _handle_otp(page: Page, credential: dict) -> bool:
@@ -247,11 +308,11 @@ async def login_reddit(
                 logger.info(f"[{profile_name}] OTP submitted on reddit.com")
                 await page.wait_for_timeout(3000)
 
-            await _goto_with_retry(page, "https://www.reddit.com/", profile_name=profile_name)
-            await page.wait_for_timeout(2500)
+            await _wait_for_authenticated_surface(page, context, profile_name=profile_name)
+            await page.wait_for_timeout(1500)
             await _dismiss_cookie_banner(page)
             await save_debug_screenshot(page, f"reddit_after_login_{profile_name}")
-            logger.info(f"[{profile_name}] after login home URL: {page.url}")
+            logger.info(f"[{profile_name}] post-login URL: {page.url}")
             await _log_auth_state(context, profile_name)
 
             try:
@@ -261,7 +322,12 @@ async def login_reddit(
 
             profile_url = credential.get("profile_url") or f"https://www.reddit.com/user/{credential.get('username')}/"
             logger.info(f"[{profile_name}] navigating to profile: {profile_url}")
-            await _goto_with_retry(page, profile_url, profile_name=profile_name)
+            page = await _goto_in_authenticated_context(
+                context,
+                page,
+                profile_url,
+                profile_name=profile_name,
+            )
             await page.wait_for_timeout(2500)
             logger.info(f"[{profile_name}] profile page URL: {page.url}")
             await save_debug_screenshot(page, f"reddit_profile_page_{profile_name}")
