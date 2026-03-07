@@ -14,6 +14,7 @@ import { Toaster, toast } from 'sonner'
 import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AdminTab } from '@/components/admin/AdminTab'
+import { RedditTab } from '@/components/reddit/RedditTab'
 import { ProfileHealthConsole } from '@/components/analytics/ProfileHealthConsole'
 import { CampaignReliabilityAuditCard, type CampaignReliabilityAuditReport } from '@/components/analytics/CampaignReliabilityAuditCard'
 import { API_BASE, WS_BASE } from '@/lib/api'
@@ -3420,6 +3421,7 @@ function App() {
               <BarChart3 className="w-4 h-4 mr-1" />
               Analytics
             </TabsTrigger>
+            <TabsTrigger value="reddit">Reddit</TabsTrigger>
             {user?.role === 'admin' && (
               <TabsTrigger value="admin">
                 <Shield className="w-4 h-4 mr-1" />
@@ -5345,6 +5347,10 @@ function App() {
                 )}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="reddit" className="mt-6">
+            <RedditTab />
           </TabsContent>
 
           {user?.role === 'admin' && (

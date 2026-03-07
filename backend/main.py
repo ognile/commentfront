@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Set, Literal
+from typing import Any, List, Optional, Dict, Set, Literal
 
 # Authentication imports
 from auth import create_access_token, create_refresh_token, decode_token, verify_password
@@ -47,6 +47,7 @@ from comment_bot import (
     DEFAULT_USER_AGENT,
 )
 from fb_session import FacebookSession, list_saved_sessions
+from reddit_session import RedditSession, list_saved_reddit_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
 from draft_manager import DraftManager
@@ -61,6 +62,12 @@ from queue_manager import (
 )
 from login_bot import create_session_from_credentials, refresh_session_profile_name, refresh_session_picture, fetch_profile_data_from_cookies
 from browser_manager import get_browser_manager, UPLOAD_DIR
+from reddit_login_bot import (
+    create_session_from_credentials as create_reddit_session_from_credentials,
+    test_session as test_reddit_session,
+)
+from reddit_bot import run_reddit_action
+from reddit_mission_store import RedditMissionScheduler, RedditMissionStore
 from name_dedupe_workflow import build_dedupe_plan, apply_dedupe_plan
 from premium_models import (
     PremiumProfileConfig,
@@ -181,6 +188,10 @@ premium_scheduler = PremiumScheduler(
     store=premium_store,
     orchestrator=premium_orchestrator,
 )
+
+# Initialize Reddit mission store/scheduler (runner wired below once helpers exist)
+reddit_mission_store = RedditMissionStore()
+reddit_mission_scheduler: Optional[RedditMissionScheduler] = None
 
 # =========================================================================
 # Media Store (ephemeral file-backed storage for queue jobs)
@@ -1402,15 +1413,33 @@ class TagUpdateRequest(BaseModel):
 class CredentialAddRequest(BaseModel):
     uid: str
     password: str
+    platform: Literal["facebook", "reddit"] = "facebook"
     secret: Optional[str] = None
     profile_name: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    email_password: Optional[str] = None
+    profile_url: Optional[str] = None
+    display_name: Optional[str] = None
+    tags: Optional[List[str]] = None
+    fixture: bool = False
 
 
 class CredentialInfo(BaseModel):
+    credential_id: Optional[str] = None
     uid: str
+    platform: Literal["facebook", "reddit"] = "facebook"
+    username: Optional[str] = None
+    email: Optional[str] = None
     profile_name: Optional[str]
+    display_name: Optional[str] = None
+    profile_url: Optional[str] = None
+    tags: List[str] = []
+    fixture: bool = False
+    linked_session_id: Optional[str] = None
     has_secret: bool
     created_at: Optional[str]
+    updated_at: Optional[str] = None
     session_connected: bool = False
     session_valid: Optional[bool] = None
     session_profile_name: Optional[str] = None  # Profile name from the linked session
@@ -1461,6 +1490,95 @@ class ProxyTestResult(BaseModel):
     response_time_ms: Optional[int] = None
     ip: Optional[str] = None
     error: Optional[str] = None
+
+
+class RedditSessionInfo(BaseModel):
+    file: str
+    platform: Literal["reddit"] = "reddit"
+    profile_name: str
+    display_name: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    profile_url: Optional[str] = None
+    extracted_at: Optional[str] = None
+    valid: bool
+    proxy: Optional[str] = None
+    proxy_masked: Optional[str] = None
+    proxy_source: Optional[str] = None
+    tags: List[str] = []
+    fixture: bool = False
+    linked_credential_id: Optional[str] = None
+    warmup_state: Dict[str, Any] = {}
+
+
+class RedditSessionCreateRequest(BaseModel):
+    credential_id: str
+    proxy_id: Optional[str] = None
+
+
+class RedditBulkSeedRequest(BaseModel):
+    lines: List[str]
+    fixture: bool = True
+
+
+class RedditActionRequest(BaseModel):
+    profile_name: str
+    action: Literal[
+        "browse_feed",
+        "upvote",
+        "open_target",
+        "create_post",
+        "comment_post",
+        "reply_comment",
+        "upload_media",
+    ]
+    url: Optional[str] = None
+    text: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    subreddit: Optional[str] = None
+    image_id: Optional[str] = None
+
+
+class RedditMissionCadence(BaseModel):
+    type: Literal["once", "daily", "interval_hours"] = "once"
+    hour: Optional[int] = None
+    minute: Optional[int] = None
+    interval_hours: Optional[int] = None
+
+
+class RedditMissionCreateRequest(BaseModel):
+    profile_name: str
+    action: Literal[
+        "browse_feed",
+        "upvote",
+        "open_target",
+        "create_post",
+        "comment_post",
+        "reply_comment",
+        "upload_media",
+    ]
+    target_url: Optional[str] = None
+    subreddit: Optional[str] = None
+    brief: Optional[str] = None
+    exact_text: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    image_id: Optional[str] = None
+    cadence: RedditMissionCadence = RedditMissionCadence()
+    verification_requirements: Optional[List[str]] = None
+
+
+class RedditMissionUpdateRequest(BaseModel):
+    status: Optional[Literal["active", "paused", "completed"]] = None
+    brief: Optional[str] = None
+    exact_text: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    image_id: Optional[str] = None
+    target_url: Optional[str] = None
+    subreddit: Optional[str] = None
+    cadence: Optional[RedditMissionCadence] = None
 
 
 class SessionCreateRequest(BaseModel):
@@ -5034,39 +5152,63 @@ async def get_config(current_user: dict = Depends(get_current_user)) -> Dict:
 
 # Credential Endpoints
 @app.get("/credentials", response_model=List[CredentialInfo])
-async def get_credentials(current_user: dict = Depends(get_current_user)):
+async def get_credentials(
+    platform: Optional[Literal["facebook", "reddit"]] = Query(default=None),
+    current_user: dict = Depends(get_current_user),
+):
     """Get all saved credentials (without passwords)."""
     credential_manager.load_credentials()
-    credentials = credential_manager.get_all_credentials()
-    sessions = list_saved_sessions()
+    credentials = credential_manager.get_all_credentials(platform=platform)
+    fb_sessions = list_saved_sessions()
+    reddit_sessions = list_saved_reddit_sessions()
 
-    sessions_by_profile = {
+    fb_sessions_by_profile = {
         (s.get("profile_name") or "").strip().lower(): s
-        for s in sessions
+        for s in fb_sessions
         if s.get("profile_name")
     }
-    sessions_by_user_id = {
+    fb_sessions_by_user_id = {
         str(s.get("user_id")): s
-        for s in sessions
+        for s in fb_sessions
         if s.get("user_id") is not None
+    }
+    reddit_sessions_by_profile = {
+        (s.get("profile_name") or "").strip().lower(): s
+        for s in reddit_sessions
+        if s.get("profile_name")
+    }
+    reddit_sessions_by_credential = {
+        str(s.get("linked_credential_id")): s
+        for s in reddit_sessions
+        if s.get("linked_credential_id")
     }
 
     enriched: List[Dict] = []
     for cred in credentials:
         session = None
+        cred_platform = str(cred.get("platform") or "facebook").strip().lower()
+        profile_name = str(cred.get("profile_name") or "").strip()
 
-        profile_name = cred.get("profile_name")
-        if profile_name:
-            session = sessions_by_profile.get(profile_name.strip().lower())
-
-        if session is None:
-            session = sessions_by_user_id.get(str(cred.get("uid")))
+        if cred_platform == "reddit":
+            if profile_name:
+                session = reddit_sessions_by_profile.get(profile_name.lower())
+            if session is None and cred.get("credential_id"):
+                session = reddit_sessions_by_credential.get(str(cred.get("credential_id")))
+        else:
+            if profile_name:
+                session = fb_sessions_by_profile.get(profile_name.lower())
+            if session is None:
+                session = fb_sessions_by_user_id.get(str(cred.get("uid")))
 
         enriched.append(
             {
                 **cred,
                 "session_connected": session is not None,
-                "session_valid": (session.get("has_valid_cookies") if session else None),
+                "session_valid": (
+                    session.get("has_valid_session") if cred_platform == "reddit" and session else
+                    session.get("has_valid_cookies") if session else
+                    None
+                ),
                 "session_profile_name": (session.get("profile_name") if session else None),
             }
         )
@@ -5077,13 +5219,21 @@ async def get_credentials(current_user: dict = Depends(get_current_user)):
 @app.post("/credentials")
 async def add_credential(request: CredentialAddRequest, current_user: dict = Depends(get_current_user)) -> Dict:
     """Add a new credential."""
-    credential_manager.add_credential(
+    storage_key = credential_manager.add_credential(
         uid=request.uid,
         password=request.password,
         secret=request.secret,
-        profile_name=request.profile_name
+        profile_name=request.profile_name,
+        platform=request.platform,
+        username=request.username,
+        email=request.email,
+        email_password=request.email_password,
+        profile_url=request.profile_url,
+        display_name=request.display_name,
+        tags=request.tags,
+        fixture=request.fixture,
     )
-    return {"success": True, "uid": request.uid}
+    return {"success": True, "uid": request.uid, "credential_id": storage_key, "platform": request.platform}
 
 
 @app.post("/credentials/bulk-import")
@@ -5212,6 +5362,360 @@ async def bulk_import_credentials(file: UploadFile = File(...), current_user: di
         "credentials_only": imported - sessions_created,
         "errors": errors,
         "total_lines": len(lines)
+    }
+
+
+def _mask_proxy_value(proxy_value: Optional[str]) -> Optional[str]:
+    if not proxy_value:
+        return None
+    try:
+        parsed = urlparse(proxy_value)
+        return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+    except Exception:
+        return None
+
+
+def _resolve_effective_proxy(proxy_id: Optional[str] = None) -> Optional[str]:
+    proxy_url = get_system_proxy()
+    if proxy_id:
+        proxy = proxy_manager.get_proxy(proxy_id)
+        if not proxy:
+            raise HTTPException(status_code=404, detail=f"Proxy not found: {proxy_id}")
+        proxy_url = proxy.get("url")
+    return proxy_url
+
+
+def _resolve_reddit_action_media_path(image_id: Optional[str]) -> Optional[str]:
+    if not image_id:
+        return None
+    item = _get_media_or_none(image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Media not found or expired")
+    return str(item.get("path"))
+
+
+async def _execute_reddit_action_payload(payload: Dict[str, Any], *, proxy_override: Optional[str] = None) -> Dict[str, Any]:
+    profile_name = str(payload.get("profile_name") or "").strip()
+    if not profile_name:
+        raise HTTPException(status_code=400, detail="profile_name is required")
+
+    session = RedditSession(profile_name)
+    if not session.load():
+        raise HTTPException(status_code=404, detail=f"Reddit session not found: {profile_name}")
+
+    image_path = _resolve_reddit_action_media_path(payload.get("image_id"))
+    return await run_reddit_action(
+        session,
+        action=str(payload.get("action") or "").strip(),
+        proxy_url=proxy_override,
+        url=payload.get("url") or payload.get("target_url"),
+        text=payload.get("text") or payload.get("exact_text") or payload.get("brief"),
+        title=payload.get("title"),
+        body=payload.get("body") or payload.get("brief"),
+        subreddit=payload.get("subreddit"),
+        image_path=image_path,
+    )
+
+
+@app.get("/reddit/credentials", response_model=List[CredentialInfo])
+async def get_reddit_credentials(current_user: dict = Depends(get_current_user)):
+    return await get_credentials(platform="reddit", current_user=current_user)
+
+
+@app.post("/reddit/credentials/bulk-import")
+async def bulk_import_reddit_credentials(
+    file: UploadFile = File(...),
+    fixture: bool = True,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    content = await file.read()
+    lines = [line.strip() for line in content.decode("utf-8").splitlines() if line.strip()]
+
+    imported = 0
+    errors: List[str] = []
+    created_ids: List[str] = []
+
+    for idx, line in enumerate(lines):
+        try:
+            storage_key = credential_manager.import_reddit_account_line(
+                line,
+                fixture=fixture,
+                tags=["reddit", "fixture"] if fixture else ["reddit"],
+            )
+            created_ids.append(storage_key)
+            imported += 1
+        except Exception as exc:
+            errors.append(f"Line {idx + 1}: {exc}")
+
+    return {
+        "platform": "reddit",
+        "imported": imported,
+        "created_ids": created_ids,
+        "errors": errors,
+        "total_lines": len(lines),
+    }
+
+
+@app.post("/reddit/credentials/seed")
+async def seed_reddit_credentials(
+    request: RedditBulkSeedRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    imported = 0
+    errors: List[str] = []
+    created_ids: List[str] = []
+    for idx, line in enumerate(request.lines):
+        try:
+            storage_key = credential_manager.import_reddit_account_line(
+                line,
+                fixture=request.fixture,
+                tags=["reddit", "fixture"] if request.fixture else ["reddit"],
+            )
+            imported += 1
+            created_ids.append(storage_key)
+        except Exception as exc:
+            errors.append(f"Line {idx + 1}: {exc}")
+    return {
+        "platform": "reddit",
+        "imported": imported,
+        "created_ids": created_ids,
+        "errors": errors,
+    }
+
+
+@app.get("/reddit/sessions", response_model=List[RedditSessionInfo])
+async def get_reddit_sessions(current_user: dict = Depends(get_current_user)):
+    sessions = list_saved_reddit_sessions()
+    results = []
+    for item in sessions:
+        stored_proxy = item.get("proxy")
+        proxy_masked = _mask_proxy_value(stored_proxy or get_system_proxy())
+        proxy_source = "session" if stored_proxy else ("env" if get_system_proxy() else None)
+        results.append(
+            RedditSessionInfo(
+                file=item["file"],
+                profile_name=item["profile_name"],
+                display_name=item.get("display_name"),
+                username=item.get("username"),
+                email=item.get("email"),
+                profile_url=item.get("profile_url"),
+                extracted_at=item.get("extracted_at"),
+                valid=bool(item.get("has_valid_session")),
+                proxy="session" if stored_proxy else ("service" if get_system_proxy() else None),
+                proxy_masked=proxy_masked,
+                proxy_source=proxy_source,
+                tags=item.get("tags", []),
+                fixture=bool(item.get("fixture", False)),
+                linked_credential_id=item.get("linked_credential_id"),
+                warmup_state=item.get("warmup_state", {}),
+            )
+        )
+    return results
+
+
+@app.post("/reddit/sessions/create")
+async def create_reddit_session_endpoint(
+    request: RedditSessionCreateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    proxy_url = _resolve_effective_proxy(request.proxy_id)
+    if not proxy_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot create Reddit session: no proxy configured. Configure a default proxy or PROXY_URL.",
+        )
+
+    async def broadcast_callback(update_type: str, data: dict):
+        await broadcast_update(update_type, data)
+
+    await broadcast_update(
+        "reddit_session_create_start",
+        {"credential_id": request.credential_id, "proxy_id": request.proxy_id},
+    )
+    result = await create_reddit_session_from_credentials(
+        credential_uid=request.credential_id,
+        proxy_url=proxy_url,
+        broadcast_callback=broadcast_callback,
+    )
+    await broadcast_update(
+        "reddit_session_create_complete",
+        {
+            "credential_id": request.credential_id,
+            "success": result.get("success", False),
+            "profile_name": result.get("profile_name"),
+            "error": result.get("error"),
+            "needs_attention": result.get("needs_attention", False),
+        },
+    )
+    return result
+
+
+@app.post("/reddit/sessions/{profile_name}/test")
+async def test_reddit_session_endpoint(
+    profile_name: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    session = RedditSession(profile_name)
+    return await test_reddit_session(session, _resolve_effective_proxy())
+
+
+@app.delete("/reddit/sessions/{profile_name}")
+async def delete_reddit_session(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    session = RedditSession(profile_name)
+    if not session.load():
+        raise HTTPException(status_code=404, detail=f"Reddit session not found: {profile_name}")
+    session.delete()
+    return {"success": True, "profile_name": profile_name, "platform": "reddit"}
+
+
+@app.post("/reddit/actions/run")
+async def run_reddit_action_endpoint(
+    request: RedditActionRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    proxy_url = _resolve_effective_proxy()
+    await broadcast_update(
+        "reddit_action_start",
+        {"profile_name": request.profile_name, "action": request.action},
+    )
+    result = await _execute_reddit_action_payload(request.model_dump(), proxy_override=proxy_url)
+    await broadcast_update(
+        "reddit_action_complete",
+        {
+            "profile_name": request.profile_name,
+            "action": request.action,
+            "success": result.get("success", False),
+            "error": result.get("error"),
+        },
+    )
+    return result
+
+
+def _mission_to_action_payload(mission: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "profile_name": mission.get("profile_name"),
+        "action": mission.get("action"),
+        "target_url": mission.get("target_url"),
+        "subreddit": mission.get("subreddit"),
+        "brief": mission.get("brief"),
+        "exact_text": mission.get("exact_text"),
+        "title": mission.get("title"),
+        "body": mission.get("body"),
+        "image_id": mission.get("image_id"),
+    }
+
+
+async def _run_single_reddit_mission(mission: Dict[str, Any]) -> Dict[str, Any]:
+    payload = _mission_to_action_payload(mission)
+    await broadcast_update(
+        "reddit_mission_start",
+        {
+            "mission_id": mission.get("id"),
+            "profile_name": mission.get("profile_name"),
+            "action": mission.get("action"),
+        },
+    )
+    result = await _execute_reddit_action_payload(payload, proxy_override=_resolve_effective_proxy())
+    await broadcast_update(
+        "reddit_mission_complete",
+        {
+            "mission_id": mission.get("id"),
+            "profile_name": mission.get("profile_name"),
+            "action": mission.get("action"),
+            "success": result.get("success", False),
+            "error": result.get("error"),
+        },
+    )
+    return result
+
+
+if reddit_mission_scheduler is None:
+    reddit_mission_scheduler = RedditMissionScheduler(
+        store=reddit_mission_store,
+        runner=_run_single_reddit_mission,
+    )
+
+
+@app.get("/reddit/missions")
+async def list_reddit_missions(current_user: dict = Depends(get_current_user)) -> Dict:
+    return {"missions": reddit_mission_store.list_missions()}
+
+
+@app.post("/reddit/missions")
+async def create_reddit_mission(
+    request: RedditMissionCreateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    mission = reddit_mission_store.create_mission(
+        {
+            "profile_name": request.profile_name,
+            "action": request.action,
+            "target_url": request.target_url,
+            "subreddit": request.subreddit,
+            "brief": request.brief,
+            "exact_text": request.exact_text,
+            "title": request.title,
+            "body": request.body,
+            "image_id": request.image_id,
+            "verification_requirements": request.verification_requirements or [],
+            "cadence": request.cadence.model_dump(),
+            "created_by": current_user.get("username"),
+        }
+    )
+    return {"success": True, "mission": mission}
+
+
+@app.put("/reddit/missions/{mission_id}")
+async def update_reddit_mission(
+    mission_id: str,
+    request: RedditMissionUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    updates = {k: v for k, v in request.model_dump(exclude_none=True).items()}
+    if "cadence" in updates and isinstance(updates["cadence"], RedditMissionCadence):
+        updates["cadence"] = updates["cadence"].model_dump()
+    mission = reddit_mission_store.update_mission(mission_id, updates)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Reddit mission not found")
+    return {"success": True, "mission": mission}
+
+
+@app.delete("/reddit/missions/{mission_id}")
+async def delete_reddit_mission(
+    mission_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    if not reddit_mission_store.delete_mission(mission_id):
+        raise HTTPException(status_code=404, detail="Reddit mission not found")
+    return {"success": True, "mission_id": mission_id}
+
+
+@app.post("/reddit/missions/{mission_id}/run-now")
+async def run_reddit_mission_now(
+    mission_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    mission = reddit_mission_store.get_mission(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Reddit mission not found")
+    result = await _run_single_reddit_mission(mission)
+    reddit_mission_store.mark_run_result(mission_id, result)
+    return {"success": True, "result": result}
+
+
+@app.post("/reddit/missions/run-due")
+async def run_due_reddit_missions(current_user: dict = Depends(get_current_user)) -> Dict:
+    results = await reddit_mission_scheduler.run_due_now()
+    return {"success": True, "count": len(results), "results": results}
+
+
+@app.get("/reddit/missions/status")
+async def reddit_mission_status(current_user: dict = Depends(get_current_user)) -> Dict:
+    due = reddit_mission_store.due_missions()
+    return {
+        "scheduler_running": bool(reddit_mission_scheduler and reddit_mission_scheduler._task and not reddit_mission_scheduler._task.done()),
+        "mission_count": len(reddit_mission_store.list_missions()),
+        "due_count": len(due),
     }
 
 
@@ -5357,19 +5861,27 @@ async def import_session_with_cookies(
 
 
 @app.delete("/credentials/{uid}")
-async def delete_credential(uid: str, current_user: dict = Depends(get_current_user)) -> Dict:
+async def delete_credential(
+    uid: str,
+    platform: Optional[Literal["facebook", "reddit"]] = Query(default=None),
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
     """Delete a credential."""
-    success = credential_manager.delete_credential(uid)
+    success = credential_manager.delete_credential(uid, platform=platform)
     if success:
-        return {"success": True, "uid": uid}
+        return {"success": True, "uid": uid, "platform": platform}
     raise HTTPException(status_code=404, detail=f"Credential not found: {uid}")
 
 
 @app.get("/otp/{uid}", response_model=OTPResponse)
-async def get_otp(uid: str, current_user: dict = Depends(get_current_user)) -> OTPResponse:
+async def get_otp(
+    uid: str,
+    platform: Optional[Literal["facebook", "reddit"]] = Query(default=None),
+    current_user: dict = Depends(get_current_user),
+) -> OTPResponse:
     """Generate current OTP code for a UID."""
     credential_manager.load_credentials()
-    result = credential_manager.generate_otp(uid)
+    result = credential_manager.generate_otp(uid, platform=platform)
     return OTPResponse(
         code=result.get("code"),
         remaining_seconds=result.get("remaining_seconds", 0),
@@ -6872,6 +7384,9 @@ async def startup_event():
     # Start premium automation scheduler
     await premium_scheduler.start()
     logger.info("Premium scheduler started on startup")
+    if reddit_mission_scheduler:
+        await reddit_mission_scheduler.start()
+        logger.info("Reddit mission scheduler started on startup")
 
 
 @app.on_event("shutdown")
@@ -6885,6 +7400,9 @@ async def shutdown_event():
     logger.info("Appeal scheduler stopped on shutdown")
     await premium_scheduler.stop()
     logger.info("Premium scheduler stopped on shutdown")
+    if reddit_mission_scheduler:
+        await reddit_mission_scheduler.stop()
+        logger.info("Reddit mission scheduler stopped on shutdown")
 
 
 # =========================================================================

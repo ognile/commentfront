@@ -47,6 +47,7 @@ async def create_browser_context(
     timezone_id: str = "",
     locale: str = "en-US",
     headless: bool = True,
+    storage_state: Optional[Dict] = None,
 ) -> tuple[Browser, BrowserContext]:
     """Create a stealth-enabled browser context with standard config.
 
@@ -75,6 +76,9 @@ async def create_browser_context(
         "locale": locale,
         "timezone_id": timezone_id,
     }
+
+    if storage_state:
+        context_options["storage_state"] = storage_state
 
     if proxy_url:
         proxy_config = build_playwright_proxy(proxy_url)
