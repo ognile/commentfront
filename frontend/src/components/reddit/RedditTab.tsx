@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { Mouse } from 'lucide-react'
 
 import { apiFetch } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -9,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import type { RemoteSessionTarget } from '@/components/remote/types'
 
 interface RedditCredential {
   credential_id: string
@@ -64,7 +66,11 @@ const ACTIONS = [
   'upload_media',
 ] as const
 
-export function RedditTab() {
+interface RedditTabProps {
+  onOpenRemoteControl?: (session: RemoteSessionTarget) => void
+}
+
+export function RedditTab({ onOpenRemoteControl }: RedditTabProps) {
   const [credentials, setCredentials] = useState<RedditCredential[]>([])
   const [sessions, setSessions] = useState<RedditSession[]>([])
   const [missions, setMissions] = useState<RedditMission[]>([])
@@ -341,9 +347,27 @@ export function RedditTab() {
                     <div className="font-medium text-[#222222]">{session.display_name || session.profile_name}</div>
                     <div className="text-xs text-[#666666]">{session.profile_url || session.username}</div>
                   </div>
-                  <Badge variant={session.valid ? 'default' : 'destructive'}>
-                    {session.valid ? 'Valid' : 'Needs attention'}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={session.valid ? 'default' : 'destructive'}>
+                      {session.valid ? 'Valid' : 'Needs attention'}
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        onOpenRemoteControl?.({
+                          platform: 'reddit',
+                          profileName: session.profile_name,
+                          displayName: session.display_name || session.profile_name,
+                          valid: session.valid,
+                        })
+                      }
+                      disabled={!session.valid || !onOpenRemoteControl}
+                      className="h-8 px-2"
+                    >
+                      <Mouse className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                 </div>
               </div>
             ))}

@@ -15,8 +15,10 @@ import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AdminTab } from '@/components/admin/AdminTab'
 import { RedditTab } from '@/components/reddit/RedditTab'
+import { RemoteControlModal } from '@/components/remote/RemoteControlModal'
 import { ProfileHealthConsole } from '@/components/analytics/ProfileHealthConsole'
 import { CampaignReliabilityAuditCard, type CampaignReliabilityAuditReport } from '@/components/analytics/CampaignReliabilityAuditCard'
+import { useRemoteControl } from '@/hooks/useRemoteControl'
 import { API_BASE, WS_BASE, apiFetch } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
 import { PearlBackground } from '@/components/PearlBackground'
@@ -219,21 +221,6 @@ interface SessionCreateStatus {
   error?: string;
 }
 
-// Remote control interfaces
-interface ActionLogEntry {
-  id: string;
-  timestamp: string;
-  type: 'click' | 'scroll' | 'key' | 'navigate' | 'type';
-  details: string;
-  status: 'sent' | 'success' | 'failed';
-}
-
-interface PendingUpload {
-  filename: string;
-  size: number;
-  imageId: string;
-}
-
 interface GeminiObservation {
   timestamp: string;
   screenshot_name: string;
@@ -361,10 +348,6 @@ interface PremiumStatusPayload {
     synced_at?: string;
   } | null;
 }
-
-// Mobile viewport dimensions
-const VIEWPORT_WIDTH = 393;
-const VIEWPORT_HEIGHT = 873;
 
 // Format duration in minutes to human-readable string
 const formatDuration = (minutes: number): string => {
@@ -590,24 +573,9 @@ function App() {
   const authRequestEpochRef = useRef(0);
   const bootstrapAuthEpochRef = useRef<number | null>(null);
   const queueRequestIdRef = useRef(0);
-
-  // Remote control state
-  const [remoteModalOpen, setRemoteModalOpen] = useState(false);
-  const [remoteSession, setRemoteSession] = useState<Session | null>(null);
-  const [remoteFrame, setRemoteFrame] = useState<string | null>(null);
-  const [remoteConnected, setRemoteConnected] = useState(false);
-  const [remoteConnecting, setRemoteConnecting] = useState(false);
-  const [remoteProgress, setRemoteProgress] = useState<string | null>(null);
-  const [, setRemoteUrl] = useState('');
-  const [remoteUrlInput, setRemoteUrlInput] = useState('');
-  const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
-  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
-  const [uploadReady, setUploadReady] = useState(false);
-  const remoteWsRef = useRef<WebSocket | null>(null);
-  const screenshotContainerRef = useRef<HTMLDivElement>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimeoutRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
-  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const remoteControl = useRemoteControl();
 
   const getAuthHeaders = useCallback((): HeadersInit => {
     const token = getAccessToken();
@@ -3146,370 +3114,6 @@ function App() {
     return () => window.clearInterval(interval);
   }, [activeTab, authReady, refreshAnalyticsHealth]);
 
-  // ============================================================================
-  // Remote Control Functions
-  // ============================================================================
-
-  const connectRemoteWebSocket = useCallback((sessionId: string) => {
-    if (remoteWsRef.current) {
-      remoteWsRef.current.close();
-    }
-
-    setRemoteConnecting(true);
-    setRemoteProgress(null);
-
-    try {
-      const accessToken = getAccessToken();
-      if (!accessToken) {
-        toast.error('Not authenticated');
-        setRemoteConnecting(false);
-        return;
-      }
-      const ws = new WebSocket(`${WS_BASE}/ws/session/${encodeURIComponent(sessionId)}/control?token=${accessToken}`);
-
-      ws.onopen = () => {
-        console.log('Remote WS connected');
-        setRemoteConnected(true);
-        setRemoteConnecting(false);
-        reconnectAttemptRef.current = 0;
-        toast.success('Browser connected');
-
-        // Start heartbeat to detect dead connections
-        if (heartbeatIntervalRef.current) {
-          clearInterval(heartbeatIntervalRef.current);
-        }
-        heartbeatIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ping' }));
-          }
-        }, 30000); // Ping every 30 seconds
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-
-          switch (message.type) {
-            case 'frame':
-              setRemoteFrame(message.data.image);
-              setRemoteProgress(null);
-              break;
-            case 'state':
-              setRemoteUrl(message.data.url || '');
-              setRemoteUrlInput(message.data.url || '');
-              break;
-            case 'progress':
-              setRemoteProgress(message.data.stage);
-              break;
-            case 'browser_ready':
-              setRemoteProgress(null);
-              toast.success('Browser ready');
-              break;
-            case 'session_auto_heal_start':
-              setRemoteProgress('auto_heal');
-              toast.loading('Recovering browser session...', { id: 'remote-auto-heal' });
-              break;
-            case 'stream_restarted':
-              setRemoteProgress('stream_restarted');
-              toast.success('Browser stream restarted');
-              break;
-            case 'session_auto_heal_done':
-              if (message.data?.success) {
-                setRemoteProgress(null);
-                toast.success('Browser session recovered', { id: 'remote-auto-heal' });
-              } else {
-                toast.error(message.data?.error || 'Browser recovery failed', { id: 'remote-auto-heal' });
-              }
-              break;
-            case 'session_idle_timeout_close':
-              toast('Session closed after 5 minutes of idle time');
-              break;
-            case 'action_result':
-              setActionLog(prev => prev.map(entry =>
-                entry.id === message.data.action_id
-                  ? { ...entry, status: message.data.success ? 'success' : 'failed' }
-                  : entry
-              ));
-              break;
-            case 'error':
-              toast.error(message.data.message);
-              break;
-          }
-        } catch (e) {
-          console.error('Failed to parse remote WS message:', e);
-        }
-      };
-
-      ws.onclose = () => {
-        setRemoteConnected(false);
-        setRemoteConnecting(false);
-
-        // Clear heartbeat interval
-        if (heartbeatIntervalRef.current) {
-          clearInterval(heartbeatIntervalRef.current);
-          heartbeatIntervalRef.current = null;
-        }
-
-        // Auto-reconnect with exponential backoff
-        if (remoteModalOpen && reconnectAttemptRef.current < 5) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 10000);
-          toast.loading('Reconnecting...', { id: 'reconnect' });
-          reconnectTimeoutRef.current = setTimeout(() => {
-            reconnectAttemptRef.current++;
-            if (remoteSession) {
-              connectRemoteWebSocket(remoteSession.profile_name);
-            }
-          }, delay);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('Remote WS error:', error);
-      };
-
-      remoteWsRef.current = ws;
-    } catch (error) {
-      console.error('Failed to create remote WebSocket:', error);
-      setRemoteConnecting(false);
-    }
-  }, [remoteModalOpen, remoteSession]);
-
-  const disconnectRemoteWebSocket = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    if (heartbeatIntervalRef.current) {
-      clearInterval(heartbeatIntervalRef.current);
-      heartbeatIntervalRef.current = null;
-    }
-    if (remoteWsRef.current) {
-      remoteWsRef.current.close();
-      remoteWsRef.current = null;
-    }
-    setRemoteConnected(false);
-    setRemoteConnecting(false);
-  }, []);
-
-  const sendRemoteAction = useCallback((action: { type: string; data: Record<string, unknown> }) => {
-    if (remoteWsRef.current?.readyState === WebSocket.OPEN) {
-      const actionId = crypto.randomUUID();
-      remoteWsRef.current.send(JSON.stringify({ ...action, action_id: actionId }));
-      return actionId;
-    }
-    return null;
-  }, []);
-
-  const addActionLogEntry = useCallback((type: ActionLogEntry['type'], details: string, actionId: string) => {
-    const entry: ActionLogEntry = {
-      id: actionId,
-      timestamp: new Date().toISOString(),
-      type,
-      details,
-      status: 'sent'
-    };
-    setActionLog(prev => [entry, ...prev].slice(0, 100));
-  }, []);
-
-  const openRemoteModal = (session: Session) => {
-    setRemoteSession(session);
-    setRemoteModalOpen(true);
-    setRemoteFrame(null);
-    setActionLog([]);
-    setPendingUpload(null);
-    setUploadReady(false);
-    connectRemoteWebSocket(session.profile_name);
-  };
-
-  const closeRemoteModal = () => {
-    disconnectRemoteWebSocket();
-    setRemoteModalOpen(false);
-    setRemoteSession(null);
-    setRemoteFrame(null);
-    setActionLog([]);
-    setPendingUpload(null);
-    setUploadReady(false);
-  };
-
-  // Handle click on screenshot
-  const handleRemoteClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!remoteConnected || !screenshotContainerRef.current) return;
-
-    const img = screenshotContainerRef.current.querySelector('img');
-    if (!img) return;
-
-    const imgRect = img.getBoundingClientRect();
-
-    // Calculate scale
-    const scale = imgRect.width / VIEWPORT_WIDTH;
-
-    // Get click position relative to image
-    const relativeX = e.clientX - imgRect.left;
-    const relativeY = e.clientY - imgRect.top;
-
-    // Check bounds
-    if (relativeX < 0 || relativeX > imgRect.width || relativeY < 0 || relativeY > imgRect.height) {
-      return;
-    }
-
-    // Translate to viewport coordinates
-    const x = Math.round(relativeX / scale);
-    const y = Math.round(relativeY / scale);
-
-    const actionId = sendRemoteAction({ type: 'click', data: { x, y } });
-    if (actionId) {
-      addActionLogEntry('click', `Click at (${x}, ${y})`, actionId);
-    }
-  };
-
-  // Handle scroll on screenshot
-  const handleRemoteScroll = (e: React.WheelEvent<HTMLDivElement>) => {
-    if (!remoteConnected) return;
-    e.preventDefault();
-
-    const actionId = sendRemoteAction({
-      type: 'scroll',
-      data: { x: VIEWPORT_WIDTH / 2, y: VIEWPORT_HEIGHT / 2, deltaY: e.deltaY }
-    });
-    if (actionId) {
-      const direction = e.deltaY > 0 ? 'down' : 'up';
-      addActionLogEntry('scroll', `Scroll ${direction}`, actionId);
-    }
-  };
-
-  // Handle keyboard input
-  useEffect(() => {
-    if (!remoteModalOpen || !remoteConnected) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Only capture if the modal is focused (not typing in URL bar)
-      const activeElement = document.activeElement;
-      if (activeElement?.tagName === 'INPUT' || activeElement?.tagName === 'TEXTAREA') {
-        return;
-      }
-
-      e.preventDefault();
-
-      const modifiers: string[] = [];
-      if (e.ctrlKey) modifiers.push('Control');
-      if (e.altKey) modifiers.push('Alt');
-      if (e.shiftKey) modifiers.push('Shift');
-      if (e.metaKey) modifiers.push('Meta');
-
-      const actionId = sendRemoteAction({
-        type: 'key',
-        data: { key: e.key, modifiers }
-      });
-
-      if (actionId) {
-        const keyDisplay = modifiers.length > 0 ? `${modifiers.join('+')}+${e.key}` : e.key;
-        addActionLogEntry('key', `Key: ${keyDisplay}`, actionId);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [remoteModalOpen, remoteConnected, sendRemoteAction, addActionLogEntry]);
-
-  // Handle URL navigation
-  const handleRemoteNavigate = () => {
-    if (!remoteConnected || !remoteUrlInput.trim()) return;
-
-    let url = remoteUrlInput.trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://' + url;
-    }
-
-    const actionId = sendRemoteAction({ type: 'navigate', data: { url } });
-    if (actionId) {
-      addActionLogEntry('navigate', `Navigate to ${url}`, actionId);
-    }
-  };
-
-  const handleRemoteRestart = async () => {
-    if (!remoteSession) return;
-    try {
-      setRemoteProgress('auto_heal');
-      setRemoteFrame(null);
-      const res = await fetch(
-        `${API_BASE}/sessions/${encodeURIComponent(remoteSession.profile_name)}/remote/restart`,
-        {
-          method: 'POST',
-          headers: getAuthHeaders(),
-        },
-      );
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || data.detail || 'Failed to restart remote browser');
-      }
-      toast.success('Remote browser restart triggered');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to restart remote browser');
-      setRemoteProgress(null);
-    }
-  };
-
-  // Handle image upload for profile picture
-  const handleImageUpload = async (file: File) => {
-    if (!remoteSession) return;
-
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
-    if (!allowedTypes.includes(file.type)) {
-      toast.error('Please upload a JPG, PNG, or WebP image');
-      return;
-    }
-
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error('Image must be under 10MB');
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(remoteSession.profile_name)}/upload-image`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: formData
-      });
-
-      const result = await res.json();
-      if (result.success) {
-        setPendingUpload({
-          filename: result.filename,
-          size: result.size,
-          imageId: result.image_id
-        });
-        setUploadReady(false);
-        toast.success(`Image uploaded: ${result.filename}`);
-      } else {
-        toast.error(`Upload failed: ${result.error}`);
-      }
-    } catch (error) {
-      toast.error(`Upload error: ${error}`);
-    }
-  };
-
-  const prepareFileUpload = async () => {
-    if (!remoteSession) return;
-
-    try {
-      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(remoteSession.profile_name)}/prepare-file-upload`, {
-        method: 'POST',
-        headers: getAuthHeaders()
-      });
-      const result = await res.json();
-      if (result.success) {
-        setUploadReady(true);
-        toast.success('File ready! Click the upload button on Facebook.');
-      } else {
-        toast.error(result.error || 'Failed to prepare upload');
-      }
-    } catch (error) {
-      toast.error(`Error: ${error}`);
-    }
-  };
-
   // Auth loading state
   if (authLoading) {
     return (
@@ -4639,7 +4243,14 @@ function App() {
                           <Button
                             size="sm"
                             variant="default"
-                            onClick={() => openRemoteModal(session)}
+                            onClick={() =>
+                              remoteControl.openRemoteModal({
+                                platform: 'facebook',
+                                profileName: session.profile_name,
+                                displayName: session.display_name || session.profile_name,
+                                valid: session.valid,
+                              })
+                            }
                             disabled={!session.valid}
                             className="h-7 text-xs px-2"
                           >
@@ -5525,7 +5136,7 @@ function App() {
           </TabsContent>
 
           <TabsContent value="reddit" className="mt-6">
-            <RedditTab />
+            <RedditTab onOpenRemoteControl={remoteControl.openRemoteModal} />
           </TabsContent>
 
           {user?.role === 'admin' && (
@@ -5894,192 +5505,7 @@ function App() {
 
       {/* Bulk Retry Dialog - REMOVED: Now just click "Retry All Failed" and it works */}
 
-      {/* Remote Control Modal */}
-      {remoteModalOpen && remoteSession && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-2 border-b bg-white shrink-0">
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <div className={`h-3 w-3 rounded-full ${
-                    remoteConnected ? 'bg-green-500' :
-                    remoteConnecting ? 'bg-yellow-500 animate-pulse' :
-                    'bg-red-500'
-                  }`} />
-                  <span className="text-sm font-medium">
-                    {remoteConnected ? 'Connected' : remoteConnecting ? 'Connecting...' : 'Disconnected'}
-                  </span>
-                </div>
-                <div className="text-sm text-[#999999]">
-                  Session: <span className="font-medium text-[#111111]">{remoteSession.profile_name}</span>
-                </div>
-              </div>
-              <Button variant="ghost" size="sm" onClick={closeRemoteModal}>
-                <X className="w-5 h-5" />
-              </Button>
-            </div>
-
-            {/* URL Bar */}
-            <div className="flex items-center gap-2 px-4 py-2 border-b bg-white shrink-0">
-              <Globe className="w-4 h-4 text-[#999999]" />
-              <Input
-                value={remoteUrlInput}
-                onChange={(e) => setRemoteUrlInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleRemoteNavigate()}
-                placeholder="Enter URL..."
-                className="flex-1 bg-white"
-              />
-              <Button variant="outline" onClick={handleRemoteRestart} disabled={!remoteSession}>
-                Restart
-              </Button>
-              <Button onClick={handleRemoteNavigate} disabled={!remoteConnected}>
-                Go
-              </Button>
-            </div>
-
-            {/* Main Content */}
-            <div className="flex-1 flex overflow-hidden min-h-0">
-              {/* Screenshot Area */}
-              <div className="flex-1 p-2 flex items-center justify-center bg-[#333333] min-h-0">
-                <div
-                  ref={screenshotContainerRef}
-                  className="relative cursor-crosshair outline-none h-full flex items-center justify-center"
-                  onClick={handleRemoteClick}
-                  onWheel={handleRemoteScroll}
-                  tabIndex={0}
-                >
-                  {remoteFrame ? (
-                    <img
-                      src={`data:image/jpeg;base64,${remoteFrame}`}
-                      alt="Browser View"
-                      className="rounded-lg shadow-lg object-contain"
-                      style={{
-                        maxHeight: '100%',
-                        maxWidth: '100%',
-                        aspectRatio: `${VIEWPORT_WIDTH}/${VIEWPORT_HEIGHT}`,
-                      }}
-                      draggable={false}
-                    />
-                  ) : (
-                    <div className="flex items-center justify-center text-[#999999]" style={{ width: 250, height: 500 }}>
-                      <div className="text-center">
-                        <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
-                        <p>{
-                          remoteProgress === 'launching_browser' ? 'Launching browser...' :
-                          remoteProgress === 'applying_stealth' ? 'Applying security...' :
-                          remoteProgress === 'navigating' ? 'Loading Facebook...' :
-                          remoteProgress === 'retrying' ? 'Retrying connection...' :
-                          remoteProgress === 'auto_heal' ? 'Recovering browser session...' :
-                          remoteProgress === 'stream_restarted' ? 'Restarting stream...' :
-                          'Waiting for browser...'
-                        }</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {!remoteConnected && remoteFrame && (
-                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center rounded-lg">
-                      <div className="text-white text-center">
-                        <WifiOff className="w-12 h-12 mx-auto mb-2" />
-                        <p>Disconnected</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Right Sidebar */}
-              <div className="w-64 border-l bg-white flex flex-col shrink-0">
-                {/* Image Upload Section */}
-                <div className="p-3 border-b">
-                  <div className="text-xs font-medium mb-2">Profile Picture Upload</div>
-                  <Input
-                    type="file"
-                    accept=".jpg,.jpeg,.png,.webp"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleImageUpload(file);
-                      e.target.value = '';
-                    }}
-                    className="text-xs"
-                  />
-                  {pendingUpload && (
-                    <div className="mt-2 p-2 bg-blue-50 rounded text-xs">
-                      <p className="text-blue-700">
-                        Ready: {pendingUpload.filename} ({Math.round(pendingUpload.size / 1024)}KB)
-                      </p>
-                      {!uploadReady ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={prepareFileUpload}
-                          className="mt-2 w-full text-xs"
-                        >
-                          Prepare for Upload
-                        </Button>
-                      ) : (
-                        <p className="mt-2 text-green-700 font-medium">
-                          Click the upload button on Facebook!
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Action Log */}
-                <div className="flex-1 flex flex-col overflow-hidden">
-                  <div className="px-4 py-3 border-b font-medium text-sm flex items-center gap-2">
-                    <Mouse className="w-4 h-4" />
-                    Action Log
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                    {actionLog.map(entry => (
-                      <div
-                        key={entry.id}
-                        className={`text-xs p-2 rounded ${
-                          entry.status === 'success' ? 'bg-green-50 text-green-700' :
-                          entry.status === 'failed' ? 'bg-red-50 text-red-700' :
-                          'bg-[rgba(51,51,51,0.08)] text-[#666666]'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono">
-                            {new Date(entry.timestamp).toLocaleTimeString()}
-                          </span>
-                          <Badge variant="outline" className="text-xs">
-                            {entry.type}
-                          </Badge>
-                        </div>
-                        <div className="mt-1 truncate">{entry.details}</div>
-                      </div>
-                    ))}
-                    {actionLog.length === 0 && (
-                      <div className="text-center text-[#999999] py-8 text-sm">
-                        No actions yet. Click on the browser to interact.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="flex items-center justify-between px-4 py-1 border-t bg-white text-xs text-[#999999] shrink-0">
-              <div className="flex items-center gap-4">
-                <span>Viewport: 393x873 (iPhone 12 Pro)</span>
-                <span>|</span>
-                <span className={remoteConnected ? 'text-green-600' : 'text-[#999999]'}>
-                  {remoteConnected ? 'Keyboard capture: ON (click browser area first)' : 'Keyboard capture: OFF'}
-                </span>
-              </div>
-              <div>
-                Actions: {actionLog.length}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <RemoteControlModal remote={remoteControl} />
 
       <Toaster position="bottom-right" richColors />
     </div>

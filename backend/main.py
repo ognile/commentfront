@@ -6465,8 +6465,13 @@ class ImageUploadResponse(BaseModel):
 pending_uploads: Dict[str, Dict] = {}
 
 
-@app.websocket("/ws/session/{session_id}/control")
-async def websocket_session_control(websocket: WebSocket, session_id: str, token: str = Query(None)):
+async def _websocket_session_control_impl(
+    websocket: WebSocket,
+    session_id: str,
+    *,
+    platform: Literal["facebook", "reddit"],
+    token: Optional[str] = None,
+):
     """
     WebSocket endpoint for interactive browser control. Requires token query parameter.
 
@@ -6499,7 +6504,7 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
         manager.subscribe(websocket)
 
         # Health-aware readiness check even for same session id.
-        result = await manager.ensure_session_ready(session_id)
+        result = await manager.ensure_session_ready(session_id, platform=platform)
         if not result["success"]:
             manager.unsubscribe(websocket)
             await websocket.send_json({"type": "error", "data": {"message": result.get("error", "Failed to start session")}})
@@ -6517,6 +6522,7 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
                 if not manager.subscriber_has_recent_frame(websocket, within_seconds=3.0):
                     heal_result = await manager.auto_heal_session(
                         session_id=session_id,
+                        platform=platform,
                         reason="bootstrap_frame_timeout",
                     )
                     if not heal_result.get("success"):
@@ -6593,7 +6599,7 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
                     pass  # Connection already dead
 
     except WebSocketDisconnect:
-        logger.info(f"Remote control WS disconnected for session {session_id}")
+        logger.info(f"Remote control WS disconnected for session {session_id} ({platform})")
     except Exception as e:
         logger.error(f"Remote control WS error: {e}")
     finally:
@@ -6601,11 +6607,21 @@ async def websocket_session_control(websocket: WebSocket, session_id: str, token
         # Note: Browser stays open for reconnection
 
 
+@app.websocket("/ws/session/{session_id}/control")
+async def websocket_session_control(websocket: WebSocket, session_id: str, token: str = Query(None)):
+    await _websocket_session_control_impl(websocket, session_id, platform="facebook", token=token)
+
+
+@app.websocket("/ws/reddit/session/{session_id}/control")
+async def websocket_reddit_session_control(websocket: WebSocket, session_id: str, token: str = Query(None)):
+    await _websocket_session_control_impl(websocket, session_id, platform="reddit", token=token)
+
+
 @app.post("/sessions/{session_id}/remote/start")
 async def start_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Start a remote control session for the given session."""
     manager = get_browser_manager()
-    return await manager.start_session(session_id)
+    return await manager.start_session(session_id, platform="facebook")
 
 
 @app.post("/sessions/{session_id}/remote/restart")
@@ -6614,6 +6630,7 @@ async def restart_remote_session(session_id: str, current_user: dict = Depends(g
     manager = get_browser_manager()
     return await manager.restart_session(
         session_id,
+        platform="facebook",
         reason=f"manual_restart:{current_user.get('username', 'unknown')}",
     )
 
@@ -6622,7 +6639,7 @@ async def restart_remote_session(session_id: str, current_user: dict = Depends(g
 async def stop_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Stop the current remote control session."""
     manager = get_browser_manager()
-    if manager.session_id != session_id:
+    if manager.session_id != session_id or manager.platform != "facebook":
         return {"success": False, "error": "Session not active"}
     return await manager.close_session()
 
@@ -6638,7 +6655,43 @@ async def get_remote_status(current_user: dict = Depends(get_current_user)) -> D
 async def get_session_action_logs(session_id: str, limit: int = 100, current_user: dict = Depends(get_current_user)) -> List[Dict]:
     """Get action logs for the current session."""
     manager = get_browser_manager()
-    if manager.session_id == session_id:
+    if manager.session_id == session_id and manager.platform == "facebook":
+        return manager.get_action_log(limit)
+    return []
+
+
+@app.post("/reddit/sessions/{session_id}/remote/start")
+async def start_reddit_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Start a Reddit remote control session for the given saved session."""
+    manager = get_browser_manager()
+    return await manager.start_session(session_id, platform="reddit")
+
+
+@app.post("/reddit/sessions/{session_id}/remote/restart")
+async def restart_reddit_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Force restart the current Reddit remote control browser for the same session id."""
+    manager = get_browser_manager()
+    return await manager.restart_session(
+        session_id,
+        platform="reddit",
+        reason=f"manual_restart:{current_user.get('username', 'unknown')}",
+    )
+
+
+@app.post("/reddit/sessions/{session_id}/remote/stop")
+async def stop_reddit_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
+    """Stop the current Reddit remote control session."""
+    manager = get_browser_manager()
+    if manager.session_id != session_id or manager.platform != "reddit":
+        return {"success": False, "error": "Session not active"}
+    return await manager.close_session()
+
+
+@app.get("/reddit/sessions/{session_id}/remote/logs")
+async def get_reddit_session_action_logs(session_id: str, limit: int = 100, current_user: dict = Depends(get_current_user)) -> List[Dict]:
+    """Get action logs for the current Reddit remote session."""
+    manager = get_browser_manager()
+    if manager.session_id == session_id and manager.platform == "reddit":
         return manager.get_action_log(limit)
     return []
 
@@ -6734,7 +6787,7 @@ async def prepare_file_upload(session_id: str, current_user: dict = Depends(get_
     """
     manager = get_browser_manager()
 
-    if manager.session_id != session_id:
+    if manager.session_id != session_id or manager.platform != "facebook":
         raise HTTPException(404, "Interactive session not found or not active")
 
     if session_id not in pending_uploads:

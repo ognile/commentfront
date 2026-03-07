@@ -11,7 +11,8 @@ import logging
 import os
 import json
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, Set
+from dataclasses import dataclass
+from typing import Optional, Dict, Any, List, Set, Awaitable, Callable, Literal
 from pathlib import Path
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
@@ -19,7 +20,9 @@ from playwright_stealth import Stealth
 from urllib.parse import urlparse, unquote
 
 from fb_session import FacebookSession, apply_session_to_context
-from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT
+from reddit_session import RedditSession
+from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT, REDDIT_MOBILE_USER_AGENT
+from proxy_manager import get_system_proxy
 
 logger = logging.getLogger("BrowserManager")
 
@@ -35,6 +38,111 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IDLE_CLOSE_SECONDS = int(os.getenv("REMOTE_IDLE_CLOSE_SECONDS", "300"))
 STREAM_STALE_SECONDS = float(os.getenv("REMOTE_STREAM_STALE_SECONDS", "10"))
 SINGLE_SCREENSHOT_TIMEOUT_SECONDS = float(os.getenv("REMOTE_SCREENSHOT_TIMEOUT_SECONDS", "3"))
+
+RemotePlatform = Literal["facebook", "reddit"]
+
+
+@dataclass
+class RemoteSessionSpec:
+    platform: RemotePlatform
+    session_id: str
+    user_agent: str
+    viewport: Dict[str, int]
+    timezone_id: str
+    locale: str
+    proxy_url: str
+    proxy_source: Literal["session", "env"]
+    start_url: str
+    wait_until: str = "domcontentloaded"
+    storage_state: Optional[Dict[str, Any]] = None
+    apply_context: Optional[Callable[[BrowserContext], Awaitable[bool]]] = None
+    is_mobile: Optional[bool] = None
+    has_touch: Optional[bool] = None
+
+
+def _reddit_session_has_persisted_auth(session: RedditSession) -> bool:
+    storage_state = dict(session.get_storage_state() or {})
+    stored_cookies = list(storage_state.get("cookies") or [])
+    direct_cookies = list(session.get_cookies() or [])
+    return bool(stored_cookies or direct_cookies)
+
+
+def _pick_remote_proxy(stored_proxy: Optional[str]) -> Optional[str]:
+    return stored_proxy or get_system_proxy()
+
+
+def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> RemoteSessionSpec:
+    if platform == "facebook":
+        session = FacebookSession(session_id)
+        if not session.load():
+            raise RuntimeError(f"Session '{session_id}' not found")
+        if not session.has_valid_cookies():
+            raise RuntimeError("Session has invalid cookies")
+
+        stored_proxy = session.get_proxy()
+        proxy_url = _pick_remote_proxy(stored_proxy)
+        if not proxy_url:
+            raise RuntimeError("No proxy available. Configure PROXY_URL or persist a session proxy.")
+
+        fingerprint = session.get_device_fingerprint()
+
+        async def _apply_facebook(context: BrowserContext) -> bool:
+            return await apply_session_to_context(context, session)
+
+        return RemoteSessionSpec(
+            platform="facebook",
+            session_id=session_id,
+            user_agent=session.get_user_agent() or DEFAULT_USER_AGENT,
+            viewport=session.get_viewport() or MOBILE_VIEWPORT,
+            timezone_id=fingerprint["timezone"],
+            locale=fingerprint["locale"],
+            proxy_url=proxy_url,
+            proxy_source="session" if stored_proxy else "env",
+            start_url="https://m.facebook.com/",
+            wait_until="commit",
+            apply_context=_apply_facebook,
+        )
+
+    session = RedditSession(session_id)
+    if not session.load():
+        raise RuntimeError(f"Reddit session '{session_id}' not found")
+    if not _reddit_session_has_persisted_auth(session):
+        raise RuntimeError("Reddit session has no persisted auth state")
+
+    stored_proxy = session.get_proxy()
+    proxy_url = _pick_remote_proxy(stored_proxy)
+    if not proxy_url:
+        raise RuntimeError("No proxy available. Configure PROXY_URL or persist a session proxy.")
+
+    fingerprint = session.get_device_fingerprint()
+    storage_state = session.get_storage_state() or None
+    direct_cookies = list(session.get_cookies() or [])
+
+    async def _apply_reddit(context: BrowserContext) -> bool:
+        if direct_cookies and not storage_state:
+            try:
+                await context.add_cookies(direct_cookies)
+            except Exception as exc:
+                logger.warning(f"Failed to apply Reddit cookies for remote session {session_id}: {exc}")
+                return False
+        return True
+
+    return RemoteSessionSpec(
+        platform="reddit",
+        session_id=session_id,
+        user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
+        viewport=session.get_viewport() or MOBILE_VIEWPORT,
+        timezone_id=fingerprint["timezone"],
+        locale=fingerprint["locale"],
+        proxy_url=proxy_url,
+        proxy_source="session" if stored_proxy else "env",
+        start_url=session.get_profile_url() or "https://www.reddit.com/",
+        wait_until="domcontentloaded",
+        storage_state=storage_state,
+        apply_context=_apply_reddit,
+        is_mobile=True,
+        has_touch=True,
+    )
 
 
 def _build_playwright_proxy(proxy_url: str) -> Dict[str, str]:
@@ -67,7 +175,9 @@ class PersistentBrowserManager:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._session_id: Optional[str] = None
+        self._platform: Optional[RemotePlatform] = None
         self._session: Optional[FacebookSession] = None
+        self._session_spec: Optional[RemoteSessionSpec] = None
 
         self._streaming_task: Optional[asyncio.Task] = None
         self._subscribers: Set = set()  # WebSocket connections
@@ -88,6 +198,7 @@ class PersistentBrowserManager:
         self._last_frame_at_ts: Optional[float] = None
         self._last_subscriber_at_ts: Optional[float] = None
         self._idle_deadline_at_ts: Optional[float] = None
+        self._expected_page_close: bool = False
 
     @property
     def is_active(self) -> bool:
@@ -98,6 +209,11 @@ class PersistentBrowserManager:
     def session_id(self) -> Optional[str]:
         """Get current session ID."""
         return self._session_id
+
+    @property
+    def platform(self) -> Optional[RemotePlatform]:
+        """Get current session platform."""
+        return self._platform
 
     @property
     def current_url(self) -> Optional[str]:
@@ -180,7 +296,7 @@ class PersistentBrowserManager:
         await self.broadcast_event("session_idle_timeout_close", payload)
         await self.close_session()
 
-    async def start_session(self, session_id: str) -> Dict[str, Any]:
+    async def start_session(self, session_id: str, *, platform: RemotePlatform = "facebook") -> Dict[str, Any]:
         """
         Launch browser with session's fingerprint.
 
@@ -202,38 +318,34 @@ class PersistentBrowserManager:
 
                 # Load session data
                 t0 = time.time()
-                session = FacebookSession(session_id)
-                if not session.load():
-                    return {"success": False, "error": f"Session '{session_id}' not found"}
-
-                if not session.has_valid_cookies():
-                    return {"success": False, "error": "Session has invalid cookies"}
-
-                self._session = session
+                session_spec = _resolve_remote_session_spec(session_id, platform)
+                self._session = FacebookSession(session_id) if platform == "facebook" else None
                 self._session_id = session_id
+                self._platform = platform
+                self._session_spec = session_spec
 
-                # Get fingerprint data
-                user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
-                viewport = session.get_viewport() or MOBILE_VIEWPORT
-                from proxy_manager import get_system_proxy
-                proxy_url = get_system_proxy()
-                if not proxy_url:
-                    return {"success": False, "error": "No proxy available. Configure PROXY_URL or add a default proxy."}
-                device_fingerprint = session.get_device_fingerprint()
                 logger.info(f"[TIMING] Session loaded in {time.time()-t0:.2f}s")
 
                 # Build context options (same as comment_bot.py)
                 context_options = {
-                    "user_agent": user_agent,
-                    "viewport": viewport,
+                    "user_agent": session_spec.user_agent,
+                    "viewport": session_spec.viewport,
                     "ignore_https_errors": True,
                     "device_scale_factor": 1,  # Critical for coordinate accuracy
-                    "timezone_id": device_fingerprint["timezone"],
-                    "locale": device_fingerprint["locale"],
+                    "timezone_id": session_spec.timezone_id,
+                    "locale": session_spec.locale,
                 }
+                if session_spec.storage_state:
+                    context_options["storage_state"] = session_spec.storage_state
+                if session_spec.is_mobile is not None:
+                    context_options["is_mobile"] = session_spec.is_mobile
+                if session_spec.has_touch is not None:
+                    context_options["has_touch"] = session_spec.has_touch
 
-                context_options["proxy"] = _build_playwright_proxy(proxy_url)
-                logger.info(f"Using proxy: {proxy_url[:30]}...")
+                context_options["proxy"] = _build_playwright_proxy(session_spec.proxy_url)
+                logger.info(
+                    f"Using remote session identity: platform={platform} proxy_source={session_spec.proxy_source} start_url={session_spec.start_url}"
+                )
 
                 # Launch playwright
                 await self.broadcast_progress("launching_browser")
@@ -260,13 +372,14 @@ class PersistentBrowserManager:
                 await Stealth().apply_stealth_async(self._context)
                 logger.info(f"[TIMING] Stealth applied in {time.time()-t4:.2f}s")
 
-                # Create page
+                # Apply session state before opening the page
                 t5 = time.time()
+                if session_spec.apply_context:
+                    applied = await session_spec.apply_context(self._context)
+                    if not applied:
+                        raise RuntimeError(f"Failed to apply {platform} session state")
                 self._page = await self._context.new_page()
-
-                # Apply session cookies
-                await apply_session_to_context(self._context, session)
-                logger.info(f"[TIMING] Page created + cookies in {time.time()-t5:.2f}s")
+                logger.info(f"[TIMING] Page created + session state in {time.time()-t5:.2f}s")
 
                 # Set up file chooser interception
                 self._page.on("filechooser", self._handle_file_chooser)
@@ -275,16 +388,16 @@ class PersistentBrowserManager:
                 self._page.on("close", lambda: asyncio.create_task(self._on_page_close()))
                 self._page.on("crash", lambda: asyncio.create_task(self._on_page_crash()))
 
-                # Navigate to Facebook with retry on timeout
+                # Navigate to the platform home/start page with retry on timeout
                 await self.broadcast_progress("navigating")
                 t6 = time.time()
                 try:
-                    await self._page.goto("https://m.facebook.com/", wait_until="commit", timeout=30000)
+                    await self._page.goto(session_spec.start_url, wait_until=session_spec.wait_until, timeout=30000)
                 except Exception as nav_error:
                     logger.warning(f"[DEBUG] Navigation failed: {nav_error}, retrying...")
                     await self.broadcast_progress("retrying")
                     await asyncio.sleep(2)
-                    await self._page.reload(wait_until="commit", timeout=30000)
+                    await self._page.goto(session_spec.start_url, wait_until=session_spec.wait_until, timeout=30000)
                 logger.info(f"[TIMING] Navigation completed in {time.time()-t6:.2f}s")
 
                 # Start frame streaming
@@ -294,14 +407,15 @@ class PersistentBrowserManager:
                 self._streaming_task = asyncio.create_task(self._streaming_loop())
 
                 logger.info(f"[TIMING] Total session start: {time.time()-t_total:.2f}s")
-                self._log_action("session_start", {"session_id": session_id})
-                logger.info(f"Interactive session started for {session_id}")
+                self._log_action("session_start", {"session_id": session_id, "platform": platform, "start_url": session_spec.start_url})
+                logger.info(f"Interactive session started for {session_id} ({platform})")
 
                 return {
                     "success": True,
                     "session_id": session_id,
+                    "platform": platform,
                     "url": self._page.url,
-                    "viewport": viewport
+                    "viewport": session_spec.viewport
                 }
 
             except Exception as e:
@@ -320,6 +434,7 @@ class PersistentBrowserManager:
     async def _cleanup(self):
         """Clean up all browser resources."""
         self._cancel_idle_close_timer()
+        self._expected_page_close = True
 
         # Stop streaming
         if self._streaming_task:
@@ -350,13 +465,16 @@ class PersistentBrowserManager:
         self._page = None
         self._context = None
         self._session_id = None
+        self._platform = None
         self._session = None
+        self._session_spec = None
         self._pending_file = None
         self._last_frame_hash = None
         self._latest_frame = None
         self._last_frame_at_ts = None
         self._subscriber_last_frame_at = {}
         self._frame_count = 0
+        self._expected_page_close = False
 
     async def _handle_file_chooser(self, file_chooser):
         """
@@ -385,6 +503,9 @@ class PersistentBrowserManager:
 
     async def _on_page_close(self):
         """Handle unexpected page closure."""
+        if self._expected_page_close:
+            logger.info("Page closed during managed cleanup")
+            return
         logger.warning("Page closed unexpectedly")
         self._stream_task_state = "failed"
         # Notify subscribers of disconnect
@@ -396,6 +517,9 @@ class PersistentBrowserManager:
 
     async def _on_page_crash(self):
         """Handle page crash."""
+        if self._expected_page_close:
+            logger.info("Page crash event during managed cleanup")
+            return
         logger.error("Page crashed!")
         self._stream_task_state = "failed"
         # Notify subscribers of crash
@@ -639,22 +763,33 @@ class PersistentBrowserManager:
             self._schedule_idle_close_timer()
         logger.info(f"Subscriber removed, total: {len(self._subscribers)}")
 
-    async def auto_heal_session(self, *, session_id: Optional[str], reason: str) -> Dict[str, Any]:
+    async def auto_heal_session(
+        self,
+        *,
+        session_id: Optional[str],
+        platform: Optional[RemotePlatform],
+        reason: str,
+    ) -> Dict[str, Any]:
         target = session_id or self._session_id
+        target_platform = platform or self._platform
         if not target:
             return {"success": False, "error": "No session available for auto-heal"}
+        if not target_platform:
+            return {"success": False, "error": "No platform available for auto-heal"}
 
         payload = {
             "session_id": target,
+            "platform": target_platform,
             "reason": reason,
         }
         self._log_action("session_auto_heal_start", payload)
         await self.broadcast_event("session_auto_heal_start", payload)
 
-        result = await self.start_session(target)
+        result = await self.start_session(target, platform=target_platform)
         if result.get("success"):
             await self.broadcast_event("stream_restarted", {
                 "session_id": target,
+                "platform": target_platform,
                 "reason": reason,
                 "url": result.get("url"),
             })
@@ -669,27 +804,34 @@ class PersistentBrowserManager:
         await self.broadcast_event("session_auto_heal_done", completion_payload)
         return result
 
-    async def restart_session(self, session_id: str, *, reason: str = "manual_restart") -> Dict[str, Any]:
-        return await self.auto_heal_session(session_id=session_id, reason=reason)
+    async def restart_session(
+        self,
+        session_id: str,
+        *,
+        platform: RemotePlatform = "facebook",
+        reason: str = "manual_restart",
+    ) -> Dict[str, Any]:
+        return await self.auto_heal_session(session_id=session_id, platform=platform, reason=reason)
 
-    async def ensure_session_ready(self, session_id: str) -> Dict[str, Any]:
+    async def ensure_session_ready(self, session_id: str, *, platform: RemotePlatform = "facebook") -> Dict[str, Any]:
         """
         Health-aware session readiness check.
         Reuses healthy session, otherwise restarts automatically.
         """
-        if self.session_id != session_id:
-            return await self.start_session(session_id)
+        if self.session_id != session_id or self.platform != platform:
+            return await self.start_session(session_id, platform=platform)
 
         if not self.is_active:
-            return await self.start_session(session_id)
+            return await self.start_session(session_id, platform=platform)
 
         reason = self._stream_health_reason()
         if reason:
-            return await self.auto_heal_session(session_id=session_id, reason=reason)
+            return await self.auto_heal_session(session_id=session_id, platform=platform, reason=reason)
 
         return {
             "success": True,
             "session_id": session_id,
+            "platform": platform,
             "url": self.current_url,
             "reused": True,
             "stream_task_state": self._stream_task_state,
@@ -900,6 +1042,7 @@ class PersistentBrowserManager:
             return {
                 "active": False,
                 "session_id": self._session_id,
+                "platform": self._platform,
                 "url": None,
                 "title": None,
                 **stream_status,
@@ -909,6 +1052,7 @@ class PersistentBrowserManager:
             return {
                 "active": True,
                 "session_id": self._session_id,
+                "platform": self._platform,
                 "url": self._page.url,
                 "title": await self._page.title(),
                 "viewport": self._page.viewport_size,
@@ -918,7 +1062,7 @@ class PersistentBrowserManager:
             }
         except Exception as e:
             logger.warning(f"Error getting current state: {e}")
-            return {"active": False, "session_id": self._session_id, **stream_status}
+            return {"active": False, "session_id": self._session_id, "platform": self._platform, **stream_status}
 
     def _log_action(self, action: str, details: Dict):
         """Log every action for debugging and audit trail."""
@@ -926,6 +1070,8 @@ class PersistentBrowserManager:
             "timestamp": datetime.now().isoformat(),
             "action": action,
             "details": details,
+            "platform": self._platform,
+            "session_id": self._session_id,
             "url": self._page.url if self._page else None
         }
         self._action_log.append(entry)

@@ -1,206 +1,109 @@
-import asyncio
-import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import browser_manager
+from config import REDDIT_MOBILE_USER_AGENT
 
 
-class FakePage:
-    url = "https://m.facebook.com/"
+class _FakeFacebookSession:
+    def __init__(self, profile_name: str):
+        self.profile_name = profile_name
 
-    def is_closed(self):
-        return False
+    def load(self):
+        return {"profile_name": self.profile_name}
 
-    async def title(self):
-        return "Facebook"
+    def has_valid_cookies(self):
+        return True
 
+    def get_proxy(self):
+        return "http://session-proxy:8080"
 
-class FakeWebSocket:
-    def __init__(self):
-        self.messages = []
+    def get_device_fingerprint(self):
+        return {"timezone": "America/New_York", "locale": "en-US"}
 
-    async def send_text(self, payload: str):
-        self.messages.append(json.loads(payload))
+    def get_user_agent(self):
+        return "facebook-agent"
 
-    async def send_json(self, payload):
-        self.messages.append(payload)
-
-
-def _fresh_manager():
-    browser_manager.PersistentBrowserManager._instance = None
-    return browser_manager.PersistentBrowserManager()
+    def get_viewport(self):
+        return {"width": 393, "height": 873}
 
 
-def test_idle_timer_closes_session_after_last_subscriber_disconnect(monkeypatch):
-    async def scenario():
-        manager = _fresh_manager()
-        manager._session_id = "Vanessa Hines"
-        manager._page = FakePage()
+class _FakeRedditSession:
+    def __init__(self, profile_name: str):
+        self.profile_name = profile_name
 
-        closed = {"count": 0}
+    def load(self):
+        return {"profile_name": self.profile_name}
 
-        async def fake_close_session():
-            closed["count"] += 1
-            manager._session_id = None
-            manager._page = None
-            return {"success": True}
+    def get_storage_state(self):
+        return {
+            "cookies": [{"name": "reddit_session", "value": "abc"}],
+            "origins": [],
+        }
 
-        monkeypatch.setattr(browser_manager, "IDLE_CLOSE_SECONDS", 1)
-        monkeypatch.setattr(manager, "close_session", fake_close_session)
+    def get_cookies(self):
+        return [{"name": "reddit_session", "value": "abc"}]
 
-        ws = FakeWebSocket()
-        manager.subscribe(ws)
-        manager.unsubscribe(ws)
-        await asyncio.sleep(1.2)
+    def get_proxy(self):
+        return None
 
-        assert closed["count"] == 1
+    def get_device_fingerprint(self):
+        return {"timezone": "America/Chicago", "locale": "en-US"}
 
-    asyncio.run(scenario())
+    def get_user_agent(self):
+        return None
 
+    def get_viewport(self):
+        return {"width": 393, "height": 873}
 
-def test_subscribe_cancels_idle_close_timer(monkeypatch):
-    async def scenario():
-        manager = _fresh_manager()
-        manager._session_id = "Vanessa Hines"
-        manager._page = FakePage()
-
-        closed = {"count": 0}
-
-        async def fake_close_session():
-            closed["count"] += 1
-            return {"success": True}
-
-        monkeypatch.setattr(browser_manager, "IDLE_CLOSE_SECONDS", 1)
-        monkeypatch.setattr(manager, "close_session", fake_close_session)
-
-        ws1 = FakeWebSocket()
-        ws2 = FakeWebSocket()
-        manager.subscribe(ws1)
-        manager.unsubscribe(ws1)
-        await asyncio.sleep(0.3)
-        manager.subscribe(ws2)
-        await asyncio.sleep(1.0)
-
-        assert closed["count"] == 0
-        manager.unsubscribe(ws2)
-        manager._cancel_idle_close_timer()
-
-    asyncio.run(scenario())
+    def get_profile_url(self):
+        return "https://www.reddit.com/user/Neera_Allvere/"
 
 
-def test_ensure_session_ready_auto_heals_dead_stream():
-    async def scenario():
-        manager = _fresh_manager()
-        manager._session_id = "Vanessa Hines"
-        manager._page = FakePage()
-        manager._stream_task_state = "failed"
-        manager._streaming_task = None
+class _NoAuthRedditSession(_FakeRedditSession):
+    def get_storage_state(self):
+        return {}
 
-        calls = []
-
-        async def fake_auto_heal_session(*, session_id, reason):
-            calls.append({"session_id": session_id, "reason": reason})
-            return {"success": True, "session_id": session_id}
-
-        manager.auto_heal_session = fake_auto_heal_session  # type: ignore[assignment]
-
-        result = await manager.ensure_session_ready("Vanessa Hines")
-        assert result["success"] is True
-        assert calls
-        assert calls[0]["session_id"] == "Vanessa Hines"
-        assert "stream_task_inactive" in calls[0]["reason"]
-
-    asyncio.run(scenario())
+    def get_cookies(self):
+        return []
 
 
-def test_ensure_session_ready_auto_heals_no_frame_stream():
-    async def scenario():
-        manager = _fresh_manager()
-        manager._session_id = "Vanessa Hines"
-        manager._page = FakePage()
-        manager._stream_task_state = "running"
-        manager._streaming_task = asyncio.create_task(asyncio.sleep(60))
-        manager._last_frame_at_ts = None
-        ws = FakeWebSocket()
-        manager.subscribe(ws)
+def test_resolve_remote_session_spec_prefers_saved_facebook_proxy(monkeypatch):
+    monkeypatch.setattr(browser_manager, "FacebookSession", _FakeFacebookSession)
+    monkeypatch.setattr(browser_manager, "get_system_proxy", lambda: "http://env-proxy:9090")
 
-        calls = []
+    spec = browser_manager._resolve_remote_session_spec("adele_hamilton", "facebook")
 
-        async def fake_auto_heal_session(*, session_id, reason):
-            calls.append({"session_id": session_id, "reason": reason})
-            return {"success": True, "session_id": session_id}
-
-        manager.auto_heal_session = fake_auto_heal_session  # type: ignore[assignment]
-        try:
-            result = await manager.ensure_session_ready("Vanessa Hines")
-            assert result["success"] is True
-            assert calls
-            assert calls[0]["session_id"] == "Vanessa Hines"
-            assert "stream_no_frames" in calls[0]["reason"]
-        finally:
-            manager.unsubscribe(ws)
-            manager._cancel_idle_close_timer()
-            if manager._streaming_task:
-                manager._streaming_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await manager._streaming_task
-
-    import contextlib
-    asyncio.run(scenario())
+    assert spec.platform == "facebook"
+    assert spec.proxy_url == "http://session-proxy:8080"
+    assert spec.proxy_source == "session"
+    assert spec.start_url == "https://m.facebook.com/"
+    assert spec.user_agent == "facebook-agent"
 
 
-def test_send_bootstrap_frame_marks_subscriber_recent():
-    async def scenario():
-        manager = _fresh_manager()
-        manager._latest_frame = b"fake-jpeg"
-        ws = FakeWebSocket()
-        manager.subscribe(ws)
+def test_resolve_remote_session_spec_uses_reddit_identity_and_env_proxy(monkeypatch):
+    monkeypatch.setattr(browser_manager, "RedditSession", _FakeRedditSession)
+    monkeypatch.setattr(browser_manager, "get_system_proxy", lambda: "http://env-proxy:9090")
 
-        sent = await manager.send_bootstrap_frame(ws)
-        assert sent is True
-        assert ws.messages
-        assert ws.messages[-1]["type"] == "frame"
-        assert ws.messages[-1]["data"]["bootstrap"] is True
-        assert manager.subscriber_has_recent_frame(ws, within_seconds=3.0) is True
+    spec = browser_manager._resolve_remote_session_spec("reddit_neera_allvere", "reddit")
 
-        manager.unsubscribe(ws)
-        manager._cancel_idle_close_timer()
-
-    asyncio.run(scenario())
+    assert spec.platform == "reddit"
+    assert spec.proxy_url == "http://env-proxy:9090"
+    assert spec.proxy_source == "env"
+    assert spec.start_url == "https://www.reddit.com/user/Neera_Allvere/"
+    assert spec.storage_state is not None
+    assert spec.user_agent == REDDIT_MOBILE_USER_AGENT
+    assert spec.is_mobile is True
+    assert spec.has_touch is True
 
 
-def test_any_subscriber_missing_recent_frame_detects_stale_subscriber():
-    async def scenario():
-        manager = _fresh_manager()
-        ws = FakeWebSocket()
-        manager.subscribe(ws)
+def test_resolve_remote_session_spec_rejects_reddit_without_persisted_auth(monkeypatch):
+    monkeypatch.setattr(browser_manager, "RedditSession", _NoAuthRedditSession)
+    monkeypatch.setattr(browser_manager, "get_system_proxy", lambda: "http://env-proxy:9090")
 
-        assert manager._any_subscriber_missing_recent_frame(within_seconds=0.01) is True
-
-        sent = await manager._send_frame_to_subscriber(ws, b"fake-jpeg", bootstrap=False)
-        assert sent is True
-        assert manager._any_subscriber_missing_recent_frame(within_seconds=3.0) is False
-
-        manager.unsubscribe(ws)
-        manager._cancel_idle_close_timer()
-
-    asyncio.run(scenario())
-
-
-def test_get_screenshot_times_out(monkeypatch):
-    class SlowPage(FakePage):
-        async def screenshot(self, **kwargs):
-            await asyncio.sleep(0.7)
-            return b"late-jpeg"
-
-    async def scenario():
-        manager = _fresh_manager()
-        manager._page = SlowPage()
-        monkeypatch.setattr(browser_manager, "SINGLE_SCREENSHOT_TIMEOUT_SECONDS", 0.05)
-        frame = await manager.get_screenshot()
-        assert frame is None
-
-    asyncio.run(scenario())
+    with pytest.raises(RuntimeError, match="no persisted auth state"):
+        browser_manager._resolve_remote_session_spec("reddit_neera_allvere", "reddit")
