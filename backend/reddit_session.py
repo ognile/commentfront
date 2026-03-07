@@ -177,16 +177,18 @@ async def verify_reddit_session_logged_in(page, session: RedditSession, debug: b
         await page.goto("https://www.reddit.com/submit", wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(2500)
         current_url = page.url.lower()
+        logger.info(f"[{session.profile_name}] verify: /submit resolved to {current_url}")
         if "/login" in current_url:
-            if debug:
-                logger.info(f"Reddit submit redirected to login: {current_url}")
             return False
 
         body = (await page.locator("body").inner_text()).lower()
+        body_preview = body[:200].replace("\n", " ")
+        logger.info(f"[{session.profile_name}] verify body: {body_preview}")
         if "create a post" in body or "post to" in body or "/submit" in current_url:
             return True
 
         login_inputs = await page.locator('input[name="username"], input[name="password"]').count()
+        logger.info(f"[{session.profile_name}] verify: login inputs found={login_inputs}")
         return login_inputs == 0
     except Exception as exc:
         if debug:

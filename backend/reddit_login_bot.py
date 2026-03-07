@@ -166,10 +166,14 @@ async def login_reddit(
             await page.goto("https://www.reddit.com/login/", wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_timeout(2000)
             await _dismiss_cookie_banner(page)
+            logger.info(f"[{profile_name}] login page loaded: {page.url}")
+            await save_debug_screenshot(page, f"reddit_login_page_{profile_name}")
 
             filled_user = await _fill_first(page, LOGIN["username_input"], str(login_identifier))
             filled_password = await _fill_first(page, LOGIN["password_input"], str(password))
+            logger.info(f"[{profile_name}] form fill: user={filled_user} pass={filled_password} identifier={login_identifier[:3]}***")
             if not filled_user or not filled_password:
+                await save_debug_screenshot(page, f"reddit_login_inputs_missing_{profile_name}")
                 await dump_interactive_elements(page, "REDDIT LOGIN INPUTS NOT FOUND")
                 raise RuntimeError("Failed to locate Reddit login inputs")
 
@@ -184,9 +188,25 @@ async def login_reddit(
                 await _click_first(page, LOGIN["submit_button"], timeout_ms=4000)
 
             await page.wait_for_timeout(4000)
-            await _handle_otp(page, credential)
+            await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
+            logger.info(f"[{profile_name}] after submit URL: {page.url}")
+
+            otp_handled = await _handle_otp(page, credential)
+            if otp_handled:
+                logger.info(f"[{profile_name}] OTP submitted, waiting for auth cookies")
+                await save_debug_screenshot(page, f"reddit_after_otp_{profile_name}")
+            else:
+                logger.info(f"[{profile_name}] no OTP prompt detected")
+
+            # Log all cookie names for debugging
+            all_cookies = await context.cookies()
+            cookie_names = [c.get("name") for c in all_cookies]
+            logger.info(f"[{profile_name}] cookies after login: {cookie_names}")
 
             if not await _wait_for_auth_cookies(context, timeout_ms=15000):
+                all_cookies2 = await context.cookies()
+                cookie_names2 = [c.get("name") for c in all_cookies2]
+                logger.error(f"[{profile_name}] auth cookies missing. all cookies: {cookie_names2}")
                 await save_debug_screenshot(page, f"reddit_login_failed_{profile_name}")
                 await dump_interactive_elements(page, "REDDIT LOGIN AUTH COOKIES MISSING")
                 raise RuntimeError("Reddit auth cookies were not created after login submission")
@@ -197,8 +217,11 @@ async def login_reddit(
                 pass
 
             profile_url = credential.get("profile_url") or f"https://www.reddit.com/user/{credential.get('username')}/"
+            logger.info(f"[{profile_name}] navigating to profile: {profile_url}")
             await page.goto(profile_url, wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_timeout(2500)
+            logger.info(f"[{profile_name}] profile page URL: {page.url}")
+            await save_debug_screenshot(page, f"reddit_profile_page_{profile_name}")
 
             await session.extract_from_context(
                 context,
