@@ -7,11 +7,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reddit_login_bot import (
     _audit_has_user_interaction_failure,
+    _body_has_user_interaction_failure,
     _choose_reference_facebook_session,
     _reference_facebook_session_candidates,
     _goto_in_authenticated_context,
     _wait_for_authenticated_surface,
     _wait_for_otp_resolution,
+    create_session_from_credentials,
 )
 
 
@@ -186,3 +188,59 @@ def test_audit_has_user_interaction_failure_reads_response_body_preview():
 
     with patch("reddit_login_bot.load_reddit_audit", return_value=audit):
         assert _audit_has_user_interaction_failure("attempt") is True
+
+
+def test_body_has_user_interaction_failure_detects_reddit_banner():
+    assert _body_has_user_interaction_failure(
+        '<faceplate-alert message="Something went wrong logging in." cause="user-interaction-failed"></faceplate-alert>'
+    ) is True
+
+
+def test_create_session_from_credentials_skips_reference_bootstrap_by_default():
+    credential = {"credential_id": "reddit::Connor_Esla", "profile_name": "reddit_connor_esla"}
+
+    async def fake_login_reddit(**kwargs):
+        return {"success": False, "attempt_id": "attempt-1", "error": "blocked"}
+
+    async def unexpected_reference(**kwargs):
+        raise AssertionError("reference bootstrap should not run")
+
+    with patch("reddit_login_bot.CredentialManager") as manager_cls, patch(
+        "reddit_login_bot.login_reddit", side_effect=fake_login_reddit
+    ), patch(
+        "reddit_login_bot._audit_has_user_interaction_failure", return_value=True
+    ), patch(
+        "reddit_login_bot.login_reddit_from_reference_facebook_identity", side_effect=unexpected_reference
+    ):
+        manager_cls.return_value.get_credential.return_value = credential
+        result = asyncio.run(create_session_from_credentials("reddit::Connor_Esla"))
+
+    assert result["success"] is False
+    assert result["attempt_id"] == "attempt-1"
+
+
+def test_create_session_from_credentials_allows_reference_bootstrap_when_enabled():
+    credential = {"credential_id": "reddit::Connor_Esla", "profile_name": "reddit_connor_esla", "uid": "Connor_Esla"}
+
+    async def fake_login_reddit(**kwargs):
+        return {"success": False, "attempt_id": "attempt-1", "error": "blocked", "profile_name": "reddit_connor_esla"}
+
+    async def fake_reference(**kwargs):
+        return {"success": True, "profile_name": "reddit_connor_esla"}
+
+    with patch("reddit_login_bot.CredentialManager") as manager_cls, patch(
+        "reddit_login_bot.login_reddit", side_effect=fake_login_reddit
+    ), patch(
+        "reddit_login_bot._audit_has_user_interaction_failure", return_value=True
+    ), patch(
+        "reddit_login_bot._reference_facebook_session_candidates", return_value=["adele_hamilton"]
+    ), patch(
+        "reddit_login_bot.login_reddit_from_reference_facebook_identity", side_effect=fake_reference
+    ):
+        manager_cls.return_value.get_credential.return_value = credential
+        result = asyncio.run(
+            create_session_from_credentials("reddit::Connor_Esla", allow_reference_bootstrap=True)
+        )
+
+    assert result["success"] is True
+    assert result["profile_name"] == "reddit_connor_esla"

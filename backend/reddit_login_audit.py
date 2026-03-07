@@ -48,6 +48,9 @@ def classify_reddit_failure(audit: Dict[str, Any], error: Optional[str]) -> Opti
     ).lower()
     error_blob = f"{error or ''} {error_text}".lower()
 
+    if "user-interaction-failed" in error_blob:
+        return "user_interaction_failed"
+
     otp_seen = any(bool(checkpoint.get("otp_input_present")) for checkpoint in checkpoints)
     profile_seen = any("/user/" in str(checkpoint.get("url") or "").lower() for checkpoint in checkpoints)
     protected_fail = any(
@@ -267,8 +270,8 @@ class RedditLoginAudit:
         for selector in (
             'input[name="otp"]',
             'input[name="code"]',
+            'input[name="appOtp"]',
             'input[autocomplete="one-time-code"]',
-            'input[inputmode="numeric"]',
         ):
             if await self._selector_count(page, selector) > 0:
                 otp_input_present = True

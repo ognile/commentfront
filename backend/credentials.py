@@ -266,7 +266,7 @@ class CredentialManager:
             return True
         return False
 
-    def set_linked_session_id(self, identifier, linked_session_id: str, platform: Optional[str] = None) -> bool:
+    def set_linked_session_id(self, identifier, linked_session_id: Optional[str], platform: Optional[str] = None) -> bool:
         """Link a credential to a session/profile identifier."""
         storage_key = self._find_storage_key(identifier, platform)
         if not storage_key:

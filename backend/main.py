@@ -70,6 +70,12 @@ from reddit_login_bot import (
 )
 from reddit_bot import run_reddit_action
 from reddit_mission_store import RedditMissionScheduler, RedditMissionStore
+from reddit_login_learning import RedditLoginLearningStore
+from reddit_convergence import (
+    DEFAULT_UNLINKED_ORDER,
+    execute_reddit_unlinked_convergence,
+    load_reddit_convergence_report,
+)
 from reddit_rollout import (
     execute_reddit_bulk_session_rollout,
     load_reddit_rollout_report,
@@ -199,6 +205,7 @@ premium_scheduler = PremiumScheduler(
 reddit_mission_store = RedditMissionStore()
 reddit_mission_scheduler: Optional[RedditMissionScheduler] = None
 reddit_bulk_rollout_tasks: Dict[str, asyncio.Task] = {}
+reddit_convergence_tasks: Dict[str, asyncio.Task] = {}
 
 # =========================================================================
 # Media Store (ephemeral file-backed storage for queue jobs)
@@ -1529,6 +1536,12 @@ class RedditSessionBulkCreateRequest(BaseModel):
     proxy_id: Optional[str] = None
     source_label: Optional[str] = None
     max_create_attempts: int = 2
+    wait_for_completion: bool = False
+
+
+class RedditConvergeUnlinkedRequest(BaseModel):
+    usernames: List[str] = []
+    proxy_id: Optional[str] = None
     wait_for_completion: bool = False
 
 
@@ -5420,6 +5433,15 @@ def _get_active_reddit_bulk_rollout() -> Optional[tuple[str, asyncio.Task]]:
     return None
 
 
+def _get_active_reddit_convergence() -> Optional[tuple[str, asyncio.Task]]:
+    for run_id, task in list(reddit_convergence_tasks.items()):
+        if task.done():
+            reddit_convergence_tasks.pop(run_id, None)
+            continue
+        return run_id, task
+    return None
+
+
 def _resolve_reddit_action_media_path(image_id: Optional[str]) -> Optional[str]:
     if not image_id:
         return None
@@ -5694,6 +5716,108 @@ async def get_reddit_bulk_create_report_endpoint(
         }
 
     raise HTTPException(status_code=404, detail=f"Reddit bulk rollout report not found: {run_id}")
+
+
+@app.post("/reddit/sessions/converge-unlinked")
+async def converge_unlinked_reddit_sessions_endpoint(
+    request: RedditConvergeUnlinkedRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    active = _get_active_reddit_convergence()
+    if active:
+        active_run_id, _ = active
+        raise HTTPException(status_code=409, detail=f"Reddit convergence already running: {active_run_id}")
+
+    proxy_url = _resolve_effective_proxy(request.proxy_id)
+    proxy_source = "named_proxy" if request.proxy_id else "env"
+    usernames = [str(item or "").strip() for item in list(request.usernames or []) if str(item or "").strip()]
+    target_usernames = usernames or list(DEFAULT_UNLINKED_ORDER)
+
+    if request.wait_for_completion:
+        report = await execute_reddit_unlinked_convergence(
+            usernames=target_usernames,
+            proxy_url=proxy_url,
+            proxy_source=proxy_source,
+            credential_manager=credential_manager,
+            learning_store=RedditLoginLearningStore(),
+            broadcast_callback=broadcast_update,
+        )
+        return {"success": True, **report}
+
+    run_id = f"reddit_converge_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+    task = asyncio.create_task(
+        execute_reddit_unlinked_convergence(
+            run_id=run_id,
+            usernames=target_usernames,
+            proxy_url=proxy_url,
+            proxy_source=proxy_source,
+            credential_manager=credential_manager,
+            learning_store=RedditLoginLearningStore(),
+            broadcast_callback=broadcast_update,
+        )
+    )
+    task.set_name(f"reddit_convergence_{run_id}")
+    reddit_convergence_tasks[run_id] = task
+
+    def _cleanup_reddit_convergence_task(completed_task: asyncio.Task, task_key: str = run_id) -> None:
+        reddit_convergence_tasks.pop(task_key, None)
+
+    task.add_done_callback(_cleanup_reddit_convergence_task)
+    return {
+        "success": True,
+        "status": "dispatched",
+        "run_id": run_id,
+        "target_usernames": target_usernames,
+        "report_status_url": f"/reddit/sessions/converge-unlinked/{run_id}",
+    }
+
+
+@app.get("/reddit/sessions/converge-unlinked/{run_id}")
+async def get_reddit_convergence_report_endpoint(
+    run_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    report = load_reddit_convergence_report(run_id)
+    if report:
+        return report
+
+    active = reddit_convergence_tasks.get(run_id)
+    if active and not active.done():
+        return {
+            "run_id": run_id,
+            "status": "running",
+            "results": [],
+            "summary": {
+                "target_count": 0,
+                "linked_count": 0,
+                "blocked_count": 0,
+            },
+        }
+
+    raise HTTPException(status_code=404, detail=f"Reddit convergence report not found: {run_id}")
+
+
+@app.get("/reddit/login-learning/summary")
+async def get_reddit_login_learning_summary(
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    store = RedditLoginLearningStore()
+    store.sync_linked_sessions()
+    return store.summary()
+
+
+@app.get("/reddit/login-learning/accounts/{username}")
+async def get_reddit_login_learning_account(
+    username: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    store = RedditLoginLearningStore()
+    store.sync_linked_sessions()
+    return {
+        "username": username,
+        "policy_version": store.summary().get("policy_version"),
+        "account": store.get_account(username),
+    }
 
 
 @app.post("/reddit/debug/reference-login")

@@ -5,6 +5,7 @@ Reddit login/session bootstrap for mobile-web execution.
 import asyncio
 import hashlib
 import logging
+import random
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from playwright.async_api import Page, async_playwright
@@ -16,6 +17,7 @@ from credentials import CredentialManager
 from fb_session import FacebookSession, apply_session_to_context, list_saved_sessions
 from proxy_manager import get_system_proxy
 from reddit_login_audit import RedditLoginAudit, compare_reddit_audits, load_reddit_audit
+from reddit_login_learning import default_strategy_config
 from reddit_selectors import COOKIE_BANNER, LOGIN
 from reddit_session import RedditSession, verify_reddit_session_logged_in
 
@@ -148,6 +150,23 @@ async def _fill_first(page: Page, selectors, value: str) -> bool:
     return False
 
 
+async def _set_first(page: Page, selectors, value: str, *, humanize: bool) -> bool:
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() > 0 and await locator.is_visible():
+                await locator.click()
+                await locator.fill("")
+                if humanize:
+                    await locator.type(value, delay=random.randint(55, 110))
+                else:
+                    await locator.fill(value)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _log_auth_state(context, profile_name: str):
     cookies = await context.cookies()
     cookie_names = sorted({str(cookie.get("name") or "") for cookie in cookies})
@@ -202,6 +221,87 @@ async def _goto_with_retry(
     raise last_exc
 
 
+async def _wait_for_login_surface(
+    page: Page,
+    *,
+    profile_name: str,
+    timeout_ms: int,
+    reload_attempts: int,
+) -> bool:
+    async def _any_login_input_visible() -> bool:
+        for selector in (*LOGIN["username_input"], *LOGIN["password_input"]):
+            try:
+                locator = page.locator(selector).first
+                if await locator.count() > 0 and await locator.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    deadline = timeout_ms
+    for attempt in range(reload_attempts + 1):
+        elapsed = 0
+        while elapsed <= deadline:
+            if await _any_login_input_visible():
+                return True
+            await page.wait_for_timeout(1000)
+            elapsed += 1000
+        if attempt >= reload_attempts:
+            break
+        logger.warning(f"[{profile_name}] login surface incomplete after {timeout_ms}ms; reloading login page")
+        await page.goto(page.url or "https://www.reddit.com/login", wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(2000)
+        await _dismiss_cookie_banner(page)
+    return False
+
+
+async def _read_response_text(response) -> str:
+    try:
+        return await response.text()
+    except Exception:
+        return ""
+
+
+async def _submit_login_with_response(page: Page, *, profile_name: str, timeout_ms: int = 20000):
+    async with page.expect_response(
+        lambda response: "/svc/shreddit/account/login" in str(response.url or "") and "/otp" not in str(response.url or ""),
+        timeout=timeout_ms,
+    ) as response_info:
+        submit_clicked = await _click_first(page, LOGIN["submit_button"], timeout_ms=5000)
+        if not submit_clicked:
+            try:
+                await page.locator(LOGIN["password_input"][0]).press("Enter")
+            except Exception:
+                pass
+    response = await response_info.value
+    body = await _read_response_text(response)
+    logger.info(f"[{profile_name}] login form submitted (button={submit_clicked}) status={response.status}")
+    return submit_clicked, response, body
+
+
+async def _submit_otp_with_response(page: Page, *, profile_name: str, timeout_ms: int = 20000):
+    async with page.expect_response(
+        lambda response: "/svc/shreddit/account/login/otp" in str(response.url or ""),
+        timeout=timeout_ms,
+    ) as response_info:
+        clicked = await _click_first(page, LOGIN["otp_submit"], timeout_ms=4000)
+        if not clicked:
+            await page.keyboard.press("Enter")
+    response = await response_info.value
+    body = await _read_response_text(response)
+    logger.info(f"[{profile_name}] otp submitted (button={clicked}) status={response.status}")
+    return clicked, response, body
+
+
+def _body_has_user_interaction_failure(body: str) -> bool:
+    return "user-interaction-failed" in str(body or "").lower()
+
+
+def _body_has_login_banner_error(body: str) -> bool:
+    lowered = str(body or "").lower()
+    return "something went wrong logging in" in lowered or "incorrect username or password" in lowered
+
+
 async def _wait_for_authenticated_surface(page: Page, context, *, profile_name: str, timeout_ms: int = 15000) -> bool:
     elapsed = 0
     step_ms = 1000
@@ -228,6 +328,47 @@ async def _wait_for_authenticated_surface(page: Page, context, *, profile_name: 
 
     logger.warning(f"[{profile_name}] post-login surface did not settle within {timeout_ms}ms")
     return False
+
+
+async def _settle_authenticated_session(
+    page: Page,
+    context,
+    *,
+    profile_name: str,
+    timeout_ms: int,
+    force_home_settle: bool,
+    fresh_page_home_settle: bool,
+):
+    settled = await _wait_for_authenticated_surface(page, context, profile_name=profile_name, timeout_ms=timeout_ms)
+    if settled and await _has_auth_cookies(context) and not await _login_inputs_present(page):
+        return page
+
+    if not force_home_settle:
+        return page
+
+    logger.info(f"[{profile_name}] auth surface incomplete; forcing home settlement on reddit.com")
+    page = await _goto_in_authenticated_context(context, page, "https://www.reddit.com/", profile_name=profile_name)
+    await page.wait_for_timeout(3000)
+    await _dismiss_cookie_banner(page)
+    settled = await _wait_for_authenticated_surface(page, context, profile_name=profile_name, timeout_ms=timeout_ms)
+    if settled:
+        return page
+
+    if not fresh_page_home_settle:
+        return page
+
+    logger.info(f"[{profile_name}] home settlement still incomplete; retrying home in a fresh page")
+    fresh_page = await context.new_page()
+    await apply_page_identity_overrides(context, fresh_page, user_agent=await page.evaluate("navigator.userAgent"), locale="en-US")
+    await _goto_with_retry(fresh_page, "https://www.reddit.com/", profile_name=profile_name)
+    await fresh_page.wait_for_timeout(3000)
+    await _dismiss_cookie_banner(fresh_page)
+    await _wait_for_authenticated_surface(fresh_page, context, profile_name=profile_name, timeout_ms=timeout_ms)
+    try:
+        await page.close()
+    except Exception:
+        pass
+    return fresh_page
 
 
 async def _goto_in_authenticated_context(context, page: Page, url: str, *, profile_name: str) -> Page:
@@ -276,9 +417,9 @@ async def _wait_for_otp_resolution(page: Page, context, *, profile_name: str, ti
     return False
 
 
-async def _handle_otp(page: Page, credential: dict) -> bool:
+async def _handle_otp(page: Page, credential: dict, *, profile_name: str) -> tuple[bool, Optional[str]]:
     if not await _otp_input_present(page):
-        return False
+        return False, None
 
     manager = CredentialManager()
     identifier = credential.get("credential_id") or credential.get("uid")
@@ -286,14 +427,13 @@ async def _handle_otp(page: Page, credential: dict) -> bool:
     if not otp_data.get("valid") or not otp_data.get("code"):
         raise RuntimeError(f"Failed to generate Reddit OTP: {otp_data.get('error')}")
 
-    filled = await _fill_first(page, LOGIN["otp_input"], otp_data["code"])
+    filled = await _set_first(page, LOGIN["otp_input"], otp_data["code"], humanize=True)
     if not filled:
         raise RuntimeError("Reddit OTP input detected but not fillable")
 
-    if not await _click_first(page, LOGIN["otp_submit"], timeout_ms=4000):
-        await page.keyboard.press("Enter")
+    _, response, body = await _submit_otp_with_response(page, profile_name=profile_name)
     await page.wait_for_timeout(3000)
-    return True
+    return True, body
 
 
 async def _run_reddit_login_flow(
@@ -311,6 +451,7 @@ async def _run_reddit_login_flow(
     cookie_blocklist_domains: Optional[list[str]] = None,
     login_navigation_timeout_ms: int = 45000,
     login_navigation_attempts: int = 3,
+    strategy: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "success": False,
@@ -327,6 +468,10 @@ async def _run_reddit_login_flow(
     if not login_identifier or not password:
         raise RuntimeError("Reddit credential missing login identifier or password")
 
+    strategy = dict(strategy or default_strategy_config())
+    strategy_id = str(strategy.get("strategy_id") or "baseline_humanized")
+    result["strategy_id"] = strategy_id
+
     logger.info(f"[{profile_name}] navigating to reddit.com/login")
     if audit:
         audit.record_event("goto_login_start", target_url="https://www.reddit.com/login")
@@ -339,6 +484,12 @@ async def _run_reddit_login_flow(
     )
     await page.wait_for_timeout(2000)
     await _dismiss_cookie_banner(page)
+    form_ready = await _wait_for_login_surface(
+        page,
+        profile_name=profile_name,
+        timeout_ms=int(strategy.get("form_wait_timeout_ms") or 12000),
+        reload_attempts=int(strategy.get("form_reload_attempts") or 0),
+    )
     logger.info(f"[{profile_name}] reddit login page: {page.url}")
     await save_debug_screenshot(page, f"reddit_login_page_{profile_name}")
     await _capture_checkpoint(audit, page, context, "login_page_loaded")
@@ -350,9 +501,22 @@ async def _run_reddit_login_flow(
         pass
     logger.info(f"[{profile_name}] page text preview: {page_text[:200]}")
 
-    user_filled = await _fill_first(page, LOGIN["username_input"], str(login_identifier))
-    pass_filled = await _fill_first(page, LOGIN["password_input"], str(password))
-    logger.info(f"[{profile_name}] login form fill: user={user_filled} pass={pass_filled}")
+    user_filled = False
+    pass_filled = False
+    if form_ready:
+        user_filled = await _set_first(
+            page,
+            LOGIN["username_input"],
+            str(login_identifier),
+            humanize=bool(strategy.get("humanize_input", True)),
+        )
+        pass_filled = await _set_first(
+            page,
+            LOGIN["password_input"],
+            str(password),
+            humanize=bool(strategy.get("humanize_input", True)),
+        )
+    logger.info(f"[{profile_name}] login form fill: user={user_filled} pass={pass_filled} strategy={strategy_id}")
 
     if not user_filled or not pass_filled:
         await dump_interactive_elements(page, f"REDDIT LOGIN FORM {profile_name}")
@@ -362,13 +526,8 @@ async def _run_reddit_login_flow(
 
     await save_debug_screenshot(page, f"reddit_form_filled_{profile_name}")
     await _capture_checkpoint(audit, page, context, "credentials_filled")
-    submit_clicked = await _click_first(page, LOGIN["submit_button"], timeout_ms=5000)
-    if not submit_clicked:
-        try:
-            await page.locator(LOGIN["password_input"][0]).press("Enter")
-        except Exception:
-            pass
-    logger.info(f"[{profile_name}] login form submitted (button={submit_clicked})")
+    await page.wait_for_timeout(int(strategy.get("post_submit_wait_ms") or 3500))
+    submit_clicked, login_response, login_body = await _submit_login_with_response(page, profile_name=profile_name)
     if audit:
         audit.record_event("credentials_submitted", button_clicked=submit_clicked)
 
@@ -377,19 +536,35 @@ async def _run_reddit_login_flow(
     logger.info(f"[{profile_name}] after submit URL: {page.url}")
     await _capture_checkpoint(audit, page, context, "after_credential_submit")
 
+    if _body_has_user_interaction_failure(login_body) or int(login_response.status or 0) >= 400:
+        raise RuntimeError(f"Reddit credential submit rejected: {login_response.status} {login_body[:200].strip()}")
+    if _body_has_login_banner_error(login_body):
+        raise RuntimeError(f"Reddit credential submit returned login error: {login_body[:200].strip()}")
+
     if await _otp_input_present(page):
         await _capture_checkpoint(audit, page, context, "otp_prompt")
 
-    otp_handled = await _handle_otp(page, credential)
+    otp_handled, otp_body = await _handle_otp(page, credential, profile_name=profile_name)
     if otp_handled:
         logger.info(f"[{profile_name}] OTP submitted on reddit.com")
         if audit:
             audit.record_event("otp_submitted")
+        if _body_has_user_interaction_failure(otp_body or ""):
+            raise RuntimeError(f"Reddit OTP submit rejected: {(otp_body or '')[:200].strip()}")
+        if _body_has_login_banner_error(otp_body or ""):
+            raise RuntimeError(f"Reddit OTP submit returned login error: {(otp_body or '')[:200].strip()}")
         await _wait_for_otp_resolution(page, context, profile_name=profile_name)
         await page.wait_for_timeout(3000)
         await _capture_checkpoint(audit, page, context, "after_otp_submit")
 
-    await _wait_for_authenticated_surface(page, context, profile_name=profile_name)
+    page = await _settle_authenticated_session(
+        page,
+        context,
+        profile_name=profile_name,
+        timeout_ms=int(strategy.get("auth_surface_timeout_ms") or 20000),
+        force_home_settle=bool(strategy.get("force_home_settle", False)),
+        fresh_page_home_settle=bool(strategy.get("fresh_page_home_settle", False)),
+    )
     await page.wait_for_timeout(1500)
     await _dismiss_cookie_banner(page)
     await save_debug_screenshot(page, f"reddit_after_login_{profile_name}")
@@ -458,6 +633,7 @@ async def _run_reddit_login_flow(
             "profile_name": profile_name,
             "username": session.get_username(),
             "profile_url": session.get_profile_url(),
+            "strategy_id": strategy_id,
         }
     )
     return result
@@ -480,6 +656,7 @@ async def login_reddit(
     proxy_source: str = "runtime",
     headless: bool = True,
     broadcast_callback: BroadcastFn = None,
+    strategy_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "success": False,
@@ -560,6 +737,7 @@ async def login_reddit(
                 audit=audit,
                 persist_session=True,
                 session=session,
+                strategy=default_strategy_config(strategy_id),
             )
             await _broadcast(
                 broadcast_callback,
@@ -734,6 +912,8 @@ async def create_session_from_credentials(
     proxy_url: Optional[str] = None,
     proxy_source: str = "runtime",
     broadcast_callback: BroadcastFn = None,
+    strategy_id: Optional[str] = None,
+    allow_reference_bootstrap: bool = False,
 ) -> Dict[str, Any]:
     manager = CredentialManager()
     credential = manager.get_credential(credential_uid, platform="reddit")
@@ -748,11 +928,12 @@ async def create_session_from_credentials(
         proxy_url=proxy_url,
         proxy_source=proxy_source,
         broadcast_callback=broadcast_callback,
+        strategy_id=strategy_id,
     )
     if result.get("success"):
         return result
 
-    if _audit_has_user_interaction_failure(result.get("attempt_id")):
+    if allow_reference_bootstrap and _audit_has_user_interaction_failure(result.get("attempt_id")):
         logger.info(
             "Reddit standalone login hit user-interaction-failed for %s; retrying via deterministic reference identity bootstrap",
             credential_uid,

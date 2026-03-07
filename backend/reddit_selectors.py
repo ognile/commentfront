@@ -24,8 +24,8 @@ LOGIN = {
     "otp_input": [
         'input[name="otp"]',
         'input[name="code"]',
+        'input[name="appOtp"]',
         'input[autocomplete="one-time-code"]',
-        'input[inputmode="numeric"]',
     ],
     "otp_submit": [
         'button:has-text("Continue")',
