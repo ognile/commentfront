@@ -16,9 +16,17 @@ from safe_io import atomic_write_json, safe_read_json
 
 logger = logging.getLogger("RedditSession")
 
-REDDIT_SESSIONS_DIR = Path(
-    os.getenv("REDDIT_SESSIONS_DIR", str(Path(__file__).parent / "sessions" / "reddit"))
-)
+
+def _default_reddit_sessions_dir() -> Path:
+    env_value = os.getenv("REDDIT_SESSIONS_DIR")
+    if env_value:
+        return Path(env_value)
+    if Path("/data").exists():
+        return Path("/data/sessions/reddit")
+    return Path(__file__).parent / "sessions" / "reddit"
+
+
+REDDIT_SESSIONS_DIR = _default_reddit_sessions_dir()
 REDDIT_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from reddit_session import RedditSession, verify_reddit_session_logged_in
+from reddit_session import RedditSession, _default_reddit_sessions_dir, verify_reddit_session_logged_in
 
 
 class _FakeLocator:
@@ -140,3 +140,9 @@ def test_verify_reddit_session_logged_in_fails_after_login_redirect():
     )
 
     assert asyncio.run(verify_reddit_session_logged_in(page, session)) is False
+
+
+def test_default_reddit_sessions_dir_prefers_env(monkeypatch):
+    monkeypatch.setenv("REDDIT_SESSIONS_DIR", "/tmp/reddit-sessions")
+
+    assert _default_reddit_sessions_dir() == Path("/tmp/reddit-sessions")
