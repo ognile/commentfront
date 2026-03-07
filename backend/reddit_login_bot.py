@@ -286,6 +286,33 @@ async def _submit_login_with_response(page: Page, *, profile_name: str, timeout_
     return submit_clicked, response, body
 
 
+async def _retry_credential_entry(
+    page: Page,
+    *,
+    profile_name: str,
+    login_identifier: str,
+    password: str,
+    strategy: Dict[str, Any],
+) -> None:
+    logger.info(f"[{profile_name}] retrying credential entry in-place after interaction failure")
+    await _dismiss_cookie_banner(page)
+    await _set_first(
+        page,
+        LOGIN["username_input"],
+        str(login_identifier),
+        humanize=bool(strategy.get("humanize_input", True)),
+    )
+    between_field_wait_ms = max(0, int(strategy.get("between_field_wait_ms") or 0))
+    if between_field_wait_ms:
+        await page.wait_for_timeout(between_field_wait_ms)
+    await _set_first(
+        page,
+        LOGIN["password_input"],
+        str(password),
+        humanize=bool(strategy.get("humanize_input", True)),
+    )
+
+
 async def _submit_otp_with_response(page: Page, *, profile_name: str, timeout_ms: int = 20000):
     async with page.expect_response(
         lambda response: "/svc/shreddit/account/login/otp" in str(response.url or ""),
@@ -602,18 +629,48 @@ async def _run_reddit_login_flow(
 
     await save_debug_screenshot(page, f"reddit_form_filled_{profile_name}")
     await _capture_checkpoint(audit, page, context, "credentials_filled")
-    await page.wait_for_timeout(int(strategy.get("post_submit_wait_ms") or 3500))
-    submit_clicked, login_response, login_body = await _submit_login_with_response(page, profile_name=profile_name)
-    if audit:
-        audit.record_event("credentials_submitted", button_clicked=submit_clicked)
 
-    await page.wait_for_timeout(5000)
-    await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
-    logger.info(f"[{profile_name}] after submit URL: {page.url}")
-    await _capture_checkpoint(audit, page, context, "after_credential_submit")
+    credential_retry_attempts = max(0, int(strategy.get("credential_retry_attempts") or 0))
+    credential_retry_wait_ms = max(0, int(strategy.get("credential_retry_wait_ms") or 0))
+    login_response = None
+    login_body = ""
 
-    if _body_has_user_interaction_failure(login_body) or int(login_response.status or 0) >= 400:
-        raise RuntimeError(f"Reddit credential submit rejected: {login_response.status} {login_body[:200].strip()}")
+    for credential_attempt in range(credential_retry_attempts + 1):
+        await page.wait_for_timeout(int(strategy.get("post_submit_wait_ms") or 3500))
+        submit_clicked, login_response, login_body = await _submit_login_with_response(page, profile_name=profile_name)
+        if audit:
+            audit.record_event(
+                "credentials_submitted",
+                button_clicked=submit_clicked,
+                credential_attempt=credential_attempt + 1,
+            )
+
+        await page.wait_for_timeout(5000)
+        await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
+        logger.info(f"[{profile_name}] after submit URL: {page.url}")
+        await _capture_checkpoint(
+            audit,
+            page,
+            context,
+            "after_credential_submit" if credential_attempt == 0 else f"after_credential_submit_retry_{credential_attempt}",
+        )
+
+        if not (_body_has_user_interaction_failure(login_body) or int(login_response.status or 0) >= 400):
+            break
+
+        if credential_attempt >= credential_retry_attempts:
+            raise RuntimeError(f"Reddit credential submit rejected: {login_response.status} {login_body[:200].strip()}")
+
+        if credential_retry_wait_ms:
+            await page.wait_for_timeout(credential_retry_wait_ms)
+        await _retry_credential_entry(
+            page,
+            profile_name=profile_name,
+            login_identifier=str(login_identifier),
+            password=str(password),
+            strategy=strategy,
+        )
+
     if _body_has_login_banner_error(login_body):
         raise RuntimeError(f"Reddit credential submit returned login error: {login_body[:200].strip()}")
 
