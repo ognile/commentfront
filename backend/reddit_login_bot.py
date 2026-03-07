@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from playwright.async_api import Page, async_playwright
 
 from browser_factory import create_browser_context
+from config import MOBILE_VIEWPORT, REDDIT_MOBILE_USER_AGENT
 from comment_bot import dump_interactive_elements, save_debug_screenshot
 from credentials import CredentialManager
 from reddit_selectors import COOKIE_BANNER, LOGIN
@@ -72,15 +73,34 @@ async def _fill_first(page: Page, selectors, value: str) -> bool:
     return False
 
 
-async def _wait_for_auth_cookies(context, timeout_ms: int = 15000) -> bool:
-    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000.0)
-    while asyncio.get_event_loop().time() < deadline:
-        cookies = await context.cookies()
-        names = {str(cookie.get("name") or "") for cookie in cookies}
-        if "token_v2" in names or "reddit_session" in names:
-            return True
-        await asyncio.sleep(0.5)
-    return False
+async def _log_auth_state(context, profile_name: str):
+    cookies = await context.cookies()
+    cookie_names = sorted({str(cookie.get("name") or "") for cookie in cookies})
+    logger.info(f"[{profile_name}] auth cookie names: {cookie_names}")
+    return cookie_names
+
+
+async def _goto_with_retry(
+    page: Page,
+    url: str,
+    *,
+    profile_name: str,
+    wait_until: str = "domcontentloaded",
+    timeout: int = 45000,
+    attempts: int = 3,
+):
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            await page.goto(url, wait_until=wait_until, timeout=timeout)
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(f"[{profile_name}] navigation attempt {attempt}/{attempts} failed for {url}: {exc}")
+            if attempt == attempts:
+                raise
+            await page.wait_for_timeout(1500 * attempt)
+    raise last_exc
 
 
 async def _handle_otp(page: Page, credential: dict) -> bool:
@@ -108,7 +128,7 @@ async def _handle_otp(page: Page, credential: dict) -> bool:
         raise RuntimeError("Reddit OTP input detected but not fillable")
 
     if not await _click_first(page, LOGIN["otp_submit"], timeout_ms=4000):
-        await page.locator(LOGIN["otp_input"][0]).press("Enter")
+        await page.keyboard.press("Enter")
     await page.wait_for_timeout(3000)
     return True
 
@@ -142,6 +162,7 @@ async def login_reddit(
 
     async with async_playwright() as playwright:
         browser = None
+        login_requests = []
         try:
             await _broadcast(
                 broadcast_callback,
@@ -150,12 +171,14 @@ async def login_reddit(
             )
             browser, context = await create_browser_context(
                 playwright,
-                user_agent=None,
-                viewport=None,
+                user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
+                viewport=session.get_viewport() or MOBILE_VIEWPORT,
                 proxy_url=proxy_url,
                 timezone_id=fingerprint["timezone"],
                 locale=fingerprint["locale"],
                 headless=headless,
+                is_mobile=True,
+                has_touch=True,
             )
             page = await context.new_page()
 
@@ -166,8 +189,6 @@ async def login_reddit(
             )
 
             # Capture network requests during login for debugging
-            login_requests = []
-
             def _capture_request(request):
                 try:
                     url = request.url.lower()
@@ -178,12 +199,11 @@ async def login_reddit(
 
             page.on("request", _capture_request)
 
-            # Use old.reddit.com login form — no reCAPTCHA Enterprise
-            logger.info(f"[{profile_name}] navigating to old.reddit.com/login")
-            await page.goto("https://old.reddit.com/login", wait_until="domcontentloaded", timeout=45000)
+            logger.info(f"[{profile_name}] navigating to reddit.com/login")
+            await _goto_with_retry(page, "https://www.reddit.com/login", profile_name=profile_name)
             await page.wait_for_timeout(2000)
             await _dismiss_cookie_banner(page)
-            logger.info(f"[{profile_name}] old reddit login page: {page.url}")
+            logger.info(f"[{profile_name}] reddit login page: {page.url}")
             await save_debug_screenshot(page, f"reddit_login_page_{profile_name}")
 
             await _broadcast(
@@ -192,26 +212,6 @@ async def login_reddit(
                 {"profile_name": profile_name, "step": "submitting_credentials"},
             )
 
-            # Fill old.reddit.com login form
-            # Old reddit uses: input#user_login[name="user"], input#passwd_login[name="passwd"]
-            OLD_USER_SELECTORS = [
-                '#user_login',
-                'input[name="user"]',
-                'input[id="user_login"]',
-            ]
-            OLD_PASS_SELECTORS = [
-                '#passwd_login',
-                'input[name="passwd"]',
-                'input[id="passwd_login"]',
-                'input[type="password"]',
-            ]
-            OLD_SUBMIT_SELECTORS = [
-                '#login-button',
-                'button[type="submit"]',
-                'button:has-text("log in")',
-            ]
-
-            # Check if old.reddit.com actually shows a login form or redirected
             page_text = ""
             try:
                 page_text = await page.locator("body").inner_text()
@@ -219,95 +219,40 @@ async def login_reddit(
                 pass
             logger.info(f"[{profile_name}] page text preview: {page_text[:200]}")
 
-            # Try to fill the form
-            user_filled = await _fill_first(page, OLD_USER_SELECTORS, str(login_identifier))
-            pass_filled = await _fill_first(page, OLD_PASS_SELECTORS, str(password))
-            logger.info(f"[{profile_name}] old form fill: user={user_filled} pass={pass_filled}")
+            user_filled = await _fill_first(page, LOGIN["username_input"], str(login_identifier))
+            pass_filled = await _fill_first(page, LOGIN["password_input"], str(password))
+            logger.info(f"[{profile_name}] login form fill: user={user_filled} pass={pass_filled}")
 
             if not user_filled or not pass_filled:
-                # Old reddit form not found — try the API from this page context
-                logger.info(f"[{profile_name}] old form not found, trying /api/login via page fetch")
-                await dump_interactive_elements(page, f"OLD REDDIT LOGIN FORM {profile_name}")
+                await dump_interactive_elements(page, f"REDDIT LOGIN FORM {profile_name}")
+                await save_debug_screenshot(page, f"reddit_login_form_missing_{profile_name}")
+                raise RuntimeError("Reddit login form inputs not found on www.reddit.com/login")
 
-                # Generate OTP
-                otp_code = ""
+            await save_debug_screenshot(page, f"reddit_form_filled_{profile_name}")
+            submit_clicked = await _click_first(page, LOGIN["submit_button"], timeout_ms=5000)
+            if not submit_clicked:
                 try:
-                    manager = CredentialManager()
-                    otp_data = manager.generate_otp(
-                        credential.get("credential_id") or credential.get("uid"),
-                        platform="reddit",
-                    )
-                    if otp_data.get("valid") and otp_data.get("code"):
-                        otp_code = otp_data["code"]
+                    await page.locator(LOGIN["password_input"][0]).press("Enter")
                 except Exception:
                     pass
+            logger.info(f"[{profile_name}] login form submitted (button={submit_clicked})")
+            await page.wait_for_timeout(5000)
+            await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
+            logger.info(f"[{profile_name}] after submit URL: {page.url}")
 
-                api_result = await page.evaluate(
-                    """async (data) => {
-                        try {
-                            const form = new URLSearchParams();
-                            form.append('user', data.username);
-                            form.append('passwd', data.password);
-                            form.append('api_type', 'json');
-                            form.append('rem', 'true');
-                            if (data.otp) form.append('otp', data.otp);
-                            const resp = await fetch('/api/login/' + data.username, {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/x-www-form-urlencoded',
-                                },
-                                body: form.toString(),
-                                credentials: 'include',
-                            });
-                            const text = await resp.text();
-                            let json = null;
-                            try { json = JSON.parse(text); } catch(e) {}
-                            return {ok: resp.ok, status: resp.status, body: text.substring(0, 2000), data: json};
-                        } catch (e) {
-                            return {ok: false, error: e.message};
-                        }
-                    }""",
-                    {"username": str(login_identifier), "password": str(password), "otp": otp_code},
-                )
-                logger.info(f"[{profile_name}] old API login: status={api_result.get('status')} body={str(api_result.get('body', ''))[:500]}")
-            else:
-                # Submit the old reddit form
-                await save_debug_screenshot(page, f"reddit_form_filled_{profile_name}")
-                submit_clicked = await _click_first(page, OLD_SUBMIT_SELECTORS, timeout_ms=5000)
-                if not submit_clicked:
-                    try:
-                        await page.locator(OLD_PASS_SELECTORS[0]).press("Enter")
-                    except Exception:
-                        pass
-                logger.info(f"[{profile_name}] old form submitted (button={submit_clicked})")
-                await page.wait_for_timeout(5000)
-                await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
-                logger.info(f"[{profile_name}] after old submit URL: {page.url}")
-
-                # Handle OTP if prompted
+            for _ in range(3):
                 otp_handled = await _handle_otp(page, credential)
-                if otp_handled:
-                    logger.info(f"[{profile_name}] OTP submitted on old reddit")
-                    await page.wait_for_timeout(3000)
+                if not otp_handled:
+                    break
+                logger.info(f"[{profile_name}] OTP submitted on reddit.com")
+                await page.wait_for_timeout(3000)
 
-            # Navigate to www.reddit.com to pick up cross-domain session
-            await page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=45000)
+            await _goto_with_retry(page, "https://www.reddit.com/", profile_name=profile_name)
             await page.wait_for_timeout(2500)
             await _dismiss_cookie_banner(page)
             await save_debug_screenshot(page, f"reddit_after_login_{profile_name}")
             logger.info(f"[{profile_name}] after login home URL: {page.url}")
-
-            # Check for auth cookies
-            all_cookies = await context.cookies()
-            cookie_names = [c.get("name") for c in all_cookies]
-            logger.info(f"[{profile_name}] cookies after login: {cookie_names}")
-
-            if not await _wait_for_auth_cookies(context, timeout_ms=10000):
-                all_cookies2 = await context.cookies()
-                cookie_names2 = [c.get("name") for c in all_cookies2]
-                logger.error(f"[{profile_name}] auth cookies missing. cookies: {cookie_names2}")
-                await save_debug_screenshot(page, f"reddit_login_failed_{profile_name}")
-                raise RuntimeError(f"Reddit auth cookies not created. cookies: {cookie_names2}")
+            await _log_auth_state(context, profile_name)
 
             try:
                 await _click_first(page, LOGIN["modal_close"], timeout_ms=2000)
@@ -316,7 +261,7 @@ async def login_reddit(
 
             profile_url = credential.get("profile_url") or f"https://www.reddit.com/user/{credential.get('username')}/"
             logger.info(f"[{profile_name}] navigating to profile: {profile_url}")
-            await page.goto(profile_url, wait_until="domcontentloaded", timeout=45000)
+            await _goto_with_retry(page, profile_url, profile_name=profile_name)
             await page.wait_for_timeout(2500)
             logger.info(f"[{profile_name}] profile page URL: {page.url}")
             await save_debug_screenshot(page, f"reddit_profile_page_{profile_name}")
@@ -336,13 +281,14 @@ async def login_reddit(
                     "stage": "new",
                     "history": [],
                 },
+                device=fingerprint,
             )
 
             verified = await verify_reddit_session_logged_in(page, session)
             if not verified:
                 await save_debug_screenshot(page, f"reddit_session_verify_failed_{profile_name}")
                 result["needs_attention"] = True
-                raise RuntimeError("Reddit session created cookies but failed authenticated destination verification")
+                raise RuntimeError("Reddit session failed authenticated destination verification on www.reddit.com")
 
             session.save()
             CredentialManager().set_linked_session_id(credential.get("credential_id") or credential.get("uid"), profile_name, platform="reddit")
@@ -363,6 +309,8 @@ async def login_reddit(
             return result
         except Exception as exc:
             result["error"] = str(exc)
+            if login_requests:
+                logger.error(f"[{profile_name}] reddit login requests: {login_requests[-10:]}")
             logger.error(f"Reddit login failed for {profile_name}: {exc}")
             await _broadcast(
                 broadcast_callback,
@@ -405,13 +353,15 @@ async def test_session(session: RedditSession, proxy_url: Optional[str] = None) 
         try:
             browser, context = await create_browser_context(
                 playwright,
-                user_agent=session.get_user_agent(),
+                user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
                 viewport=session.get_viewport(),
                 proxy_url=proxy_url or session.get_proxy(),
                 timezone_id=fingerprint["timezone"],
                 locale=fingerprint["locale"],
                 headless=True,
                 storage_state=session.get_storage_state(),
+                is_mobile=True,
+                has_touch=True,
             )
             page = await context.new_page()
             verified = await verify_reddit_session_logged_in(page, session)

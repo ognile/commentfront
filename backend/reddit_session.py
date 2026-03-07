@@ -47,12 +47,14 @@ class RedditSession:
         display_name: Optional[str] = None,
         fixture: bool = False,
         warmup_state: Optional[Dict[str, Any]] = None,
+        device: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Extract session data from an authenticated Playwright context."""
         storage_state = await context.storage_state()
         cookies = storage_state.get("cookies", [])
         user_agent = await page.evaluate("navigator.userAgent")
         viewport = page.viewport_size or MOBILE_VIEWPORT
+        device_fingerprint = dict(device or self.get_device_fingerprint())
 
         self.data = {
             "platform": "reddit",
@@ -67,6 +69,7 @@ class RedditSession:
             "user_agent": user_agent,
             "viewport": viewport,
             "proxy": proxy,
+            "device": device_fingerprint,
             "tags": list(tags or ["reddit"]),
             "fixture": bool(fixture),
             "linked_credential_id": linked_credential_id,
@@ -120,9 +123,16 @@ class RedditSession:
         return self.data.get("proxy")
 
     def get_device_fingerprint(self) -> Dict[str, str]:
-        if not self.data:
-            seed = self.profile_name or "reddit"
-        else:
+        if self.data:
+            device = dict(self.data.get("device") or {})
+            if device.get("timezone"):
+                return {
+                    "timezone": str(device.get("timezone")),
+                    "locale": str(device.get("locale") or "en-US"),
+                }
+
+        seed = self.profile_name or "reddit"
+        if self.data:
             seed = self.data.get("username") or self.profile_name or "reddit"
 
         index = int(hashlib.md5(seed.encode()).hexdigest(), 16) % len(USA_TIMEZONES)
@@ -169,27 +179,53 @@ async def verify_reddit_session_logged_in(page, session: RedditSession, debug: b
     Validate a Reddit session using authenticated destinations, not just public pages.
     """
     try:
-        if not session.has_auth_tokens():
-            if debug:
-                logger.info("Reddit session missing auth cookies")
-            return False
+        cookie_names = sorted({str(cookie.get("name") or "") for cookie in session.get_cookies()})
+        if debug:
+            logger.info(f"[{session.profile_name}] verify cookie names: {cookie_names}")
 
-        await page.goto("https://www.reddit.com/submit", wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(2500)
-        current_url = page.url.lower()
-        logger.info(f"[{session.profile_name}] verify: /submit resolved to {current_url}")
-        if "/login" in current_url:
-            return False
+        destinations = [
+            "https://www.reddit.com/submit",
+            "https://www.reddit.com/settings/account",
+        ]
 
-        body = (await page.locator("body").inner_text()).lower()
-        body_preview = body[:200].replace("\n", " ")
-        logger.info(f"[{session.profile_name}] verify body: {body_preview}")
-        if "create a post" in body or "post to" in body or "/submit" in current_url:
-            return True
+        for destination in destinations:
+            last_exc = None
+            for attempt in range(1, 3):
+                try:
+                    await page.goto(destination, wait_until="domcontentloaded", timeout=30000)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        f"[{session.profile_name}] verify navigation attempt {attempt}/2 failed for {destination}: {exc}"
+                    )
+                    if attempt == 2:
+                        raise
+                    await page.wait_for_timeout(1200 * attempt)
+            if last_exc:
+                raise last_exc
+            await page.wait_for_timeout(2500)
+            current_url = page.url.lower()
+            logger.info(f"[{session.profile_name}] verify: {destination} resolved to {current_url}")
 
-        login_inputs = await page.locator('input[name="username"], input[name="password"]').count()
-        logger.info(f"[{session.profile_name}] verify: login inputs found={login_inputs}")
-        return login_inputs == 0
+            body = (await page.locator("body").inner_text()).lower()
+            body_preview = body[:200].replace("\n", " ")
+            logger.info(f"[{session.profile_name}] verify body: {body_preview}")
+
+            login_inputs = await page.locator('input[name="username"], input[name="password"]').count()
+            logger.info(f"[{session.profile_name}] verify: login inputs found={login_inputs}")
+
+            if "/login" in current_url or login_inputs > 0:
+                continue
+
+            if any(marker in body for marker in ("create a post", "post to", "account settings", "email address")):
+                return True
+
+            if "/submit" in current_url or "/settings/" in current_url:
+                return True
+
+        return False
     except Exception as exc:
         if debug:
             logger.warning(f"Reddit session verification failed: {exc}")
@@ -203,7 +239,8 @@ def list_saved_reddit_sessions() -> List[Dict[str, Any]]:
         if not data:
             continue
         cookies = list(data.get("cookies") or [])
-        cookie_names = {str(cookie.get("name") or "") for cookie in cookies}
+        storage_state = dict(data.get("storage_state") or {})
+        persisted_cookie_count = len(cookies or list(storage_state.get("cookies") or []))
         sessions.append(
             {
                 "file": session_file.name,
@@ -215,7 +252,7 @@ def list_saved_reddit_sessions() -> List[Dict[str, Any]]:
                 "profile_url": data.get("profile_url"),
                 "extracted_at": data.get("extracted_at"),
                 "proxy": data.get("proxy"),
-                "has_valid_session": bool({"token_v2", "reddit_session"} & cookie_names),
+                "has_valid_session": persisted_cookie_count > 0,
                 "tags": list(data.get("tags") or []),
                 "fixture": bool(data.get("fixture", False)),
                 "linked_credential_id": data.get("linked_credential_id"),

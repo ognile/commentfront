@@ -17,6 +17,12 @@ DEFAULT_USER_AGENT = (
     "Mobile/15E148 Safari/604.1"
 )
 
+REDDIT_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/133.0.0.0 Mobile Safari/537.36"
+)
+
 BROWSER_ARGS = ["--disable-notifications", "--disable-geolocation"]
 
 # =============================================================================

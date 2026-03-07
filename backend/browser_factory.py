@@ -48,6 +48,8 @@ async def create_browser_context(
     locale: str = "en-US",
     headless: bool = True,
     storage_state: Optional[Dict] = None,
+    is_mobile: Optional[bool] = None,
+    has_touch: Optional[bool] = None,
 ) -> tuple[Browser, BrowserContext]:
     """Create a stealth-enabled browser context with standard config.
 
@@ -79,6 +81,12 @@ async def create_browser_context(
 
     if storage_state:
         context_options["storage_state"] = storage_state
+
+    if is_mobile is not None:
+        context_options["is_mobile"] = is_mobile
+
+    if has_touch is not None:
+        context_options["has_touch"] = has_touch
 
     if proxy_url:
         proxy_config = build_playwright_proxy(proxy_url)

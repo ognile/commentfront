@@ -13,7 +13,8 @@ from playwright.async_api import async_playwright
 
 from browser_factory import create_browser_context
 from comment_bot import dump_interactive_elements, save_debug_screenshot
-from reddit_login_bot import _dismiss_cookie_banner
+from config import REDDIT_MOBILE_USER_AGENT
+from reddit_login_bot import _dismiss_cookie_banner, _goto_with_retry
 from reddit_selectors import COMMENT, HOME, POST
 from reddit_session import RedditSession
 
@@ -44,13 +45,15 @@ async def _session_page(session: RedditSession, proxy_url: Optional[str] = None)
     async with async_playwright() as playwright:
         browser, context = await create_browser_context(
             playwright,
-            user_agent=session.get_user_agent(),
+            user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
             viewport=session.get_viewport(),
             proxy_url=proxy_url or session.get_proxy(),
             timezone_id=fingerprint["timezone"],
             locale=fingerprint["locale"],
             headless=True,
             storage_state=session.get_storage_state(),
+            is_mobile=True,
+            has_touch=True,
         )
         try:
             page = await context.new_page()
@@ -60,7 +63,7 @@ async def _session_page(session: RedditSession, proxy_url: Optional[str] = None)
 
 
 async def _goto(page, url: str):
-    await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+    await _goto_with_retry(page, url, profile_name="reddit_action")
     await page.wait_for_timeout(2500)
     await _dismiss_cookie_banner(page)
     await page.wait_for_timeout(500)

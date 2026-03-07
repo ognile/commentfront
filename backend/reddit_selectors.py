@@ -4,16 +4,19 @@ Reddit mobile-web selectors and intent helpers.
 
 LOGIN = {
     "username_input": [
+        'input[name="loginUsername"]',
         'input[name="username"]',
         'input[autocomplete="username"]',
         'input[type="text"]',
         'input[type="email"]',
     ],
     "password_input": [
+        'input[name="loginPassword"]',
         'input[name="password"]',
         'input[type="password"]',
     ],
     "submit_button": [
+        'button[type="submit"]',
         'button.login',
         'button:has-text("Log In")',
         'button:has-text("Continue")',
