@@ -5442,6 +5442,16 @@ def _get_active_reddit_convergence() -> Optional[tuple[str, asyncio.Task]]:
     return None
 
 
+def _register_reddit_convergence_task(run_id: str, task: asyncio.Task) -> None:
+    task.set_name(f"reddit_convergence_{run_id}")
+    reddit_convergence_tasks[run_id] = task
+
+    def _cleanup_reddit_convergence_task(completed_task: asyncio.Task, task_key: str = run_id) -> None:
+        reddit_convergence_tasks.pop(task_key, None)
+
+    task.add_done_callback(_cleanup_reddit_convergence_task)
+
+
 def _resolve_reddit_action_media_path(image_id: Optional[str]) -> Optional[str]:
     if not image_id:
         return None
@@ -5732,19 +5742,24 @@ async def converge_unlinked_reddit_sessions_endpoint(
     proxy_source = "named_proxy" if request.proxy_id else "env"
     usernames = [str(item or "").strip() for item in list(request.usernames or []) if str(item or "").strip()]
     target_usernames = usernames or list(DEFAULT_UNLINKED_ORDER)
+    run_id = f"reddit_converge_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
 
     if request.wait_for_completion:
-        report = await execute_reddit_unlinked_convergence(
-            usernames=target_usernames,
-            proxy_url=proxy_url,
-            proxy_source=proxy_source,
-            credential_manager=credential_manager,
-            learning_store=RedditLoginLearningStore(),
-            broadcast_callback=broadcast_update,
+        task = asyncio.create_task(
+            execute_reddit_unlinked_convergence(
+                run_id=run_id,
+                usernames=target_usernames,
+                proxy_url=proxy_url,
+                proxy_source=proxy_source,
+                credential_manager=credential_manager,
+                learning_store=RedditLoginLearningStore(),
+                broadcast_callback=broadcast_update,
+            )
         )
+        _register_reddit_convergence_task(run_id, task)
+        report = await task
         return {"success": True, **report}
 
-    run_id = f"reddit_converge_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     task = asyncio.create_task(
         execute_reddit_unlinked_convergence(
             run_id=run_id,
@@ -5756,13 +5771,7 @@ async def converge_unlinked_reddit_sessions_endpoint(
             broadcast_callback=broadcast_update,
         )
     )
-    task.set_name(f"reddit_convergence_{run_id}")
-    reddit_convergence_tasks[run_id] = task
-
-    def _cleanup_reddit_convergence_task(completed_task: asyncio.Task, task_key: str = run_id) -> None:
-        reddit_convergence_tasks.pop(task_key, None)
-
-    task.add_done_callback(_cleanup_reddit_convergence_task)
+    _register_reddit_convergence_task(run_id, task)
     return {
         "success": True,
         "status": "dispatched",

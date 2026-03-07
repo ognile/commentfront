@@ -28,6 +28,7 @@ LOGIN = {
         'input[autocomplete="one-time-code"]',
     ],
     "otp_submit": [
+        'button:has-text("Check code")',
         'button:has-text("Continue")',
         'button:has-text("Verify")',
         'button:has-text("Log In")',
