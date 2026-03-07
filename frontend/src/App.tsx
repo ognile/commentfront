@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, useEffectEvent } from 'react'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -396,9 +396,61 @@ const getConsolidatedResults = (results: CampaignResult[]): CampaignResult[] => 
   return Object.values(byJobIndex).sort((a, b) => a.job_index - b.job_index);
 };
 
+const INITIAL_QUEUE_STATE: QueueState = {
+  processor_running: false,
+  current_campaign_id: null,
+  pending_count: 0,
+  max_pending: 50,
+  pending: [],
+  history: [],
+};
+
+const INITIAL_LIVE_STATUS: LiveStatus = {
+  connected: false,
+  currentStep: 'idle',
+  currentJob: 0,
+  totalJobs: 0,
+};
+
+function normalizeErrorMessage(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const joined = value.map(v => normalizeErrorMessage(v, '')).filter(Boolean).join('; ');
+    return joined || fallback;
+  }
+
+  if (value && typeof value === 'object') {
+    const asRecord = value as Record<string, unknown>;
+    if (typeof asRecord.message === 'string' && asRecord.message.trim()) return asRecord.message;
+    if (typeof asRecord.detail === 'string' && asRecord.detail.trim()) return asRecord.detail;
+    if (Array.isArray(asRecord.errors) && asRecord.errors.length > 0) {
+      const joined = asRecord.errors.map(e => String(e)).join('; ');
+      if (joined.trim()) return joined;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return fallback;
+    }
+  }
+
+  if (value instanceof Error && value.message) return value.message;
+  return fallback;
+}
+
+async function parseApiError(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    return normalizeErrorMessage(body?.detail ?? body, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
 function App() {
   // Auth state - must be first hook
   const { user, isAuthenticated, isLoading: authLoading, logout } = useAuth();
+  const authReady = !authLoading && isAuthenticated;
 
   const [url, setUrl] = useState('');
   const [comments, setComments] = useState('');
@@ -443,21 +495,18 @@ function App() {
   const enableWarmup = true; // Warmup always enabled for new campaigns
 
   // Campaign queue state - synced with backend
-  const [queueState, setQueueState] = useState<QueueState>({
-    processor_running: false,
-    current_campaign_id: null,
-    pending_count: 0,
-    max_pending: 50,
-    pending: [],
-    history: []
-  });
+  const [queueState, setQueueState] = useState<QueueState>(INITIAL_QUEUE_STATE);
   const [queueLoading, setQueueLoading] = useState(true);
+  const [queueRefreshing, setQueueRefreshing] = useState(false);
+  const [queueInitialized, setQueueInitialized] = useState(false);
   const [campaignAudit, setCampaignAudit] = useState<CampaignReliabilityAuditReport | null>(null);
   const [campaignAuditLoading, setCampaignAuditLoading] = useState(true);
   const [campaignAuditError, setCampaignAuditError] = useState<string | null>(null);
+  const [campaignAuditInitialized, setCampaignAuditInitialized] = useState(false);
   const [addingToQueue, setAddingToQueue] = useState(false);
   const [drafts, setDrafts] = useState<CampaignDraft[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(true);
+  const [draftsInitialized, setDraftsInitialized] = useState(false);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const [publishingDraftId, setPublishingDraftId] = useState<string | null>(null);
@@ -466,9 +515,9 @@ function App() {
   const draftAutosaveTimerRef = useRef<number | null>(null);
   const loadingDraftIntoFormRef = useRef(false);
   const draftSaveInFlightRef = useRef<Promise<CampaignDraft | null> | null>(null);
-  const fetchQueueRef = useRef<(() => Promise<void>) | null>(null);
-  const fetchCampaignAuditRef = useRef<(() => Promise<void>) | null>(null);
-  const fetchDraftsRef = useRef<(() => Promise<void>) | null>(null);
+  const fetchQueueRef = useRef<((options?: { background?: boolean }) => Promise<void>) | null>(null);
+  const fetchCampaignAuditRef = useRef<((options?: { background?: boolean }) => Promise<void>) | null>(null);
+  const fetchDraftsRef = useRef<((options?: { background?: boolean }) => Promise<void>) | null>(null);
 
   // Campaign details modal state
   const [selectedCampaign, setSelectedCampaign] = useState<QueuedCampaign | null>(null);
@@ -533,15 +582,14 @@ function App() {
   const [premiumLoading, setPremiumLoading] = useState(false);
 
   // WebSocket and live status
-  const [liveStatus, setLiveStatus] = useState<LiveStatus>({
-    connected: false,
-    currentStep: 'idle',
-    currentJob: 0,
-    totalJobs: 0
-  });
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>(INITIAL_LIVE_STATUS);
   const [screenshotKey, setScreenshotKey] = useState(0);
   const [activeTab, setActiveTab] = useState('campaign');
   const wsRef = useRef<WebSocket | null>(null);
+  const authReadyRef = useRef(authReady);
+  const authRequestEpochRef = useRef(0);
+  const bootstrapAuthEpochRef = useRef<number | null>(null);
+  const queueRequestIdRef = useRef(0);
 
   // Remote control state
   const [remoteModalOpen, setRemoteModalOpen] = useState(false);
@@ -561,9 +609,69 @@ function App() {
   const reconnectAttemptRef = useRef(0);
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const getAuthHeaders = useCallback((): HeadersInit => {
+    const token = getAccessToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, []);
+
+  const beginProtectedRequest = () => (
+    authReadyRef.current ? authRequestEpochRef.current : null
+  );
+
+  const isProtectedRequestCurrent = (requestEpoch: number) => (
+    authReadyRef.current && authRequestEpochRef.current === requestEpoch
+  );
+
+  useEffect(() => {
+    authReadyRef.current = authReady;
+    authRequestEpochRef.current += 1;
+
+    if (authReady) return;
+
+    bootstrapAuthEpochRef.current = null;
+    queueRequestIdRef.current += 1;
+    setQueueState(INITIAL_QUEUE_STATE);
+    setQueueLoading(true);
+    setQueueRefreshing(false);
+    setQueueInitialized(false);
+    setCampaignAudit(null);
+    setCampaignAuditLoading(true);
+    setCampaignAuditInitialized(false);
+    setCampaignAuditError(null);
+    setDrafts([]);
+    setDraftsLoading(true);
+    setDraftsInitialized(false);
+    setSessions([]);
+    setCredentials([]);
+    setProxies([]);
+    setPremiumStatus(null);
+    setAiProducts([]);
+    setSelectedAiProductId('');
+    setAppealStatuses(new Map());
+    setAllTags([]);
+    setLiveStatus(INITIAL_LIVE_STATUS);
+  }, [authReady]);
+
   // WebSocket connection
   useEffect(() => {
+    if (!authReady) {
+      if (reconnectTimeoutRef.current) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setLiveStatus(INITIAL_LIVE_STATUS);
+      return;
+    }
+
+    let cancelled = false;
+
     const connectWebSocket = () => {
+      if (cancelled || !authReadyRef.current) return;
+
       try {
         const accessToken = getAccessToken();
         if (!accessToken) {
@@ -658,12 +766,15 @@ function App() {
               case 'queue_state_sync':
                 // Full state sync on connect or reconnect
                 setQueueState(update.data);
+                setQueueInitialized(true);
                 setQueueLoading(false);
-                void fetchCampaignAuditRef.current?.();
+                setQueueRefreshing(false);
+                void fetchCampaignAuditRef.current?.({ background: true });
                 break;
 
               case 'drafts_state_sync':
                 setDrafts(update.data?.drafts || []);
+                setDraftsInitialized(true);
                 setDraftsLoading(false);
                 break;
 
@@ -949,8 +1060,8 @@ function App() {
                 break;
               case 'bulk_retry_all_campaign_complete':
                 toast.success(`Campaign ${update.data.campaign_id?.slice(0, 8)}: ${update.data.jobs_succeeded} recovered, ${update.data.jobs_exhausted} exhausted`);
-                fetchQueue();
-                void fetchCampaignAuditRef.current?.();
+                fetchQueueRef.current?.({ background: true });
+                void fetchCampaignAuditRef.current?.({ background: true });
                 break;
               case 'bulk_retry_all_complete':
                 setIsRetryingAll(false);
@@ -962,8 +1073,8 @@ function App() {
                     toast.warning(`${update.data.total_jobs_exhausted} jobs ran out of eligible profiles`);
                   }
                 }
-                fetchQueue();
-                void fetchCampaignAuditRef.current?.();
+                fetchQueueRef.current?.({ background: true });
+                void fetchCampaignAuditRef.current?.({ background: true });
                 break;
 
               // Legacy queue events (for backward compatibility during transition)
@@ -1026,13 +1137,20 @@ function App() {
         };
 
         ws.onclose = () => {
+          if (wsRef.current === ws) {
+            wsRef.current = null;
+          }
           console.log('WebSocket disconnected');
           setLiveStatus(prev => ({ ...prev, connected: false }));
+          if (cancelled || !authReadyRef.current) return;
           // Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
           reconnectAttemptRef.current++;
           console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptRef.current})`);
-          setTimeout(connectWebSocket, delay);
+          reconnectTimeoutRef.current = window.setTimeout(() => {
+            reconnectTimeoutRef.current = null;
+            connectWebSocket();
+          }, delay);
         };
 
         ws.onerror = (error) => {
@@ -1041,62 +1159,31 @@ function App() {
 
         wsRef.current = ws;
       } catch (error) {
+        if (cancelled || !authReadyRef.current) return;
         console.error('Failed to connect WebSocket:', error);
         const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
         reconnectAttemptRef.current++;
-        setTimeout(connectWebSocket, delay);
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          reconnectTimeoutRef.current = null;
+          connectWebSocket();
+        }, delay);
       }
     };
 
     connectWebSocket();
 
     return () => {
+      cancelled = true;
+      if (reconnectTimeoutRef.current) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
-  }, []);
-
-  // Helper to get auth headers
-  const getAuthHeaders = (): HeadersInit => {
-    const token = getAccessToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
-  const normalizeErrorMessage = (value: unknown, fallback: string): string => {
-    if (typeof value === 'string' && value.trim()) return value;
-    if (Array.isArray(value)) {
-      const joined = value.map(v => normalizeErrorMessage(v, '')).filter(Boolean).join('; ');
-      return joined || fallback;
-    }
-
-    if (value && typeof value === 'object') {
-      const asRecord = value as Record<string, unknown>;
-      if (typeof asRecord.message === 'string' && asRecord.message.trim()) return asRecord.message;
-      if (typeof asRecord.detail === 'string' && asRecord.detail.trim()) return asRecord.detail;
-      if (Array.isArray(asRecord.errors) && asRecord.errors.length > 0) {
-        const joined = asRecord.errors.map(e => String(e)).join('; ');
-        if (joined.trim()) return joined;
-      }
-      try {
-        return JSON.stringify(value);
-      } catch {
-        return fallback;
-      }
-    }
-
-    if (value instanceof Error && value.message) return value.message;
-    return fallback;
-  };
-
-  const parseApiError = async (res: Response, fallback: string): Promise<string> => {
-    try {
-      const body = await res.json();
-      return normalizeErrorMessage(body?.detail ?? body, fallback);
-    } catch {
-      return fallback;
-    }
-  };
+  }, [authReady]);
 
   const parseCommentsInput = (raw: string): string[] => raw
     .split('\n')
@@ -1144,11 +1231,13 @@ function App() {
       const without = prev.filter(existing => existing.id !== draft.id);
       return [draft, ...without];
     });
+    setDraftsInitialized(true);
     setDraftsLoading(false);
   }, []);
 
   const removeDraftLocally = useCallback((draftId: string) => {
     setDrafts(prev => prev.filter(existing => existing.id !== draftId));
+    setDraftsInitialized(true);
     setDraftsLoading(false);
   }, []);
 
@@ -1170,27 +1259,38 @@ function App() {
         pending_count: pending.length
       };
     });
+    setQueueInitialized(true);
     setQueueLoading(false);
+    setQueueRefreshing(false);
   }, []);
 
   const fetchSessions = async (opts?: { silent?: boolean }) => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
     try {
       setSessionsLoading(true);
       const data = await apiFetch<Session[]>('/sessions');
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       setSessions(data);
     } catch (error) {
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       console.error("Failed to fetch sessions:", error);
       if (!opts?.silent) toast.error('Failed to load sessions');
     } finally {
-      setSessionsLoading(false);
+      if (isProtectedRequestCurrent(requestEpoch)) {
+        setSessionsLoading(false);
+      }
     }
   };
 
   const fetchAppealStatuses = useCallback(async () => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
     try {
       const res = await fetch(`${API_BASE}/appeals/status`, { headers: getAuthHeaders() });
       if (!res.ok) return;
       const data = await res.json();
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       const map = new Map<string, AppealStatusEntry>();
       for (const p of data.profiles || []) {
         map.set(p.profile_name, p);
@@ -1199,30 +1299,38 @@ function App() {
     } catch {
       // Silently fail - appeal status is supplementary
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   const fetchSchedulerStatus = useCallback(async () => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
     try {
       const res = await fetch(`${API_BASE}/appeals/scheduler/status`, { headers: getAuthHeaders() });
       if (!res.ok) return;
       const data = await res.json();
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       setSchedulerStatus(data);
     } catch {
       // Silently fail
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   const fetchPremiumStatus = async () => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
     try {
       setPremiumLoading(true);
       const res = await fetch(`${API_BASE}/premium/status`, { headers: getAuthHeaders() });
       if (!res.ok) return;
       const data = await res.json();
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       setPremiumStatus(data);
     } catch {
       // Silently fail
     } finally {
-      setPremiumLoading(false);
+      if (isProtectedRequestCurrent(requestEpoch)) {
+        setPremiumLoading(false);
+      }
     }
   };
 
@@ -1248,12 +1356,16 @@ function App() {
   };
 
   const fetchTags = async () => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
     try {
       const res = await fetch(`${API_BASE}/tags`, { headers: getAuthHeaders() });
       if (!res.ok) throw new Error('Failed to fetch tags');
       const data = await res.json();
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       setAllTags(data);
     } catch (error) {
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       console.error("Failed to fetch tags:", error);
     }
   };
@@ -1275,46 +1387,77 @@ function App() {
   };
 
   const fetchCredentials = async (opts?: { silent?: boolean }) => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
     try {
       setCredentialsLoading(true);
       const data = await apiFetch<Credential[]>('/credentials');
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       setCredentials(data);
     } catch (error) {
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       console.error("Failed to fetch credentials:", error);
       if (!opts?.silent) toast.error('Failed to load credentials');
     } finally {
-      setCredentialsLoading(false);
+      if (isProtectedRequestCurrent(requestEpoch)) {
+        setCredentialsLoading(false);
+      }
     }
   };
 
   const fetchProxies = async (opts?: { silent?: boolean }) => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
     try {
       setProxiesLoading(true);
       const data = await apiFetch<Proxy[]>('/proxies');
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       setProxies(data);
     } catch (error) {
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       console.error("Failed to fetch proxies:", error);
       if (!opts?.silent) toast.error('Failed to load proxies');
     } finally {
-      setProxiesLoading(false);
+      if (isProtectedRequestCurrent(requestEpoch)) {
+        setProxiesLoading(false);
+      }
     }
   };
 
-  const fetchQueue = async () => {
+  const fetchQueue = async (options: { background?: boolean } = {}) => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
+    const requestId = ++queueRequestIdRef.current;
+    const preserveVisibleData = options.background || queueInitialized;
     try {
-      setQueueLoading(true);
+      if (preserveVisibleData) {
+        setQueueRefreshing(true);
+      } else {
+        setQueueLoading(true);
+      }
       const data = await apiFetch<QueueState>('/queue');
+      if (!isProtectedRequestCurrent(requestEpoch) || requestId !== queueRequestIdRef.current) return;
       setQueueState(data);
+      setQueueInitialized(true);
     } catch (error) {
+      if (!isProtectedRequestCurrent(requestEpoch) || requestId !== queueRequestIdRef.current) return;
       console.error("Failed to fetch queue:", error);
     } finally {
-      setQueueLoading(false);
+      if (isProtectedRequestCurrent(requestEpoch) && requestId === queueRequestIdRef.current) {
+        setQueueLoading(false);
+        setQueueRefreshing(false);
+      }
     }
   };
 
-  const fetchCampaignReliabilityAudit = useCallback(async () => {
+  const fetchCampaignReliabilityAudit = useCallback(async (options: { background?: boolean } = {}) => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
+    const preserveVisibleData = options.background || campaignAuditInitialized;
     try {
-      setCampaignAuditLoading(true);
+      if (!preserveVisibleData) {
+        setCampaignAuditLoading(true);
+      }
       setCampaignAuditError(null);
       const res = await fetch(`${API_BASE}/queue/reliability-audit?lookback_days=2&min_total_count=6`, {
         headers: getAuthHeaders()
@@ -1323,34 +1466,46 @@ function App() {
         throw new Error(await parseApiError(res, 'Failed to fetch campaign reliability audit'));
       }
       const data = await res.json();
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       setCampaignAudit(data);
+      setCampaignAuditInitialized(true);
     } catch (error) {
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       console.error('Failed to fetch campaign reliability audit:', error);
       setCampaignAuditError(normalizeErrorMessage(error, 'Failed to fetch campaign reliability audit'));
     } finally {
-      setCampaignAuditLoading(false);
+      if (isProtectedRequestCurrent(requestEpoch)) {
+        setCampaignAuditLoading(false);
+      }
     }
-  }, [parseApiError]);
+  }, [campaignAuditInitialized, getAuthHeaders]);
 
-  const fetchDrafts = async () => {
+  const fetchDrafts = async (options: { background?: boolean } = {}) => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
+    const preserveVisibleData = options.background || draftsInitialized;
     try {
-      setDraftsLoading(true);
+      if (!preserveVisibleData) {
+        setDraftsLoading(true);
+      }
       const res = await fetch(`${API_BASE}/drafts`, { headers: getAuthHeaders() });
       if (!res.ok) throw new Error(await parseApiError(res, 'Failed to fetch drafts'));
       const data = await res.json();
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       setDrafts(data.drafts || []);
+      setDraftsInitialized(true);
     } catch (error) {
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       console.error('Failed to fetch drafts:', error);
     } finally {
-      setDraftsLoading(false);
+      if (isProtectedRequestCurrent(requestEpoch)) {
+        setDraftsLoading(false);
+      }
     }
   };
-
-  useEffect(() => {
-    fetchQueueRef.current = fetchQueue;
-    fetchCampaignAuditRef.current = fetchCampaignReliabilityAudit;
-    fetchDraftsRef.current = fetchDrafts;
-  }, [fetchCampaignReliabilityAudit]);
+  fetchQueueRef.current = fetchQueue;
+  fetchCampaignAuditRef.current = fetchCampaignReliabilityAudit;
+  fetchDraftsRef.current = fetchDrafts;
 
   const fetchGeminiObservations = useCallback(async () => {
     try {
@@ -1365,7 +1520,7 @@ function App() {
     } finally {
       setLoadingObservations(false);
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   const clearGeminiObservations = async () => {
     try {
@@ -1404,7 +1559,7 @@ function App() {
     } finally {
       setLoadingAnalytics(false);
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   const refreshAnalyticsHealth = useCallback(async () => {
     await Promise.all([fetchProfileAnalytics(), fetchSchedulerStatus(), fetchAppealStatuses()]);
@@ -1435,7 +1590,7 @@ function App() {
     } finally {
       setProfileActionKey(prev => prev === actionKey ? null : prev);
     }
-  }, [parseApiError, refreshAnalyticsHealth]);
+  }, [getAuthHeaders, refreshAnalyticsHealth]);
 
   const restrictProfile = useCallback(async (profileName: string, hours: number = 24) => {
     const actionKey = `${profileName}:restrict`;
@@ -1456,7 +1611,7 @@ function App() {
     } finally {
       setProfileActionKey(prev => prev === actionKey ? null : prev);
     }
-  }, [parseApiError, refreshAnalyticsHealth]);
+  }, [getAuthHeaders, refreshAnalyticsHealth]);
 
   const verifyRestrictedProfile = useCallback(async (profileName: string) => {
     const actionKey = `${profileName}:verify`;
@@ -1492,7 +1647,7 @@ function App() {
     } finally {
       setProfileActionKey(prev => prev === actionKey ? null : prev);
     }
-  }, [parseApiError, refreshAnalyticsHealth]);
+  }, [getAuthHeaders, refreshAnalyticsHealth]);
 
   const appealRestrictedProfile = useCallback(async (profileName: string) => {
     const actionKey = `${profileName}:appeal`;
@@ -1528,10 +1683,9 @@ function App() {
     } finally {
       setProfileActionKey(prev => prev === actionKey ? null : prev);
     }
-  }, [parseApiError, refreshAnalyticsHealth]);
+  }, [getAuthHeaders, refreshAnalyticsHealth]);
 
-  // Tier 1: Critical path - load immediately for Campaign tab
-  useEffect(() => {
+  const runAuthenticatedBootstrap = useEffectEvent(() => {
     void fetchSessions({ silent: true });
     void fetchTags();
     void fetchAppealStatuses();
@@ -1540,33 +1694,45 @@ function App() {
     void fetchDrafts();
     void fetchAiProducts({ silent: true });
     void fetchPremiumStatus();
-  }, [fetchAppealStatuses, fetchCampaignReliabilityAudit]);
+  });
+
+  // Tier 1: Critical path - load once per authenticated app mount
+  useEffect(() => {
+    if (!authReady) return;
+    const authEpoch = authRequestEpochRef.current;
+    if (bootstrapAuthEpochRef.current === authEpoch) return;
+    bootstrapAuthEpochRef.current = authEpoch;
+    runAuthenticatedBootstrap();
+  }, [authReady]);
 
   // Resilience path: if websocket is down, keep queue/drafts fresh without manual refresh.
   useEffect(() => {
+    if (!authReady) return;
     if (liveStatus.connected) return;
     const interval = window.setInterval(() => {
-      void fetchQueueRef.current?.();
-      void fetchDraftsRef.current?.();
+      void fetchQueueRef.current?.({ background: true });
+      void fetchDraftsRef.current?.({ background: true });
     }, 6000);
     return () => window.clearInterval(interval);
-  }, [liveStatus.connected]);
+  }, [authReady, liveStatus.connected]);
 
   useEffect(() => {
+    if (!authReady) return;
     if (campaignInputMode !== 'ai') return;
     if (aiProducts.length > 0) return;
-    fetchAiProducts({ silent: true });
-  }, [campaignInputMode, aiProducts.length]);
+    void fetchAiProducts({ silent: true });
+  }, [authReady, campaignInputMode, aiProducts.length]);
 
   // Tier 2: Background loading - load after critical data, during idle time
   useEffect(() => {
+    if (!authReady) return;
     if (!sessionsLoading) {
       // Use requestIdleCallback to load during browser idle time
       const scheduleIdle = window.requestIdleCallback || ((cb: IdleRequestCallback) => setTimeout(cb, 100));
       scheduleIdle(() => fetchCredentials({ silent: true }));
       scheduleIdle(() => fetchProxies({ silent: true }));
     }
-  }, [sessionsLoading]);
+  }, [authReady, sessionsLoading]);
 
   useEffect(() => {
     if (!activeDraftId) {
@@ -1709,6 +1875,8 @@ function App() {
   };
 
   const fetchAiProducts = async (options: { silent?: boolean; preferProductId?: string } = {}) => {
+    const requestEpoch = beginProtectedRequest();
+    if (requestEpoch === null) return;
     const { silent = false, preferProductId } = options;
     setAiProductsLoading(true);
     try {
@@ -1719,6 +1887,7 @@ function App() {
         throw new Error(await parseApiError(res, 'Failed to fetch AI products'));
       }
       const data = await res.json();
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       const products = Array.isArray(data.products) ? data.products as CampaignAIProduct[] : [];
       setAiProducts(products);
 
@@ -1735,11 +1904,14 @@ function App() {
         '';
       setSelectedAiProductId(nextSelected);
     } catch (error) {
+      if (!isProtectedRequestCurrent(requestEpoch)) return;
       if (!silent) {
         toast.error(normalizeErrorMessage(error, 'Failed to fetch AI products'));
       }
     } finally {
-      setAiProductsLoading(false);
+      if (isProtectedRequestCurrent(requestEpoch)) {
+        setAiProductsLoading(false);
+      }
     }
   };
 
@@ -2940,8 +3112,9 @@ function App() {
 
   // Sessions tab auto-refresh when switching to it
   useEffect(() => {
+    if (!authReady) return;
     if (activeTab === 'campaign') {
-      void fetchCampaignReliabilityAudit();
+      void fetchCampaignReliabilityAudit({ background: true });
     }
     if (activeTab === 'sessions') {
       void fetchSessions({ silent: true });
@@ -2953,23 +3126,25 @@ function App() {
       void fetchGeminiObservations();
       void refreshAnalyticsHealth();
     }
-  }, [activeTab, fetchCampaignReliabilityAudit, fetchGeminiObservations, refreshAnalyticsHealth]);
+  }, [activeTab, authReady, fetchCampaignReliabilityAudit, fetchGeminiObservations, refreshAnalyticsHealth]);
 
   useEffect(() => {
+    if (!authReady) return;
     if (activeTab !== 'campaign') return;
     const interval = window.setInterval(() => {
-      void fetchCampaignAuditRef.current?.();
+      void fetchCampaignAuditRef.current?.({ background: true });
     }, 30000);
     return () => window.clearInterval(interval);
-  }, [activeTab]);
+  }, [activeTab, authReady]);
 
   useEffect(() => {
+    if (!authReady) return;
     if (activeTab !== 'analytics') return;
     const interval = window.setInterval(() => {
       void refreshAnalyticsHealth();
     }, 30000);
     return () => window.clearInterval(interval);
-  }, [activeTab, refreshAnalyticsHealth]);
+  }, [activeTab, authReady, refreshAnalyticsHealth]);
 
   // ============================================================================
   // Remote Control Functions
@@ -3837,12 +4012,20 @@ function App() {
                       {queueState.pending_count}/{queueState.max_pending}
                     </Badge>
                   </span>
-                  {queueState.pending.some(c => c.status === 'processing') && (
-                    <Badge className="bg-blue-500 animate-pulse">
-                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                      Processing
-                    </Badge>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {queueRefreshing && !queueLoading && (
+                      <Badge variant="outline" className="font-normal text-[#666666]">
+                        <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
+                        Refreshing
+                      </Badge>
+                    )}
+                    {queueState.pending.some(c => c.status === 'processing') && (
+                      <Badge className="bg-blue-500 animate-pulse">
+                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                        Processing
+                      </Badge>
+                    )}
+                  </div>
                 </CardTitle>
                 {queueState.pending.length > 0 && (
                   <p className="text-sm text-[#999999]">
