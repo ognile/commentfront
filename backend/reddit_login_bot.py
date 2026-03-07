@@ -93,6 +93,17 @@ async def _login_inputs_present(page: Page) -> bool:
         return False
 
 
+async def _otp_input_present(page: Page) -> bool:
+    for selector in LOGIN["otp_input"]:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() > 0 and await locator.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _goto_with_retry(
     page: Page,
     url: str,
@@ -164,18 +175,28 @@ async def _goto_in_authenticated_context(context, page: Page, url: str, *, profi
         return fresh_page
 
 
-async def _handle_otp(page: Page, credential: dict) -> bool:
-    otp_input_found = False
-    for selector in LOGIN["otp_input"]:
-        try:
-            locator = page.locator(selector).first
-            if await locator.count() > 0 and await locator.is_visible():
-                otp_input_found = True
-                break
-        except Exception:
-            continue
+async def _wait_for_otp_resolution(page: Page, context, *, profile_name: str, timeout_ms: int = 15000) -> bool:
+    elapsed = 0
+    step_ms = 1000
 
-    if not otp_input_found:
+    while elapsed <= timeout_ms:
+        if await _has_auth_cookies(context):
+            logger.info(f"[{profile_name}] otp resolved via auth cookies")
+            return True
+
+        if not await _otp_input_present(page):
+            logger.info(f"[{profile_name}] otp input cleared")
+            return True
+
+        await page.wait_for_timeout(step_ms)
+        elapsed += step_ms
+
+    logger.warning(f"[{profile_name}] otp input still visible after {timeout_ms}ms")
+    return False
+
+
+async def _handle_otp(page: Page, credential: dict) -> bool:
+    if not await _otp_input_present(page):
         return False
 
     manager = CredentialManager()
@@ -301,11 +322,10 @@ async def login_reddit(
             await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
             logger.info(f"[{profile_name}] after submit URL: {page.url}")
 
-            for _ in range(3):
-                otp_handled = await _handle_otp(page, credential)
-                if not otp_handled:
-                    break
+            otp_handled = await _handle_otp(page, credential)
+            if otp_handled:
                 logger.info(f"[{profile_name}] OTP submitted on reddit.com")
+                await _wait_for_otp_resolution(page, context, profile_name=profile_name)
                 await page.wait_for_timeout(3000)
 
             await _wait_for_authenticated_surface(page, context, profile_name=profile_name)

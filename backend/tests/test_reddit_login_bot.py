@@ -4,28 +4,58 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from reddit_login_bot import _goto_in_authenticated_context, _wait_for_authenticated_surface
+from reddit_login_bot import (
+    _goto_in_authenticated_context,
+    _wait_for_authenticated_surface,
+    _wait_for_otp_resolution,
+)
 
 
 class _FakeLocator:
-    def __init__(self, *, count_value: int = 0):
-        self._count_value = count_value
+    def __init__(self, *, count_values: list[int] | None = None, visible: bool = True):
+        self._count_values = list(count_values or [0])
+        self._visible = visible
+        self._index = 0
 
     async def count(self):
-        return self._count_value
+        value = self._count_values[min(self._index, len(self._count_values) - 1)]
+        self._index += 1
+        return value
+
+    @property
+    def first(self):
+        return self
+
+    async def is_visible(self):
+        return self._visible
 
 
 class _FakePage:
-    def __init__(self, *, url: str, login_inputs: int = 0, goto_error: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        url: str,
+        login_inputs: int = 0,
+        goto_error: Exception | None = None,
+        otp_counts_by_selector: dict[str, list[int]] | None = None,
+    ):
         self.url = url
         self._login_inputs = login_inputs
         self._goto_error = goto_error
+        self._otp_counts_by_selector = otp_counts_by_selector or {}
+        self._locators = {}
         self.closed = False
         self.goto_calls = []
 
     def locator(self, selector: str):
         if selector == 'input[name="username"], input[name="password"]':
-            return _FakeLocator(count_value=self._login_inputs)
+            if selector not in self._locators:
+                self._locators[selector] = _FakeLocator(count_values=[self._login_inputs])
+            return self._locators[selector]
+        if selector in self._otp_counts_by_selector:
+            if selector not in self._locators:
+                self._locators[selector] = _FakeLocator(count_values=self._otp_counts_by_selector[selector])
+            return self._locators[selector]
         raise AssertionError(f"unexpected selector: {selector}")
 
     async def goto(self, url, wait_until=None, timeout=None):
@@ -84,3 +114,15 @@ def test_goto_in_authenticated_context_retries_in_fresh_page_after_empty_respons
     assert resolved_page is fresh_page
     assert fresh_page.url == "https://www.reddit.com/user/Neera_Allvere/"
     assert broken_page.closed is True
+
+
+def test_wait_for_otp_resolution_returns_when_otp_input_disappears():
+    page = _FakePage(
+        url="https://www.reddit.com/login/",
+        otp_counts_by_selector={'input[name="otp"]': [1, 1, 0]},
+    )
+    context = _FakeContext(cookies=[])
+
+    assert asyncio.run(
+        _wait_for_otp_resolution(page, context, profile_name="reddit_neera", timeout_ms=3000)
+    ) is True
