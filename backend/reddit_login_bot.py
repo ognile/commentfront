@@ -177,6 +177,20 @@ async def login_reddit(
                 {"profile_name": profile_name, "step": "submitting_credentials"},
             )
 
+            # Generate OTP upfront since these accounts have 2FA
+            otp_code = ""
+            try:
+                manager = CredentialManager()
+                otp_data = manager.generate_otp(
+                    credential.get("credential_id") or credential.get("uid"),
+                    platform="reddit",
+                )
+                if otp_data.get("valid") and otp_data.get("code"):
+                    otp_code = otp_data["code"]
+                    logger.info(f"[{profile_name}] generated OTP for login")
+            except Exception as otp_err:
+                logger.warning(f"[{profile_name}] OTP generation failed (will try without): {otp_err}")
+
             # Call Reddit's JSON login API directly from page context
             api_result = await page.evaluate(
                 """async (data) => {
@@ -186,21 +200,26 @@ async def login_reddit(
                         form.append('passwd', data.password);
                         form.append('api_type', 'json');
                         form.append('rem', 'true');
+                        if (data.otp) form.append('otp', data.otp);
                         const resp = await fetch('/api/login/' + data.username, {
                             method: 'POST',
                             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                             body: form.toString(),
                             credentials: 'include',
                         });
-                        const json = await resp.json();
-                        return {ok: resp.ok, status: resp.status, data: json};
+                        const text = await resp.text();
+                        let json = null;
+                        try { json = JSON.parse(text); } catch(e) {}
+                        return {ok: resp.ok, status: resp.status, statusText: resp.statusText, body: text.substring(0, 1000), data: json};
                     } catch (e) {
                         return {ok: false, error: e.message};
                     }
                 }""",
-                {"username": str(login_identifier), "password": str(password)},
+                {"username": str(login_identifier), "password": str(password), "otp": otp_code},
             )
-            logger.info(f"[{profile_name}] API login response: status={api_result.get('status')} errors={api_result.get('data', {}).get('json', {}).get('errors', [])}")
+            logger.info(f"[{profile_name}] API login response: status={api_result.get('status')} ok={api_result.get('ok')} body={str(api_result.get('body', ''))[:500]}")
+            if api_result.get("error"):
+                logger.error(f"[{profile_name}] API fetch error: {api_result['error']}")
 
             api_json = (api_result.get("data") or {}).get("json", {})
             api_errors = api_json.get("errors", [])
