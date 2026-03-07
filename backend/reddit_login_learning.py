@@ -26,10 +26,16 @@ REDDIT_LOGIN_LEARNING_PATH = _default_learning_path()
 STRATEGY_CONFIGS: Dict[str, Dict[str, Any]] = {
     "baseline_humanized": {
         "strategy_id": "baseline_humanized",
+        "login_identifier_preference": "username",
         "humanize_input": True,
         "form_wait_timeout_ms": 12000,
         "form_reload_attempts": 0,
+        "pre_interaction_wait_ms": 0,
+        "between_field_wait_ms": 400,
         "post_submit_wait_ms": 3500,
+        "otp_pre_submit_wait_ms": 800,
+        "otp_retry_attempts": 0,
+        "otp_min_remaining_seconds": 8,
         "otp_resolution_timeout_ms": 20000,
         "auth_surface_timeout_ms": 20000,
         "force_home_settle": False,
@@ -37,10 +43,16 @@ STRATEGY_CONFIGS: Dict[str, Dict[str, Any]] = {
     },
     "settle_home": {
         "strategy_id": "settle_home",
+        "login_identifier_preference": "username",
         "humanize_input": True,
         "form_wait_timeout_ms": 14000,
         "form_reload_attempts": 0,
+        "pre_interaction_wait_ms": 1200,
+        "between_field_wait_ms": 600,
         "post_submit_wait_ms": 4500,
+        "otp_pre_submit_wait_ms": 1200,
+        "otp_retry_attempts": 0,
+        "otp_min_remaining_seconds": 8,
         "otp_resolution_timeout_ms": 22000,
         "auth_surface_timeout_ms": 22000,
         "force_home_settle": True,
@@ -48,12 +60,52 @@ STRATEGY_CONFIGS: Dict[str, Dict[str, Any]] = {
     },
     "acquire_form_reload": {
         "strategy_id": "acquire_form_reload",
+        "login_identifier_preference": "username",
         "humanize_input": True,
         "form_wait_timeout_ms": 18000,
         "form_reload_attempts": 2,
+        "pre_interaction_wait_ms": 1500,
+        "between_field_wait_ms": 700,
         "post_submit_wait_ms": 4500,
+        "otp_pre_submit_wait_ms": 1200,
+        "otp_retry_attempts": 0,
+        "otp_min_remaining_seconds": 8,
         "otp_resolution_timeout_ms": 22000,
         "auth_surface_timeout_ms": 22000,
+        "force_home_settle": True,
+        "fresh_page_home_settle": True,
+    },
+    "email_identifier_dwell": {
+        "strategy_id": "email_identifier_dwell",
+        "login_identifier_preference": "email",
+        "humanize_input": True,
+        "form_wait_timeout_ms": 15000,
+        "form_reload_attempts": 1,
+        "pre_interaction_wait_ms": 4500,
+        "between_field_wait_ms": 1200,
+        "post_submit_wait_ms": 6500,
+        "otp_pre_submit_wait_ms": 1200,
+        "otp_retry_attempts": 0,
+        "otp_min_remaining_seconds": 10,
+        "otp_resolution_timeout_ms": 22000,
+        "auth_surface_timeout_ms": 22000,
+        "force_home_settle": True,
+        "fresh_page_home_settle": True,
+    },
+    "otp_retry_fresh_cycle": {
+        "strategy_id": "otp_retry_fresh_cycle",
+        "login_identifier_preference": "username",
+        "humanize_input": True,
+        "form_wait_timeout_ms": 15000,
+        "form_reload_attempts": 0,
+        "pre_interaction_wait_ms": 2000,
+        "between_field_wait_ms": 900,
+        "post_submit_wait_ms": 4500,
+        "otp_pre_submit_wait_ms": 1800,
+        "otp_retry_attempts": 1,
+        "otp_min_remaining_seconds": 24,
+        "otp_resolution_timeout_ms": 24000,
+        "auth_surface_timeout_ms": 24000,
         "force_home_settle": True,
         "fresh_page_home_settle": True,
     },
@@ -245,11 +297,13 @@ class RedditLoginLearningStore:
 
         ordered: List[str] = []
         if "otp_never_shown" in recent_failure_buckets or "err_empty_response" in recent_errors or "inputs not found" in recent_errors:
-            ordered.extend(["acquire_form_reload", "settle_home", "baseline_humanized"])
+            ordered.extend(["acquire_form_reload", "email_identifier_dwell", "settle_home", "baseline_humanized"])
+        elif "otp submit rejected" in recent_errors:
+            ordered.extend(["otp_retry_fresh_cycle", "settle_home", "email_identifier_dwell", "baseline_humanized", "acquire_form_reload"])
         elif "user_interaction_failed" in recent_failure_buckets or "protected_routes_fail" in recent_failure_buckets:
-            ordered.extend(["settle_home", "baseline_humanized", "acquire_form_reload"])
+            ordered.extend(["email_identifier_dwell", "settle_home", "otp_retry_fresh_cycle", "baseline_humanized", "acquire_form_reload"])
         else:
-            ordered.extend(["baseline_humanized", "settle_home", "acquire_form_reload"])
+            ordered.extend(["baseline_humanized", "settle_home", "email_identifier_dwell", "otp_retry_fresh_cycle", "acquire_form_reload"])
 
         deduped: List[Dict[str, Any]] = []
         seen = set()

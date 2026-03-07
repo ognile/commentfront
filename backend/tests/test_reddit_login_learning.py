@@ -28,7 +28,28 @@ def test_learning_store_records_attempts_and_recommends_strategy(tmp_path, monke
     assert account["last_strategy_id"] == "baseline_humanized"
 
     strategies = store.recommended_strategies("Cloudia_Merra")
-    assert [item["strategy_id"] for item in strategies][:2] == ["acquire_form_reload", "settle_home"]
+    assert [item["strategy_id"] for item in strategies][:2] == ["acquire_form_reload", "email_identifier_dwell"]
+
+
+def test_learning_store_prioritizes_otp_retry_for_otp_stage_interaction_failures(tmp_path, monkeypatch):
+    learning_path = tmp_path / "reddit_login_learning.json"
+    monkeypatch.setattr(reddit_login_learning, "REDDIT_LOGIN_LEARNING_PATH", learning_path)
+
+    store = reddit_login_learning.RedditLoginLearningStore(file_path=str(learning_path))
+    store.record_attempt(
+        username="Kaylee_Andreas",
+        strategy_id="settle_home",
+        result={
+            "attempt_id": "attempt-otp",
+            "audit_json_url": "/audit/kaylee-otp.json",
+            "failure_bucket": "user_interaction_failed",
+            "error": "Reddit OTP submit rejected: 401 user-interaction-failed",
+        },
+        linked=False,
+    )
+
+    strategies = store.recommended_strategies("Kaylee_Andreas")
+    assert [item["strategy_id"] for item in strategies][:2] == ["otp_retry_fresh_cycle", "settle_home"]
 
 
 def test_learning_store_syncs_existing_linked_sessions(tmp_path, monkeypatch):

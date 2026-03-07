@@ -167,6 +167,13 @@ async def _set_first(page: Page, selectors, value: str, *, humanize: bool) -> bo
     return False
 
 
+def _resolve_login_identifier(credential: dict, strategy: Dict[str, Any]) -> Optional[str]:
+    preference = str(strategy.get("login_identifier_preference") or "username").strip().lower()
+    if preference == "email":
+        return credential.get("email") or credential.get("username") or credential.get("uid")
+    return credential.get("username") or credential.get("uid") or credential.get("email")
+
+
 async def _log_auth_state(context, profile_name: str):
     cookies = await context.cookies()
     cookie_names = sorted({str(cookie.get("name") or "") for cookie in cookies})
@@ -417,23 +424,80 @@ async def _wait_for_otp_resolution(page: Page, context, *, profile_name: str, ti
     return False
 
 
-async def _handle_otp(page: Page, credential: dict, *, profile_name: str) -> tuple[bool, Optional[str]]:
+async def _generate_fresh_otp(
+    manager: CredentialManager,
+    identifier: str,
+    *,
+    min_remaining_seconds: int,
+    profile_name: str,
+    max_wait_seconds: int = 45,
+) -> Dict[str, Any]:
+    waited_seconds = 0
+    while waited_seconds <= max_wait_seconds:
+        otp_data = manager.generate_otp(identifier, platform="reddit")
+        if not otp_data.get("valid") or not otp_data.get("code"):
+            raise RuntimeError(f"Failed to generate Reddit OTP: {otp_data.get('error')}")
+        remaining_seconds = int(otp_data.get("remaining_seconds") or 0)
+        if remaining_seconds >= min_remaining_seconds:
+            return otp_data
+        logger.info(
+            f"[{profile_name}] waiting for fresher otp window ({remaining_seconds}s remaining < {min_remaining_seconds}s)"
+        )
+        await asyncio.sleep(1)
+        waited_seconds += 1
+
+    return manager.generate_otp(identifier, platform="reddit")
+
+
+async def _handle_otp(
+    page: Page,
+    credential: dict,
+    *,
+    profile_name: str,
+    strategy: Dict[str, Any],
+) -> tuple[bool, Optional[str], int]:
     if not await _otp_input_present(page):
-        return False, None
+        return False, None, 0
 
     manager = CredentialManager()
     identifier = credential.get("credential_id") or credential.get("uid")
-    otp_data = manager.generate_otp(identifier, platform="reddit")
-    if not otp_data.get("valid") or not otp_data.get("code"):
-        raise RuntimeError(f"Failed to generate Reddit OTP: {otp_data.get('error')}")
+    retry_attempts = max(0, int(strategy.get("otp_retry_attempts") or 0))
+    min_remaining_seconds = max(0, int(strategy.get("otp_min_remaining_seconds") or 0))
+    pre_submit_wait_ms = max(0, int(strategy.get("otp_pre_submit_wait_ms") or 0))
 
-    filled = await _set_first(page, LOGIN["otp_input"], otp_data["code"], humanize=True)
-    if not filled:
-        raise RuntimeError("Reddit OTP input detected but not fillable")
+    last_body: Optional[str] = None
+    last_status = 0
+    for attempt_index in range(retry_attempts + 1):
+        otp_data = await _generate_fresh_otp(
+            manager,
+            str(identifier),
+            min_remaining_seconds=min_remaining_seconds,
+            profile_name=profile_name,
+        )
+        filled = await _set_first(page, LOGIN["otp_input"], str(otp_data["code"]), humanize=True)
+        if not filled:
+            raise RuntimeError("Reddit OTP input detected but not fillable")
 
-    _, response, body = await _submit_otp_with_response(page, profile_name=profile_name)
-    await page.wait_for_timeout(3000)
-    return True, body
+        if pre_submit_wait_ms:
+            await page.wait_for_timeout(pre_submit_wait_ms)
+
+        _, response, body = await _submit_otp_with_response(page, profile_name=profile_name)
+        last_body = body
+        last_status = int(response.status or 0)
+        await page.wait_for_timeout(3000)
+
+        if not _body_has_user_interaction_failure(body) and not _body_has_login_banner_error(body) and last_status < 400:
+            return True, body, last_status
+
+        if attempt_index >= retry_attempts:
+            break
+
+        logger.warning(
+            f"[{profile_name}] otp attempt {attempt_index + 1} rejected; retrying with fresh otp cycle"
+        )
+        await page.wait_for_timeout(2000)
+
+    return True, last_body, last_status
 
 
 async def _run_reddit_login_flow(
@@ -462,15 +526,14 @@ async def _run_reddit_login_flow(
         "needs_attention": False,
     }
 
-    login_identifier = credential.get("username") or credential.get("uid") or credential.get("email")
+    strategy = dict(strategy or default_strategy_config())
+    strategy_id = str(strategy.get("strategy_id") or "baseline_humanized")
+    result["strategy_id"] = strategy_id
+    login_identifier = _resolve_login_identifier(credential, strategy)
     password = credential.get("password")
 
     if not login_identifier or not password:
         raise RuntimeError("Reddit credential missing login identifier or password")
-
-    strategy = dict(strategy or default_strategy_config())
-    strategy_id = str(strategy.get("strategy_id") or "baseline_humanized")
-    result["strategy_id"] = strategy_id
 
     logger.info(f"[{profile_name}] navigating to reddit.com/login")
     if audit:
@@ -493,6 +556,12 @@ async def _run_reddit_login_flow(
     logger.info(f"[{profile_name}] reddit login page: {page.url}")
     await save_debug_screenshot(page, f"reddit_login_page_{profile_name}")
     await _capture_checkpoint(audit, page, context, "login_page_loaded")
+    if audit:
+        audit.record_event(
+            "strategy_selected",
+            strategy_id=strategy_id,
+            login_identifier_preference=str(strategy.get("login_identifier_preference") or "username"),
+        )
 
     page_text = ""
     try:
@@ -500,6 +569,11 @@ async def _run_reddit_login_flow(
     except Exception:
         pass
     logger.info(f"[{profile_name}] page text preview: {page_text[:200]}")
+
+    pre_interaction_wait_ms = max(0, int(strategy.get("pre_interaction_wait_ms") or 0))
+    between_field_wait_ms = max(0, int(strategy.get("between_field_wait_ms") or 0))
+    if pre_interaction_wait_ms:
+        await page.wait_for_timeout(pre_interaction_wait_ms)
 
     user_filled = False
     pass_filled = False
@@ -510,6 +584,8 @@ async def _run_reddit_login_flow(
             str(login_identifier),
             humanize=bool(strategy.get("humanize_input", True)),
         )
+        if user_filled and between_field_wait_ms:
+            await page.wait_for_timeout(between_field_wait_ms)
         pass_filled = await _set_first(
             page,
             LOGIN["password_input"],
@@ -544,12 +620,17 @@ async def _run_reddit_login_flow(
     if await _otp_input_present(page):
         await _capture_checkpoint(audit, page, context, "otp_prompt")
 
-    otp_handled, otp_body = await _handle_otp(page, credential, profile_name=profile_name)
+    otp_handled, otp_body, otp_status = await _handle_otp(
+        page,
+        credential,
+        profile_name=profile_name,
+        strategy=strategy,
+    )
     if otp_handled:
         logger.info(f"[{profile_name}] OTP submitted on reddit.com")
         if audit:
             audit.record_event("otp_submitted")
-        if _body_has_user_interaction_failure(otp_body or ""):
+        if _body_has_user_interaction_failure(otp_body or "") or otp_status >= 400:
             raise RuntimeError(f"Reddit OTP submit rejected: {(otp_body or '')[:200].strip()}")
         if _body_has_login_banner_error(otp_body or ""):
             raise RuntimeError(f"Reddit OTP submit returned login error: {(otp_body or '')[:200].strip()}")

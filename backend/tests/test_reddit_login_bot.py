@@ -10,6 +10,7 @@ from reddit_login_bot import (
     _body_has_user_interaction_failure,
     _choose_reference_facebook_session,
     _reference_facebook_session_candidates,
+    _resolve_login_identifier,
     _goto_in_authenticated_context,
     _wait_for_authenticated_surface,
     _wait_for_otp_resolution,
@@ -194,6 +195,17 @@ def test_body_has_user_interaction_failure_detects_reddit_banner():
     assert _body_has_user_interaction_failure(
         '<faceplate-alert message="Something went wrong logging in." cause="user-interaction-failed"></faceplate-alert>'
     ) is True
+
+
+def test_resolve_login_identifier_can_prefer_email():
+    credential = {
+        "username": "Connor_Esla",
+        "uid": "Connor_Esla",
+        "email": "connor@example.com",
+    }
+
+    assert _resolve_login_identifier(credential, {"login_identifier_preference": "email"}) == "connor@example.com"
+    assert _resolve_login_identifier(credential, {"login_identifier_preference": "username"}) == "Connor_Esla"
 
 
 def test_create_session_from_credentials_skips_reference_bootstrap_by_default():
