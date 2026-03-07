@@ -48,10 +48,14 @@ class RedditSession:
         fixture: bool = False,
         warmup_state: Optional[Dict[str, Any]] = None,
         device: Optional[Dict[str, str]] = None,
+        bootstrap_source_session_id: Optional[str] = None,
+        cookie_blocklist_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Extract session data from an authenticated Playwright context."""
         storage_state = await context.storage_state()
-        cookies = storage_state.get("cookies", [])
+        cookies = self._filter_cookies(storage_state.get("cookies", []), cookie_blocklist_domains)
+        filtered_storage_state = dict(storage_state or {})
+        filtered_storage_state["cookies"] = cookies
         user_agent = await page.evaluate("navigator.userAgent")
         viewport = page.viewport_size or MOBILE_VIEWPORT
         device_fingerprint = dict(device or self.get_device_fingerprint())
@@ -64,7 +68,7 @@ class RedditSession:
             "email": email,
             "profile_url": profile_url,
             "extracted_at": datetime.utcnow().isoformat(),
-            "storage_state": storage_state,
+            "storage_state": filtered_storage_state,
             "cookies": cookies,
             "user_agent": user_agent,
             "viewport": viewport,
@@ -75,6 +79,8 @@ class RedditSession:
             "linked_credential_id": linked_credential_id,
             "warmup_state": warmup_state or {},
         }
+        if bootstrap_source_session_id:
+            self.data["bootstrap_source_session_id"] = bootstrap_source_session_id
         return self.data
 
     def save(self) -> bool:
@@ -165,6 +171,23 @@ class RedditSession:
         if not self.data:
             return {}
         return dict(self.data.get("warmup_state") or {})
+
+    @staticmethod
+    def _filter_cookies(
+        cookies: List[Dict[str, Any]],
+        blocked_domains: Optional[List[str]],
+    ) -> List[Dict[str, Any]]:
+        blocked = [str(domain or "").lower().lstrip(".") for domain in list(blocked_domains or []) if str(domain or "").strip()]
+        if not blocked:
+            return list(cookies or [])
+
+        filtered: List[Dict[str, Any]] = []
+        for cookie in list(cookies or []):
+            domain = str(cookie.get("domain") or "").lower().lstrip(".")
+            if any(domain == blocked_domain or domain.endswith(f".{blocked_domain}") for blocked_domain in blocked):
+                continue
+            filtered.append(cookie)
+        return filtered
 
     def update_warmup_state(self, state: Dict[str, Any]) -> bool:
         if not self.data:

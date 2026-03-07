@@ -1,10 +1,13 @@
 import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reddit_login_bot import (
+    _audit_has_user_interaction_failure,
+    _choose_reference_facebook_session,
     _goto_in_authenticated_context,
     _wait_for_authenticated_surface,
     _wait_for_otp_resolution,
@@ -126,3 +129,29 @@ def test_wait_for_otp_resolution_returns_when_otp_input_disappears():
     assert asyncio.run(
         _wait_for_otp_resolution(page, context, profile_name="reddit_neera", timeout_ms=3000)
     ) is True
+
+
+def test_choose_reference_facebook_session_is_deterministic_per_credential():
+    sessions = [
+        {"profile_name": "amber", "has_valid_cookies": True},
+        {"profile_name": "adele", "has_valid_cookies": True},
+        {"profile_name": "betty", "has_valid_cookies": True},
+    ]
+
+    with patch("reddit_login_bot.list_saved_sessions", return_value=sessions):
+        selected = _choose_reference_facebook_session(None, credential_label="reddit::Neera_Allvere")
+        repeated = _choose_reference_facebook_session(None, credential_label="reddit::Neera_Allvere")
+
+    assert selected in {"adele", "amber", "betty"}
+    assert selected == repeated
+
+
+def test_audit_has_user_interaction_failure_reads_response_body_preview():
+    audit = {
+        "responses": [
+            {"body_preview": '<faceplate-alert cause="user-interaction-failed"></faceplate-alert>'}
+        ]
+    }
+
+    with patch("reddit_login_bot.load_reddit_audit", return_value=audit):
+        assert _audit_has_user_interaction_failure("attempt") is True

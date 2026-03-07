@@ -3,6 +3,7 @@ Reddit login/session bootstrap for mobile-web execution.
 """
 
 import asyncio
+import hashlib
 import logging
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
@@ -22,6 +23,7 @@ logger = logging.getLogger("RedditLoginBot")
 
 BroadcastFn = Optional[Callable[[str, dict], Awaitable[None]]]
 AttemptMode = Literal["reference_facebook_identity", "standalone_reddit_identity"]
+BOOTSTRAP_COOKIE_BLOCKLIST = ["facebook.com", "messenger.com"]
 
 
 async def _broadcast(callback: BroadcastFn, update_type: str, payload: dict):
@@ -33,16 +35,24 @@ def _credential_label(credential: dict) -> str:
     return str(credential.get("username") or credential.get("uid") or credential.get("credential_id") or "reddit")
 
 
-def _choose_reference_facebook_session(preferred_session_id: Optional[str] = None) -> str:
+def _choose_reference_facebook_session(
+    preferred_session_id: Optional[str] = None,
+    *,
+    credential_label: Optional[str] = None,
+) -> str:
     if preferred_session_id:
         session = FacebookSession(preferred_session_id)
         if not session.load() or not session.has_valid_cookies():
             raise RuntimeError(f"Reference Facebook session '{preferred_session_id}' is unavailable or invalid")
         return preferred_session_id
 
-    for item in list_saved_sessions():
-        if item.get("has_valid_cookies"):
-            return str(item.get("profile_name"))
+    candidates = [str(item.get("profile_name")) for item in list_saved_sessions() if item.get("has_valid_cookies")]
+    if candidates:
+        candidates = sorted(candidates)
+        if credential_label:
+            index = int(hashlib.md5(str(credential_label).encode()).hexdigest(), 16) % len(candidates)
+            return candidates[index]
+        return candidates[0]
 
     raise RuntimeError("No valid Facebook sessions available for Reddit reference audit")
 
@@ -64,6 +74,19 @@ def _mask_proxy(proxy_url: Optional[str]) -> Optional[str]:
         return proxy_url
     creds, host = proxy_url.rsplit("@", 1)
     return f"{creds.split(':', 1)[0]}:***@{host}"
+
+
+def _audit_has_user_interaction_failure(attempt_id: Optional[str]) -> bool:
+    if not attempt_id:
+        return False
+    audit = load_reddit_audit(attempt_id)
+    if not audit:
+        return False
+    for response in list(audit.get("responses") or []):
+        preview = str(response.get("body_preview") or "").lower()
+        if "user-interaction-failed" in preview:
+            return True
+    return False
 
 
 async def _click_first(page: Page, selectors, *, timeout_ms: int = 2500) -> bool:
@@ -267,6 +290,8 @@ async def _run_reddit_login_flow(
     audit: Optional[RedditLoginAudit],
     persist_session: bool,
     session: RedditSession,
+    bootstrap_source_session_id: Optional[str] = None,
+    cookie_blocklist_domains: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "success": False,
@@ -383,6 +408,8 @@ async def _run_reddit_login_flow(
             "history": [],
         },
         device=fingerprint,
+        bootstrap_source_session_id=bootstrap_source_session_id,
+        cookie_blocklist_domains=cookie_blocklist_domains,
     )
 
     verified = await verify_reddit_session_logged_in(page, session, audit=audit)
@@ -542,8 +569,13 @@ async def login_reddit_from_reference_facebook_identity(
     credential: dict,
     reference_session_id: Optional[str] = None,
     headless: bool = True,
+    persist_session: bool = False,
+    target_profile_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    chosen_session_id = _choose_reference_facebook_session(reference_session_id)
+    chosen_session_id = _choose_reference_facebook_session(
+        reference_session_id,
+        credential_label=_credential_label(credential),
+    )
     reference_session = FacebookSession(chosen_session_id)
     if not reference_session.load() or not reference_session.has_valid_cookies():
         return {
@@ -562,8 +594,8 @@ async def login_reddit_from_reference_facebook_identity(
         }
 
     fingerprint = reference_session.get_device_fingerprint()
-    profile_name = f"reference_{_credential_label(credential)}_{chosen_session_id}"
-    temp_session = RedditSession(profile_name)
+    profile_name = target_profile_name or f"reference_{_credential_label(credential)}_{chosen_session_id}"
+    session = RedditSession(profile_name)
     result: Dict[str, Any] = {
         "success": False,
         "platform": "reddit",
@@ -614,16 +646,29 @@ async def login_reddit_from_reference_facebook_identity(
                 proxy_url=proxy_url,
                 fingerprint=fingerprint,
                 audit=audit,
-                persist_session=False,
-                session=temp_session,
+                persist_session=persist_session,
+                session=session,
+                bootstrap_source_session_id=chosen_session_id if persist_session else None,
+                cookie_blocklist_domains=BOOTSTRAP_COOKIE_BLOCKLIST if persist_session else None,
             )
             result.update(
                 {
                     "reference_session_id": chosen_session_id,
-                    "persisted_session": False,
+                    "persisted_session": persist_session,
+                    "bootstrap_used": persist_session,
                 }
             )
-            result.update(audit.finalize(success=True, error=None, extra={"persisted_session": False}))
+            result.update(
+                audit.finalize(
+                    success=True,
+                    error=None,
+                    extra={
+                        "persisted_session": persist_session,
+                        "bootstrap_used": persist_session,
+                        "reference_session_id": chosen_session_id,
+                    },
+                )
+            )
             return result
         except Exception as exc:
             result["error"] = str(exc)
@@ -633,7 +678,8 @@ async def login_reddit_from_reference_facebook_identity(
                     error=str(exc),
                     extra={
                         "reference_session_id": chosen_session_id,
-                        "persisted_session": False,
+                        "persisted_session": persist_session,
+                        "bootstrap_used": persist_session,
                     },
                 )
             )
@@ -658,12 +704,35 @@ async def create_session_from_credentials(
             "platform": "reddit",
             "error": f"Reddit credential not found: {credential_uid}",
         }
-    return await login_reddit(
+    result = await login_reddit(
         credential=credential,
         proxy_url=proxy_url,
         proxy_source=proxy_source,
         broadcast_callback=broadcast_callback,
     )
+    if result.get("success"):
+        return result
+
+    if _audit_has_user_interaction_failure(result.get("attempt_id")):
+        logger.info(
+            "Reddit standalone login hit user-interaction-failed for %s; retrying via deterministic reference identity bootstrap",
+            credential_uid,
+        )
+        await _broadcast(
+            broadcast_callback,
+            "reddit_session_progress",
+            {
+                "profile_name": result.get("profile_name") or credential.get("profile_name"),
+                "step": "bootstrap_retry_reference_identity",
+            },
+        )
+        return await login_reddit_from_reference_facebook_identity(
+            credential=credential,
+            persist_session=True,
+            target_profile_name=result.get("profile_name") or credential.get("profile_name") or f"reddit_{credential.get('uid')}",
+        )
+
+    return result
 
 
 async def run_reference_login_from_credentials(

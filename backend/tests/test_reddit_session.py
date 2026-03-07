@@ -58,7 +58,10 @@ def test_extract_from_context_persists_device_and_identity_fields():
     session = RedditSession("reddit_neera")
     context = _FakeContext(
         {
-            "cookies": [{"name": "reddit_loid", "value": "abc"}],
+            "cookies": [
+                {"name": "reddit_loid", "value": "abc", "domain": ".reddit.com"},
+                {"name": "c_user", "value": "123", "domain": ".facebook.com"},
+            ],
             "origins": [{"origin": "https://www.reddit.com", "localStorage": []}],
         }
     )
@@ -75,6 +78,8 @@ def test_extract_from_context_persists_device_and_identity_fields():
             linked_credential_id="reddit::Neera_Allvere",
             display_name="Neera_Allvere",
             device={"timezone": "America/Chicago", "locale": "en-US"},
+            bootstrap_source_session_id="adele_compton",
+            cookie_blocklist_domains=["facebook.com"],
         )
     )
 
@@ -82,6 +87,9 @@ def test_extract_from_context_persists_device_and_identity_fields():
     assert data["user_agent"] == "fake-agent"
     assert data["viewport"] == {"width": 393, "height": 873}
     assert data["linked_credential_id"] == "reddit::Neera_Allvere"
+    assert data["bootstrap_source_session_id"] == "adele_compton"
+    assert [cookie["name"] for cookie in data["cookies"]] == ["reddit_loid"]
+    assert [cookie["name"] for cookie in data["storage_state"]["cookies"]] == ["reddit_loid"]
 
 
 def test_get_device_fingerprint_prefers_persisted_device():
