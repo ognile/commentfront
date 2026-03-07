@@ -19,6 +19,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from playwright_stealth import Stealth
 from urllib.parse import urlparse, unquote
 
+from browser_factory import apply_page_identity_overrides
 from fb_session import FacebookSession, apply_session_to_context
 from reddit_session import RedditSession
 from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT, REDDIT_MOBILE_USER_AGENT
@@ -379,6 +380,12 @@ class PersistentBrowserManager:
                     if not applied:
                         raise RuntimeError(f"Failed to apply {platform} session state")
                 self._page = await self._context.new_page()
+                await apply_page_identity_overrides(
+                    self._context,
+                    self._page,
+                    user_agent=session_spec.user_agent,
+                    locale=session_spec.locale,
+                )
                 logger.info(f"[TIMING] Page created + session state in {time.time()-t5:.2f}s")
 
                 # Set up file chooser interception

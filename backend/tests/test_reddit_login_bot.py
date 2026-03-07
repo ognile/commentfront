@@ -50,6 +50,7 @@ class _FakePage:
         self._locators = {}
         self.closed = False
         self.goto_calls = []
+        self.init_scripts = []
 
     def locator(self, selector: str):
         if selector == 'input[name="username"], input[name="password"]':
@@ -71,6 +72,14 @@ class _FakePage:
     async def wait_for_timeout(self, timeout_ms):
         return None
 
+    async def evaluate(self, script):
+        if script == "navigator.userAgent":
+            return "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
+        raise AssertionError(f"unexpected evaluate script: {script}")
+
+    async def add_init_script(self, script, arg=None):
+        self.init_scripts.append((script, arg))
+
     async def close(self):
         self.closed = True
 
@@ -79,6 +88,7 @@ class _FakeContext:
     def __init__(self, *, cookies, fresh_page: _FakePage | None = None):
         self._cookies = cookies
         self._fresh_page = fresh_page
+        self.cdp_sessions = []
 
     async def cookies(self):
         return list(self._cookies)
@@ -87,6 +97,19 @@ class _FakeContext:
         if not self._fresh_page:
             raise AssertionError("fresh page not configured")
         return self._fresh_page
+
+    async def new_cdp_session(self, page):
+        session = _FakeCDPSession()
+        self.cdp_sessions.append(session)
+        return session
+
+
+class _FakeCDPSession:
+    def __init__(self):
+        self.commands = []
+
+    async def send(self, method, params):
+        self.commands.append((method, params))
 
 
 def test_wait_for_authenticated_surface_accepts_auth_cookies_without_url_change():
@@ -106,14 +129,19 @@ def test_goto_in_authenticated_context_retries_in_fresh_page_after_empty_respons
     fresh_page = _FakePage(url="about:blank")
     context = _FakeContext(cookies=[{"name": "reddit_session"}], fresh_page=fresh_page)
 
-    resolved_page = asyncio.run(
-        _goto_in_authenticated_context(
-            context,
-            broken_page,
-            "https://www.reddit.com/user/Neera_Allvere/",
-            profile_name="reddit_neera",
+    async def _noop_identity(*args, **kwargs):
+        return None
+
+    with patch("reddit_login_bot.apply_page_identity_overrides") as identity_patch:
+        identity_patch.side_effect = _noop_identity
+        resolved_page = asyncio.run(
+            _goto_in_authenticated_context(
+                context,
+                broken_page,
+                "https://www.reddit.com/user/Neera_Allvere/",
+                profile_name="reddit_neera",
+            )
         )
-    )
 
     assert resolved_page is fresh_page
     assert fresh_page.url == "https://www.reddit.com/user/Neera_Allvere/"

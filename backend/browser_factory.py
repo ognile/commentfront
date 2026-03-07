@@ -3,11 +3,13 @@ Browser Factory - Single source of truth for Playwright browser context creation
 Eliminates copy-paste drift across comment_bot.py, login_bot.py, adaptive_agent.py, etc.
 """
 
+import json
 import logging
-from typing import Dict, Optional
+import re
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse, unquote
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Playwright
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
 from playwright_stealth import Stealth
 
 from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT, BROWSER_ARGS
@@ -99,3 +101,124 @@ async def create_browser_context(
     await Stealth().apply_stealth_async(context)
 
     return browser, context
+
+
+def _build_android_chromium_identity(user_agent: str) -> Optional[Dict[str, Any]]:
+    ua = str(user_agent or "")
+    if "Android" not in ua or "Chrome/" not in ua:
+        return None
+
+    chrome_match = re.search(r"Chrome/([\d.]+)", ua)
+    if not chrome_match:
+        return None
+
+    android_match = re.search(r"Android\s+([\d.]+)", ua)
+    model_match = re.search(r"Android\s+[\d.]+;\s*([^)]+?)\)", ua)
+
+    full_version = chrome_match.group(1)
+    major_version = full_version.split(".", 1)[0]
+    platform_version = (android_match.group(1) if android_match else "13").replace("_", ".")
+
+    return {
+        "platform": "Android",
+        "navigator_platform": "Linux armv8l",
+        "brands": [
+            {"brand": "Not=A?Brand", "version": "99"},
+            {"brand": "Chromium", "version": major_version},
+            {"brand": "Google Chrome", "version": major_version},
+        ],
+        "full_version": full_version,
+        "platform_version": platform_version,
+        "architecture": "",
+        "model": (model_match.group(1).strip() if model_match else ""),
+        "mobile": True,
+    }
+
+
+async def apply_page_identity_overrides(
+    context: BrowserContext,
+    page: Page,
+    *,
+    user_agent: Optional[str],
+    locale: str = "en-US",
+) -> None:
+    """Align chromium client hints and navigator fields with the chosen mobile UA."""
+    identity = _build_android_chromium_identity(user_agent or "")
+    if not identity:
+        return
+
+    cdp_session = await context.new_cdp_session(page)
+    await cdp_session.send(
+        "Emulation.setUserAgentOverride",
+        {
+            "userAgent": user_agent,
+            "acceptLanguage": locale,
+            "platform": identity["navigator_platform"],
+            "userAgentMetadata": {
+                "brands": identity["brands"],
+                "fullVersion": identity["full_version"],
+                "platform": identity["platform"],
+                "platformVersion": identity["platform_version"],
+                "architecture": identity["architecture"],
+                "model": identity["model"],
+                "mobile": identity["mobile"],
+            },
+        },
+    )
+
+    await page.add_init_script(
+        """
+        (identity) => {
+          const defineValue = (target, key, value) => {
+            try {
+              Object.defineProperty(target, key, {
+                configurable: true,
+                get: () => value,
+              });
+            } catch (error) {
+              // Ignore readonly override failures; CDP already handles the network side.
+            }
+          };
+
+          const uaData = {
+            brands: identity.brands,
+            mobile: identity.mobile,
+            platform: identity.platform,
+            getHighEntropyValues: async (hints) => {
+              const values = {
+                architecture: identity.architecture,
+                brands: identity.brands,
+                mobile: identity.mobile,
+                model: identity.model,
+                platform: identity.platform,
+                platformVersion: identity.platform_version,
+                uaFullVersion: identity.full_version,
+                fullVersionList: identity.brands.map((brand) => ({
+                  brand: brand.brand,
+                  version: identity.full_version,
+                })),
+              };
+              if (!Array.isArray(hints)) {
+                return values;
+              }
+              return hints.reduce((acc, hint) => {
+                if (Object.prototype.hasOwnProperty.call(values, hint)) {
+                  acc[hint] = values[hint];
+                }
+                return acc;
+              }, {});
+            },
+            toJSON: () => ({
+              brands: identity.brands,
+              mobile: identity.mobile,
+              platform: identity.platform,
+            }),
+          };
+
+          defineValue(Navigator.prototype, "platform", identity.navigator_platform);
+          defineValue(Navigator.prototype, "userAgentData", uaData);
+          defineValue(Navigator.prototype, "maxTouchPoints", 5);
+        }
+        """,
+        json.loads(json.dumps(identity)),
+    )

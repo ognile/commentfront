@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from playwright.async_api import async_playwright
 
-from browser_factory import create_browser_context
+from browser_factory import apply_page_identity_overrides, create_browser_context
 from comment_bot import dump_interactive_elements, save_debug_screenshot
 from config import REDDIT_MOBILE_USER_AGENT
 from reddit_login_bot import _dismiss_cookie_banner, _goto_with_retry
@@ -57,6 +57,12 @@ async def _session_page(session: RedditSession, proxy_url: Optional[str] = None)
         )
         try:
             page = await context.new_page()
+            await apply_page_identity_overrides(
+                context,
+                page,
+                user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
+                locale=fingerprint["locale"],
+            )
             yield browser, context, page
         finally:
             await browser.close()

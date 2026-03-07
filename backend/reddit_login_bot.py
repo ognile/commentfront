@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from playwright.async_api import Page, async_playwright
 
-from browser_factory import create_browser_context
+from browser_factory import apply_page_identity_overrides, create_browser_context
 from config import DEFAULT_USER_AGENT, MOBILE_VIEWPORT, REDDIT_MOBILE_USER_AGENT
 from comment_bot import dump_interactive_elements, save_debug_screenshot
 from credentials import CredentialManager
@@ -242,6 +242,12 @@ async def _goto_in_authenticated_context(context, page: Page, url: str, *, profi
             f"[{profile_name}] navigation to {url} failed on current page after auth; retrying in fresh page"
         )
         fresh_page = await context.new_page()
+        user_agent = None
+        try:
+            user_agent = await page.evaluate("navigator.userAgent")
+        except Exception:
+            user_agent = None
+        await apply_page_identity_overrides(context, fresh_page, user_agent=user_agent, locale="en-US")
         await _goto_with_retry(fresh_page, url, profile_name=profile_name)
         try:
             await page.close()
@@ -524,6 +530,12 @@ async def login_reddit(
                 has_touch=True,
             )
             page = await context.new_page()
+            await apply_page_identity_overrides(
+                context,
+                page,
+                user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
+                locale=fingerprint["locale"],
+            )
             audit.attach_page(page)
             audit.record_event("browser_context_created")
 
@@ -654,6 +666,12 @@ async def login_reddit_from_reference_facebook_identity(
             )
             await apply_session_to_context(context, reference_session)
             page = await context.new_page()
+            await apply_page_identity_overrides(
+                context,
+                page,
+                user_agent=reference_session.get_user_agent() or DEFAULT_USER_AGENT,
+                locale=fingerprint["locale"],
+            )
             audit.attach_page(page)
             audit.record_event("browser_context_created", reference_session_id=chosen_session_id)
 
@@ -819,6 +837,12 @@ async def test_session(session: RedditSession, proxy_url: Optional[str] = None) 
                 has_touch=True,
             )
             page = await context.new_page()
+            await apply_page_identity_overrides(
+                context,
+                page,
+                user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
+                locale=fingerprint["locale"],
+            )
             verified = await verify_reddit_session_logged_in(page, session)
             return {
                 "success": verified,
