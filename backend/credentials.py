@@ -37,6 +37,8 @@ class CredentialManager:
 
         normalized_platform = self._normalize_platform(platform)
         if platform:
+            if needle.startswith(f"{normalized_platform}::") and needle in self.credentials:
+                return needle
             candidate = self._storage_key(needle, normalized_platform)
             if candidate in self.credentials:
                 return candidate

@@ -174,7 +174,7 @@ class RedditSession:
         return self.save()
 
 
-async def verify_reddit_session_logged_in(page, session: RedditSession, debug: bool = True) -> bool:
+async def verify_reddit_session_logged_in(page, session: RedditSession, debug: bool = True, audit=None) -> bool:
     """
     Validate a Reddit session using authenticated destinations, not just public pages.
     """
@@ -215,6 +215,10 @@ async def verify_reddit_session_logged_in(page, session: RedditSession, debug: b
 
             login_inputs = await page.locator('input[name="username"], input[name="password"]').count()
             logger.info(f"[{session.profile_name}] verify: login inputs found={login_inputs}")
+
+            if audit:
+                checkpoint_name = "protected_destination_verify_submit" if "/submit" in destination else "protected_destination_verify_settings"
+                await audit.capture_checkpoint(page, page.context, checkpoint_name)
 
             if "/login" in current_url or login_inputs > 0:
                 continue

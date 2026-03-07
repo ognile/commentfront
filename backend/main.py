@@ -63,7 +63,9 @@ from queue_manager import (
 from login_bot import create_session_from_credentials, refresh_session_profile_name, refresh_session_picture, fetch_profile_data_from_cookies
 from browser_manager import get_browser_manager, UPLOAD_DIR
 from reddit_login_bot import (
+    compare_attempts as compare_reddit_login_attempts,
     create_session_from_credentials as create_reddit_session_from_credentials,
+    run_reference_login_from_credentials,
     test_session as test_reddit_session,
 )
 from reddit_bot import run_reddit_action
@@ -1514,6 +1516,16 @@ class RedditSessionInfo(BaseModel):
 class RedditSessionCreateRequest(BaseModel):
     credential_id: str
     proxy_id: Optional[str] = None
+
+
+class RedditReferenceLoginRequest(BaseModel):
+    credential_id: str
+    reference_session_id: Optional[str] = None
+
+
+class RedditAuditCompareRequest(BaseModel):
+    reference_attempt_id: str
+    standalone_attempt_id: str
 
 
 class RedditBulkSeedRequest(BaseModel):
@@ -5535,6 +5547,7 @@ async def create_reddit_session_endpoint(
     result = await create_reddit_session_from_credentials(
         credential_uid=request.credential_id,
         proxy_url=proxy_url,
+        proxy_source="proxy_id" if request.proxy_id else ("env" if get_system_proxy() else "runtime"),
         broadcast_callback=broadcast_callback,
     )
     await broadcast_update(
@@ -5548,6 +5561,28 @@ async def create_reddit_session_endpoint(
         },
     )
     return result
+
+
+@app.post("/reddit/debug/reference-login")
+async def reference_reddit_login_endpoint(
+    request: RedditReferenceLoginRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    return await run_reference_login_from_credentials(
+        request.credential_id,
+        reference_session_id=request.reference_session_id,
+    )
+
+
+@app.post("/reddit/debug/compare-audits")
+async def compare_reddit_audits_endpoint(
+    request: RedditAuditCompareRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    return compare_reddit_login_attempts(
+        request.reference_attempt_id,
+        request.standalone_attempt_id,
+    )
 
 
 @app.post("/reddit/sessions/{profile_name}/test")
