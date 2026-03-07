@@ -26,6 +26,12 @@ except ImportError:
 
 logger = logging.getLogger("CommentBot")
 
+
+def _brief(e: Exception) -> str:
+    """Truncate Playwright errors to first line (full call logs can be 60+ lines)."""
+    return str(e).split("\n")[0]
+
+
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
 
@@ -797,7 +803,7 @@ async def smart_focus(page: Page, selectors: List[str], description: str) -> boo
                     await save_debug_screenshot(page, f"post_focus_{description.replace(' ', '_')}")
                     return True
         except Exception as e:
-            logger.warning(f"  Focus error on '{selector}': {e}")
+            logger.warning(f"  Focus error on '{selector}': {_brief(e)}")
             continue
 
     logger.warning(f"Failed to focus: {description}")
@@ -1046,7 +1052,7 @@ async def vision_element_click(page: Page, x: int, y: int) -> bool:
             logger.warning(f"No element at ({x}, {y}): {result.get('reason')}")
             return False
     except Exception as e:
-        logger.error(f"vision_element_click error: {e}")
+        logger.error(f"vision_element_click error: {_brief(e)}")
         return False
 
 
@@ -1084,7 +1090,7 @@ async def type_comment(page: Page, comment: str) -> bool:
         logger.info(f"Typed comment: {comment[:20]}...")
         return True
     except Exception as e:
-        logger.error(f"Failed to type: {e}")
+        logger.error(f"Failed to type: {_brief(e)}")
         return False
 
 
@@ -1610,8 +1616,8 @@ async def post_comment_verified(
             logger.info("=" * 50)
 
         except Exception as e:
-            result["error"] = str(e)
-            logger.error(f"FAILED: {e}")
+            result["error"] = _brief(e)
+            logger.error(f"FAILED: {_brief(e)}")
             logger.error(f"Steps completed before failure: {result['steps_completed']}")
             if 'page' in locals():
                 error_screenshot = await save_debug_screenshot(page, "error_state")

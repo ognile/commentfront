@@ -22,6 +22,11 @@ from fb_selectors import FEED
 logger = logging.getLogger("WarmupBot")
 
 
+def _brief(e: Exception) -> str:
+    """Truncate Playwright errors to first line (full call logs can be 60+ lines)."""
+    return str(e).split("\n")[0]
+
+
 @dataclass
 class WarmupResult:
     """Result of warm-up activity."""
@@ -68,7 +73,7 @@ async def scroll_feed(page: Page, direction: str = "down", amount: int = 300) ->
         return True
 
     except Exception as e:
-        logger.error(f"Scroll failed: {e}")
+        logger.error(f"Scroll failed: {_brief(e)}")
         return False
 
 
@@ -123,7 +128,7 @@ async def like_random_post(page: Page) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"Failed to like post: {e}")
+        logger.error(f"Failed to like post: {_brief(e)}")
         return False
 
 
@@ -165,7 +170,7 @@ async def navigate_to_feed(page: Page) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"Failed to navigate to feed: {e}")
+        logger.error(f"Failed to navigate to feed: {_brief(e)}")
         return False
 
 
@@ -263,7 +268,7 @@ async def perform_warmup(
         return result
 
     except Exception as e:
-        logger.error(f"Warm-up failed: {e}")
+        logger.error(f"Warm-up failed: {_brief(e)}")
         result.error = str(e)
         result.duration_seconds = time.time() - start_time
         return result

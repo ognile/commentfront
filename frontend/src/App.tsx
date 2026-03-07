@@ -17,7 +17,7 @@ import { AdminTab } from '@/components/admin/AdminTab'
 import { RedditTab } from '@/components/reddit/RedditTab'
 import { ProfileHealthConsole } from '@/components/analytics/ProfileHealthConsole'
 import { CampaignReliabilityAuditCard, type CampaignReliabilityAuditReport } from '@/components/analytics/CampaignReliabilityAuditCard'
-import { API_BASE, WS_BASE } from '@/lib/api'
+import { API_BASE, WS_BASE, apiFetch } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
 import { PearlBackground } from '@/components/PearlBackground'
 import { TagInput } from '@/components/TagInput'
@@ -1005,8 +1005,8 @@ function App() {
                 }));
                 setCreatingSession(null);
                 if (update.data.success) {
-                  fetchSessions();
-                  fetchCredentials(); // Also refresh credentials to show linked session profile name
+                  fetchSessions({ silent: true });
+                  fetchCredentials({ silent: true });
                 }
                 break;
               case 'batch_session_start':
@@ -1016,8 +1016,8 @@ function App() {
                 setBatchInProgress(false);
                 setSelectedCredentials(new Set());
                 toast.success(`Batch complete: ${update.data.success_count}/${update.data.total} sessions created`);
-                fetchSessions();
-                fetchCredentials();
+                fetchSessions({ silent: true });
+                fetchCredentials({ silent: true });
                 break;
             }
           } catch (e) {
@@ -1173,16 +1173,14 @@ function App() {
     setQueueLoading(false);
   }, []);
 
-  const fetchSessions = async () => {
+  const fetchSessions = async (opts?: { silent?: boolean }) => {
     try {
       setSessionsLoading(true);
-      const res = await fetch(`${API_BASE}/sessions`, { headers: getAuthHeaders() });
-      if (!res.ok) throw new Error('Failed to fetch sessions');
-      const data = await res.json();
+      const data = await apiFetch<Session[]>('/sessions');
       setSessions(data);
     } catch (error) {
       console.error("Failed to fetch sessions:", error);
-      toast.error('Failed to load sessions');
+      if (!opts?.silent) toast.error('Failed to load sessions');
     } finally {
       setSessionsLoading(false);
     }
@@ -1276,31 +1274,27 @@ function App() {
     }
   };
 
-  const fetchCredentials = async () => {
+  const fetchCredentials = async (opts?: { silent?: boolean }) => {
     try {
       setCredentialsLoading(true);
-      const res = await fetch(`${API_BASE}/credentials`, { headers: getAuthHeaders() });
-      if (!res.ok) throw new Error('Failed to fetch credentials');
-      const data = await res.json();
+      const data = await apiFetch<Credential[]>('/credentials');
       setCredentials(data);
     } catch (error) {
       console.error("Failed to fetch credentials:", error);
-      toast.error('Failed to load credentials');
+      if (!opts?.silent) toast.error('Failed to load credentials');
     } finally {
       setCredentialsLoading(false);
     }
   };
 
-  const fetchProxies = async () => {
+  const fetchProxies = async (opts?: { silent?: boolean }) => {
     try {
       setProxiesLoading(true);
-      const res = await fetch(`${API_BASE}/proxies`, { headers: getAuthHeaders() });
-      if (!res.ok) throw new Error('Failed to fetch proxies');
-      const data = await res.json();
+      const data = await apiFetch<Proxy[]>('/proxies');
       setProxies(data);
     } catch (error) {
       console.error("Failed to fetch proxies:", error);
-      toast.error('Failed to load proxies');
+      if (!opts?.silent) toast.error('Failed to load proxies');
     } finally {
       setProxiesLoading(false);
     }
@@ -1309,9 +1303,7 @@ function App() {
   const fetchQueue = async () => {
     try {
       setQueueLoading(true);
-      const res = await fetch(`${API_BASE}/queue`, { headers: getAuthHeaders() });
-      if (!res.ok) throw new Error('Failed to fetch queue');
-      const data = await res.json();
+      const data = await apiFetch<QueueState>('/queue');
       setQueueState(data);
     } catch (error) {
       console.error("Failed to fetch queue:", error);
@@ -1540,7 +1532,7 @@ function App() {
 
   // Tier 1: Critical path - load immediately for Campaign tab
   useEffect(() => {
-    void fetchSessions();
+    void fetchSessions({ silent: true });
     void fetchTags();
     void fetchAppealStatuses();
     void fetchQueue();
@@ -1571,8 +1563,8 @@ function App() {
     if (!sessionsLoading) {
       // Use requestIdleCallback to load during browser idle time
       const scheduleIdle = window.requestIdleCallback || ((cb: IdleRequestCallback) => setTimeout(cb, 100));
-      scheduleIdle(() => fetchCredentials());
-      scheduleIdle(() => fetchProxies());
+      scheduleIdle(() => fetchCredentials({ silent: true }));
+      scheduleIdle(() => fetchProxies({ silent: true }));
     }
   }, [sessionsLoading]);
 
@@ -2952,7 +2944,7 @@ function App() {
       void fetchCampaignReliabilityAudit();
     }
     if (activeTab === 'sessions') {
-      void fetchSessions();
+      void fetchSessions({ silent: true });
     }
     if (activeTab === 'premium') {
       void fetchPremiumStatus();
@@ -4131,7 +4123,7 @@ function App() {
                     <CardTitle className="text-lg">Sessions ({filteredSessions.length})</CardTitle>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button size="sm" variant="outline" onClick={fetchSessions}>
+                    <Button size="sm" variant="outline" onClick={() => fetchSessions()}>
                       <RefreshCw className="w-4 h-4 mr-2" />
                       Reload
                     </Button>
@@ -4636,7 +4628,7 @@ function App() {
                           Create {selectedCredentials.size} Session{selectedCredentials.size > 1 ? 's' : ''}
                         </Button>
                       )}
-                      <Button size="sm" variant="outline" onClick={fetchCredentials}>
+                      <Button size="sm" variant="outline" onClick={() => fetchCredentials()}>
                         <RefreshCw className="w-4 h-4 mr-2" />
                         Refresh
                       </Button>
@@ -4825,7 +4817,7 @@ function App() {
               <Card className="">
                 <CardHeader className="bg-[rgba(51,51,51,0.04)] border-b border-[rgba(0,0,0,0.1)] pb-4 flex flex-row justify-between items-center">
                   <CardTitle className="text-lg">Saved Proxies ({proxies.length})</CardTitle>
-                  <Button size="sm" variant="outline" onClick={fetchProxies}>
+                  <Button size="sm" variant="outline" onClick={() => fetchProxies()}>
                     <RefreshCw className="w-4 h-4 mr-2" />
                     Refresh
                   </Button>

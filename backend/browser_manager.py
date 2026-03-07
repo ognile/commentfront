@@ -23,6 +23,11 @@ from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT
 
 logger = logging.getLogger("BrowserManager")
 
+
+def _brief(e: Exception) -> str:
+    """Truncate Playwright errors to first line (full call logs can be 60+ lines)."""
+    return str(e).split("\n")[0]
+
 # Temp directory for uploaded images
 UPLOAD_DIR = Path("/tmp/commentbot_uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -724,8 +729,8 @@ class PersistentBrowserManager:
 
             return {"success": True, "action": "click", "x": x, "y": y}
         except Exception as e:
-            logger.error(f"Click error: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error(f"Click error: {_brief(e)}")
+            return {"success": False, "error": _brief(e)}
 
     async def handle_keyboard(self, key: str, modifiers: List[str] = None) -> Dict[str, Any]:
         """
@@ -770,8 +775,8 @@ class PersistentBrowserManager:
 
             return {"success": True, "action": "key", "key": key_combo}
         except Exception as e:
-            logger.error(f"Keyboard error: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error(f"Keyboard error: {_brief(e)}")
+            return {"success": False, "error": _brief(e)}
 
     async def handle_type(self, text: str) -> Dict[str, Any]:
         """
@@ -795,8 +800,8 @@ class PersistentBrowserManager:
 
             return {"success": True, "action": "type", "length": len(text)}
         except Exception as e:
-            logger.error(f"Type error: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error(f"Type error: {_brief(e)}")
+            return {"success": False, "error": _brief(e)}
 
     async def handle_scroll(self, x: int, y: int, delta_y: int) -> Dict[str, Any]:
         """
@@ -826,8 +831,8 @@ class PersistentBrowserManager:
 
             return {"success": True, "action": "scroll", "delta_y": delta_y}
         except Exception as e:
-            logger.error(f"Scroll error: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error(f"Scroll error: {_brief(e)}")
+            return {"success": False, "error": _brief(e)}
 
     async def navigate(self, url: str) -> Dict[str, Any]:
         """
@@ -858,8 +863,8 @@ class PersistentBrowserManager:
 
             return {"success": True, "action": "navigate", "url": self._page.url}
         except Exception as e:
-            logger.error(f"Navigate error: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error(f"Navigate error: {_brief(e)}")
+            return {"success": False, "error": _brief(e)}
 
     async def get_screenshot(self) -> Optional[bytes]:
         """Take a screenshot and return as bytes."""
