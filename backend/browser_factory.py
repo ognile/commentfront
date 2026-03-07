@@ -166,9 +166,10 @@ async def apply_page_identity_overrides(
         },
     )
 
-    await page.add_init_script(
-        """
-        (identity) => {
+    identity_json = json.dumps(identity)
+    script = """
+        (() => {
+          const identity = __IDENTITY_JSON__;
           const defineValue = (target, key, value) => {
             try {
               Object.defineProperty(target, key, {
@@ -218,7 +219,6 @@ async def apply_page_identity_overrides(
           defineValue(Navigator.prototype, "platform", identity.navigator_platform);
           defineValue(Navigator.prototype, "userAgentData", uaData);
           defineValue(Navigator.prototype, "maxTouchPoints", 5);
-        }
-        """,
-        json.loads(json.dumps(identity)),
-    )
+        })()
+        """
+    await page.add_init_script(script.replace("__IDENTITY_JSON__", identity_json))
