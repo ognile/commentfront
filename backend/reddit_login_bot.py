@@ -165,7 +165,22 @@ async def login_reddit(
                 {"profile_name": profile_name, "step": "opening_login"},
             )
 
-            # Use www.reddit.com login with human-like interaction to pass reCAPTCHA
+            # Capture network requests during login for debugging
+            login_requests = []
+
+            def _capture_request(request):
+                url = request.url.lower()
+                if any(kw in url for kw in ("login", "auth", "captcha", "recaptcha", "svc/shreddit")):
+                    login_requests.append({"url": request.url, "method": request.method, "post_data": (request.post_data or "")[:500]})
+
+            def _capture_response(response):
+                url = response.url.lower()
+                if any(kw in url for kw in ("login", "auth", "svc/shreddit")):
+                    login_requests.append({"url": response.url, "status": response.status, "type": "response"})
+
+            page.on("request", _capture_request)
+            page.on("response", _capture_response)
+
             logger.info(f"[{profile_name}] starting reddit login with human-like interaction")
             await page.goto("https://www.reddit.com/login/", wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_timeout(2000)
@@ -219,6 +234,10 @@ async def login_reddit(
             await page.wait_for_timeout(5000)
             await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
             logger.info(f"[{profile_name}] after submit URL: {page.url}")
+
+            # Log all captured network requests
+            for req in login_requests:
+                logger.info(f"[{profile_name}] network: {req}")
 
             # Check for login error vs OTP prompt
             page_text = ""
