@@ -165,11 +165,43 @@ async def login_reddit(
                 {"profile_name": profile_name, "step": "opening_login"},
             )
 
-            # Use old.reddit.com API login to bypass reCAPTCHA on modern login page
-            logger.info(f"[{profile_name}] using old.reddit.com API login")
-            await page.goto("https://old.reddit.com/", wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(1500)
+            # Use www.reddit.com login with human-like interaction to pass reCAPTCHA
+            logger.info(f"[{profile_name}] starting reddit login with human-like interaction")
+            await page.goto("https://www.reddit.com/login/", wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(2000)
             await _dismiss_cookie_banner(page)
+            logger.info(f"[{profile_name}] login page loaded: {page.url}")
+            await save_debug_screenshot(page, f"reddit_login_page_{profile_name}")
+
+            # Human-like typing: click field, type slowly char by char
+            username_loc = None
+            for sel in LOGIN["username_input"]:
+                loc = page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    username_loc = loc
+                    break
+            password_loc = None
+            for sel in LOGIN["password_input"]:
+                loc = page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    password_loc = loc
+                    break
+
+            if not username_loc or not password_loc:
+                await save_debug_screenshot(page, f"reddit_login_inputs_missing_{profile_name}")
+                await dump_interactive_elements(page, "REDDIT LOGIN INPUTS NOT FOUND")
+                raise RuntimeError("Failed to locate Reddit login inputs")
+
+            # Click and type with delays to look human
+            await username_loc.click()
+            await page.wait_for_timeout(300)
+            await username_loc.type(str(login_identifier), delay=50)
+            await page.wait_for_timeout(500)
+            await password_loc.click()
+            await page.wait_for_timeout(300)
+            await password_loc.type(str(password), delay=50)
+            await page.wait_for_timeout(500)
+            logger.info(f"[{profile_name}] typed credentials (identifier={login_identifier[:3]}***)")
 
             await _broadcast(
                 broadcast_callback,
@@ -177,123 +209,50 @@ async def login_reddit(
                 {"profile_name": profile_name, "step": "submitting_credentials"},
             )
 
-            # Generate OTP upfront since these accounts have 2FA
-            otp_code = ""
+            # Click the Log In button directly instead of pressing Enter
+            login_clicked = await _click_first(page, LOGIN["submit_button"], timeout_ms=5000)
+            if not login_clicked:
+                # Fallback to pressing Enter on password field
+                await password_loc.press("Enter")
+            logger.info(f"[{profile_name}] login submitted (button_clicked={login_clicked})")
+
+            await page.wait_for_timeout(5000)
+            await save_debug_screenshot(page, f"reddit_after_submit_{profile_name}")
+            logger.info(f"[{profile_name}] after submit URL: {page.url}")
+
+            # Check for login error vs OTP prompt
+            page_text = ""
             try:
-                manager = CredentialManager()
-                otp_data = manager.generate_otp(
-                    credential.get("credential_id") or credential.get("uid"),
-                    platform="reddit",
-                )
-                if otp_data.get("valid") and otp_data.get("code"):
-                    otp_code = otp_data["code"]
-                    logger.info(f"[{profile_name}] generated OTP for login")
-            except Exception as otp_err:
-                logger.warning(f"[{profile_name}] OTP generation failed (will try without): {otp_err}")
+                page_text = await page.locator("body").inner_text()
+            except Exception:
+                pass
 
-            # Call Reddit's JSON login API directly from page context
-            api_result = await page.evaluate(
-                """async (data) => {
-                    try {
-                        const form = new URLSearchParams();
-                        form.append('user', data.username);
-                        form.append('passwd', data.password);
-                        form.append('api_type', 'json');
-                        form.append('rem', 'true');
-                        if (data.otp) form.append('otp', data.otp);
-                        const resp = await fetch('/api/login/' + data.username, {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                            body: form.toString(),
-                            credentials: 'include',
-                        });
-                        const text = await resp.text();
-                        let json = null;
-                        try { json = JSON.parse(text); } catch(e) {}
-                        return {ok: resp.ok, status: resp.status, statusText: resp.statusText, body: text.substring(0, 1000), data: json};
-                    } catch (e) {
-                        return {ok: false, error: e.message};
-                    }
-                }""",
-                {"username": str(login_identifier), "password": str(password), "otp": otp_code},
-            )
-            logger.info(f"[{profile_name}] API login response: status={api_result.get('status')} ok={api_result.get('ok')} body={str(api_result.get('body', ''))[:500]}")
-            if api_result.get("error"):
-                logger.error(f"[{profile_name}] API fetch error: {api_result['error']}")
+            if "something went wrong" in page_text.lower() or "incorrect" in page_text.lower():
+                logger.error(f"[{profile_name}] login error: {page_text[:300]}")
+                await dump_interactive_elements(page, f"REDDIT LOGIN ERROR {profile_name}")
+                raise RuntimeError(f"Reddit login rejected: {page_text[:200]}")
 
-            api_json = (api_result.get("data") or {}).get("json", {})
-            api_errors = api_json.get("errors", [])
-            api_errors_str = str(api_errors)
+            # Handle OTP/2FA prompt
+            otp_handled = await _handle_otp(page, credential)
+            if otp_handled:
+                logger.info(f"[{profile_name}] OTP submitted")
+                await page.wait_for_timeout(3000)
+                await save_debug_screenshot(page, f"reddit_after_otp_{profile_name}")
+            else:
+                logger.info(f"[{profile_name}] no OTP prompt detected")
 
-            # Check if 2FA is required (Reddit returns WRONG_OTP or similar when 2FA is enabled)
-            needs_otp = any(
-                any(kw in str(err).upper() for kw in ("WRONG_OTP", "TWO_FA", "BAD_OTP", "OTP", "2FA"))
-                for err in api_errors
-            )
-            if api_errors and not needs_otp:
-                error_msg = "; ".join(str(e) for e in api_errors)
-                logger.error(f"[{profile_name}] Reddit API login errors: {error_msg}")
-                await save_debug_screenshot(page, f"reddit_api_login_error_{profile_name}")
-                raise RuntimeError(f"Reddit API login failed: {error_msg}")
-
-            if needs_otp:
-                logger.info(f"[{profile_name}] 2FA required, generating OTP")
-                manager = CredentialManager()
-                otp_data = manager.generate_otp(
-                    credential.get("credential_id") or credential.get("uid"),
-                    platform="reddit",
-                )
-                if not otp_data.get("valid") or not otp_data.get("code"):
-                    raise RuntimeError(f"Failed to generate Reddit OTP: {otp_data.get('error')}")
-                # Retry login with OTP
-                api_result = await page.evaluate(
-                    """async (data) => {
-                        try {
-                            const form = new URLSearchParams();
-                            form.append('user', data.username);
-                            form.append('passwd', data.password);
-                            form.append('api_type', 'json');
-                            form.append('rem', 'true');
-                            form.append('otp', data.otp);
-                            const resp = await fetch('/api/login/' + data.username, {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                                body: form.toString(),
-                                credentials: 'include',
-                            });
-                            const json = await resp.json();
-                            return {ok: resp.ok, status: resp.status, data: json};
-                        } catch (e) {
-                            return {ok: false, error: e.message};
-                        }
-                    }""",
-                    {"username": str(login_identifier), "password": str(password), "otp": otp_data["code"]},
-                )
-                logger.info(f"[{profile_name}] API login+OTP response: status={api_result.get('status')} errors={api_result.get('data', {}).get('json', {}).get('errors', [])}")
-                otp_errors = (api_result.get("data") or {}).get("json", {}).get("errors", [])
-                if otp_errors:
-                    raise RuntimeError(f"Reddit API login+OTP failed: {otp_errors}")
-
-            # Log cookies after API login
+            # Wait for auth cookies
             all_cookies = await context.cookies()
             cookie_names = [c.get("name") for c in all_cookies]
-            logger.info(f"[{profile_name}] cookies after API login: {cookie_names}")
+            logger.info(f"[{profile_name}] cookies after login: {cookie_names}")
 
-            # Navigate to new reddit to pick up cross-domain session
-            await page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(2500)
-            await _dismiss_cookie_banner(page)
-            await save_debug_screenshot(page, f"reddit_after_login_{profile_name}")
-            logger.info(f"[{profile_name}] new reddit home URL: {page.url}")
-
-            # Final cookie check
-            all_cookies = await context.cookies()
-            cookie_names = [c.get("name") for c in all_cookies]
-            logger.info(f"[{profile_name}] cookies after new reddit: {cookie_names}")
-            auth_names = {"token_v2", "reddit_session"}
-            if not (auth_names & set(cookie_names)):
+            if not await _wait_for_auth_cookies(context, timeout_ms=15000):
+                all_cookies2 = await context.cookies()
+                cookie_names2 = [c.get("name") for c in all_cookies2]
+                logger.error(f"[{profile_name}] auth cookies missing. all cookies: {cookie_names2}")
                 await save_debug_screenshot(page, f"reddit_login_failed_{profile_name}")
-                raise RuntimeError(f"Reddit auth cookies missing after API login. cookies: {cookie_names}")
+                await dump_interactive_elements(page, f"REDDIT AUTH COOKIES MISSING {profile_name}")
+                raise RuntimeError(f"Reddit auth cookies not created. cookies: {cookie_names2}")
 
             try:
                 await _click_first(page, LOGIN["modal_close"], timeout_ms=2000)
