@@ -193,6 +193,97 @@ def _has_strong_reply_submission_evidence(evidence: Dict[str, Any]) -> bool:
     )
 
 
+def _normalize_submission_text(value: str) -> str:
+    """Normalize visible text before comment snippet matching."""
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _is_composer_element(element: Dict[str, Any]) -> bool:
+    """Best-effort composer detection for element-dump entries."""
+    tag = str(element.get("tag") or "").lower()
+    role = str(element.get("role") or "").lower()
+    aria_label = str(element.get("ariaLabel") or "").lower()
+    placeholder = str(element.get("placeholder") or "").lower()
+    text = str(element.get("text") or "").lower()
+    haystack = " ".join([tag, role, aria_label, placeholder, text])
+    return any(
+        marker in haystack
+        for marker in ["write a comment", "textbox", "combobox", "textarea", "contenteditable"]
+    )
+
+
+async def _collect_comment_submission_evidence(
+    page: Page,
+    comment_text: str,
+    interactive_elements: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Collect local post-submit evidence before falling back to screenshot verification."""
+    snippet = str(comment_text or "")[-120:]
+    snippet_norm = _normalize_submission_text(snippet)
+
+    local_state = await page.evaluate(
+        """(snippet) => {
+            const norm = (value) => (value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+            const snippetNorm = norm(snippet);
+            const bodyText = norm(document.body ? document.body.innerText : '');
+            const composerSelectors = [
+                'textarea',
+                'input',
+                '[contenteditable="true"]',
+                '[role="textbox"]',
+                '[role="combobox"]'
+            ];
+            const composerNodes = Array.from(document.querySelectorAll(composerSelectors.join(',')));
+            const composerTextStillPresent = composerNodes.some((node) => {
+                const value = norm(node.value || node.innerText || node.textContent || '');
+                return snippetNorm && value.includes(snippetNorm);
+            });
+
+            return {
+                bodyTextContainsSnippet: Boolean(snippetNorm) && bodyText.includes(snippetNorm),
+                composerTextStillPresent,
+                composerCleared: !composerTextStillPresent,
+                postingIndicatorSeen: bodyText.includes('posting...')
+            };
+        }""",
+        snippet,
+    )
+
+    interactive_text_seen = False
+    if snippet_norm and interactive_elements:
+        for element in interactive_elements:
+            if _is_composer_element(element):
+                continue
+            haystack = _normalize_submission_text(
+                f"{element.get('text') or ''} {element.get('ariaLabel') or ''}"
+            )
+            if haystack and snippet_norm in haystack:
+                interactive_text_seen = True
+                break
+
+    local_comment_text_seen = bool(
+        local_state.get("bodyTextContainsSnippet") and not local_state.get("composerTextStillPresent")
+    )
+
+    return {
+        "submit_clicked": True,
+        "posting_indicator_seen": bool(local_state.get("postingIndicatorSeen")),
+        "composer_cleared": bool(local_state.get("composerCleared")),
+        "composer_text_still_present": bool(local_state.get("composerTextStillPresent")),
+        "local_comment_text_seen": local_comment_text_seen,
+        "interactive_text_seen": interactive_text_seen,
+    }
+
+
+def _has_strong_comment_submission_evidence(evidence: Dict[str, Any]) -> bool:
+    """Recognize submit-like evidence that warrants recovery instead of reposting."""
+    if not evidence.get("submit_clicked"):
+        return False
+    if evidence.get("local_comment_text_seen") or evidence.get("interactive_text_seen"):
+        return True
+    return bool(evidence.get("posting_indicator_seen") and evidence.get("composer_cleared"))
+
+
 def _escape_css_attr_value(value: str) -> str:
     """Escape quotes/backslashes for safe CSS attribute selectors."""
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
@@ -1581,36 +1672,76 @@ async def post_comment_verified(
             await asyncio.sleep(5)
 
             # Dump elements after send to see what's on the page
-            await dump_interactive_elements(page, "AFTER SEND CLICK - checking for comment")
+            post_submit_elements = await dump_interactive_elements(page, "AFTER SEND CLICK - checking for comment")
+            submission_evidence = await _collect_comment_submission_evidence(
+                page,
+                comment,
+                interactive_elements=post_submit_elements,
+            )
 
             # Verify comment was posted
             if phase_callback:
                 await phase_callback("verifying", {"source": "post_comment_verified"})
-            verify_screenshot = await save_debug_screenshot(page, "step5_verify")
-            verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
-
-            if not verification.success:
-                if verification.status == "pending":
-                    # Comment pending, wait more (7s to give FB time to finish posting)
-                    logger.info("Comment appears pending, waiting 7 more seconds...")
-                    await asyncio.sleep(7)
-                    verify_screenshot = await save_debug_screenshot(page, "step5_pending")
-                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
-                else:
-                    # Not pending - try one more wait and check
-                    logger.info(f"Comment not visible, waiting 3 more seconds... ({verification.message})")
-                    await asyncio.sleep(3)
-                    verify_screenshot = await save_debug_screenshot(page, "step5_retry")
-                    verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
+            if submission_evidence.get("local_comment_text_seen") or submission_evidence.get("interactive_text_seen"):
+                result["steps_completed"].append("comment_posted")
+                result["success"] = True
+                result["verified"] = True
+                result["method"] = "hybrid_verified"
+                result["verification_confidence"] = 1.0
+                result["submission_evidence"] = submission_evidence
+                logger.info("✓ Step 5: Comment posted with local DOM confirmation before Gemini fallback")
+            else:
+                verify_screenshot = await save_debug_screenshot(page, "step5_verify")
+                verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
 
                 if not verification.success:
-                    raise Exception(f"Step 5 FAILED - Comment not posted: {verification.message}")
+                    if verification.status == "pending":
+                        logger.info("Comment appears pending, waiting 7 more seconds...")
+                        await asyncio.sleep(7)
+                        post_submit_elements = await dump_interactive_elements(page, "STEP 5 PENDING RETRY")
+                        submission_evidence = await _collect_comment_submission_evidence(
+                            page,
+                            comment,
+                            interactive_elements=post_submit_elements,
+                        )
+                        if submission_evidence.get("local_comment_text_seen") or submission_evidence.get("interactive_text_seen"):
+                            verification.success = True
+                            verification.confidence = max(float(getattr(verification, "confidence", 0.0) or 0.0), 0.95)
+                        else:
+                            verify_screenshot = await save_debug_screenshot(page, "step5_pending")
+                            verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
+                    else:
+                        logger.info(f"Comment not visible, waiting 3 more seconds... ({verification.message})")
+                        await asyncio.sleep(3)
+                        post_submit_elements = await dump_interactive_elements(page, "STEP 5 FINAL RETRY")
+                        submission_evidence = await _collect_comment_submission_evidence(
+                            page,
+                            comment,
+                            interactive_elements=post_submit_elements,
+                        )
+                        if submission_evidence.get("local_comment_text_seen") or submission_evidence.get("interactive_text_seen"):
+                            verification.success = True
+                            verification.confidence = max(float(getattr(verification, "confidence", 0.0) or 0.0), 0.9)
+                        else:
+                            verify_screenshot = await save_debug_screenshot(page, "step5_retry")
+                            verification = await vision.verify_state(verify_screenshot, "comment_posted", expected_text=comment[-100:])
 
-            result["steps_completed"].append("comment_posted")
-            result["success"] = True
-            result["verified"] = True
-            result["verification_confidence"] = verification.confidence
-            logger.info(f"✓ Step 5: Comment posted and verified! (confidence: {verification.confidence:.0%})")
+                    if not verification.success and _has_strong_comment_submission_evidence(submission_evidence):
+                        result["method"] = "verification_inconclusive"
+                        result["error"] = f"Step 5 INCONCLUSIVE - Comment submission evidence is strong but visual confirmation failed: {verification.message}"
+                        result["submission_evidence"] = submission_evidence
+                        logger.warning(result["error"])
+                        return result
+
+                    if not verification.success:
+                        raise Exception(f"Step 5 FAILED - Comment not posted: {verification.message}")
+
+                result["steps_completed"].append("comment_posted")
+                result["success"] = True
+                result["verified"] = True
+                result["verification_confidence"] = verification.confidence
+                result["submission_evidence"] = submission_evidence
+                logger.info(f"✓ Step 5: Comment posted and verified! (confidence: {verification.confidence:.0%})")
             logger.info("=" * 50)
             logger.info("SUCCESS: All 5 steps completed with verification!")
             logger.info("=" * 50)
@@ -2100,6 +2231,19 @@ async def reconcile_comment_submission(
                 )
                 await asyncio.sleep(1.0)
 
+                elements = await dump_interactive_elements(page, "RECONCILIATION CHECK")
+                submission_evidence = await _collect_comment_submission_evidence(
+                    page,
+                    comment_text,
+                    interactive_elements=elements,
+                )
+                if submission_evidence.get("local_comment_text_seen") or submission_evidence.get("interactive_text_seen"):
+                    return {
+                        "found": True,
+                        "confidence": 1.0,
+                        "reason": "comment text verified from local DOM evidence",
+                    }
+
                 shot = await save_debug_screenshot(page, "reconcile_verify")
                 verification = await vision.verify_state(shot, "comment_posted", expected_text=comment_text[-100:])
                 if verification.success:
@@ -2115,6 +2259,13 @@ async def reconcile_comment_submission(
                         "found": False,
                         "confidence": float(verification.confidence or 0.0),
                         "reason": verification.message or "comment text not visible",
+                    }
+
+                if _has_strong_comment_submission_evidence(submission_evidence):
+                    return {
+                        "found": None,
+                        "confidence": max(float(verification.confidence or 0.0), 0.5),
+                        "reason": verification.message or "verification inconclusive with strong submit evidence",
                     }
 
                 return {

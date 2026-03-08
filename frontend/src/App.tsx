@@ -98,6 +98,9 @@ interface QueuedCampaign {
   has_retries?: boolean;
   last_retry_at?: string;
   auto_retry?: AutoRetryState;
+  delivery_state?: 'delivered' | 'recovering' | 'exhausted';
+  remaining_failed_jobs?: number;
+  retry_overdue_seconds?: number | null;
 }
 
 interface QueueState {
@@ -281,7 +284,11 @@ interface AppealStatusEntry {
 interface AnalyticsSummary {
   today: { comments: number; success: number; success_rate: number };
   week: { comments: number; success: number; success_rate: number };
+  attempt_today?: { comments: number; success: number; success_rate: number };
+  attempt_week?: { comments: number; success: number; success_rate: number };
   profiles: { active: number; restricted: number; total: number };
+  retry_backlog?: { campaigns: number; jobs: number };
+  overdue_retries?: { campaigns: number; jobs: number };
 }
 
 interface AppealSchedulerStatus {
@@ -3818,6 +3825,17 @@ function App() {
                               {!campaign.auto_retry && campaign.has_retries && (
                                 <span className="ml-2 text-blue-500">(retried)</span>
                               )}
+                              {campaign.delivery_state === 'recovering' && (
+                                <span className="ml-2 text-amber-600">
+                                  ({campaign.remaining_failed_jobs ?? 0} jobs still recovering
+                                  {(campaign.retry_overdue_seconds ?? 0) > 0 ? `, overdue ${Math.round((campaign.retry_overdue_seconds ?? 0) / 60)}m` : ''})
+                                </span>
+                              )}
+                              {campaign.delivery_state === 'exhausted' && (
+                                <span className="ml-2 text-red-500">
+                                  ({campaign.remaining_failed_jobs ?? 0} jobs unresolved)
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -4836,19 +4854,38 @@ function App() {
           <TabsContent value="analytics" className="mt-6 space-y-6">
             {/* Summary Stats */}
             {analyticsSummary && (
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
                 <Card className="p-4">
                   <div className="text-2xl font-bold">{analyticsSummary.today.comments}</div>
-                  <div className="text-sm text-[#666666]">Today's Comments</div>
+                  <div className="text-sm text-[#666666]">Delivery Today</div>
                   <div className="text-xs text-green-600 mt-1">
-                    {analyticsSummary.today.success_rate.toFixed(0)}% success
+                    {analyticsSummary.today.success_rate.toFixed(0)}% delivered
                   </div>
                 </Card>
                 <Card className="p-4">
                   <div className="text-2xl font-bold">{analyticsSummary.week.comments}</div>
-                  <div className="text-sm text-[#666666]">This Week</div>
+                  <div className="text-sm text-[#666666]">Delivery Week</div>
                   <div className="text-xs text-green-600 mt-1">
-                    {analyticsSummary.week.success_rate.toFixed(0)}% success
+                    {analyticsSummary.week.success_rate.toFixed(0)}% delivered
+                  </div>
+                  {analyticsSummary.attempt_week && (
+                    <div className="text-[11px] text-[#999999] mt-1">
+                      attempts: {analyticsSummary.attempt_week.success_rate.toFixed(0)}%
+                    </div>
+                  )}
+                </Card>
+                <Card className="p-4">
+                  <div className="text-2xl font-bold text-amber-600">{analyticsSummary.retry_backlog?.jobs ?? 0}</div>
+                  <div className="text-sm text-[#666666]">Recovery Backlog</div>
+                  <div className="text-xs text-amber-600 mt-1">
+                    {analyticsSummary.retry_backlog?.campaigns ?? 0} campaigns still need delivery
+                  </div>
+                </Card>
+                <Card className="p-4">
+                  <div className="text-2xl font-bold text-red-500">{analyticsSummary.overdue_retries?.jobs ?? 0}</div>
+                  <div className="text-sm text-[#666666]">Overdue Retry Jobs</div>
+                  <div className="text-xs text-red-500 mt-1">
+                    {analyticsSummary.overdue_retries?.campaigns ?? 0} campaigns overdue
                   </div>
                 </Card>
                 <Card className="p-4">

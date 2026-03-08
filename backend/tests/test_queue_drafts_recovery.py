@@ -320,3 +320,170 @@ def test_auto_retry_success_marks_job_exhausted_to_prevent_repost():
     assert failed_job["last_profile"] == "profile_new"
     remaining = [fj for fj in updated["auto_retry"]["failed_jobs"] if not fj.get("exhausted")]
     assert remaining == []
+
+
+def test_due_auto_retry_runs_even_with_pending_campaign(monkeypatch):
+    pending = main.queue_manager.add_campaign(
+        url=VALID_URL,
+        comments=["pending job"],
+        jobs=None,
+        duration_minutes=30,
+        username="tester",
+        filter_tags=None,
+        enable_warmup=True,
+        profile_name=None,
+    )
+
+    retry_campaign_id = "campaign_due_retry"
+    main.queue_manager.history = [
+        {
+            "id": retry_campaign_id,
+            "status": "completed",
+            "url": VALID_URL,
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [
+                {
+                    "job_index": 0,
+                    "text": "recover me",
+                    "comment": "recover me",
+                    "success": False,
+                    "method": "verification_inconclusive",
+                    "error": "Step 5 INCONCLUSIVE - visual confirmation failed",
+                }
+            ],
+            "auto_retry": {
+                "status": "scheduled",
+                "current_round": 0,
+                "max_rounds": 4,
+                "next_retry_at": datetime.utcnow().isoformat(),
+                "schedule_seconds": [300, 1800, 7200, 21600],
+                "failed_jobs": [
+                    {
+                        "job_index": 0,
+                        "comment": "recover me",
+                        "excluded_profiles": [],
+                        "last_profile": "profile_old",
+                        "exhausted": False,
+                    }
+                ],
+            },
+        }
+    ]
+
+    processed = []
+
+    async def fake_process_auto_retry(campaign):
+        processed.append(campaign["id"])
+
+    async def fake_check_proxy_health():
+        return {"healthy": True, "ip": "1.1.1.1"}
+
+    monkeypatch.setattr(main.queue_processor, "_process_auto_retry", fake_process_auto_retry)
+    monkeypatch.setattr(main, "check_proxy_health", fake_check_proxy_health)
+
+    ran = asyncio.run(main.queue_processor._run_retry_iteration())
+
+    assert ran is True
+    assert processed == [retry_campaign_id]
+    assert pending["id"] in main.queue_manager.campaigns
+
+
+def test_auto_retry_reconciles_existing_comment_before_repost(monkeypatch):
+    campaign_id = "campaign_reconcile_retry"
+    main.queue_manager.history = [
+        {
+            "id": campaign_id,
+            "status": "completed",
+            "url": VALID_URL,
+            "filter_tags": [],
+            "enable_warmup": True,
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [
+                {
+                    "job_index": 0,
+                    "text": "same text",
+                    "comment": "same text",
+                    "success": False,
+                    "method": "verification_inconclusive",
+                    "error": "Step 5 INCONCLUSIVE - visual confirmation failed",
+                    "profile_name": "profile_old",
+                }
+            ],
+            "auto_retry": {
+                "status": "scheduled",
+                "current_round": 0,
+                "max_rounds": 4,
+                "next_retry_at": datetime.utcnow().isoformat(),
+                "schedule_seconds": [300, 1800, 7200, 21600],
+                "failed_jobs": [
+                    {
+                        "job_index": 0,
+                        "comment": "same text",
+                        "excluded_profiles": [],
+                        "last_profile": "profile_old",
+                        "exhausted": False,
+                    }
+                ],
+            },
+        }
+    ]
+
+    class FakeFacebookSession:
+        def __init__(self, profile_name: str):
+            self.profile_name = profile_name
+
+        def load(self) -> bool:
+            return True
+
+    class FakeProfileManager:
+        def __init__(self):
+            self.reserved = set()
+
+        async def reserve_profile(self, profile_name: str) -> bool:
+            if profile_name in self.reserved:
+                return False
+            self.reserved.add(profile_name)
+            return True
+
+        async def release_profile(self, profile_name: str):
+            self.reserved.discard(profile_name)
+
+        def get_eligible_profiles(self, **_kwargs):
+            raise AssertionError("repost selection should not happen when reconciliation succeeds")
+
+        def mark_profile_used(self, **_kwargs):
+            raise AssertionError("no new posting attempt should be recorded")
+
+        def mark_profile_restricted(self, **_kwargs):
+            raise AssertionError("no restriction update expected")
+
+    async def fake_reconcile_comment_submission(**_kwargs):
+        return {"found": True, "confidence": 0.97, "reason": "comment text verified from local DOM evidence"}
+
+    async def fail_if_post_attempted(*_args, **_kwargs):
+        raise AssertionError("no repost should happen when reconciliation succeeds")
+
+    monkeypatch.setattr(main, "FacebookSession", FakeFacebookSession)
+    monkeypatch.setattr(profile_manager, "get_profile_manager", lambda: FakeProfileManager())
+    monkeypatch.setattr(main, "reconcile_comment_submission", fake_reconcile_comment_submission)
+    monkeypatch.setattr(main, "post_comment_verified", fail_if_post_attempted)
+
+    campaign = main.queue_manager.get_campaign_from_history(campaign_id)
+    assert campaign is not None
+
+    asyncio.run(main.queue_processor._process_auto_retry(campaign))
+
+    updated = main.queue_manager.get_campaign_from_history(campaign_id)
+    assert updated is not None
+    assert updated["success_count"] == 1
+    assert updated["auto_retry"]["status"] == "completed"
+    assert any(
+        result.get("method") == "reconciled_existing_comment" and result.get("success")
+        for result in updated["results"]
+    )

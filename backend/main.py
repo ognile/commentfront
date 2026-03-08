@@ -57,6 +57,8 @@ from queue_manager import (
     canonicalize_campaign_jobs,
     find_duplicate_text_conflicts,
     near_duplicate_ratio,
+    get_campaign_success_count,
+    get_campaign_total_jobs,
     LOOKBACK_DAYS_DEFAULT,
     NEAR_DUPLICATE_THRESHOLD,
 )
@@ -237,7 +239,8 @@ class QueueProcessor:
     def __init__(self, qm: CampaignQueueManager):
         self.queue_manager = qm
         self.is_running = False
-        self._task: Optional[asyncio.Task] = None
+        self._campaign_task: Optional[asyncio.Task] = None
+        self._retry_task: Optional[asyncio.Task] = None
         self._stop_requested = False
         self._current_campaign_cancelled = False
         self.logger = logging.getLogger("QueueProcessor")
@@ -250,18 +253,20 @@ class QueueProcessor:
 
         self.is_running = True
         self._stop_requested = False
-        self._task = asyncio.create_task(self._process_loop())
+        self._campaign_task = asyncio.create_task(self._campaign_loop())
+        self._retry_task = asyncio.create_task(self._retry_loop())
         self.logger.info("Queue processor started")
 
     async def stop(self):
         """Gracefully stop the processor."""
         self._stop_requested = True
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._campaign_task, self._retry_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         self.is_running = False
         self.queue_manager.set_processor_running(False)
         self.logger.info("Queue processor stopped")
@@ -274,6 +279,36 @@ class QueueProcessor:
     def _comment_hash(text: str) -> str:
         normalized = " ".join(str(text or "").strip().lower().split())
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _failure_requires_reconciliation(result: Optional[dict]) -> bool:
+        """Retry reconciliation is required for verification-shaped failures."""
+        if not result:
+            return False
+        method = str(result.get("method") or "").lower()
+        error = str(result.get("error") or "").lower()
+        return method in ("verification_inconclusive", "uncertain_no_repost") or "comment not posted" in error
+
+    @staticmethod
+    def _determine_failure_type(
+        *,
+        success: bool,
+        was_restriction: bool,
+        error: Optional[str],
+        method: Optional[str] = None,
+    ) -> Optional[str]:
+        """Keep post-submit uncertainty out of profile-quality penalties."""
+        if success:
+            return None
+
+        error_lower = str(error or "").lower()
+        if str(method or "").lower() == "verification_inconclusive":
+            return "infrastructure"
+        if was_restriction or "restricted" in error_lower or "ban" in error_lower:
+            return "restriction"
+        if any(x in error_lower for x in ["timeout", "proxy", "connection", "network", "tunnel", "net::err"]):
+            return "infrastructure"
+        return "facebook_error"
 
     async def _recover_inflight_checkpoint(
         self,
@@ -414,35 +449,80 @@ class QueueProcessor:
                 },
             )
 
-    async def _process_loop(self):
-        """Main processing loop - runs continuously.
-        Priority 1: pending campaigns. Priority 2: due auto-retries."""
+    async def _campaign_loop(self):
+        """Main processing loop for new campaigns."""
         while not self._stop_requested:
             try:
-                # Pause while retry-all is running to avoid profile conflicts
-                if _retry_all_task and not _retry_all_task.done():
-                    await asyncio.sleep(5)
-                    continue
-
-                campaign = self.queue_manager.get_next_pending()
-
-                if campaign:
-                    self._current_campaign_cancelled = False
-                    await self._process_campaign(campaign)
-                else:
-                    # Priority 2: due auto-retries (only when no pending campaigns)
-                    retry_campaign = self.queue_manager.get_next_due_retry()
-                    if retry_campaign:
-                        await self._process_auto_retry(retry_campaign)
-                    else:
-                        await asyncio.sleep(2)
-
+                worked = await self._run_campaign_iteration()
+                if not worked:
+                    await asyncio.sleep(2)
             except asyncio.CancelledError:
-                self.logger.info("Processor loop cancelled")
+                self.logger.info("Campaign loop cancelled")
                 break
             except Exception as e:
-                self.logger.error(f"Processor loop error: {e}")
+                self.logger.error(f"Campaign loop error: {e}")
                 await asyncio.sleep(5)  # Wait before retrying
+
+    async def _retry_loop(self):
+        """Dedicated retry loop so overdue recoveries do not starve behind pending work."""
+        while not self._stop_requested:
+            try:
+                worked = await self._run_retry_iteration()
+                if not worked:
+                    await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                self.logger.info("Retry loop cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Retry loop error: {e}")
+                await asyncio.sleep(5)
+
+    async def _run_campaign_iteration(self) -> bool:
+        """Run one new-campaign iteration. Returns True when work was processed."""
+        if _retry_all_task and not _retry_all_task.done():
+            return False
+
+        campaign = self.queue_manager.get_next_pending()
+        if not campaign:
+            return False
+
+        self._current_campaign_cancelled = False
+        await self._process_campaign(campaign)
+        return True
+
+    async def _run_retry_iteration(self) -> bool:
+        """Run one due auto-retry iteration. Returns True when work was processed."""
+        if _retry_all_task and not _retry_all_task.done():
+            return False
+
+        retry_campaign = self.queue_manager.get_next_due_retry()
+        if not retry_campaign:
+            return False
+
+        overdue_seconds = 0
+        next_retry_at = retry_campaign.get("auto_retry", {}).get("next_retry_at")
+        if next_retry_at:
+            next_retry_dt = datetime.fromisoformat(str(next_retry_at).replace("Z", "+00:00")).replace(tzinfo=None)
+            overdue_seconds = max(0, int((datetime.utcnow() - next_retry_dt).total_seconds()))
+
+        remaining_jobs = len(
+            [fj for fj in retry_campaign.get("auto_retry", {}).get("failed_jobs", []) if not fj.get("exhausted")]
+        )
+        self.logger.info(
+            f"Auto-retry due for campaign {retry_campaign['id'][:8]}... "
+            f"(overdue={overdue_seconds}s, remaining_jobs={remaining_jobs})"
+        )
+
+        health = await check_proxy_health()
+        if not health["healthy"]:
+            self.logger.warning(
+                f"Skipping auto-retry for {retry_campaign['id'][:8]}... because proxy health is down: "
+                f"{health.get('error', 'unknown')}"
+            )
+            return False
+
+        await self._process_auto_retry(retry_campaign)
+        return True
 
     async def _process_campaign(self, campaign: dict):
         """Process a single campaign."""
@@ -801,16 +881,12 @@ class QueueProcessor:
 
                     # Determine failure type for analytics granularity
                     # Check infrastructure FIRST — proxy/timeout errors must not be classified as restriction
-                    failure_type = None
-                    if not result["success"]:
-                        error = result.get("error", "")
-                        error_lower = str(error).lower()
-                        if any(x in error_lower for x in ["timeout", "proxy", "connection", "network", "tunnel", "net::err"]):
-                            failure_type = "infrastructure"
-                        elif result.get("throttled") or "restricted" in error_lower or "ban" in error_lower:
-                            failure_type = "restriction"
-                        else:
-                            failure_type = "facebook_error"
+                    failure_type = self._determine_failure_type(
+                        success=bool(result["success"]),
+                        was_restriction=bool(result.get("throttled")),
+                        error=result.get("error"),
+                        method=result.get("method"),
+                    )
 
                     # Track profile usage for rotation (LRU - only updates timestamp on success)
                     profile_manager.mark_profile_used(
@@ -867,11 +943,11 @@ class QueueProcessor:
                     self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
 
                     # Track exception in analytics (classify as infrastructure error)
-                    error_str = str(e).lower()
-                    if any(x in error_str for x in ["timeout", "proxy", "connection", "network"]):
-                        exc_failure_type = "infrastructure"
-                    else:
-                        exc_failure_type = "facebook_error"
+                    exc_failure_type = self._determine_failure_type(
+                        success=False,
+                        was_restriction=False,
+                        error=str(e),
+                    )
 
                     profile_manager.mark_profile_used(
                         profile_name=profile_name,
@@ -989,6 +1065,83 @@ class QueueProcessor:
 
             job_index = fj["job_index"]
             comment = fj.get("comment", "")
+            job_history = [
+                result
+                for result in campaign.get("results", [])
+                if result.get("job_index") == job_index
+            ]
+            last_failure = next((result for result in reversed(job_history) if not result.get("success")), None)
+
+            if self._failure_requires_reconciliation(last_failure):
+                reconciliation_profile = fj.get("last_profile", "")
+                if reconciliation_profile:
+                    reserved_reconciliation = await profile_manager.reserve_profile(reconciliation_profile)
+                    if not reserved_reconciliation:
+                        self.logger.warning(
+                            f"Auto-retry reconciliation skipped for campaign {campaign_id[:8]} job {job_index}: "
+                            f"profile {reconciliation_profile} is currently reserved"
+                        )
+                        round_failed += 1
+                        continue
+
+                    try:
+                        session = FacebookSession(reconciliation_profile)
+                        if session.load():
+                            reconciliation = await reconcile_comment_submission(
+                                session=session,
+                                url=url,
+                                comment_text=comment,
+                                proxy=get_system_proxy(),
+                            )
+                            if reconciliation.get("found") is True:
+                                self.logger.info(
+                                    f"Auto-retry reconciliation recovered campaign {campaign_id[:8]} job {job_index} "
+                                    f"without repost (profile={reconciliation_profile}, confidence={reconciliation.get('confidence', 0.0):.2f})"
+                                )
+                                self.queue_manager.record_retry_attempt(
+                                    campaign_id=campaign_id,
+                                    job_index=job_index,
+                                    profile=reconciliation_profile,
+                                    round_num=round_num,
+                                    success=True,
+                                    error=None,
+                                    was_restriction=False,
+                                    method="reconciled_existing_comment",
+                                    verified=True,
+                                    metadata={
+                                        "reconciled_without_repost": True,
+                                        "reconciliation_confidence": reconciliation.get("confidence", 0.0),
+                                        "reconciliation_reason": reconciliation.get("reason"),
+                                    },
+                                )
+                                await broadcast_update("auto_retry_job_result", {
+                                    "campaign_id": campaign_id,
+                                    "job_index": job_index,
+                                    "profile": reconciliation_profile,
+                                    "success": True,
+                                    "error": None,
+                                    "method": "reconciled_existing_comment",
+                                    "round": round_num,
+                                })
+                                round_succeeded += 1
+                                succeeded_profiles.add(reconciliation_profile)
+                                continue
+
+                            if reconciliation.get("found") is None:
+                                self.logger.warning(
+                                    f"Auto-retry reconciliation inconclusive for campaign {campaign_id[:8]} job {job_index}: "
+                                    f"{reconciliation.get('reason', 'unknown reason')}"
+                                )
+                                round_failed += 1
+                                continue
+                        else:
+                            self.logger.warning(
+                                f"Auto-retry reconciliation session missing for campaign {campaign_id[:8]} "
+                                f"job {job_index} profile={reconciliation_profile}"
+                            )
+                    finally:
+                        await profile_manager.release_profile(reconciliation_profile)
+
             excluded = set(fj.get("excluded_profiles", []))
             exclude_from_selection = list(excluded | succeeded_profiles)
 
@@ -1007,10 +1160,23 @@ class QueueProcessor:
 
             # Profile selection: prefer last_profile if still eligible (transient failure)
             last_profile = fj.get("last_profile", "")
-            if last_profile and last_profile in eligible and last_profile not in excluded:
-                profile_name = last_profile
-            else:
-                profile_name = eligible[0]
+            ordered_profiles = eligible[:]
+            if last_profile and last_profile in ordered_profiles and last_profile not in excluded:
+                ordered_profiles.remove(last_profile)
+                ordered_profiles.insert(0, last_profile)
+
+            profile_name: Optional[str] = None
+            for candidate in ordered_profiles:
+                if await profile_manager.reserve_profile(candidate):
+                    profile_name = candidate
+                    break
+
+            if not profile_name:
+                self.logger.warning(
+                    f"Auto-retry: no free profile reservation available for campaign {campaign_id[:8]} job {job_index}"
+                )
+                round_failed += 1
+                continue
 
             self.logger.info(f"Auto-retry: job {job_index} with profile {profile_name}")
 
@@ -1037,16 +1203,13 @@ class QueueProcessor:
                 success = result.get("success", False)
                 was_restriction = bool(result.get("throttled"))
                 error = result.get("error")
-
-                # Determine failure type
-                failure_type = None
-                if not success:
-                    if was_restriction or "restricted" in str(error).lower():
-                        failure_type = "restriction"
-                    elif any(x in str(error).lower() for x in ["timeout", "proxy", "connection", "network"]):
-                        failure_type = "infrastructure"
-                    else:
-                        failure_type = "facebook_error"
+                method = result.get("method")
+                failure_type = self._determine_failure_type(
+                    success=bool(success),
+                    was_restriction=was_restriction,
+                    error=error,
+                    method=method,
+                )
 
                 profile_manager.mark_profile_used(
                     profile_name=profile_name,
@@ -1069,7 +1232,9 @@ class QueueProcessor:
                     round_num=round_num,
                     success=success,
                     error=error,
-                    was_restriction=was_restriction
+                    was_restriction=was_restriction,
+                    method=str(method or "auto_retry"),
+                    verified=result.get("verified"),
                 )
 
                 await broadcast_update("auto_retry_job_result", {
@@ -1078,6 +1243,7 @@ class QueueProcessor:
                     "profile": profile_name,
                     "success": success,
                     "error": error,
+                    "method": method,
                     "round": round_num
                 })
 
@@ -1096,9 +1262,11 @@ class QueueProcessor:
                     round_num=round_num,
                     success=False,
                     error=str(e),
-                    was_restriction=False
+                    was_restriction=False,
                 )
                 round_failed += 1
+            finally:
+                await profile_manager.release_profile(profile_name)
 
         # Check if all jobs are now succeeded or exhausted
         campaign = self.queue_manager.get_campaign_from_history(campaign_id)
@@ -2106,7 +2274,69 @@ async def get_analytics_summary(current_user: dict = Depends(get_current_user)):
     """Get summary analytics for all profiles."""
     from profile_manager import get_profile_manager
     pm = get_profile_manager()
-    return pm.get_analytics_summary()
+    attempt_summary = pm.get_analytics_summary()
+
+    history = queue_manager.get_history(limit=100)
+    pending = queue_manager.get_full_state().get("pending", [])
+    delivery_rows = history + pending
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    week_start = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    delivery_today_total = 0
+    delivery_today_success = 0
+    delivery_week_total = 0
+    delivery_week_success = 0
+    retry_backlog_campaigns = 0
+    retry_backlog_jobs = 0
+    overdue_retry_campaigns = 0
+    overdue_retry_jobs = 0
+
+    for campaign in delivery_rows:
+        reference_date = (
+            str(campaign.get("completed_at") or campaign.get("created_at") or campaign.get("started_at") or "")[:10]
+        )
+        total_jobs = get_campaign_total_jobs(campaign)
+        success_jobs = get_campaign_success_count(campaign)
+        remaining_jobs = max(0, total_jobs - success_jobs)
+
+        if reference_date == today:
+            delivery_today_total += total_jobs
+            delivery_today_success += success_jobs
+        if reference_date and reference_date >= week_start:
+            delivery_week_total += total_jobs
+            delivery_week_success += success_jobs
+
+        if remaining_jobs > 0:
+            retry_backlog_campaigns += 1
+            retry_backlog_jobs += remaining_jobs
+            if (campaign.get("retry_overdue_seconds") or 0) > 0:
+                overdue_retry_campaigns += 1
+                overdue_retry_jobs += remaining_jobs
+
+    return {
+        "today": {
+            "comments": delivery_today_total,
+            "success": delivery_today_success,
+            "success_rate": (delivery_today_success / delivery_today_total * 100) if delivery_today_total > 0 else 0,
+        },
+        "week": {
+            "comments": delivery_week_total,
+            "success": delivery_week_success,
+            "success_rate": (delivery_week_success / delivery_week_total * 100) if delivery_week_total > 0 else 0,
+        },
+        "attempt_today": attempt_summary.get("today", {}),
+        "attempt_week": attempt_summary.get("week", {}),
+        "profiles": attempt_summary.get("profiles", {}),
+        "retry_backlog": {
+            "campaigns": retry_backlog_campaigns,
+            "jobs": retry_backlog_jobs,
+        },
+        "overdue_retries": {
+            "campaigns": overdue_retry_campaigns,
+            "jobs": overdue_retry_jobs,
+        },
+    }
 
 
 @app.get("/analytics/profiles")

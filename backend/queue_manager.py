@@ -3,6 +3,7 @@ Campaign Queue Manager - Persistent queue with background processing support
 Follows the same pattern as proxy_manager.py
 """
 
+import copy
 import os
 import json
 import logging
@@ -26,6 +27,87 @@ def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
     except Exception:
         return None
+
+
+def get_campaign_total_jobs(campaign: dict) -> int:
+    """Return the original job count for a campaign."""
+    total_count = campaign.get("total_count")
+    if isinstance(total_count, int) and total_count >= 0:
+        return total_count
+
+    jobs = campaign.get("jobs") or []
+    if jobs:
+        return len(jobs)
+
+    comments = campaign.get("comments") or []
+    if comments:
+        return len(comments)
+
+    results = campaign.get("results") or []
+    return len({r.get("job_index") for r in results if r.get("job_index") is not None})
+
+
+def get_campaign_success_count(campaign: dict) -> int:
+    """Return unique job success count for a campaign."""
+    success_count = campaign.get("success_count")
+    if isinstance(success_count, int) and success_count >= 0:
+        return success_count
+
+    results = campaign.get("results") or []
+    return len({r.get("job_index") for r in results if r.get("success") and r.get("job_index") is not None})
+
+
+def get_campaign_remaining_failed_jobs(campaign: dict) -> int:
+    """Return remaining unique jobs that still need delivery."""
+    total_jobs = get_campaign_total_jobs(campaign)
+    success_count = get_campaign_success_count(campaign)
+    return max(0, total_jobs - success_count)
+
+
+def get_campaign_retry_overdue_seconds(campaign: dict, now: Optional[datetime] = None) -> Optional[int]:
+    """Return overdue seconds for scheduled retries, otherwise None."""
+    auto_retry = campaign.get("auto_retry") or {}
+    if auto_retry.get("status") != "scheduled":
+        return None
+
+    next_retry_at = parse_iso_datetime(auto_retry.get("next_retry_at"))
+    if not next_retry_at:
+        return None
+
+    current_time = now or datetime.utcnow()
+    if next_retry_at >= current_time:
+        return 0
+    return int((current_time - next_retry_at).total_seconds())
+
+
+def derive_campaign_delivery_state(campaign: dict, now: Optional[datetime] = None) -> str:
+    """Return delivery state for operator truth surfaces."""
+    remaining_jobs = get_campaign_remaining_failed_jobs(campaign)
+    if remaining_jobs <= 0:
+        return "delivered"
+
+    status = str(campaign.get("status") or "").lower()
+    auto_retry = campaign.get("auto_retry") or {}
+    auto_retry_status = str(auto_retry.get("status") or "").lower()
+
+    if status in ("pending", "processing"):
+        return "recovering"
+
+    if auto_retry_status in ("scheduled", "in_progress"):
+        return "recovering"
+
+    return "exhausted"
+
+
+def decorate_campaign_delivery(campaign: dict, now: Optional[datetime] = None) -> dict:
+    """Attach derived delivery fields without mutating persisted state."""
+    payload = copy.deepcopy(campaign)
+    payload["success_count"] = get_campaign_success_count(campaign)
+    payload["total_count"] = get_campaign_total_jobs(campaign)
+    payload["remaining_failed_jobs"] = get_campaign_remaining_failed_jobs(campaign)
+    payload["delivery_state"] = derive_campaign_delivery_state(campaign, now=now)
+    payload["retry_overdue_seconds"] = get_campaign_retry_overdue_seconds(campaign, now=now)
+    return payload
 
 
 def normalize_text_for_dedup(text: str) -> str:
@@ -501,7 +583,11 @@ class CampaignQueueManager:
 
     def get_history(self, limit: int = 100) -> List[dict]:
         """Get completed campaign history."""
-        return self.history[:min(limit, self.MAX_HISTORY)]
+        now = datetime.utcnow()
+        return [
+            decorate_campaign_delivery(campaign, now=now)
+            for campaign in self.history[:min(limit, self.MAX_HISTORY)]
+        ]
 
     def add_retry_result(self, campaign_id: str, result: dict) -> Optional[dict]:
         """
@@ -640,13 +726,14 @@ class CampaignQueueManager:
         ]
         pending.sort(key=lambda c: c.get("created_at", ""))
 
+        now = datetime.utcnow()
         return {
             "processor_running": self.processor_state.get("is_running", False),
             "current_campaign_id": self.processor_state.get("current_campaign_id"),
             "pending_count": len(pending),
             "max_pending": self.MAX_PENDING,
-            "pending": pending,
-            "history": self.history[:20]  # Send first 20 for initial load
+            "pending": [decorate_campaign_delivery(campaign, now=now) for campaign in pending],
+            "history": [decorate_campaign_delivery(campaign, now=now) for campaign in self.history[:20]]
         }
 
     def is_processor_running(self) -> bool:
@@ -857,9 +944,19 @@ class CampaignQueueManager:
         candidates.sort(key=lambda c: c["auto_retry"]["next_retry_at"])
         return candidates[0]
 
-    def record_retry_attempt(self, campaign_id: str, job_index: int, profile: str,
-                             round_num: int, success: bool, error: Optional[str],
-                             was_restriction: bool):
+    def record_retry_attempt(
+        self,
+        campaign_id: str,
+        job_index: int,
+        profile: str,
+        round_num: int,
+        success: bool,
+        error: Optional[str],
+        was_restriction: bool,
+        method: str = "auto_retry",
+        verified: Optional[bool] = None,
+        metadata: Optional[Dict[str, object]] = None,
+    ):
         """Record a single auto-retry attempt result. Saves to disk immediately."""
         campaign = self.get_campaign_from_history(campaign_id)
         if not campaign:
@@ -870,14 +967,16 @@ class CampaignQueueManager:
             "profile_name": profile,
             "comment": "",
             "success": success,
-            "verified": success,
-            "method": "auto_retry",
+            "verified": success if verified is None else verified,
+            "method": method,
             "error": error,
             "job_index": job_index,
             "is_retry": True,
             "auto_retry_round": round_num,
             "retried_at": datetime.utcnow().isoformat()
         }
+        if metadata:
+            result.update(metadata)
 
         # Find comment text from auto_retry.failed_jobs
         ar = campaign.get("auto_retry", {})

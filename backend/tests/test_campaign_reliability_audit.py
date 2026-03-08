@@ -43,7 +43,7 @@ def test_reliability_audit_go_for_self_healed_infra_noise():
             "url": "https://facebook.com/post-a",
             "created_by": "ops",
             "status": "completed",
-            "completed_at": "2026-03-05T10:00:00Z",
+            "completed_at": "2026-03-07T10:00:00Z",
             "total_count": 10,
             "success_count": 10,
             "auto_retry": {"status": "completed"},
@@ -71,7 +71,7 @@ def test_reliability_audit_go_for_self_healed_infra_noise():
             "url": "https://facebook.com/post-b",
             "created_by": "ops",
             "status": "completed",
-            "completed_at": "2026-03-04T12:00:00Z",
+            "completed_at": "2026-03-07T12:00:00Z",
             "total_count": 8,
             "success_count": 8,
             "results": [],
@@ -103,7 +103,7 @@ def test_reliability_audit_watchlist_when_retry_overhead_or_repeated_automation_
                 "url": f"https://facebook.com/post-{index}",
                 "created_by": "ops",
                 "status": "completed",
-                "completed_at": f"2026-03-05T0{index}:00:00Z",
+                "completed_at": f"2026-03-07T0{index}:00:00Z",
                 "total_count": 10,
                 "success_count": 10,
                 "auto_retry": {"status": "completed"},
@@ -165,7 +165,7 @@ def test_reliability_audit_requires_fixes_for_unrecovered_jobs_and_live_fallout(
             "url": "https://facebook.com/post-risky",
             "created_by": "ops",
             "status": "completed",
-            "completed_at": "2026-03-05T18:00:00Z",
+            "completed_at": "2026-03-07T18:00:00Z",
             "total_count": 12,
             "success_count": 11,
             "has_retries": True,
@@ -220,7 +220,7 @@ def test_reliability_audit_helper_accepts_direct_call_defaults(monkeypatch):
             "url": "https://facebook.com/post-direct",
             "created_by": "ops",
             "status": "completed",
-            "completed_at": "2026-03-05T08:00:00Z",
+            "completed_at": "2026-03-07T08:00:00Z",
             "total_count": 6,
             "success_count": 6,
             "results": [],
@@ -245,3 +245,57 @@ def test_reliability_audit_helper_accepts_direct_call_defaults(monkeypatch):
 
     assert report["summary"]["verdict"] == VERDICT_GO
     assert report["summary"]["campaign_count"] == 1
+
+
+def test_analytics_summary_uses_final_delivery_and_retry_backlog(monkeypatch):
+    class FakeProfileManager:
+        def get_analytics_summary(self):
+            return {
+                "today": {"comments": 40, "success": 40, "success_rate": 100},
+                "week": {"comments": 200, "success": 180, "success_rate": 90},
+                "profiles": {"active": 10, "restricted": 1, "total": 11},
+            }
+
+    monkeypatch.setattr(profile_manager, "get_profile_manager", lambda: FakeProfileManager())
+    monkeypatch.setattr(
+        main.queue_manager,
+        "get_history",
+        lambda limit=100: [
+            {
+                "id": "delivered-campaign",
+                "created_at": "2026-03-08T08:00:00Z",
+                "completed_at": "2026-03-08T09:00:00Z",
+                "total_count": 3,
+                "success_count": 3,
+                "delivery_state": "delivered",
+                "remaining_failed_jobs": 0,
+                "retry_overdue_seconds": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        main.queue_manager,
+        "get_full_state",
+        lambda: {
+            "pending": [
+                {
+                    "id": "recovering-campaign",
+                    "created_at": "2026-03-08T10:00:00Z",
+                    "total_count": 4,
+                    "success_count": 2,
+                    "delivery_state": "recovering",
+                    "remaining_failed_jobs": 2,
+                    "retry_overdue_seconds": 600,
+                }
+            ]
+        },
+    )
+
+    summary = asyncio.run(main.get_analytics_summary(current_user={"username": "tester"}))
+
+    assert summary["today"]["comments"] == 7
+    assert summary["today"]["success"] == 5
+    assert round(summary["today"]["success_rate"], 2) == round(5 / 7 * 100, 2)
+    assert summary["retry_backlog"] == {"campaigns": 1, "jobs": 2}
+    assert summary["overdue_retries"] == {"campaigns": 1, "jobs": 2}
+    assert summary["attempt_today"]["comments"] == 40
