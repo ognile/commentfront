@@ -100,6 +100,25 @@ STRATEGY_CONFIGS: Dict[str, Dict[str, Any]] = {
         "force_home_settle": True,
         "fresh_page_home_settle": True,
     },
+    "email_identifier_fast_otp": {
+        "strategy_id": "email_identifier_fast_otp",
+        "login_identifier_preference": "email",
+        "humanize_input": True,
+        "form_wait_timeout_ms": 15000,
+        "form_reload_attempts": 1,
+        "pre_interaction_wait_ms": 4500,
+        "between_field_wait_ms": 1200,
+        "post_submit_wait_ms": 6500,
+        "credential_retry_attempts": 2,
+        "credential_retry_wait_ms": 9000,
+        "otp_pre_submit_wait_ms": 250,
+        "otp_retry_attempts": 1,
+        "otp_min_remaining_seconds": 0,
+        "otp_resolution_timeout_ms": 24000,
+        "auth_surface_timeout_ms": 24000,
+        "force_home_settle": True,
+        "fresh_page_home_settle": True,
+    },
     "otp_retry_fresh_cycle": {
         "strategy_id": "otp_retry_fresh_cycle",
         "login_identifier_preference": "username",
@@ -309,11 +328,11 @@ class RedditLoginLearningStore:
         if "otp_never_shown" in recent_failure_buckets or "err_empty_response" in recent_errors or "inputs not found" in recent_errors:
             ordered.extend(["acquire_form_reload", "email_identifier_dwell", "settle_home", "baseline_humanized"])
         elif "otp submit rejected" in recent_errors:
-            ordered.extend(["otp_retry_fresh_cycle", "settle_home", "email_identifier_dwell", "baseline_humanized", "acquire_form_reload"])
+            ordered.extend(["email_identifier_fast_otp", "otp_retry_fresh_cycle", "settle_home", "email_identifier_dwell", "baseline_humanized", "acquire_form_reload"])
         elif "user_interaction_failed" in recent_failure_buckets or "protected_routes_fail" in recent_failure_buckets:
-            ordered.extend(["email_identifier_dwell", "settle_home", "otp_retry_fresh_cycle", "baseline_humanized", "acquire_form_reload"])
+            ordered.extend(["email_identifier_dwell", "settle_home", "email_identifier_fast_otp", "otp_retry_fresh_cycle", "baseline_humanized", "acquire_form_reload"])
         else:
-            ordered.extend(["baseline_humanized", "settle_home", "email_identifier_dwell", "otp_retry_fresh_cycle", "acquire_form_reload"])
+            ordered.extend(["baseline_humanized", "settle_home", "email_identifier_dwell", "email_identifier_fast_otp", "otp_retry_fresh_cycle", "acquire_form_reload"])
 
         deduped: List[Dict[str, Any]] = []
         seen = set()

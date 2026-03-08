@@ -49,7 +49,7 @@ def test_learning_store_prioritizes_otp_retry_for_otp_stage_interaction_failures
     )
 
     strategies = store.recommended_strategies("Kaylee_Andreas")
-    assert [item["strategy_id"] for item in strategies][:2] == ["otp_retry_fresh_cycle", "settle_home"]
+    assert [item["strategy_id"] for item in strategies][:2] == ["email_identifier_fast_otp", "otp_retry_fresh_cycle"]
 
 
 def test_learning_store_syncs_existing_linked_sessions(tmp_path, monkeypatch):

@@ -482,6 +482,8 @@ async def _handle_otp(
     *,
     profile_name: str,
     strategy: Dict[str, Any],
+    audit: Optional[RedditLoginAudit] = None,
+    context=None,
 ) -> tuple[bool, Optional[str], int]:
     if not await _otp_input_present(page):
         return False, None, 0
@@ -504,6 +506,7 @@ async def _handle_otp(
         filled = await _set_first(page, LOGIN["otp_input"], str(otp_data["code"]), humanize=True)
         if not filled:
             raise RuntimeError("Reddit OTP input detected but not fillable")
+        await _capture_checkpoint(audit, page, context, "otp_filled")
 
         if pre_submit_wait_ms:
             await page.wait_for_timeout(pre_submit_wait_ms)
@@ -682,6 +685,8 @@ async def _run_reddit_login_flow(
         credential,
         profile_name=profile_name,
         strategy=strategy,
+        audit=audit,
+        context=context,
     )
     if otp_handled:
         logger.info(f"[{profile_name}] OTP submitted on reddit.com")
