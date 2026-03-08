@@ -52,6 +52,38 @@ def test_learning_store_prioritizes_otp_retry_for_otp_stage_interaction_failures
     assert [item["strategy_id"] for item in strategies][:2] == ["email_identifier_fast_otp", "otp_retry_fresh_cycle"]
 
 
+def test_learning_store_remembers_older_otp_stage_progress(tmp_path, monkeypatch):
+    learning_path = tmp_path / "reddit_login_learning.json"
+    monkeypatch.setattr(reddit_login_learning, "REDDIT_LOGIN_LEARNING_PATH", learning_path)
+
+    store = reddit_login_learning.RedditLoginLearningStore(file_path=str(learning_path))
+    store.record_attempt(
+        username="Connor_Esla",
+        strategy_id="email_identifier_dwell",
+        result={
+            "attempt_id": "attempt-email-otp",
+            "audit_json_url": "/audit/connor-otp.json",
+            "failure_bucket": "user_interaction_failed",
+            "error": "Reddit OTP submit rejected: 401 user-interaction-failed",
+        },
+        linked=False,
+    )
+    store.record_attempt(
+        username="Connor_Esla",
+        strategy_id="baseline_humanized",
+        result={
+            "attempt_id": "attempt-later",
+            "audit_json_url": "/audit/connor-later.json",
+            "failure_bucket": "user_interaction_failed",
+            "error": "Reddit credential submit rejected: 401 user-interaction-failed",
+        },
+        linked=False,
+    )
+
+    strategies = store.recommended_strategies("Connor_Esla")
+    assert [item["strategy_id"] for item in strategies][:2] == ["email_identifier_fast_otp", "email_identifier_dwell"]
+
+
 def test_learning_store_syncs_existing_linked_sessions(tmp_path, monkeypatch):
     learning_path = tmp_path / "reddit_login_learning.json"
     monkeypatch.setattr(reddit_login_learning, "REDDIT_LOGIN_LEARNING_PATH", learning_path)

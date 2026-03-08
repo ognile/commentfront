@@ -323,16 +323,23 @@ class RedditLoginLearningStore:
         history = list(record.get("history") or [])
         recent_failure_buckets = [str(item.get("failure_bucket") or "").strip().lower() for item in history[-3:]]
         recent_errors = " ".join(str(item.get("error") or "") for item in history[-3:]).lower()
+        historical_errors = " ".join(str(item.get("error") or "") for item in history[-10:]).lower()
+        historical_strategy_ids = [str(item.get("strategy_id") or "").strip() for item in history[-10:]]
 
         ordered: List[str] = []
         if "otp_never_shown" in recent_failure_buckets or "err_empty_response" in recent_errors or "inputs not found" in recent_errors:
             ordered.extend(["acquire_form_reload", "email_identifier_dwell", "settle_home", "baseline_humanized"])
-        elif "otp submit rejected" in recent_errors:
+        elif "otp submit rejected" in recent_errors or "otp submit rejected" in historical_errors:
             ordered.extend(["email_identifier_fast_otp", "otp_retry_fresh_cycle", "settle_home", "email_identifier_dwell", "baseline_humanized", "acquire_form_reload"])
         elif "user_interaction_failed" in recent_failure_buckets or "protected_routes_fail" in recent_failure_buckets:
             ordered.extend(["email_identifier_dwell", "settle_home", "email_identifier_fast_otp", "otp_retry_fresh_cycle", "baseline_humanized", "acquire_form_reload"])
         else:
             ordered.extend(["baseline_humanized", "settle_home", "email_identifier_dwell", "email_identifier_fast_otp", "otp_retry_fresh_cycle", "acquire_form_reload"])
+
+        if "email_identifier_dwell" in historical_strategy_ids:
+            ordered.insert(0, "email_identifier_dwell")
+        if "otp submit rejected" in historical_errors:
+            ordered.insert(0, "email_identifier_fast_otp")
 
         deduped: List[Dict[str, Any]] = []
         seen = set()
