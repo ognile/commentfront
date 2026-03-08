@@ -111,6 +111,32 @@ async def _click_first(page, selectors, *, timeout_ms: int = 4000) -> bool:
 
 async def _open_comment_composer(page) -> bool:
     opened = await _click_first(page, COMMENT["composer_trigger"], timeout_ms=3000)
+    if not opened:
+        try:
+            opened = bool(
+                await page.evaluate(
+                    """() => {
+                        const candidates = Array.from(document.querySelectorAll('button, input, textarea, div'));
+                        const probe = (value) => (value || '').toLowerCase().trim();
+                        for (const node of candidates) {
+                            const text = probe(node.innerText || node.textContent);
+                            const placeholder = probe(node.getAttribute('placeholder'));
+                            const aria = probe(node.getAttribute('aria-label'));
+                            if (
+                                text.includes('join the conversation') ||
+                                placeholder.includes('join the conversation') ||
+                                aria.includes('join the conversation')
+                            ) {
+                                node.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }"""
+                )
+            )
+        except Exception:
+            opened = False
     if opened:
         await page.wait_for_timeout(600)
     return opened

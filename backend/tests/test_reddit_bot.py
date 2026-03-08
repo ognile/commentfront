@@ -10,9 +10,13 @@ import reddit_bot
 class _FakePage:
     def __init__(self):
         self.waits = []
+        self.evaluate_result = False
 
     async def wait_for_timeout(self, timeout_ms):
         self.waits.append(timeout_ms)
+
+    async def evaluate(self, script):
+        return self.evaluate_result
 
 
 def test_fill_comment_input_opens_join_conversation_trigger(monkeypatch):
@@ -63,3 +67,18 @@ def test_fill_comment_input_uses_reply_selectors_for_reply_flow(monkeypatch):
     assert ok is True
     assert selector_sets == [tuple(reddit_bot.COMMENT["reply_input"])]
     assert page.waits == []
+
+
+def test_open_comment_composer_falls_back_to_js_probe(monkeypatch):
+    page = _FakePage()
+    page.evaluate_result = True
+
+    async def fake_click_first(_page, _selectors, timeout_ms=4000):
+        return False
+
+    monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
+
+    ok = asyncio.run(reddit_bot._open_comment_composer(page))
+
+    assert ok is True
+    assert page.waits == [600]
