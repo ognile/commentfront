@@ -89,11 +89,21 @@ POST = {
 }
 
 COMMENT = {
+    "composer_trigger": [
+        'button:has-text("Join the conversation")',
+        'textarea[placeholder*="join the conversation" i]',
+        'input[placeholder*="join the conversation" i]',
+        '[placeholder*="join the conversation" i]',
+        '[aria-label*="join the conversation" i]',
+    ],
     "composer_input": [
         'div[contenteditable="true"]',
+        'div[contenteditable="plaintext-only"]',
         'textarea',
         'textarea[placeholder*="comment" i]',
         'textarea[aria-label*="comment" i]',
+        'textarea[placeholder*="join the conversation" i]',
+        'input[placeholder*="join the conversation" i]',
     ],
     "submit_button": [
         'button:has-text("Comment")',
@@ -105,8 +115,11 @@ COMMENT = {
     ],
     "reply_input": [
         'div[contenteditable="true"]',
+        'div[contenteditable="plaintext-only"]',
         'textarea',
         'textarea[placeholder*="reply" i]',
         'textarea[aria-label*="reply" i]',
+        'textarea[placeholder*="join the conversation" i]',
+        'input[placeholder*="join the conversation" i]',
     ],
 }

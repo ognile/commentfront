@@ -109,6 +109,22 @@ async def _click_first(page, selectors, *, timeout_ms: int = 4000) -> bool:
     return False
 
 
+async def _open_comment_composer(page) -> bool:
+    opened = await _click_first(page, COMMENT["composer_trigger"], timeout_ms=3000)
+    if opened:
+        await page.wait_for_timeout(600)
+    return opened
+
+
+async def _fill_comment_input(page, text: str, *, reply: bool = False) -> bool:
+    selectors = COMMENT["reply_input"] if reply else COMMENT["composer_input"]
+    if await _fill_first(page, selectors, text):
+        return True
+    await _open_comment_composer(page)
+    await page.wait_for_timeout(400)
+    return await _fill_first(page, selectors, text)
+
+
 async def _first_visible_comment_link(page) -> Optional[str]:
     for selector in HOME["comment_link"]:
         try:
@@ -281,7 +297,7 @@ async def comment_on_post(
             await _goto(page, url)
             await dump_interactive_elements(page, "REDDIT COMMENT ON POST")
 
-            if not await _fill_first(page, COMMENT["composer_input"], text):
+            if not await _fill_comment_input(page, text):
                 raise RuntimeError("Reddit comment composer not found")
 
             if not await _click_first(page, COMMENT["submit_button"], timeout_ms=4000):
@@ -319,7 +335,7 @@ async def reply_to_comment(
                 raise RuntimeError("Reddit Reply button not found")
             await page.wait_for_timeout(1000)
 
-            if not await _fill_first(page, COMMENT["reply_input"], text):
+            if not await _fill_comment_input(page, text, reply=True):
                 raise RuntimeError("Reddit reply input not found")
 
             if not await _click_first(page, COMMENT["submit_button"], timeout_ms=4000):
