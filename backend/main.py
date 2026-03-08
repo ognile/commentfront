@@ -2,11 +2,15 @@
 CommentBot API - Streamlined Facebook Comment Automation
 """
 
+from env_loader import load_project_env
+
+load_project_env()
+
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, status, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from typing import Any, List, Optional, Dict, Set, Literal
 
@@ -92,6 +96,14 @@ from premium_rules import build_rules_snapshot, load_rule_texts_from_paths
 from premium_store import get_premium_store
 from premium_orchestrator import PremiumOrchestrator
 from premium_scheduler import PremiumScheduler
+from forensics import (
+    build_forensic_group,
+    download_forensic_artifact_bytes,
+    get_forensic_artifact_by_id,
+    get_forensic_attempt_detail,
+    has_direct_active_restriction_proof,
+    list_forensic_attempts,
+)
 from campaign_ai import (
     CampaignAIError,
     fetch_campaign_context,
@@ -309,6 +321,24 @@ class QueueProcessor:
         if any(x in error_lower for x in ["timeout", "proxy", "connection", "network", "tunnel", "net::err"]):
             return "infrastructure"
         return "facebook_error"
+
+    @staticmethod
+    def _apply_restriction_signal(
+        profile_manager,
+        *,
+        profile_name: str,
+        reason: str,
+        attempt_id: Optional[str] = None,
+    ) -> str:
+        if has_direct_active_restriction_proof(reason):
+            profile_manager.mark_profile_restricted(profile_name, reason=reason)
+            return "restriction_verified"
+        profile_manager.mark_profile_restriction_suspected(
+            profile_name,
+            reason=reason,
+            attempt_id=attempt_id,
+        )
+        return "restriction_suspected"
 
     async def _recover_inflight_checkpoint(
         self,
@@ -802,6 +832,13 @@ class QueueProcessor:
                         proxy=get_system_proxy(),
                         enable_warmup=enable_warmup,
                         phase_callback=phase_callback,
+                        forensic_context={
+                            "platform": "facebook",
+                            "engine": "campaign_comment",
+                            "campaign_id": campaign_id,
+                            "job_id": str(original_job_idx),
+                            "run_id": campaign_id,
+                        },
                     ) if job_type != "reply_comment" else None
 
                     target_comment_url = str(job.get("target_comment_url") or "").strip()
@@ -903,10 +940,11 @@ class QueueProcessor:
                         throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
                         self.logger.warning(f"Profile {profile_name} throttled: {throttle_reason}")
 
-                        # Mark profile as restricted (progressive escalation)
-                        profile_manager.mark_profile_restricted(
+                        self._apply_restriction_signal(
+                            profile_manager,
                             profile_name=profile_name,
-                            reason=throttle_reason
+                            reason=throttle_reason,
+                            attempt_id=result.get("attempt_id"),
                         )
 
                         # Broadcast throttle event to frontend
@@ -1197,7 +1235,15 @@ class QueueProcessor:
                     url=url,
                     comment=comment,
                     proxy=get_system_proxy(),
-                    enable_warmup=enable_warmup
+                    enable_warmup=enable_warmup,
+                    forensic_context={
+                        "platform": "facebook",
+                        "engine": "auto_retry_comment",
+                        "campaign_id": campaign_id,
+                        "job_id": str(job_index),
+                        "run_id": campaign_id,
+                        "parent_attempt_id": fj.get("attempt_id"),
+                    },
                 )
 
                 success = result.get("success", False)
@@ -1220,9 +1266,11 @@ class QueueProcessor:
                 )
 
                 if was_restriction:
-                    profile_manager.mark_profile_restricted(
+                    self._apply_restriction_signal(
+                        profile_manager,
                         profile_name=profile_name,
-                        reason=result.get("throttle_reason", "Facebook restriction")
+                        reason=result.get("throttle_reason", "Facebook restriction"),
+                        attempt_id=result.get("attempt_id"),
                     )
 
                 self.queue_manager.record_retry_attempt(
@@ -2266,6 +2314,89 @@ async def clear_gemini_logs(current_user: dict = Depends(get_current_user)):
 
 
 # =============================================================================
+# FORENSIC INVESTIGATION ENDPOINTS
+# =============================================================================
+
+@app.get("/forensics/attempts")
+async def get_forensics_attempts(
+    platform: Optional[str] = Query(default=None),
+    engine: Optional[str] = Query(default=None),
+    campaign_id: Optional[str] = Query(default=None),
+    profile_name: Optional[str] = Query(default=None),
+    run_id: Optional[str] = Query(default=None),
+    final_verdict: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    filters = {
+        key: value
+        for key, value in {
+            "platform": platform,
+            "engine": engine,
+            "campaign_id": campaign_id,
+            "profile_name": profile_name,
+            "run_id": run_id,
+            "final_verdict": final_verdict,
+        }.items()
+        if value
+    }
+    attempts = await list_forensic_attempts(filters=filters or None, limit=limit)
+    return {"count": len(attempts), "attempts": attempts}
+
+
+@app.get("/forensics/attempts/{attempt_id}")
+async def get_forensics_attempt(attempt_id: str, current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    detail = await get_forensic_attempt_detail(attempt_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Forensic attempt not found")
+    return detail
+
+
+@app.get("/forensics/attempts/{attempt_id}/timeline")
+async def get_forensics_attempt_timeline(attempt_id: str, current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    detail = await get_forensic_attempt_detail(attempt_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Forensic attempt not found")
+    return {
+        "attempt": detail.get("attempt"),
+        "timeline": detail.get("events", []),
+        "artifacts": detail.get("artifacts", []),
+        "verdict": detail.get("verdict"),
+        "links": detail.get("links"),
+    }
+
+
+@app.get("/forensics/campaigns/{campaign_id}/forensics")
+async def get_campaign_forensics(campaign_id: str, current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    return await build_forensic_group({"campaign_id": campaign_id}, limit=500)
+
+
+@app.get("/forensics/profiles/{profile_name}/forensics")
+async def get_profile_forensics(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    return await build_forensic_group({"profile_name": profile_name}, limit=500)
+
+
+@app.get("/forensics/runs/{run_id}")
+async def get_run_forensics(run_id: str, current_user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+    return await build_forensic_group({"run_id": run_id}, limit=500)
+
+
+@app.get("/forensics/artifacts/{artifact_id}")
+async def get_forensics_artifact(artifact_id: str, current_user: dict = Depends(get_current_user)):
+    artifact = await get_forensic_artifact_by_id(artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Forensic artifact not found")
+    response = await download_forensic_artifact_bytes(artifact_id)
+    if response is None:
+        raise HTTPException(status_code=404, detail="Forensic artifact payload not found")
+    return Response(
+        content=response.content,
+        media_type=artifact.get("content_type") or response.headers.get("content-type") or "application/octet-stream",
+        headers={"Cache-Control": "private, max-age=60"},
+    )
+
+
+# =============================================================================
 # PROFILE ANALYTICS ENDPOINTS
 # =============================================================================
 
@@ -2645,7 +2776,8 @@ async def post_comment_endpoint(request: CommentRequest, current_user: dict = De
         session=session,
         url=request.url,
         comment=request.comment,
-        proxy=get_system_proxy()
+        proxy=get_system_proxy(),
+        forensic_context={"platform": "facebook", "engine": "direct_comment", "run_id": "direct_comment"},
     )
     
     if not result["success"]:
@@ -2694,7 +2826,13 @@ async def run_campaign(request: CampaignRequest, current_user: dict = Depends(ge
                 session=session,
                 url=request.url,
                 comment=comment,
-                proxy=get_system_proxy()
+                proxy=get_system_proxy(),
+                forensic_context={
+                    "platform": "facebook",
+                    "engine": "staggered_campaign_comment",
+                    "run_id": request.url,
+                    "job_id": str(job_index),
+                },
             )
 
             await broadcast_update("job_complete", {
@@ -2877,7 +3015,13 @@ async def run_campaign_queue(request: CampaignQueueRequest, current_user: dict =
                     session=session,
                     url=campaign.url,
                     comment=comment,
-                    proxy=get_system_proxy()
+                    proxy=get_system_proxy(),
+                    forensic_context={
+                        "platform": "facebook",
+                        "engine": "campaign_comment",
+                        "run_id": campaign.url,
+                        "job_id": str(job_idx),
+                    },
                 )
 
                 await broadcast_update("job_complete", {
@@ -3165,7 +3309,14 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
                 url=request.url,
                 comment=comment,
                 proxy=get_system_proxy(),
-                enable_warmup=request.enable_warmup
+                enable_warmup=request.enable_warmup,
+                forensic_context={
+                    "platform": "facebook",
+                    "engine": "campaign_test_comment",
+                    "run_id": test_id,
+                    "campaign_id": test_id,
+                    "job_id": str(job_idx),
+                },
             )
 
             await broadcast_update("test_job_complete", {
@@ -3211,9 +3362,11 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
             # Check for throttling
             if result.get("throttled"):
                 logger.warning(f"[TEST] Profile {profile_name} throttled")
-                profile_manager.mark_profile_restricted(
+                queue_processor._apply_restriction_signal(
+                    profile_manager,
                     profile_name=profile_name,
-                    reason=result.get("throttle_reason", "Test detected throttle")
+                    reason=result.get("throttle_reason", "Test detected throttle"),
+                    attempt_id=result.get("attempt_id"),
                 )
 
         except Exception as e:
@@ -4187,7 +4340,14 @@ async def retry_campaign_job(
             url=url,
             comment=request.comment,
             proxy=get_system_proxy(),
-            enable_warmup=enable_warmup  # RESPECT original campaign's warmup setting
+            enable_warmup=enable_warmup,  # RESPECT original campaign's warmup setting
+            forensic_context={
+                "platform": "facebook",
+                "engine": "manual_retry_comment",
+                "run_id": campaign_id,
+                "campaign_id": campaign_id,
+                "job_id": str(request.job_index),
+            },
         )
 
         # Determine failure type for analytics granularity
@@ -4228,9 +4388,11 @@ async def retry_campaign_job(
         # Check for throttling/restriction and auto-block
         if result.get("throttled"):
             throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
-            profile_manager.mark_profile_restricted(
+            queue_processor._apply_restriction_signal(
+                profile_manager,
                 profile_name=request.profile_name,
-                reason=throttle_reason
+                reason=throttle_reason,
+                attempt_id=result.get("attempt_id"),
             )
 
         # Update the campaign in history
@@ -4461,7 +4623,14 @@ async def bulk_retry_failed_jobs(
                     url=url,
                     comment=comment,
                     proxy=get_system_proxy(),
-                    enable_warmup=enable_warmup
+                    enable_warmup=enable_warmup,
+                    forensic_context={
+                        "platform": "facebook",
+                        "engine": "bulk_retry_comment",
+                        "run_id": campaign_id,
+                        "campaign_id": campaign_id,
+                        "job_id": str(job_index),
+                    },
                 )
 
                 # Determine failure type for analytics
@@ -4486,9 +4655,11 @@ async def bulk_retry_failed_jobs(
 
                 # Check for throttling and auto-block
                 if post_result.get("throttled"):
-                    profile_manager.mark_profile_restricted(
+                    queue_processor._apply_restriction_signal(
+                        profile_manager,
                         profile_name=profile_name,
-                        reason=post_result.get("throttle_reason", "Facebook restriction")
+                        reason=post_result.get("throttle_reason", "Facebook restriction"),
+                        attempt_id=post_result.get("attempt_id"),
                     )
 
                 result = {
@@ -4827,7 +4998,14 @@ async def _retry_single_campaign(
                     async with browser_semaphore:
                         post_result = await post_comment_verified(
                             session=session, url=url, comment=comment,
-                            proxy=get_system_proxy(), enable_warmup=enable_warmup
+                            proxy=get_system_proxy(), enable_warmup=enable_warmup,
+                            forensic_context={
+                                "platform": "facebook",
+                                "engine": "retry_all_comment",
+                                "run_id": campaign_id,
+                                "campaign_id": campaign_id,
+                                "job_id": str(job_index),
+                            },
                         )
                 finally:
                     await profile_manager.release_profile(profile_name)
@@ -4850,9 +5028,11 @@ async def _retry_single_campaign(
 
                 # Layer 3: Don't restrict profiles on infrastructure errors
                 if post_result.get("throttled") and failure_type != "infrastructure":
-                    profile_manager.mark_profile_restricted(
+                    queue_processor._apply_restriction_signal(
+                        profile_manager,
                         profile_name=profile_name,
-                        reason=post_result.get("throttle_reason", "Facebook restriction")
+                        reason=post_result.get("throttle_reason", "Facebook restriction"),
+                        attempt_id=post_result.get("attempt_id"),
                     )
                 elif post_result.get("throttled") and failure_type == "infrastructure":
                     logger.info(f"Retry-all: skipping restriction for {profile_name} — infrastructure error, not real restriction")
@@ -7760,7 +7940,12 @@ async def adaptive_agent_endpoint(
         profile_name=request.profile_name,
         task=request.task,
         max_steps=request.max_steps,
-        start_url=request.start_url
+        start_url=request.start_url,
+        forensic_context={
+            "platform": "facebook",
+            "engine": "adaptive_agent_endpoint",
+            "run_id": f"adaptive_endpoint:{request.profile_name}",
+        },
     )
 
     return result

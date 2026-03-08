@@ -5,6 +5,11 @@ All magic numbers, thresholds, and constants in one place.
 
 import os
 
+from env_loader import load_project_env
+
+
+load_project_env()
+
 # =============================================================================
 # BROWSER / VIEWPORT
 # =============================================================================

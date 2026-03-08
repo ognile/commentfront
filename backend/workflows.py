@@ -115,7 +115,12 @@ IMPORTANT:
             task=task,
             max_steps=20,
             start_url="https://m.facebook.com/me",
-            upload_file_path=image_path
+            upload_file_path=image_path,
+            forensic_context={
+                "platform": "facebook",
+                "engine": "workflow_update_profile_photo",
+                "run_id": f"workflow_update_profile_photo:{profile_name}",
+            },
         )
         result["profile_upload"] = upload_result
 
@@ -369,7 +374,12 @@ IMPORTANT:
             task=task,
             max_steps=20,
             start_url="https://m.facebook.com/me",
-            upload_file_path=image_path
+            upload_file_path=image_path,
+            forensic_context={
+                "platform": "facebook",
+                "engine": "workflow_regenerate_profile_photo",
+                "run_id": f"workflow_regenerate_profile_photo:{profile_name}",
+            },
         )
         result["profile_upload"] = upload_result
 

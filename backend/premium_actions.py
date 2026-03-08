@@ -261,6 +261,12 @@ async def _execute_task(
         start_url=start_url,
         upload_file_path=upload_file_path,
         max_type_actions=max_type_actions,
+        forensic_context={
+            "platform": "facebook",
+            "engine": f"premium_{action_type}",
+            "run_id": run_id,
+            "metadata": {"cycle_index": cycle_index, "step_id": step_id},
+        },
     )
     if _has_tunnel_connection_error(adaptive_result):
         fallback_chain = []
@@ -283,6 +289,12 @@ async def _execute_task(
                 start_url=fallback_url,
                 upload_file_path=upload_file_path,
                 max_type_actions=max_type_actions,
+                forensic_context={
+                    "platform": "facebook",
+                    "engine": f"premium_{action_type}_retry",
+                    "run_id": run_id,
+                    "metadata": {"cycle_index": cycle_index, "step_id": step_id, "retry_index": retry_index},
+                },
             )
             tunnel_persisted = _has_tunnel_connection_error(retry_result)
             combined_errors = []

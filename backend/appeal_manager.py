@@ -191,7 +191,18 @@ async def verify_single_profile(profile_name: str) -> Dict[str, Any]:
     logger.info(f"{prefix} Verifying restriction status")
 
     try:
-        result = await run_adaptive_task(profile_name=profile_name, task=VERIFY_TASK_PROMPT, max_steps=10)
+        result = await run_adaptive_task(
+            profile_name=profile_name,
+            task=VERIFY_TASK_PROMPT,
+            max_steps=10,
+            forensic_context={
+                "platform": "facebook",
+                "engine": "restriction_verify",
+                "run_id": f"restriction_verify:{profile_name}",
+                "parent_attempt_id": state.get("suspected_restriction_attempt_id"),
+                "metadata": {"restriction_reason": state.get("restriction_reason")},
+            },
+        )
         verified_status = _parse_verify_status(result)
         steps_used = len(result.get("steps", []))
         action_taken = "none"
@@ -218,6 +229,11 @@ async def verify_single_profile(profile_name: str) -> Dict[str, Any]:
             action_taken = "marked_in_review"
             logger.info(f"{prefix} {verified_status} -> marked in_review")
         elif verified_status.startswith("ACTIVE"):
+            if pm.get_profile_state(profile_name).get("status") != "restricted":
+                pm.mark_profile_restricted(
+                    profile_name,
+                    reason=verified_status,
+                )
             pm.record_recovery_event(
                 profile_name,
                 event="verify_confirmed_restricted",
@@ -265,7 +281,16 @@ async def _comment_check_fallback(profile_name: str, pm) -> tuple:
 
     prefix = f"[VERIFY:{profile_name}]"
     try:
-        result = await run_adaptive_task(profile_name=profile_name, task=COMMENT_CHECK_PROMPT, max_steps=8)
+        result = await run_adaptive_task(
+            profile_name=profile_name,
+            task=COMMENT_CHECK_PROMPT,
+            max_steps=8,
+            forensic_context={
+                "platform": "facebook",
+                "engine": "restriction_comment_check",
+                "run_id": f"restriction_comment_check:{profile_name}",
+            },
+        )
         status = _parse_verify_status(result)
 
         if "CAN_COMMENT" in status.upper():
@@ -349,7 +374,18 @@ async def appeal_single_profile(profile_name: str) -> Dict[str, Any]:
 
     logger.info(f"{prefix} Running appeal via adaptive agent")
     try:
-        result = await run_adaptive_task(profile_name=profile_name, task=APPEAL_TASK_PROMPT, max_steps=15)
+        result = await run_adaptive_task(
+            profile_name=profile_name,
+            task=APPEAL_TASK_PROMPT,
+            max_steps=15,
+            forensic_context={
+                "platform": "facebook",
+                "engine": "restriction_appeal",
+                "run_id": f"restriction_appeal:{profile_name}",
+                "parent_attempt_id": state.get("suspected_restriction_attempt_id"),
+                "metadata": {"restriction_reason": state.get("restriction_reason")},
+            },
+        )
         final_status = result.get("final_status", "unknown")
         steps_used = len(result.get("steps", []))
         error = None

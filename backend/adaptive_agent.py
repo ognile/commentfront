@@ -19,6 +19,13 @@ from fb_session import FacebookSession, apply_session_to_context
 from gemini_vision import get_vision_client, set_observation_context
 from comment_bot import save_debug_screenshot, dump_interactive_elements, _build_playwright_proxy
 from config import MOBILE_VIEWPORT
+from forensics import (
+    build_adaptive_verdict,
+    record_current_event,
+    reset_current_forensic_recorder,
+    set_current_forensic_recorder,
+    start_forensic_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +210,7 @@ class AdaptiveAgent:
         start_url: str = "https://m.facebook.com",
         upload_file_path: Optional[str] = None,
         max_type_actions: Optional[int] = None,
+        forensic_context: Optional[Dict[str, Any]] = None,
     ):
         self.profile_name = profile_name
         self.task = task
@@ -232,6 +240,7 @@ class AdaptiveAgent:
             if isinstance(max_type_actions, int) and max_type_actions > 0
             else None
         )
+        self.forensic_context = forensic_context or {}
 
     @staticmethod
     def _normalize_typed_payload(text: str) -> str:
@@ -859,15 +868,49 @@ REASONING: Comment was submitted"""
 
     async def run(self) -> Dict[str, Any]:
         """Run the adaptive agent task. Returns results dict."""
+        recorder = await start_forensic_attempt(
+            platform=self.forensic_context.get("platform", "facebook"),
+            engine=self.forensic_context.get("engine", "adaptive_agent"),
+            profile_name=self.profile_name,
+            campaign_id=self.forensic_context.get("campaign_id"),
+            job_id=self.forensic_context.get("job_id"),
+            session_id=self.profile_name,
+            parent_attempt_id=self.forensic_context.get("parent_attempt_id"),
+            run_id=self.forensic_context.get("run_id"),
+            trace_id=self.forensic_context.get("trace_id"),
+            metadata={
+                "task": self.task,
+                "start_url": self.start_url,
+                "upload_file_path": self.upload_file_path,
+                **(self.forensic_context.get("metadata") or {}),
+            },
+        )
+        self.results["attempt_id"] = recorder.attempt_id
+        self.results["trace_id"] = recorder.trace_id
+        recorder_token = set_current_forensic_recorder(recorder)
         # Load session
         self.session = FacebookSession(self.profile_name)
         if not self.session.load():
-            return {"error": f"Failed to load session for {self.profile_name}"}
+            self.results["errors"].append(f"Failed to load session for {self.profile_name}")
+            self.results["final_status"] = "error"
+            verdict = build_adaptive_verdict(self.results)
+            self.results["final_verdict"] = verdict.final_verdict
+            self.results["evidence_summary"] = verdict.summary
+            await recorder.finalize(verdict, metadata={"session_load": "failed"})
+            reset_current_forensic_recorder(recorder_token)
+            return self.results
 
         # Get vision client
         self.vision = get_vision_client()
         if not self.vision:
-            return {"error": "Vision client not available"}
+            self.results["errors"].append("Vision client not available")
+            self.results["final_status"] = "error"
+            verdict = build_adaptive_verdict(self.results)
+            self.results["final_verdict"] = verdict.final_verdict
+            self.results["evidence_summary"] = verdict.summary
+            await recorder.finalize(verdict, metadata={"vision": "missing"})
+            reset_current_forensic_recorder(recorder_token)
+            return self.results
 
         # Set context for Gemini logging
         set_observation_context(profile_name=self.profile_name, campaign_id="adaptive_agent")
@@ -909,6 +952,7 @@ REASONING: Comment was submitted"""
 
             # Create page and apply session cookies
             self.page = await context.new_page()
+            await recorder.attach_page(self.page, context)
             await apply_session_to_context(context, self.session)
 
             # Set up file chooser handler for UPLOAD action
@@ -952,6 +996,17 @@ REASONING: Comment was submitted"""
                     "screenshot": screenshot_path or "failed",
                     "elements_found": len(initial_elements)
                 })
+                await record_current_event(
+                    "navigate",
+                    {
+                        "step": 0,
+                        "target": self.start_url,
+                        "url": self.page.url,
+                        "elements_found": len(initial_elements),
+                    },
+                    phase="navigate",
+                    source="adaptive_agent",
+                )
 
                 # Guardrail: do not allow model calls to block a run indefinitely.
                 gemini_timeout_seconds = float(os.getenv("ADAPTIVE_GEMINI_TIMEOUT_SECONDS", "40"))
@@ -1420,6 +1475,17 @@ REASONING: Comment was submitted"""
                             "step": step_num,
                             "action": step_result["action_taken"]
                         })
+                    await record_current_event(
+                        "action_trace",
+                        {
+                            "step": step_num,
+                            "action_taken": step_result.get("action_taken"),
+                            "reasoning": step_result.get("reasoning"),
+                            "url": self.page.url if self.page else None,
+                        },
+                        phase="step",
+                        source="adaptive_agent",
+                    )
 
                 else:
                     self.results["final_status"] = "max_steps_reached"
@@ -1438,6 +1504,11 @@ REASONING: Comment was submitted"""
                 await browser.close()
 
         logger.info(f"{self.log_prefix} Complete: {self.results['final_status']}")
+        verdict = build_adaptive_verdict(self.results)
+        self.results["final_verdict"] = verdict.final_verdict
+        self.results["evidence_summary"] = verdict.summary
+        await recorder.finalize(verdict, metadata={"error_count": len(self.results.get("errors") or [])})
+        reset_current_forensic_recorder(recorder_token)
         return self.results
 
 
@@ -1448,6 +1519,7 @@ async def run_adaptive_task(
     start_url: str = "https://m.facebook.com",
     upload_file_path: Optional[str] = None,
     max_type_actions: Optional[int] = None,
+    forensic_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Convenience function to run an adaptive agent task.
@@ -1472,5 +1544,6 @@ async def run_adaptive_task(
             start_url=start_url,
             upload_file_path=upload_file_path,
             max_type_actions=max_type_actions,
+            forensic_context=forensic_context,
         )
         return await agent.run()

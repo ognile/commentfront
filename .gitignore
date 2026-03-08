@@ -13,6 +13,7 @@ backend/sessions/*.json
 venv/
 __pycache__/
 .pytest_cache/
+supabase/.temp/
 node_modules/
 dist/
 .env
@@ -22,4 +23,7 @@ backend/campaign_queue.json
 backend/campaign_queue.json.bak
 backend/profile_state.json.bak
 backend/appeal_scheduler_state.json
+backend/appeal_scheduler_state.json.bak
 backend/campaign_ai_products.json
+backend/premium_automation_state.json
+backend/premium_automation_state.json.bak

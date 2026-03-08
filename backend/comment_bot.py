@@ -15,6 +15,15 @@ from fb_session import FacebookSession, apply_session_to_context
 import fb_selectors
 from config import MOBILE_VIEWPORT, DEFAULT_USER_AGENT, DEBUG_DIR
 from browser_factory import build_playwright_proxy
+from forensics import (
+    attach_current_file_artifact,
+    attach_current_json_artifact,
+    build_comment_verdict,
+    record_current_event,
+    reset_current_forensic_recorder,
+    set_current_forensic_recorder,
+    start_forensic_attempt,
+)
 
 # Vision integration (optional - will work without it)
 try:
@@ -612,6 +621,11 @@ async def save_debug_screenshot(page: Page, name: str) -> str:
         latest_path = os.path.join(DEBUG_DIR, "latest.png")
         await page.screenshot(path=latest_path, scale="css", timeout=10000)
         logger.info(f"Saved debug screenshot: {path}")
+        await attach_current_file_artifact(
+            "screenshot",
+            path,
+            metadata={"name": name, "page_url": page.url},
+        )
         return path
     except Exception as e:
         logger.warning(f"Failed to save screenshot: {e}")
@@ -716,6 +730,12 @@ async def dump_interactive_elements(page: Page, context: str = "") -> List[dict]
             bounds = el['bounds']
             logger.info(f"  [{i}] {el['tag']} {attrs} text=\"{text_info}\" ({bounds['x']},{bounds['y']} {bounds['w']}x{bounds['h']})")
 
+        await attach_current_json_artifact(
+            "dom_snapshot",
+            f"{context.lower().replace(' ', '_').replace('/', '_')[:80] or 'dom_snapshot'}.json",
+            {"context": context, "page_url": page.url, "elements": elements},
+            metadata={"context": context, "element_count": len(elements)},
+        )
         return elements
     except Exception as e:
         logger.warning(f"Failed to dump interactive elements: {e}")
@@ -1473,6 +1493,7 @@ async def post_comment_verified(
     proxy: Optional[str] = None,
     enable_warmup: bool = False,
     phase_callback: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    forensic_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Post a comment with AI vision VERIFICATION at every step.
@@ -1498,6 +1519,27 @@ async def post_comment_verified(
     if not vision:
         result["error"] = "Vision client not available - required for verified mode"
         return result
+
+    recorder = await start_forensic_attempt(
+        platform="facebook",
+        engine=(forensic_context or {}).get("engine", "comment_post"),
+        profile_name=session.profile_name,
+        campaign_id=(forensic_context or {}).get("campaign_id"),
+        job_id=(forensic_context or {}).get("job_id"),
+        session_id=session.profile_name,
+        parent_attempt_id=(forensic_context or {}).get("parent_attempt_id"),
+        run_id=(forensic_context or {}).get("run_id"),
+        trace_id=(forensic_context or {}).get("trace_id"),
+        metadata={
+            "url": url,
+            "comment_excerpt": _brief(comment),
+            "enable_warmup": enable_warmup,
+            **((forensic_context or {}).get("metadata") or {}),
+        },
+    )
+    result["attempt_id"] = recorder.attempt_id
+    result["trace_id"] = recorder.trace_id
+    recorder_token = set_current_forensic_recorder(recorder)
 
     async with async_playwright() as p:
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
@@ -1530,6 +1572,7 @@ async def post_comment_verified(
 
         try:
             page = await context.new_page()
+            await recorder.attach_page(page, context)
             if not await apply_session_to_context(context, session):
                 raise Exception("Failed to apply cookies")
 
@@ -1552,6 +1595,7 @@ async def post_comment_verified(
 
             # ========== STEP 1: Navigate and verify post is visible ==========
             logger.info(f"Step 1: Navigating to {url}")
+            await record_current_event("navigate", {"url": url}, phase="navigate", source="post_comment_verified")
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
 
             # Check for Reels redirect immediately
@@ -1564,6 +1608,7 @@ async def post_comment_verified(
                 raise Exception("Step 1 FAILED - Post not visible after 6 attempts")
 
             result["steps_completed"].append("post_visible")
+            await record_current_event("verification", {"step": "post_visible", "success": True}, phase="verify", source="post_comment_verified")
             logger.info("✓ Step 1: Post visible")
 
             # ========== STEP 2: Click comment button using self-healing loop ==========
@@ -1597,6 +1642,7 @@ async def post_comment_verified(
                     raise Exception(f"Step 2 FAILED - Comments not opened: {verification.message}")
 
             result["steps_completed"].append("comments_opened")
+            await record_current_event("click", {"target": "comment_button", "success": True}, phase="engage", source="post_comment_verified")
             logger.info(f"✓ Step 2: Comments section opened (confidence: {verification.confidence:.0%})")
 
             # PROACTIVE AUDIT: Dump elements now that comments section is open
@@ -1632,6 +1678,7 @@ async def post_comment_verified(
             # (Playwright doesn't show visual cursor, so Gemini can't verify)
             # Step 4 will verify if typing worked by checking if text appears
             result["steps_completed"].append("input_clicked")
+            await record_current_event("click", {"target": "comment_input", "success": True}, phase="compose", source="post_comment_verified")
             logger.info("✓ Step 3: Input field clicked (skipping Gemini - cursor not visible in headless)")
 
             # ========== STEP 4: Type comment and verify text appears ==========
@@ -1645,6 +1692,12 @@ async def post_comment_verified(
                 raise Exception(f"Step 4 FAILED - Typed text not visible: {verification.message}")
 
             result["steps_completed"].append("text_typed")
+            await record_current_event(
+                "type",
+                {"length": len(comment), "success": True},
+                phase="compose",
+                source="post_comment_verified",
+            )
             logger.info(f"✓ Step 4: Typed text visible (confidence: {verification.confidence:.0%})")
 
             # ========== STEP 5: Click send button using self-healing loop ==========
@@ -1667,6 +1720,7 @@ async def post_comment_verified(
                     "submit_clicked",
                     {"source": "post_comment_verified", "step": "comment_submit_clicked"},
                 )
+            await record_current_event("submit", {"success": True}, phase="submit", source="post_comment_verified")
 
             # Wait for comment to post (5s for long comments to render)
             await asyncio.sleep(5)
@@ -1689,6 +1743,12 @@ async def post_comment_verified(
                 result["method"] = "hybrid_verified"
                 result["verification_confidence"] = 1.0
                 result["submission_evidence"] = submission_evidence
+                await record_current_event(
+                    "verification",
+                    {"step": "comment_posted", "success": True, "method": "hybrid_verified", "submission_evidence": submission_evidence},
+                    phase="verify",
+                    source="post_comment_verified",
+                )
                 logger.info("✓ Step 5: Comment posted with local DOM confirmation before Gemini fallback")
             else:
                 verify_screenshot = await save_debug_screenshot(page, "step5_verify")
@@ -1730,7 +1790,24 @@ async def post_comment_verified(
                         result["method"] = "verification_inconclusive"
                         result["error"] = f"Step 5 INCONCLUSIVE - Comment submission evidence is strong but visual confirmation failed: {verification.message}"
                         result["submission_evidence"] = submission_evidence
+                        await record_current_event(
+                            "verification",
+                            {
+                                "step": "comment_posted",
+                                "success": False,
+                                "status": "inconclusive",
+                                "message": verification.message,
+                                "submission_evidence": submission_evidence,
+                            },
+                            phase="verify",
+                            source="post_comment_verified",
+                        )
                         logger.warning(result["error"])
+                        verdict = build_comment_verdict(result)
+                        result["final_verdict"] = verdict.final_verdict
+                        result["evidence_summary"] = verdict.summary
+                        await recorder.finalize(verdict, metadata={"result_error": result.get("error")})
+                        reset_current_forensic_recorder(recorder_token)
                         return result
 
                     if not verification.success:
@@ -1741,6 +1818,17 @@ async def post_comment_verified(
                 result["verified"] = True
                 result["verification_confidence"] = verification.confidence
                 result["submission_evidence"] = submission_evidence
+                await record_current_event(
+                    "verification",
+                    {
+                        "step": "comment_posted",
+                        "success": True,
+                        "confidence": verification.confidence,
+                        "submission_evidence": submission_evidence,
+                    },
+                    phase="verify",
+                    source="post_comment_verified",
+                )
                 logger.info(f"✓ Step 5: Comment posted and verified! (confidence: {verification.confidence:.0%})")
             logger.info("=" * 50)
             logger.info("SUCCESS: All 5 steps completed with verification!")
@@ -1768,6 +1856,12 @@ async def post_comment_verified(
                 elif vision and error_screenshot:
                     try:
                         restriction_check = await vision.check_restriction(error_screenshot)
+                        await record_current_event(
+                            "restriction_check",
+                            restriction_check,
+                            phase="verify",
+                            source="post_comment_verified",
+                        )
                         if restriction_check.get("restricted"):
                             result["throttled"] = True
                             result["throttle_reason"] = restriction_check.get("reason", "Unknown restriction")
@@ -1781,6 +1875,12 @@ async def post_comment_verified(
 
     # Cleanup old screenshots after each run (keep last 100)
     cleanup_old_screenshots(max_keep=100)
+
+    verdict = build_comment_verdict(result)
+    result["final_verdict"] = verdict.final_verdict
+    result["evidence_summary"] = verdict.summary
+    await recorder.finalize(verdict, metadata={"result_error": result.get("error")})
+    reset_current_forensic_recorder(recorder_token)
 
     return result
 

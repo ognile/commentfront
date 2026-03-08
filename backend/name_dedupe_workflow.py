@@ -192,6 +192,11 @@ async def _apply_single_rename(profile_name: str, to_display_name: str) -> Dict:
         task=task,
         max_steps=30,
         start_url="https://m.facebook.com/me",
+        forensic_context={
+            "platform": "facebook",
+            "engine": "name_dedupe",
+            "run_id": f"name_dedupe:{profile_name}",
+        },
     )
 
     final_status = adaptive_result.get("final_status")

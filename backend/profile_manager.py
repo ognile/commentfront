@@ -58,8 +58,13 @@ class ProfileManager:
             "last_used_at": None,
             "usage_count": 0,
             "status": "active",
+            "cooldown_expires_at": None,
+            "cooldown_reason": None,
             "restriction_expires_at": None,
             "restriction_reason": None,
+            "suspected_restriction_attempt_id": None,
+            "suspected_restriction_reason": None,
+            "suspected_restriction_at": None,
             "restriction_count": 0,
             "daily_stats": {},
             "usage_history": [],
@@ -264,6 +269,24 @@ class ProfileManager:
                     skip_reasons["restricted"] += 1
                     continue
 
+            if state.get("status") == "cooldown":
+                cooldown_expires_at = state.get("cooldown_expires_at")
+                if cooldown_expires_at:
+                    try:
+                        cooldown_dt = datetime.fromisoformat(cooldown_expires_at.replace("Z", ""))
+                        if datetime.utcnow() < cooldown_dt:
+                            skip_reasons["restricted"] += 1
+                            continue
+                        else:
+                            self._clear_cooldown(profile_name)
+                    except Exception as e:
+                        logger.warning(f"Invalid cooldown date for {profile_name}: {e}")
+                        skip_reasons["restricted"] += 1
+                        continue
+                else:
+                    skip_reasons["restricted"] += 1
+                    continue
+
             # Auto-restrict profiles with very low success rates
             # Exclude infrastructure failures (proxy/timeout) from calculation — those aren't the profile's fault
             total_attempts = state.get("usage_count", 0)
@@ -314,6 +337,22 @@ class ProfileManager:
                 save=False,
             )
             logger.info(f"Auto-unblocked profile {normalized} (restriction expired)")
+            self._save_state()
+
+    def _clear_cooldown(self, profile_name: str):
+        normalized = self._normalize_name(profile_name)
+        if normalized in self.state["profiles"]:
+            profile = self._ensure_profile(normalized)
+            profile["status"] = "active"
+            profile["cooldown_expires_at"] = None
+            profile["cooldown_reason"] = None
+            self.record_recovery_event(
+                normalized,
+                event="restriction_suspected_expired",
+                state="resolved",
+                details={"source": "cooldown_expiry"},
+                save=False,
+            )
             self._save_state()
 
     def record_recovery_event(
@@ -469,6 +508,8 @@ class ProfileManager:
         expires_at = now + timedelta(hours=hours)
 
         profile["status"] = "restricted"
+        profile["cooldown_expires_at"] = None
+        profile["cooldown_reason"] = None
         profile["restriction_expires_at"] = expires_at.isoformat() + "Z"
         profile["restriction_reason"] = reason
 
@@ -493,6 +534,35 @@ class ProfileManager:
         logger.warning(f"Restricted profile {normalized} for {hours}h (reason: {reason}, offense #{restriction_count})")
         self._save_state()
 
+    def mark_profile_restriction_suspected(
+        self,
+        profile_name: str,
+        *,
+        reason: str,
+        attempt_id: Optional[str] = None,
+        cooldown_minutes: int = 30,
+    ):
+        normalized = self._normalize_name(profile_name)
+        self._ensure_profile(normalized)
+        now = datetime.utcnow()
+        profile = self.state["profiles"][normalized]
+        expires_at = now + timedelta(minutes=cooldown_minutes)
+        profile["status"] = "cooldown"
+        profile["cooldown_expires_at"] = expires_at.isoformat() + "Z"
+        profile["cooldown_reason"] = reason
+        profile["suspected_restriction_attempt_id"] = attempt_id
+        profile["suspected_restriction_reason"] = reason
+        profile["suspected_restriction_at"] = now.isoformat() + "Z"
+        self.record_recovery_event(
+            normalized,
+            event="restriction_suspected",
+            state="cooldown",
+            details={"reason": reason, "attempt_id": attempt_id, "cooldown_minutes": cooldown_minutes},
+            save=False,
+        )
+        logger.warning(f"Marked profile {normalized} as suspected restriction for {cooldown_minutes}m (reason: {reason})")
+        self._save_state()
+
     def unblock_profile(
         self,
         profile_name: str,
@@ -509,8 +579,13 @@ class ProfileManager:
 
         profile = self._ensure_profile(normalized)
         profile["status"] = "active"
+        profile["cooldown_expires_at"] = None
+        profile["cooldown_reason"] = None
         profile["restriction_expires_at"] = None
         profile["restriction_reason"] = None
+        profile["suspected_restriction_attempt_id"] = None
+        profile["suspected_restriction_reason"] = None
+        profile["suspected_restriction_at"] = None
         profile["restriction_count"] = 0  # Reset escalation on manual unblock
         # Reset appeal state
         profile["appeal_status"] = "none"
@@ -616,6 +691,25 @@ class ProfileManager:
                             changed = True
                     except Exception as e:
                         logger.error(f"Error parsing expiry date for {profile_name}: {e}")
+            elif profile.get("status") == "cooldown":
+                cooldown_expires_at = profile.get("cooldown_expires_at")
+                if cooldown_expires_at:
+                    try:
+                        expires_dt = datetime.fromisoformat(cooldown_expires_at.replace("Z", ""))
+                        if now > expires_dt:
+                            profile["status"] = "active"
+                            profile["cooldown_expires_at"] = None
+                            profile["cooldown_reason"] = None
+                            self.record_recovery_event(
+                                profile_name,
+                                event="restriction_suspected_expired",
+                                state="resolved",
+                                details={"source": "cooldown_expiry_check"},
+                                save=False,
+                            )
+                            changed = True
+                    except Exception as e:
+                        logger.error(f"Error parsing cooldown expiry date for {profile_name}: {e}")
 
         if changed:
             self._save_state()
@@ -688,11 +782,16 @@ class ProfileManager:
         return {
             "profile_name": normalized,
             "status": profile.get("status", "active"),
+            "cooldown_expires_at": profile.get("cooldown_expires_at"),
+            "cooldown_reason": profile.get("cooldown_reason"),
             "last_used_at": profile.get("last_used_at"),
             "usage_count": profile.get("usage_count", 0),
             "restriction_count": profile.get("restriction_count", 0),
             "restriction_expires_at": profile.get("restriction_expires_at"),
             "restriction_reason": profile.get("restriction_reason"),
+            "suspected_restriction_attempt_id": profile.get("suspected_restriction_attempt_id"),
+            "suspected_restriction_reason": profile.get("suspected_restriction_reason"),
+            "suspected_restriction_at": profile.get("suspected_restriction_at"),
             "total_comments": total_comments,
             "success_rate": (total_success / total_comments * 100) if total_comments > 0 else 0,
             "daily_stats": daily_stats,

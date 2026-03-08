@@ -18,6 +18,7 @@ from google.genai import types
 
 # Import the persistent observations store
 from gemini_observations_store import get_observations_store
+from forensics import queue_current_event
 
 logger = logging.getLogger("GeminiVision")
 
@@ -124,6 +125,20 @@ def log_gemini_observation(
         parsed_result=parsed_result,
         profile_name=profile_name,
         campaign_id=campaign_id
+    )
+    queue_current_event(
+        "gemini_call",
+        {
+            "screenshot_name": screenshot_name,
+            "operation_type": operation_type,
+            "prompt_type": prompt_type,
+            "full_response": full_response,
+            "parsed_result": parsed_result,
+            "profile_name": profile_name,
+            "campaign_id": campaign_id,
+        },
+        phase="model",
+        source="gemini_vision",
     )
 
 

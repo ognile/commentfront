@@ -17,6 +17,13 @@ from config import REDDIT_MOBILE_USER_AGENT
 from reddit_login_bot import _dismiss_cookie_banner, _goto_with_retry
 from reddit_selectors import COMMENT, HOME, POST
 from reddit_session import RedditSession
+from forensics import (
+    build_generic_verdict,
+    get_current_forensic_recorder,
+    reset_current_forensic_recorder,
+    set_current_forensic_recorder,
+    start_forensic_attempt,
+)
 
 logger = logging.getLogger("RedditBot")
 
@@ -63,6 +70,9 @@ async def _session_page(session: RedditSession, proxy_url: Optional[str] = None)
                 user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
                 locale=fingerprint["locale"],
             )
+            recorder = get_current_forensic_recorder()
+            if recorder:
+                await recorder.attach_page(page, context)
             yield browser, context, page
         finally:
             await browser.close()
@@ -357,37 +367,71 @@ async def run_reddit_action(
     body: Optional[str] = None,
     subreddit: Optional[str] = None,
     image_path: Optional[str] = None,
+    forensic_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized = str(action or "").strip().lower()
+    recorder = await start_forensic_attempt(
+        platform="reddit",
+        engine=(forensic_context or {}).get("engine", f"reddit_{normalized}"),
+        profile_name=session.profile_name,
+        campaign_id=(forensic_context or {}).get("campaign_id"),
+        job_id=(forensic_context or {}).get("job_id"),
+        session_id=session.profile_name,
+        parent_attempt_id=(forensic_context or {}).get("parent_attempt_id"),
+        run_id=(forensic_context or {}).get("run_id"),
+        trace_id=(forensic_context or {}).get("trace_id"),
+        metadata={
+            "action": normalized,
+            "url": url,
+            "subreddit": subreddit,
+            **((forensic_context or {}).get("metadata") or {}),
+        },
+    )
+    recorder_token = set_current_forensic_recorder(recorder)
+    result: Dict[str, Any]
     if normalized == "browse_feed":
-        return await browse_feed(session, proxy_url=proxy_url)
-    if normalized == "upvote":
-        return await upvote_random_post(session, proxy_url=proxy_url)
-    if normalized == "open_target":
+        result = await browse_feed(session, proxy_url=proxy_url)
+    elif normalized == "upvote":
+        result = await upvote_random_post(session, proxy_url=proxy_url)
+    elif normalized == "open_target":
         if not url:
-            return _result(success=False, action=normalized, profile_name=session.profile_name, error="url is required")
-        return await open_post_target(session, url, proxy_url=proxy_url)
-    if normalized == "create_post":
+            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="url is required")
+        else:
+            result = await open_post_target(session, url, proxy_url=proxy_url)
+    elif normalized == "create_post":
         if not title:
-            return _result(success=False, action=normalized, profile_name=session.profile_name, error="title is required")
-        return await create_post(
-            session,
-            title=title,
-            body=body,
-            subreddit=subreddit,
-            image_path=image_path,
-            proxy_url=proxy_url,
-        )
-    if normalized == "comment_post":
+            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="title is required")
+        else:
+            result = await create_post(
+                session,
+                title=title,
+                body=body,
+                subreddit=subreddit,
+                image_path=image_path,
+                proxy_url=proxy_url,
+            )
+    elif normalized == "comment_post":
         if not url or not text:
-            return _result(success=False, action=normalized, profile_name=session.profile_name, error="url and text are required")
-        return await comment_on_post(session, url=url, text=text, proxy_url=proxy_url)
-    if normalized == "reply_comment":
+            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="url and text are required")
+        else:
+            result = await comment_on_post(session, url=url, text=text, proxy_url=proxy_url)
+    elif normalized == "reply_comment":
         if not url or not text:
-            return _result(success=False, action=normalized, profile_name=session.profile_name, error="url and text are required")
-        return await reply_to_comment(session, url=url, text=text, proxy_url=proxy_url)
-    if normalized == "upload_media":
+            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="url and text are required")
+        else:
+            result = await reply_to_comment(session, url=url, text=text, proxy_url=proxy_url)
+    elif normalized == "upload_media":
         if not image_path:
-            return _result(success=False, action=normalized, profile_name=session.profile_name, error="image_path is required")
-        return await upload_media_only(session, image_path=image_path, proxy_url=proxy_url)
-    return _result(success=False, action=normalized, profile_name=session.profile_name, error=f"Unsupported Reddit action: {action}")
+            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="image_path is required")
+        else:
+            result = await upload_media_only(session, image_path=image_path, proxy_url=proxy_url)
+    else:
+        result = _result(success=False, action=normalized, profile_name=session.profile_name, error=f"Unsupported Reddit action: {action}")
+    result["attempt_id"] = recorder.attempt_id
+    result["trace_id"] = recorder.trace_id
+    verdict = build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")
+    result["final_verdict"] = verdict.final_verdict
+    result["evidence_summary"] = verdict.summary
+    await recorder.finalize(verdict, metadata={"action": normalized})
+    reset_current_forensic_recorder(recorder_token)
+    return result
