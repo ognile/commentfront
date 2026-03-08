@@ -286,31 +286,75 @@ async def _submit_login_with_response(page: Page, *, profile_name: str, timeout_
     return submit_clicked, response, body
 
 
-async def _retry_credential_entry(
+async def _restart_login_cycle(
     page: Page,
+    context,
     *,
     profile_name: str,
     login_identifier: str,
     password: str,
     strategy: Dict[str, Any],
-) -> None:
-    logger.info(f"[{profile_name}] retrying credential entry in-place after interaction failure")
-    await _dismiss_cookie_banner(page)
-    await _set_first(
-        page,
+    audit: Optional[RedditLoginAudit],
+    retry_index: int,
+) -> Page:
+    logger.info(f"[{profile_name}] restarting reddit login on a fresh page for credential retry {retry_index}")
+    fresh_page = await context.new_page()
+    try:
+        user_agent = await page.evaluate("navigator.userAgent")
+    except Exception:
+        user_agent = None
+    await apply_page_identity_overrides(context, fresh_page, user_agent=user_agent, locale="en-US")
+    await _goto_with_retry(
+        fresh_page,
+        "https://www.reddit.com/login",
+        profile_name=profile_name,
+    )
+    await fresh_page.wait_for_timeout(2000)
+    await _dismiss_cookie_banner(fresh_page)
+    form_ready = await _wait_for_login_surface(
+        fresh_page,
+        profile_name=profile_name,
+        timeout_ms=int(strategy.get("form_wait_timeout_ms") or 12000),
+        reload_attempts=int(strategy.get("form_reload_attempts") or 0),
+    )
+    await _capture_checkpoint(audit, fresh_page, context, f"login_page_reload_{retry_index}")
+    if not form_ready:
+        raise RuntimeError("Reddit login form inputs not found on fresh retry page")
+
+    pre_interaction_wait_ms = max(0, int(strategy.get("pre_interaction_wait_ms") or 0))
+    between_field_wait_ms = max(0, int(strategy.get("between_field_wait_ms") or 0))
+    if pre_interaction_wait_ms:
+        await fresh_page.wait_for_timeout(pre_interaction_wait_ms)
+
+    user_filled = await _set_first(
+        fresh_page,
         LOGIN["username_input"],
         str(login_identifier),
         humanize=bool(strategy.get("humanize_input", True)),
     )
-    between_field_wait_ms = max(0, int(strategy.get("between_field_wait_ms") or 0))
-    if between_field_wait_ms:
-        await page.wait_for_timeout(between_field_wait_ms)
-    await _set_first(
-        page,
+    if user_filled and between_field_wait_ms:
+        await fresh_page.wait_for_timeout(between_field_wait_ms)
+    pass_filled = await _set_first(
+        fresh_page,
         LOGIN["password_input"],
         str(password),
         humanize=bool(strategy.get("humanize_input", True)),
     )
+    logger.info(
+        f"[{profile_name}] fresh retry login fill: user={user_filled} pass={pass_filled} retry={retry_index}"
+    )
+    if not user_filled or not pass_filled:
+        await dump_interactive_elements(fresh_page, f"REDDIT LOGIN FORM RETRY {profile_name}")
+        await save_debug_screenshot(fresh_page, f"reddit_login_form_retry_missing_{profile_name}")
+        await _capture_checkpoint(audit, fresh_page, context, f"login_form_retry_missing_{retry_index}")
+        raise RuntimeError("Reddit login form inputs not found on fresh retry page")
+
+    await _capture_checkpoint(audit, fresh_page, context, f"credentials_refilled_retry_{retry_index}")
+    try:
+        await page.close()
+    except Exception:
+        pass
+    return fresh_page
 
 
 async def _submit_otp_with_response(page: Page, *, profile_name: str, timeout_ms: int = 20000):
@@ -666,12 +710,15 @@ async def _run_reddit_login_flow(
 
         if credential_retry_wait_ms:
             await page.wait_for_timeout(credential_retry_wait_ms)
-        await _retry_credential_entry(
+        page = await _restart_login_cycle(
             page,
+            context,
             profile_name=profile_name,
             login_identifier=str(login_identifier),
             password=str(password),
             strategy=strategy,
+            audit=audit,
+            retry_index=credential_attempt + 1,
         )
 
     if _body_has_login_banner_error(login_body):

@@ -325,9 +325,26 @@ class RedditLoginLearningStore:
         recent_errors = " ".join(str(item.get("error") or "") for item in history[-3:]).lower()
         historical_errors = " ".join(str(item.get("error") or "") for item in history[-10:]).lower()
         historical_strategy_ids = [str(item.get("strategy_id") or "").strip() for item in history[-10:]]
+        otp_stage_strategy_ids = []
+        for item in reversed(history[-20:]):
+            error_text = str(item.get("error") or "").lower()
+            strategy_id = str(item.get("strategy_id") or "").strip()
+            if not strategy_id:
+                continue
+            if "otp submit rejected" not in error_text:
+                continue
+            if strategy_id in otp_stage_strategy_ids:
+                continue
+            otp_stage_strategy_ids.append(strategy_id)
 
         ordered: List[str] = []
-        if "otp_never_shown" in recent_failure_buckets or "err_empty_response" in recent_errors or "inputs not found" in recent_errors:
+        if otp_stage_strategy_ids:
+            ordered.extend(otp_stage_strategy_ids)
+            if any(strategy_id.startswith("email_identifier") for strategy_id in otp_stage_strategy_ids):
+                ordered.extend(["email_identifier_fast_otp", "email_identifier_dwell", "otp_retry_fresh_cycle"])
+            else:
+                ordered.extend(["otp_retry_fresh_cycle", "settle_home", "baseline_humanized", "acquire_form_reload"])
+        elif "otp_never_shown" in recent_failure_buckets or "err_empty_response" in recent_errors or "inputs not found" in recent_errors:
             ordered.extend(["acquire_form_reload", "email_identifier_dwell", "settle_home", "baseline_humanized"])
         elif "otp submit rejected" in recent_errors or "otp submit rejected" in historical_errors:
             ordered.extend(["email_identifier_fast_otp", "otp_retry_fresh_cycle", "settle_home", "email_identifier_dwell", "baseline_humanized", "acquire_form_reload"])
@@ -336,9 +353,9 @@ class RedditLoginLearningStore:
         else:
             ordered.extend(["baseline_humanized", "settle_home", "email_identifier_dwell", "email_identifier_fast_otp", "otp_retry_fresh_cycle", "acquire_form_reload"])
 
-        if "email_identifier_dwell" in historical_strategy_ids:
+        if "email_identifier_dwell" in historical_strategy_ids and not otp_stage_strategy_ids:
             ordered.insert(0, "email_identifier_dwell")
-        if "otp submit rejected" in historical_errors:
+        if "otp submit rejected" in historical_errors and not otp_stage_strategy_ids:
             ordered.insert(0, "email_identifier_fast_otp")
 
         deduped: List[Dict[str, Any]] = []
