@@ -4708,6 +4708,85 @@ async def _retry_single_campaign(
         job_succeeded = False
         job_tried_profiles = set(succeeded_profiles)
         consecutive_post_not_visible = 0
+        job_history = [
+            result
+            for result in campaign.get("results", [])
+            if result.get("job_index") == job_index
+        ]
+        last_failure = next((result for result in reversed(job_history) if not result.get("success")), None)
+
+        if queue_processor._failure_requires_reconciliation(last_failure):
+            reconciliation_profile = (
+                (last_failure or {}).get("profile_name")
+                or job.get("original_profile")
+                or ""
+            )
+            if reconciliation_profile:
+                reserved_reconciliation = await profile_manager.reserve_profile(reconciliation_profile)
+                if reserved_reconciliation:
+                    try:
+                        session = FacebookSession(reconciliation_profile)
+                        if session.load():
+                            reconciliation = await reconcile_comment_submission(
+                                session=session,
+                                url=url,
+                                comment_text=comment,
+                                proxy=get_system_proxy(),
+                            )
+                            if reconciliation.get("found") is True:
+                                queue_manager.add_retry_result(
+                                    campaign_id,
+                                    {
+                                        "profile_name": reconciliation_profile,
+                                        "comment": comment,
+                                        "success": True,
+                                        "verified": True,
+                                        "method": "reconciled_existing_comment",
+                                        "error": None,
+                                        "job_index": job_index,
+                                        "is_retry": True,
+                                        "original_profile": job.get("original_profile"),
+                                        "retried_at": datetime.utcnow().isoformat(),
+                                        "reconciled_without_repost": True,
+                                        "reconciliation_confidence": reconciliation.get("confidence", 0.0),
+                                        "reconciliation_reason": reconciliation.get("reason"),
+                                    },
+                                )
+                                campaign_jobs_succeeded += 1
+                                succeeded_profiles.add(reconciliation_profile)
+                                logger.info(
+                                    f"Retry-all reconciliation recovered campaign {campaign_id[:8]} "
+                                    f"job {job_index} without repost"
+                                )
+                                continue
+                            if reconciliation.get("found") is None:
+                                queue_manager.add_retry_result(
+                                    campaign_id,
+                                    {
+                                        "profile_name": reconciliation_profile,
+                                        "comment": comment,
+                                        "success": False,
+                                        "verified": False,
+                                        "method": "verification_inconclusive",
+                                        "error": reconciliation.get(
+                                            "reason",
+                                            "Reconciliation inconclusive after prior submit evidence",
+                                        ),
+                                        "job_index": job_index,
+                                        "is_retry": True,
+                                        "original_profile": job.get("original_profile"),
+                                        "retried_at": datetime.utcnow().isoformat(),
+                                        "reconciliation_inconclusive": True,
+                                    },
+                                )
+                                campaign_jobs_exhausted += 1
+                                logger.warning(
+                                    f"Retry-all reconciliation inconclusive for campaign {campaign_id[:8]} "
+                                    f"job {job_index}; stopping without repost"
+                                )
+                                continue
+                    finally:
+                        await profile_manager.release_profile(reconciliation_profile)
 
         while not job_succeeded:
             eligible = profile_manager.get_eligible_profiles(

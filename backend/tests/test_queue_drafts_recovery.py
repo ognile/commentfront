@@ -678,3 +678,94 @@ def test_retry_all_still_exhausts_early_when_post_is_dead(monkeypatch):
     failed_results = [r for r in updated["results"] if not r.get("success")]
     assert failed_results[-2]["error"] == "Early termination: 4 consecutive post_not_visible failures"
     assert failed_results[-1]["error"] == "Post URL appears dead (all profiles failed on prior job)"
+
+
+def test_retry_all_reconciles_existing_comment_before_repost(monkeypatch):
+    campaign_id = "campaign_bulk_retry_reconcile"
+    main.queue_manager.history = [
+        {
+            "id": campaign_id,
+            "status": "completed",
+            "url": VALID_URL,
+            "filter_tags": [],
+            "enable_warmup": False,
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [
+                {
+                    "job_index": 0,
+                    "text": "same text",
+                    "comment": "same text",
+                    "success": False,
+                    "method": "verification_inconclusive",
+                    "error": "Step 5 INCONCLUSIVE - visual confirmation failed",
+                    "profile_name": "profile_old",
+                }
+            ],
+        }
+    ]
+
+    class FakeFacebookSession:
+        def __init__(self, profile_name: str):
+            self.profile_name = profile_name
+
+        def load(self) -> bool:
+            return True
+
+        def has_valid_cookies(self) -> bool:
+            return True
+
+    class FakeProfileManager:
+        def __init__(self):
+            self.reserved = set()
+
+        def get_eligible_profiles(self, **_kwargs):
+            raise AssertionError("repost selection should not happen when reconciliation succeeds")
+
+        async def reserve_profile(self, profile_name: str) -> bool:
+            if profile_name in self.reserved:
+                return False
+            self.reserved.add(profile_name)
+            return True
+
+        async def release_profile(self, profile_name: str):
+            self.reserved.discard(profile_name)
+
+        def mark_profile_used(self, **_kwargs):
+            raise AssertionError("no repost should occur")
+
+        def mark_profile_restricted(self, **_kwargs):
+            raise AssertionError("no restriction update expected")
+
+    async def fake_reconcile_comment_submission(**_kwargs):
+        return {"found": True, "confidence": 0.98, "reason": "comment found from local dom evidence"}
+
+    async def fail_if_post_attempted(**_kwargs):
+        raise AssertionError("bulk retry should not repost after successful reconciliation")
+
+    monkeypatch.setattr(main, "FacebookSession", FakeFacebookSession)
+    monkeypatch.setattr(main, "reconcile_comment_submission", fake_reconcile_comment_submission)
+    monkeypatch.setattr(main, "post_comment_verified", fail_if_post_attempted)
+
+    result = asyncio.run(
+        main._retry_single_campaign(
+            campaign=main.queue_manager.get_campaign_from_history(campaign_id),
+            campaign_index=0,
+            total_campaigns=1,
+            profile_manager=FakeProfileManager(),
+            browser_semaphore=asyncio.Semaphore(1),
+        )
+    )
+
+    assert result["jobs_succeeded"] == 1
+    assert result["jobs_exhausted"] == 0
+
+    updated = main.queue_manager.get_campaign_from_history(campaign_id)
+    assert updated is not None
+    assert updated["success_count"] == 1
+    assert any(
+        r.get("method") == "reconciled_existing_comment" and r.get("success")
+        for r in updated["results"]
+    )
