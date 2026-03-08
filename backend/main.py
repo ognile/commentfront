@@ -4707,8 +4707,7 @@ async def _retry_single_campaign(
         comment = job["comment"]
         job_succeeded = False
         job_tried_profiles = set(succeeded_profiles)
-        consecutive_same_error = 0
-        last_error_type = None
+        consecutive_post_not_visible = 0
 
         while not job_succeeded:
             eligible = profile_manager.get_eligible_profiles(
@@ -4796,38 +4795,36 @@ async def _retry_single_campaign(
                     job_succeeded = True
                     campaign_jobs_succeeded += 1
                     succeeded_profiles.add(profile_name)
-                    consecutive_same_error = 0
+                    consecutive_post_not_visible = 0
                 else:
-                    # Track consecutive failures with same error pattern
-                    error_key = failure_type or "unknown"
-                    if "not visible" in str(post_result.get("error", "")).lower():
-                        error_key = "post_not_visible"
-                    if error_key == last_error_type:
-                        consecutive_same_error += 1
+                    error_text = str(post_result.get("error", "")).lower()
+                    if "not visible" in error_text:
+                        consecutive_post_not_visible += 1
                     else:
-                        consecutive_same_error = 1
-                        last_error_type = error_key
+                        consecutive_post_not_visible = 0
 
-                    # Early termination: 4 consecutive same errors = post/URL is broken
-                    if consecutive_same_error >= 4:
+                    # Only dead-post evidence can short-circuit a campaign. Infrastructure
+                    # noise must keep rotating through profiles until the pool is actually exhausted.
+                    if consecutive_post_not_visible >= 4:
                         logger.warning(
                             f"Retry-all: {campaign_id[:8]} job {job_index}: "
-                            f"{consecutive_same_error} consecutive '{error_key}' failures, exhausting job early"
+                            f"{consecutive_post_not_visible} consecutive post_not_visible failures, exhausting job early"
                         )
                         exhaust_result = {
                             "profile_name": None, "comment": comment, "success": False,
                             "verified": False, "method": "exhausted",
-                            "error": f"Early termination: {consecutive_same_error} consecutive {error_key} failures",
+                            "error": (
+                                f"Early termination: {consecutive_post_not_visible} "
+                                "consecutive post_not_visible failures"
+                            ),
                             "job_index": job_index, "is_retry": True,
                             "original_profile": job.get("original_profile"),
                             "retried_at": datetime.utcnow().isoformat()
                         }
                         queue_manager.add_retry_result(campaign_id, exhaust_result)
                         campaign_jobs_exhausted += 1
-                        # If it's a URL-level issue, mark URL as dead to skip remaining jobs
-                        if error_key == "post_not_visible":
-                            url_is_dead = True
-                            logger.warning(f"Retry-all: {campaign_id[:8]} post URL appears dead, skipping remaining jobs")
+                        url_is_dead = True
+                        logger.warning(f"Retry-all: {campaign_id[:8]} post URL appears dead, skipping remaining jobs")
                         break
 
             except Exception as e:
