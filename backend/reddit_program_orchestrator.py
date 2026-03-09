@@ -74,8 +74,13 @@ def _target_ref(item: Dict[str, Any]) -> Optional[str]:
 
 
 def _failure_classification(result: Dict[str, Any]) -> str:
+    failure_class = str(result.get("failure_class") or "").strip().lower()
+    if failure_class == "community_restricted":
+        return "community_restricted"
     if str(result.get("error") or "").lower().find("session not found") >= 0:
         return "session_invalid"
+    if "banned from this community" in str(result.get("error") or "").lower():
+        return "community_restricted"
     verdict = str(result.get("final_verdict") or "")
     if verdict == "infra_failure" or is_infra_error_text(result.get("error")):
         return "infrastructure"
@@ -373,7 +378,7 @@ class RedditProgramOrchestrator:
         item["result"] = self._compact_result(result)
         item["error"] = error
 
-        if classification in {"session_invalid", "quota_exhausted"}:
+        if classification in {"session_invalid", "quota_exhausted", "community_restricted"}:
             item["status"] = "blocked"
             return
 

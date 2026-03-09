@@ -204,3 +204,41 @@ def test_scheduler_start_recovers_interrupted_programs(tmp_path):
     recovered = asyncio.run(run())
     assert recovered["status"] == "active"
     assert recovered["compiled"]["work_items"][0]["status"] == "pending"
+
+
+def test_orchestrator_blocks_community_restricted_items(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            engagement_quotas={
+                "upvotes_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            }
+        )
+    )
+
+    async def fake_runner(session, *, action, url=None, **_kwargs):
+        return {
+            "success": False,
+            "action": action,
+            "error": "reddit community ban: can't comment on posts",
+            "failure_class": "community_restricted",
+            "attempt_id": "attempt-ban",
+            "trace_id": "trace-ban",
+            "final_verdict": "failed_confirmed",
+            "evidence_summary": "community ban detected",
+            "current_url": url,
+        }
+
+    monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
+    orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
+
+    asyncio.run(orchestrator.process_program(program["id"]))
+    updated = store.get_program(program["id"])
+    item = updated["compiled"]["work_items"][0]
+
+    assert item["status"] == "blocked"
+    assert item["error"] == "reddit community ban: can't comment on posts"

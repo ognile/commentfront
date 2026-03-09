@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -13,12 +14,18 @@ class _FakePage:
         self.evaluate_result = False
         self.keyboard = _FakeKeyboard()
         self.mouse = _FakeMouse()
+        self.body_text = ""
 
     async def wait_for_timeout(self, timeout_ms):
         self.waits.append(timeout_ms)
 
     async def evaluate(self, script, *args):
         return self.evaluate_result
+
+    def locator(self, selector):
+        if selector == "body":
+            return _FakeBodyLocator(self.body_text)
+        raise AssertionError(f"unexpected locator: {selector}")
 
 
 class _FakeKeyboard:
@@ -35,6 +42,14 @@ class _FakeMouse:
 
     async def click(self, x, y):
         self.clicks.append((x, y))
+
+
+class _FakeBodyLocator:
+    def __init__(self, text):
+        self._text = text
+
+    async def inner_text(self):
+        return self._text
 
 
 class _FakeViewportLocator:
@@ -209,6 +224,54 @@ def test_open_comment_composer_uses_visible_text_region_before_layout(monkeypatc
         ("text_region", "Endometrial biopsy"),
         ("thread", "Endometrial biopsy"),
     ]
+
+
+def test_detect_community_comment_ban_returns_reason():
+    page = _FakePage()
+    page.body_text = "you’re currently banned from this community and can’t comment on posts."
+
+    reason = asyncio.run(reddit_bot._detect_community_comment_ban(page))
+
+    assert reason == "reddit community ban: can't comment on posts"
+
+
+def test_comment_on_post_returns_community_restricted(monkeypatch):
+    page = _FakePage()
+    page.body_text = "you’re currently banned from this community and can’t comment on posts."
+    page.url = "https://www.reddit.com/r/WomensHealth/comments/example/post/"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, _url):
+        return None
+
+    async def fake_dump(_page, _context):
+        return None
+
+    async def fake_title(_page):
+        return "Endometrial biopsy"
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
+    monkeypatch.setattr(reddit_bot, "_current_thread_title", fake_title)
+    monkeypatch.setattr(reddit_bot, "_capture_reddit_failure_state", lambda *_args, **_kwargs: asyncio.sleep(0))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.comment_on_post(
+            session,
+            url="https://www.reddit.com/r/WomensHealth/comments/example/post/",
+            text="supportive text",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["failure_class"] == "community_restricted"
+    assert result["throttled"] is True
+    assert "community ban" in result["error"]
 
 
 def test_click_composer_text_region_uses_evaluate_candidate():

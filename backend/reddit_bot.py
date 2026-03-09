@@ -32,6 +32,14 @@ logger = logging.getLogger("RedditBot")
 REDDIT_HTTP_HEADERS = {"User-Agent": "commentfront-reddit-bot/1.0"}
 
 
+class RedditCommunityBanError(RuntimeError):
+    """Raised when Reddit shows a subreddit-level comment ban/banner."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 def _result(
     *,
     success: bool,
@@ -52,6 +60,31 @@ def _result(
 
 def _normalize_text(value: Optional[str]) -> str:
     return " ".join(str(value or "").strip().lower().split())
+
+
+async def _detect_community_comment_ban(page) -> Optional[str]:
+    try:
+        body_text = _normalize_text(await page.locator("body").inner_text())
+    except Exception:
+        return None
+    patterns = [
+        ("you're currently banned from this community and can't comment on posts", "reddit community ban: can't comment on posts"),
+        ("you are currently banned from this community and can't comment on posts", "reddit community ban: can't comment on posts"),
+        ("you’re currently banned from this community and can’t comment on posts", "reddit community ban: can't comment on posts"),
+        ("you are currently banned from this community and can’t comment on posts", "reddit community ban: can't comment on posts"),
+    ]
+    for needle, reason in patterns:
+        if needle in body_text:
+            return reason
+    return None
+
+
+async def _raise_if_community_comment_banned(page, *, capture_context: str) -> None:
+    reason = await _detect_community_comment_ban(page)
+    if not reason:
+        return
+    await _capture_reddit_failure_state(page, capture_context)
+    raise RedditCommunityBanError(reason)
 
 
 def _extract_reddit_comment_id(target_comment_url: Optional[str]) -> Optional[str]:
@@ -1941,8 +1974,10 @@ async def comment_on_post(
             await _goto(page, url)
             await dump_interactive_elements(page, "REDDIT COMMENT ON POST")
             expected_title = await _current_thread_title(page)
+            await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")
 
             if not await _fill_comment_input(page, text, expected_title=expected_title):
+                await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")
                 await _capture_reddit_failure_state(page, "REDDIT COMMENT COMPOSER MISSING")
                 raise RuntimeError("Reddit comment composer not found")
 
@@ -1960,6 +1995,17 @@ async def comment_on_post(
                 screenshot=screenshot,
                 current_url=page.url,
                 error=None if success else "Reddit comment verification failed",
+            )
+        except RedditCommunityBanError as exc:
+            return _result(
+                success=False,
+                action="comment_post",
+                profile_name=session.profile_name,
+                error=str(exc),
+                failure_class="community_restricted",
+                throttled=True,
+                throttle_reason=str(exc),
+                current_url=page.url,
             )
         except Exception as exc:
             return _result(success=False, action="comment_post", profile_name=session.profile_name, error=str(exc))
@@ -1981,6 +2027,7 @@ async def reply_to_comment(
             await _goto(page, target_url)
             await dump_interactive_elements(page, "REDDIT REPLY TO COMMENT")
             expected_title = await _current_thread_title(page)
+            await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
             row = await _comment_action_row(page, author=author, expected_title=expected_title)
 
             clicked_reply = await _click_named_control(
@@ -1995,6 +2042,7 @@ async def reply_to_comment(
             if not clicked_reply and row:
                 clicked_reply = await _click_reply_row_button(page, row=row)
             if not clicked_reply:
+                await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
                 await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
                 raise RuntimeError("Reddit Reply button not found")
             await page.wait_for_timeout(1000)
@@ -2032,6 +2080,19 @@ async def reply_to_comment(
                 screenshot=screenshot,
                 current_url=page.url,
                 error=None if success else "Reddit reply verification failed",
+            )
+        except RedditCommunityBanError as exc:
+            return _result(
+                success=False,
+                action="reply_comment",
+                profile_name=session.profile_name,
+                error=str(exc),
+                failure_class="community_restricted",
+                throttled=True,
+                throttle_reason=str(exc),
+                current_url=page.url,
+                target_url=target_url,
+                target_comment_url=target_comment_url,
             )
         except Exception as exc:
             return _result(success=False, action="reply_comment", profile_name=session.profile_name, error=str(exc))
