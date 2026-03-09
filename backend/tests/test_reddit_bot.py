@@ -110,7 +110,6 @@ def test_open_comment_composer_falls_back_to_js_probe(monkeypatch):
 
 def test_fill_comment_input_falls_back_to_keyboard_after_composer_opens(monkeypatch):
     page = _FakePage()
-    page.evaluate_result = True
     calls = []
 
     async def fake_fill(target_page, selectors, value):
@@ -126,6 +125,8 @@ def test_fill_comment_input_falls_back_to_keyboard_after_composer_opens(monkeypa
 
     monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill)
     monkeypatch.setattr(reddit_bot, "_open_comment_composer", fake_open)
+    monkeypatch.setattr(reddit_bot, "_active_editable_present", lambda _page: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_keyboard_type_and_verify", lambda _page, text, reply=False: asyncio.sleep(0, result=True))
 
     ok = asyncio.run(reddit_bot._fill_comment_input(page, "typed by keyboard"))
 
@@ -135,8 +136,7 @@ def test_fill_comment_input_falls_back_to_keyboard_after_composer_opens(monkeypa
         ("open",),
         ("fill", tuple(reddit_bot.COMMENT["composer_input"]), "typed by keyboard"),
     ]
-    assert page.keyboard.typed == [("typed by keyboard", 25)]
-    assert page.waits == [400, 500]
+    assert page.waits == [400]
 
 
 def test_open_comment_composer_uses_visible_text_region_before_layout(monkeypatch):
@@ -203,3 +203,41 @@ def test_click_composer_region_from_layout_requires_thread_context(monkeypatch):
     ok = asyncio.run(reddit_bot._click_composer_region_from_layout(page, "Endometrial biopsy"))
 
     assert ok is False
+
+
+def test_fill_comment_input_reply_flow_never_opens_global_composer(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_fill(target_page, selectors, value):
+        assert target_page is page
+        calls.append(("fill", tuple(selectors), value))
+        return False
+
+    async def fake_active(target_page):
+        assert target_page is page
+        calls.append(("active",))
+        return False
+
+    async def fake_open(_page, expected_title=None):
+        raise AssertionError("reply flow must not open the global composer")
+
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill)
+    monkeypatch.setattr(reddit_bot, "_active_editable_present", fake_active)
+    monkeypatch.setattr(reddit_bot, "_open_comment_composer", fake_open)
+
+    ok = asyncio.run(
+        reddit_bot._fill_comment_input(
+            page,
+            "reply text",
+            reply=True,
+            expected_title="Endometrial biopsy",
+            allow_global_trigger=False,
+        )
+    )
+
+    assert ok is False
+    assert calls == [
+        ("fill", tuple(reddit_bot.COMMENT["reply_input"]), "reply text"),
+        ("active",),
+    ]

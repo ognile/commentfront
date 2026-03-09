@@ -121,6 +121,12 @@ COMMENT = {
         'button:has-text("Reply")',
         'button[aria-label*="reply" i]',
     ],
+    "reply_submit_button": [
+        'button:has-text("Reply")',
+        'button[aria-label*="reply" i]',
+        'button:has-text("Comment")',
+        'button[aria-label*="comment" i]',
+    ],
     "reply_input": [
         'div[contenteditable="true"]',
         'div[contenteditable="plaintext-only"]',
@@ -129,5 +135,16 @@ COMMENT = {
         'textarea[aria-label*="reply" i]',
         'textarea[placeholder*="join the conversation" i]',
         'input[placeholder*="join the conversation" i]',
+    ],
+}
+
+SUBREDDIT = {
+    "join_button": [
+        'button:has-text("Join")',
+        'button[aria-label*="join" i]',
+    ],
+    "joined_button": [
+        'button:has-text("Joined")',
+        'button[aria-label*="joined" i]',
     ],
 }

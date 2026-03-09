@@ -1781,6 +1781,9 @@ class RedditActionRequest(BaseModel):
     action: Literal[
         "browse_feed",
         "upvote",
+        "upvote_post",
+        "upvote_comment",
+        "join_subreddit",
         "open_target",
         "create_post",
         "comment_post",
@@ -1788,6 +1791,7 @@ class RedditActionRequest(BaseModel):
         "upload_media",
     ]
     url: Optional[str] = None
+    target_comment_url: Optional[str] = None
     text: Optional[str] = None
     title: Optional[str] = None
     body: Optional[str] = None
@@ -1807,6 +1811,9 @@ class RedditMissionCreateRequest(BaseModel):
     action: Literal[
         "browse_feed",
         "upvote",
+        "upvote_post",
+        "upvote_comment",
+        "join_subreddit",
         "open_target",
         "create_post",
         "comment_post",
@@ -1814,6 +1821,7 @@ class RedditMissionCreateRequest(BaseModel):
         "upload_media",
     ]
     target_url: Optional[str] = None
+    target_comment_url: Optional[str] = None
     subreddit: Optional[str] = None
     brief: Optional[str] = None
     exact_text: Optional[str] = None
@@ -1832,6 +1840,7 @@ class RedditMissionUpdateRequest(BaseModel):
     body: Optional[str] = None
     image_id: Optional[str] = None
     target_url: Optional[str] = None
+    target_comment_url: Optional[str] = None
     subreddit: Optional[str] = None
     cadence: Optional[RedditMissionCadence] = None
 
@@ -5962,6 +5971,7 @@ async def _execute_reddit_action_payload(payload: Dict[str, Any], *, proxy_overr
         action=str(payload.get("action") or "").strip(),
         proxy_url=proxy_override,
         url=payload.get("url") or payload.get("target_url"),
+        target_comment_url=payload.get("target_comment_url"),
         text=payload.get("text") or payload.get("exact_text") or payload.get("brief"),
         title=payload.get("title"),
         body=payload.get("body") or payload.get("brief"),
@@ -6383,6 +6393,7 @@ def _mission_to_action_payload(mission: Dict[str, Any]) -> Dict[str, Any]:
         "profile_name": mission.get("profile_name"),
         "action": mission.get("action"),
         "target_url": mission.get("target_url"),
+        "target_comment_url": mission.get("target_comment_url"),
         "subreddit": mission.get("subreddit"),
         "brief": mission.get("brief"),
         "exact_text": mission.get("exact_text"),
