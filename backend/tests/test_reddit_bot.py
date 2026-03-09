@@ -15,6 +15,7 @@ class _FakePage:
         self.keyboard = _FakeKeyboard()
         self.mouse = _FakeMouse()
         self.body_text = ""
+        self.url = "https://www.reddit.com/"
 
     async def wait_for_timeout(self, timeout_ms):
         self.waits.append(timeout_ms)
@@ -286,6 +287,104 @@ def test_comment_on_post_returns_community_restricted(monkeypatch):
     assert result["failure_class"] == "community_restricted"
     assert result["throttled"] is True
     assert "community ban" in result["error"]
+
+
+def test_create_post_uses_semantic_title_fallback_when_selector_title_is_missing(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, url):
+        assert url == "https://www.reddit.com/r/WomensHealth/submit?type=TEXT"
+
+    async def fake_dump(_page, _context):
+        return None
+
+    async def fake_fill_first(_page, selectors, value):
+        if tuple(selectors) == tuple(reddit_bot.POST["title_input"]):
+            return False
+        if tuple(selectors) == tuple(reddit_bot.POST["body_input"]):
+            assert value == "body text"
+            return True
+        raise AssertionError(f"unexpected selectors: {selectors}")
+
+    async def fake_semantic_fill(_page, *, kind, value):
+        return kind == "title" and value == "hello title"
+
+    async def fake_click_first(_page, selectors, timeout_ms=4000):
+        assert tuple(selectors) == tuple(reddit_bot.POST["post_button"])
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill_first)
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", fake_semantic_fill)
+    monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="hello title",
+            body="body text",
+            subreddit="WomensHealth",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["current_url"] == "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
+
+
+def test_create_post_uses_semantic_body_fallback_when_body_selector_is_missing(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, _url):
+        return None
+
+    async def fake_dump(_page, _context):
+        return None
+
+    async def fake_fill_first(_page, selectors, value):
+        if tuple(selectors) == tuple(reddit_bot.POST["title_input"]):
+            return True
+        if tuple(selectors) == tuple(reddit_bot.POST["body_input"]):
+            assert value == "body text"
+            return False
+        raise AssertionError(f"unexpected selectors: {selectors}")
+
+    async def fake_semantic_fill(_page, *, kind, value):
+        return kind == "body" and value == "body text"
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill_first)
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", fake_semantic_fill)
+    monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="hello title",
+            body="body text",
+            subreddit="WomensHealth",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["current_url"] == "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
 
 
 def test_click_composer_text_region_uses_evaluate_candidate():

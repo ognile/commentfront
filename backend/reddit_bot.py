@@ -652,6 +652,132 @@ async def _active_editable_present(page) -> bool:
         return False
 
 
+async def _fill_post_field_by_semantics(page, *, kind: str, value: str) -> bool:
+    normalized_kind = _normalize_text(kind)
+    if normalized_kind not in {"title", "body"}:
+        return False
+    try:
+        result = await page.evaluate(
+            """({ kind, value }) => {
+                const normalize = (input) => String(input || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const roots = [];
+                const visitRoot = (root) => {
+                    if (!root || roots.includes(root)) return;
+                    roots.push(root);
+                    if (!root.querySelectorAll) return;
+                    for (const el of Array.from(root.querySelectorAll('*'))) {
+                        if (el.shadowRoot) visitRoot(el.shadowRoot);
+                    }
+                };
+                visitRoot(document);
+
+                const visible = (rect) =>
+                    rect &&
+                    rect.width >= 8 &&
+                    rect.height >= 8 &&
+                    rect.bottom >= 0 &&
+                    rect.right >= 0 &&
+                    rect.top <= (window.innerHeight || 873) &&
+                    rect.left <= (window.innerWidth || 393);
+                const tokens = {
+                    title: ['title', 'headline', 'subject'],
+                    body: ['post body', 'body', 'content', 'text field', 'rich text', 'what are your thoughts'],
+                };
+                const rejects = {
+                    title: ['body', 'content', 'comment', 'reply'],
+                    body: ['title', 'headline', 'subject'],
+                };
+                const candidates = [];
+                for (const root of roots) {
+                    const nodes = root.querySelectorAll
+                        ? Array.from(root.querySelectorAll('input, textarea, [role="textbox"], [contenteditable="true"], [contenteditable="plaintext-only"]'))
+                        : [];
+                    for (const node of nodes) {
+                        const rect = node.getBoundingClientRect();
+                        if (!visible(rect)) continue;
+                        if (node.disabled || node.readOnly) continue;
+                        const text = normalize(node.innerText || node.textContent || node.value);
+                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        const placeholder = normalize(node.getAttribute && node.getAttribute('placeholder'));
+                        const name = normalize(node.getAttribute && node.getAttribute('name'));
+                        const role = normalize(node.getAttribute && node.getAttribute('role'));
+                        const className = normalize(node.className);
+                        const id = normalize(node.id);
+                        const combined = [text, aria, placeholder, name, role, className, id].filter(Boolean).join(' | ');
+                        let score = 0;
+                        for (const token of tokens[kind] || []) {
+                            if (combined.includes(token)) score += token === kind ? 8 : 5;
+                        }
+                        for (const token of rejects[kind] || []) {
+                            if (combined.includes(token)) score -= 6;
+                        }
+                        if (node.isContentEditable) score += kind === 'body' ? 4 : 0;
+                        if (role === 'textbox') score += 1;
+                        if (node.tagName === 'TEXTAREA') score += 1;
+                        candidates.push({ node, rect, score, combined, tag: String(node.tagName || '').toLowerCase() });
+                    }
+                }
+                candidates.sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+                const target = candidates[0];
+                if (!target) return null;
+                const node = target.node;
+                node.scrollIntoView({ block: 'center', inline: 'nearest' });
+                if (node.focus) node.focus();
+                const assignNativeValue = (element, nextValue) => {
+                    if (element instanceof HTMLInputElement) {
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                        if (setter) setter.call(element, nextValue);
+                        else element.value = nextValue;
+                        return true;
+                    }
+                    if (element instanceof HTMLTextAreaElement) {
+                        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+                        if (setter) setter.call(element, nextValue);
+                        else element.value = nextValue;
+                        return true;
+                    }
+                    return false;
+                };
+                if (assignNativeValue(node, value)) {
+                    node.dispatchEvent(new Event('input', { bubbles: true }));
+                    node.dispatchEvent(new Event('change', { bubbles: true }));
+                } else if (node.isContentEditable) {
+                    node.textContent = value;
+                    node.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
+                    node.dispatchEvent(new Event('change', { bubbles: true }));
+                } else {
+                    return null;
+                }
+                return {
+                    kind,
+                    combined: target.combined,
+                    score: target.score,
+                    tag: target.tag,
+                };
+            }""",
+            {"kind": normalized_kind, "value": value},
+        )
+    except Exception:
+        return False
+    if not result:
+        return False
+    queue_current_event(
+        "type",
+        {
+            "method": "semantic_editable_fill",
+            "target": normalized_kind,
+            "matched": result.get("combined"),
+            "score": result.get("score"),
+            "tag": result.get("tag"),
+            "length": len(value or ""),
+        },
+        phase="typing",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(500)
+    return bool(await _typed_text_visible(page, value))
+
+
 @asynccontextmanager
 async def _session_page(session: RedditSession, proxy_url: Optional[str] = None):
     fingerprint = session.get_device_fingerprint()
@@ -1988,18 +2114,27 @@ async def create_post(
     target_url = "https://www.reddit.com/submit"
     if subreddit:
         normalized = subreddit.strip().lstrip("r/").strip("/")
-        target_url = f"https://www.reddit.com/r/{quote(normalized)}/submit"
+        target_url = f"https://www.reddit.com/r/{quote(normalized)}/submit?type=TEXT"
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             await _goto(page, target_url)
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.wait_for_timeout(400)
             await dump_interactive_elements(page, "REDDIT CREATE POST")
 
-            if not await _fill_first(page, POST["title_input"], title):
+            title_filled = await _fill_first(page, POST["title_input"], title)
+            if not title_filled:
+                title_filled = await _fill_post_field_by_semantics(page, kind="title", value=title)
+            if not title_filled:
+                await _capture_reddit_failure_state(page, "REDDIT POST TITLE MISSING")
                 raise RuntimeError("Reddit post title input not found")
 
             if body:
-                if not await _fill_first(page, POST["body_input"], body):
+                body_filled = await _fill_first(page, POST["body_input"], body)
+                if not body_filled:
+                    body_filled = await _fill_post_field_by_semantics(page, kind="body", value=body)
+                if not body_filled:
                     await page.keyboard.type(body, delay=15)
 
             if image_path:
