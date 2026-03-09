@@ -20,7 +20,7 @@ expected output: deterministic subreddit-header join path
 verification: production success with `final_verdict=success_confirmed`, screenshot showing `joined`, and matching forensic timeline
 
 2. prove `upvote_post`
-status: `in_progress`
+status: `pass`
 expected output: deterministic post action-row vote path on a fresh explicit target post so the proof is not polluted by already-upvoted toggle state
 verification: one production success with target-post screenshot evidence and matching forensic timeline
 
@@ -30,12 +30,12 @@ expected output: dedicated comment-row vote path anchored to the target comment 
 verification: one production success on a concrete comment permalink with screenshot evidence and matching forensic timeline
 
 4. prove `reply_comment`
-status: `in_progress`
+status: `pass`
 expected output: anchored reply path that opens the reply box on the intended comment row and fills the inline reply composer directly before submit
 verification: one production success with screenshot showing the reply under the target comment and matching forensic timeline
 
 5. lock shared learnings
-status: `in_progress`
+status: `pass`
 expected output: reusable helpers for anchor detection, pointer clicks, row-state verification, and failure-state capture
 verification: all four action proofs exist in production without manual rescue
 
