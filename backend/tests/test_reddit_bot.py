@@ -31,9 +31,13 @@ class _FakePage:
 class _FakeKeyboard:
     def __init__(self):
         self.typed = []
+        self.pressed = []
 
     async def type(self, text, delay=0):
         self.typed.append((text, delay))
+
+    async def press(self, key):
+        self.pressed.append(key)
 
 
 class _FakeMouse:
@@ -235,6 +239,16 @@ def test_detect_community_comment_ban_returns_reason():
     assert reason == "reddit community ban: can't comment on posts"
 
 
+def test_dismiss_reddit_open_app_sheet_clicks_close_button():
+    page = _FakePage()
+    page.evaluate_result = True
+
+    dismissed = asyncio.run(reddit_bot._dismiss_reddit_open_app_sheet(page))
+
+    assert dismissed is True
+    assert page.waits == [700]
+
+
 def test_comment_on_post_returns_community_restricted(monkeypatch):
     page = _FakePage()
     page.body_text = "you’re currently banned from this community and can’t comment on posts."
@@ -289,6 +303,43 @@ def test_click_composer_text_region_uses_evaluate_candidate():
     assert ok is True
     assert page.mouse.clicks == [(190, 402)]
     assert page.waits == [700]
+
+
+def test_ensure_thread_context_retries_navigation_when_title_missing(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_thread_context(_page, expected_title):
+        calls.append(("thread", expected_title))
+        return len([entry for entry in calls if entry[0] == "thread"]) >= 2
+
+    async def fake_click_visible(_page, **kwargs):
+        calls.append(("click_visible", kwargs["needle"]))
+        return False
+
+    async def fake_goto(_page, url):
+        calls.append(("goto", url))
+        return None
+
+    monkeypatch.setattr(reddit_bot, "_thread_context_present", fake_thread_context)
+    monkeypatch.setattr(reddit_bot, "_click_visible_text_region", fake_click_visible)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+
+    ok = asyncio.run(
+        reddit_bot._ensure_thread_context(
+            page,
+            url="https://www.reddit.com/r/PCOS/comments/1roqvnw/glp1_pcos/",
+            expected_title="GLP-1 & PCOS",
+        )
+    )
+
+    assert ok is True
+    assert calls == [
+        ("thread", "GLP-1 & PCOS"),
+        ("click_visible", "GLP-1 & PCOS"),
+        ("goto", "https://www.reddit.com/r/PCOS/comments/1roqvnw/glp1_pcos/"),
+        ("thread", "GLP-1 & PCOS"),
+    ]
 
 
 def test_click_composer_region_from_layout_requires_thread_context(monkeypatch):
@@ -599,6 +650,90 @@ def test_ensure_reply_inline_box_uses_dom_retry_when_first_click_does_not_open(m
         "present",
         ("dom", 152.0, 702.0, "reply_comment_dom_retry"),
         "present",
+    ]
+
+
+def test_reply_to_comment_retries_after_dismissing_open_app_sheet(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/PCOS/comments/1roqvnw/glp1_pcos/"
+    ensure_calls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_comment_context(_target_comment_url):
+        return {
+            "thread_url": "https://www.reddit.com/r/PCOS/comments/1roqvnw/glp1_pcos/",
+            "author": "Pigeon-From-Hell",
+            "title": "GLP-1 & PCOS",
+        }
+
+    async def fake_goto(_page, _url):
+        return None
+
+    async def fake_dump(_page, _label):
+        return None
+
+    async def fake_current_title(_page):
+        return "GLP-1 & PCOS"
+
+    async def fake_raise_if_banned(_page, capture_context=None):
+        return None
+
+    async def fake_comment_row(_page, author=None, expected_title=None):
+        return {"reply": {"x": 152, "y": 702}}
+
+    async def fake_click_named(_page, **kwargs):
+        return True
+
+    async def fake_dismiss_open_sheet(_page):
+        return True
+
+    async def fake_ensure_reply_box(_page, *, row, author, expected_title):
+        ensure_calls.append((author, expected_title))
+        return len(ensure_calls) >= 2
+
+    async def fake_fill_comment(*_args, **_kwargs):
+        return True
+
+    async def fake_click_submit(*_args, **_kwargs):
+        return True
+
+    async def fake_save(_page, _label):
+        return "/tmp/reply.png"
+
+    async def fake_verify(_page, _text):
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_load_target_comment_context", fake_comment_context)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
+    monkeypatch.setattr(reddit_bot, "_current_thread_title", fake_current_title)
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", fake_raise_if_banned)
+    monkeypatch.setattr(reddit_bot, "_comment_action_row", fake_comment_row)
+    monkeypatch.setattr(reddit_bot, "_click_named_control", fake_click_named)
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss_open_sheet)
+    monkeypatch.setattr(reddit_bot, "_ensure_reply_inline_box", fake_ensure_reply_box)
+    monkeypatch.setattr(reddit_bot, "_fill_comment_input", fake_fill_comment)
+    monkeypatch.setattr(reddit_bot, "_click_reply_submit", fake_click_submit)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", fake_save)
+    monkeypatch.setattr(reddit_bot, "_verify_text_visible", fake_verify)
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.reply_to_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/PCOS/comments/1roqvnw/glp1_pcos/o9gaqm9/",
+            text="helpful reply",
+        )
+    )
+
+    assert result["success"] is True
+    assert ensure_calls == [
+        ("Pigeon-From-Hell", "GLP-1 & PCOS"),
+        ("Pigeon-From-Hell", "GLP-1 & PCOS"),
     ]
 
 

@@ -169,6 +169,32 @@ async def _load_target_comment_context(target_comment_url: str) -> Optional[Dict
     }
 
 
+async def _load_post_context(target_url: str) -> Optional[Dict[str, Any]]:
+    try:
+        async with httpx.AsyncClient(
+            headers=REDDIT_HTTP_HEADERS,
+            follow_redirects=True,
+            timeout=20.0,
+        ) as client:
+            response = await client.get(_reddit_json_url(target_url))
+            response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        logger.warning(f"failed to fetch reddit post context for {target_url}: {exc}")
+        return {"thread_url": target_url, "title": None}
+
+    try:
+        post = payload[0]["data"]["children"][0]["data"]
+    except Exception:
+        post = {}
+
+    permalink = str(post.get("permalink") or "").strip()
+    return {
+        "thread_url": f"https://www.reddit.com{permalink}" if permalink else target_url,
+        "title": str(post.get("title") or "").strip() or None,
+    }
+
+
 def _pick_candidate(
     candidates: List[Dict[str, Any]],
     *,
@@ -661,7 +687,46 @@ async def _goto(page, url: str):
     await _goto_with_retry(page, url, profile_name="reddit_action")
     await page.wait_for_timeout(2500)
     await _dismiss_cookie_banner(page)
+    await _dismiss_reddit_open_app_sheet(page)
     await page.wait_for_timeout(500)
+
+
+async def _dismiss_reddit_open_app_sheet(page) -> bool:
+    try:
+        dismissed = bool(
+            await page.evaluate(
+                """() => {
+                    const viewportHeight = window.innerHeight || 873;
+                    const visible = (rect) => rect && rect.width >= 16 && rect.height >= 16 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight;
+                    const nodes = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+                    const openCta = nodes.find((node) => {
+                        const text = String(node.innerText || node.textContent || node.getAttribute?.('aria-label') || '').trim().toLowerCase();
+                        const rect = node.getBoundingClientRect();
+                        return visible(rect) && rect.top >= viewportHeight - 120 && text === 'open';
+                    });
+                    if (!openCta) return false;
+                    const closeButton = nodes.find((node) => {
+                        const text = String(node.innerText || node.textContent || node.getAttribute?.('aria-label') || '').trim().toLowerCase();
+                        const rect = node.getBoundingClientRect();
+                        return visible(rect) && rect.top >= viewportHeight - 120 && rect.left <= 56 && rect.width <= 48 && rect.height <= 48 && !text;
+                    });
+                    if (!closeButton) return false;
+                    closeButton.click();
+                    return true;
+                }"""
+            )
+        )
+    except Exception:
+        dismissed = False
+    if dismissed:
+        queue_current_event(
+            "click",
+            {"method": "open_app_sheet_dismiss"},
+            phase="activation",
+            source="reddit_bot",
+        )
+        await page.wait_for_timeout(700)
+    return dismissed
 
 
 async def _fill_first(page, selectors, value: str) -> bool:
@@ -766,6 +831,31 @@ async def _thread_context_present(page, expected_title: Optional[str]) -> bool:
             or normalized_title in current_title
         )
     )
+
+
+async def _ensure_thread_context(page, *, url: str, expected_title: Optional[str]) -> bool:
+    if await _thread_context_present(page, expected_title):
+        return True
+    for _attempt in range(2):
+        if expected_title:
+            clicked = await _click_visible_text_region(
+                page,
+                needle=expected_title,
+                action_name="thread_context_recover",
+                min_top=40,
+            )
+            if clicked:
+                await page.wait_for_timeout(900)
+                await _dismiss_reddit_open_app_sheet(page)
+                if await _thread_context_present(page, expected_title):
+                    return True
+        try:
+            await _goto(page, url)
+        except Exception:
+            continue
+        if await _thread_context_present(page, expected_title):
+            return True
+    return False
 
 
 async def _click_composer_text_region(page, expected_title: Optional[str] = None) -> bool:
@@ -1073,7 +1163,9 @@ async def _vote_point_is_active(page, *, x: float, y: float) -> bool:
                         const r = Number(match[1]);
                         const g = Number(match[2]);
                         const b = Number(match[3]);
-                        return r >= 160 && g <= 120 && b <= 110;
+                        const warmActive = r >= 160 && g <= 140 && b <= 120;
+                        const coolActive = b >= 130 && g >= 120 && r <= 130;
+                        return warmActive || coolActive;
                     };
                     const samples = [
                         [x, y],
@@ -1116,7 +1208,9 @@ async def _vote_region_is_active(page, *, left: float, right: float, y: float) -
                         const r = Number(match[1]);
                         const g = Number(match[2]);
                         const b = Number(match[3]);
-                        return r >= 160 && g <= 120 && b <= 110;
+                        const warmActive = r >= 160 && g <= 140 && b <= 120;
+                        const coolActive = b >= 130 && g >= 120 && r <= 130;
+                        return warmActive || coolActive;
                     };
                     for (let px = left; px <= right; px += 12) {
                         for (let py = y - 10; py <= y + 10; py += 10) {
@@ -1584,9 +1678,18 @@ async def upvote_post(
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             await _goto(page, url)
+            target_context = await _load_post_context(url)
+            expected_title = (target_context or {}).get("title") or await _current_thread_title(page)
+            if not await _ensure_thread_context(page, url=url, expected_title=expected_title):
+                await _capture_reddit_failure_state(page, "REDDIT POST THREAD CONTEXT MISSING")
+                return _result(
+                    success=False,
+                    action="upvote_post",
+                    profile_name=session.profile_name,
+                    error="Reddit target thread did not load",
+                )
             await _scroll_until_post_actions_visible(page)
             await dump_interactive_elements(page, "REDDIT UPVOTE POST")
-            expected_title = await _current_thread_title(page)
             share_locator = await _first_viewport_locator(page, COMMENT["share_button"])
             share_box = await share_locator.bounding_box() if share_locator else None
             share_y = float(share_box["y"] + (share_box["height"] / 2)) if share_box else None
@@ -1790,6 +1893,8 @@ async def join_subreddit(
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             await _goto(page, url)
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.wait_for_timeout(500)
             await dump_interactive_elements(page, "REDDIT JOIN SUBREDDIT")
 
             if await _visible_selector_exists(page, SUBREDDIT["joined_button"]):
@@ -1835,6 +1940,8 @@ async def join_subreddit(
                 raise RuntimeError("Reddit join button not found")
 
             await page.wait_for_timeout(1500)
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.wait_for_timeout(500)
             screenshot = await save_debug_screenshot(page, f"reddit_join_subreddit_{session.profile_name}")
             success = bool(
                 await _visible_selector_exists(page, SUBREDDIT["joined_button"])
@@ -1972,8 +2079,12 @@ async def comment_on_post(
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             await _goto(page, url)
+            target_context = await _load_post_context(url)
+            expected_title = (target_context or {}).get("title") or await _current_thread_title(page)
+            if not await _ensure_thread_context(page, url=url, expected_title=expected_title):
+                await _capture_reddit_failure_state(page, "REDDIT THREAD CONTEXT MISSING")
+                raise RuntimeError("Reddit target thread did not load")
             await dump_interactive_elements(page, "REDDIT COMMENT ON POST")
-            expected_title = await _current_thread_title(page)
             await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")
 
             if not await _fill_comment_input(page, text, expected_title=expected_title):
@@ -2046,14 +2157,23 @@ async def reply_to_comment(
                 await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
                 raise RuntimeError("Reddit Reply button not found")
             await page.wait_for_timeout(1000)
+            await _dismiss_reddit_open_app_sheet(page)
             if not await _ensure_reply_inline_box(
                 page,
                 row=row,
                 author=author,
                 expected_title=expected_title,
             ):
-                await _capture_reddit_failure_state(page, "REDDIT REPLY BOX MISSING")
-                raise RuntimeError("Reddit reply box did not open")
+                await _dismiss_reddit_open_app_sheet(page)
+                await page.wait_for_timeout(500)
+                if not await _ensure_reply_inline_box(
+                    page,
+                    row=row,
+                    author=author,
+                    expected_title=expected_title,
+                ):
+                    await _capture_reddit_failure_state(page, "REDDIT REPLY BOX MISSING")
+                    raise RuntimeError("Reddit reply box did not open")
 
             if not await _fill_comment_input(
                 page,
