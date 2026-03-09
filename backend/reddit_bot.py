@@ -256,14 +256,6 @@ async def _click_composer_text_region(page, expected_title: Optional[str] = None
 
                 const best = candidates[0];
                 if (!best) return { ok: false };
-                let target = best.clickTarget;
-                if (target && target.nodeType === Node.TEXT_NODE) target = target.parentElement;
-                if (!target || !target.click) {
-                    target = document.elementFromPoint(best.x, best.y);
-                }
-                if (target && target.click) {
-                    target.click();
-                }
                 return {
                     ok: true,
                     x: best.x,
@@ -279,6 +271,8 @@ async def _click_composer_text_region(page, expected_title: Optional[str] = None
 
     if not candidate or not candidate.get("ok"):
         return False
+
+    await page.mouse.click(candidate.get("x"), candidate.get("y"))
 
     queue_current_event(
         "click",

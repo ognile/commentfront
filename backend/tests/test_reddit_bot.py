@@ -12,6 +12,7 @@ class _FakePage:
         self.waits = []
         self.evaluate_result = False
         self.keyboard = _FakeKeyboard()
+        self.mouse = _FakeMouse()
 
     async def wait_for_timeout(self, timeout_ms):
         self.waits.append(timeout_ms)
@@ -26,6 +27,14 @@ class _FakeKeyboard:
 
     async def type(self, text, delay=0):
         self.typed.append((text, delay))
+
+
+class _FakeMouse:
+    def __init__(self):
+        self.clicks = []
+
+    async def click(self, x, y):
+        self.clicks.append((x, y))
 
 
 def test_fill_comment_input_opens_join_conversation_trigger(monkeypatch):
@@ -178,6 +187,7 @@ def test_click_composer_text_region_uses_evaluate_candidate():
     ok = asyncio.run(reddit_bot._click_composer_text_region(page, "Endometrial biopsy"))
 
     assert ok is True
+    assert page.mouse.clicks == [(190, 402)]
     assert page.waits == [600]
 
 
