@@ -188,7 +188,7 @@ def test_click_composer_text_region_uses_evaluate_candidate():
 
     assert ok is True
     assert page.mouse.clicks == [(190, 402)]
-    assert page.waits == [600]
+    assert page.waits == [700]
 
 
 def test_click_composer_region_from_layout_requires_thread_context(monkeypatch):
@@ -241,3 +241,72 @@ def test_fill_comment_input_reply_flow_never_opens_global_composer(monkeypatch):
         ("fill", tuple(reddit_bot.COMMENT["reply_input"]), "reply text"),
         ("active",),
     ]
+
+
+def test_click_visible_text_region_clicks_candidate(monkeypatch):
+    page = _FakePage()
+
+    async def fake_find(_page, **kwargs):
+        assert kwargs["needle"] == "join"
+        return {"x": 311, "y": 142, "source": "text_node", "label": "join"}
+
+    monkeypatch.setattr(reddit_bot, "_find_visible_text_region", fake_find)
+
+    ok = asyncio.run(
+        reddit_bot._click_visible_text_region(
+            page,
+            needle="join",
+            action_name="join_subreddit",
+            min_top=60,
+            max_top=260,
+        )
+    )
+
+    assert ok is True
+    assert page.mouse.clicks == [(311, 142)]
+    assert page.waits == [700]
+
+
+def test_click_post_upvote_region_uses_share_box_geometry():
+    page = _FakePage()
+
+    ok = asyncio.run(
+        reddit_bot._click_post_upvote_region(
+            page,
+            share_box={"x": 230.0, "y": 356.0, "height": 32.0},
+        )
+    )
+
+    assert ok is True
+    assert page.mouse.clicks == [(44, 372)]
+    assert page.waits == [900]
+
+
+def test_click_comment_upvote_region_uses_vote_point():
+    page = _FakePage()
+
+    ok = asyncio.run(
+        reddit_bot._click_comment_upvote_region(
+            page,
+            row={"vote": {"x": 35, "y": 356}, "reply": {"x": 152, "y": 356}},
+        )
+    )
+
+    assert ok is True
+    assert page.mouse.clicks == [(35, 356)]
+    assert page.waits == [900]
+
+
+def test_click_reply_row_button_uses_reply_center():
+    page = _FakePage()
+
+    ok = asyncio.run(
+        reddit_bot._click_reply_row_button(
+            page,
+            row={"reply": {"x": 152, "y": 702}},
+        )
+    )
+
+    assert ok is True
+    assert page.mouse.clicks == [(152, 702)]
+    assert page.waits == [900]

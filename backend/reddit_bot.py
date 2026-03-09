@@ -314,6 +314,156 @@ async def _locate_text_anchor(page, needle: Optional[str], expected_title: Optio
     return result or None
 
 
+async def _find_visible_text_region(
+    page,
+    *,
+    needle: str,
+    expected_title: Optional[str] = None,
+    min_top: float = 0.0,
+    max_top: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    normalized = _normalize_text(needle)
+    if not normalized:
+        return None
+    try:
+        result = await page.evaluate(
+            """({ needle, expectedTitle, minTop, maxTop }) => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const visibleRect = (rect) => rect && rect.width >= 6 && rect.height >= 6 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight && rect.left <= viewportWidth;
+                const roots = [];
+                const visitRoot = (root) => {
+                    if (!root || roots.includes(root)) return;
+                    roots.push(root);
+                    if (!root.querySelectorAll) return;
+                    for (const el of Array.from(root.querySelectorAll('*'))) {
+                        if (el.shadowRoot) visitRoot(el.shadowRoot);
+                    }
+                };
+                visitRoot(document);
+
+                let titleRect = null;
+                const titleNeedle = normalize(expectedTitle);
+                if (titleNeedle) {
+                    for (const root of roots) {
+                        const headings = root.querySelectorAll ? Array.from(root.querySelectorAll('h1, h2, h3')) : [];
+                        for (const heading of headings) {
+                            const text = normalize(heading.innerText || heading.textContent);
+                            if (!text) continue;
+                            if (text === titleNeedle || text.includes(titleNeedle) || titleNeedle.includes(text)) {
+                                const rect = heading.getBoundingClientRect();
+                                if (visibleRect(rect)) {
+                                    titleRect = rect;
+                                    break;
+                                }
+                            }
+                        }
+                        if (titleRect) break;
+                    }
+                }
+
+                const candidates = [];
+                const addCandidate = (rect, source, label) => {
+                    if (!visibleRect(rect)) return;
+                    if (titleRect && rect.top <= titleRect.bottom - 6) return;
+                    if (rect.top < minTop) return;
+                    if (typeof maxTop === 'number' && rect.top > maxTop) return;
+                    const centerX = Math.round(Math.max(12, Math.min(viewportWidth - 12, rect.left + rect.width / 2)));
+                    const centerY = Math.round(Math.max(12, Math.min(viewportHeight - 12, rect.top + rect.height / 2)));
+                    const verticalOffset = titleRect ? Math.max(0, rect.top - titleRect.bottom) : rect.top;
+                    candidates.push({
+                        x: centerX,
+                        y: centerY,
+                        source,
+                        label,
+                        top: rect.top,
+                        left: rect.left,
+                        verticalOffset,
+                    });
+                };
+
+                for (const root of roots) {
+                    const elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
+                    for (const el of elements) {
+                        const text = normalize(el.innerText || el.textContent);
+                        const placeholder = normalize(el.getAttribute && el.getAttribute('placeholder'));
+                        const aria = normalize(el.getAttribute && el.getAttribute('aria-label'));
+                        const combined = [text, placeholder, aria].filter(Boolean).join(' | ');
+                        if (!combined.includes(needle)) continue;
+                        addCandidate(el.getBoundingClientRect(), 'element_text', combined);
+                    }
+                    if (!root.createTreeWalker) continue;
+                    const walker = root.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                        acceptNode(node) {
+                            return normalize(node.textContent).includes(needle)
+                                ? NodeFilter.FILTER_ACCEPT
+                                : NodeFilter.FILTER_REJECT;
+                        },
+                    });
+                    let node = walker.nextNode();
+                    while (node) {
+                        const range = document.createRange();
+                        range.selectNodeContents(node);
+                        for (const rect of Array.from(range.getClientRects())) {
+                            addCandidate(rect, 'text_node', normalize(node.textContent));
+                        }
+                        node = walker.nextNode();
+                    }
+                }
+
+                candidates.sort((a, b) => a.verticalOffset - b.verticalOffset || a.top - b.top || a.left - b.left);
+                return candidates[0] || null;
+            }""",
+            {
+                "needle": normalized,
+                "expectedTitle": expected_title or "",
+                "minTop": float(min_top or 0.0),
+                "maxTop": None if max_top is None else float(max_top),
+            },
+        )
+    except Exception:
+        return None
+    return result or None
+
+
+async def _click_visible_text_region(
+    page,
+    *,
+    needle: str,
+    action_name: str,
+    expected_title: Optional[str] = None,
+    min_top: float = 0.0,
+    max_top: Optional[float] = None,
+) -> bool:
+    candidate = await _find_visible_text_region(
+        page,
+        needle=needle,
+        expected_title=expected_title,
+        min_top=min_top,
+        max_top=max_top,
+    )
+    if not candidate:
+        return False
+    await page.mouse.click(candidate["x"], candidate["y"])
+    queue_current_event(
+        "click",
+        {
+            "method": "visible_text_region",
+            "action_name": action_name,
+            "needle": needle,
+            "x": candidate.get("x"),
+            "y": candidate.get("y"),
+            "source": candidate.get("source"),
+            "label": candidate.get("label"),
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(700)
+    return True
+
+
 async def _click_named_control(
     page,
     *,
@@ -541,142 +691,14 @@ async def _thread_context_present(page, expected_title: Optional[str]) -> bool:
 
 
 async def _click_composer_text_region(page, expected_title: Optional[str] = None) -> bool:
-    try:
-        candidate = await page.evaluate(
-            """({ needle, expectedTitle }) => {
-                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-                const viewportWidth = window.innerWidth || 393;
-                const viewportHeight = window.innerHeight || 873;
-                const phrase = normalize(needle);
-                const titleNeedle = normalize(expectedTitle);
-                const roots = [];
-                const visitRoot = (root) => {
-                    if (!root || roots.includes(root)) return;
-                    roots.push(root);
-                    if (!root.querySelectorAll) return;
-                    for (const el of Array.from(root.querySelectorAll('*'))) {
-                        if (el.shadowRoot) visitRoot(el.shadowRoot);
-                    }
-                };
-                visitRoot(document);
-
-                const visibleRect = (rect) => {
-                    if (!rect) return false;
-                    if (rect.width < 6 || rect.height < 6) return false;
-                    if (rect.bottom < 0 || rect.right < 0) return false;
-                    if (rect.top > viewportHeight || rect.left > viewportWidth) return false;
-                    return true;
-                };
-
-                let titleRect = null;
-                if (titleNeedle) {
-                    for (const root of roots) {
-                        const headings = root.querySelectorAll ? Array.from(root.querySelectorAll('h1, h2, h3')) : [];
-                        for (const heading of headings) {
-                            const text = normalize(heading.innerText || heading.textContent);
-                            if (!text) continue;
-                            if (text === titleNeedle || text.includes(titleNeedle) || titleNeedle.includes(text)) {
-                                const rect = heading.getBoundingClientRect();
-                                if (visibleRect(rect)) {
-                                    titleRect = rect;
-                                    break;
-                                }
-                            }
-                        }
-                        if (titleRect) break;
-                    }
-                }
-
-                const candidates = [];
-                const addCandidate = (rect, clickTarget, source, label) => {
-                    if (!visibleRect(rect)) return;
-                    if (titleRect && rect.top <= titleRect.bottom - 6) return;
-                    if (rect.top >= viewportHeight - 40) return;
-                    const centerX = Math.round(Math.max(12, Math.min(viewportWidth - 12, rect.left + rect.width / 2)));
-                    const centerY = Math.round(Math.max(12, Math.min(viewportHeight - 12, rect.top + rect.height / 2)));
-                    const verticalOffset = titleRect ? Math.max(0, rect.top - titleRect.bottom) : rect.top;
-                    candidates.push({
-                        x: centerX,
-                        y: centerY,
-                        source,
-                        label,
-                        top: rect.top,
-                        verticalOffset,
-                        clickTarget,
-                    });
-                };
-
-                for (const root of roots) {
-                    const elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
-                    for (const el of elements) {
-                        const text = normalize(el.innerText || el.textContent);
-                        const placeholder = normalize(el.getAttribute && el.getAttribute('placeholder'));
-                        const aria = normalize(el.getAttribute && el.getAttribute('aria-label'));
-                        if (text.includes(phrase) || placeholder.includes(phrase) || aria.includes(phrase)) {
-                            addCandidate(el.getBoundingClientRect(), el, 'element_text', text || placeholder || aria);
-                        }
-                    }
-                    if (!root.createTreeWalker) continue;
-                    const walker = root.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-                        acceptNode(node) {
-                            return normalize(node.textContent).includes(phrase)
-                                ? NodeFilter.FILTER_ACCEPT
-                                : NodeFilter.FILTER_REJECT;
-                        },
-                    });
-                    let node = walker.nextNode();
-                    while (node) {
-                        const range = document.createRange();
-                        range.selectNodeContents(node);
-                        const rects = Array.from(range.getClientRects());
-                        for (const rect of rects) {
-                            addCandidate(rect, node.parentElement || node.parentNode, 'text_node', normalize(node.textContent));
-                        }
-                        node = walker.nextNode();
-                    }
-                }
-
-                candidates.sort((a, b) => {
-                    if (a.verticalOffset !== b.verticalOffset) return a.verticalOffset - b.verticalOffset;
-                    return a.top - b.top;
-                });
-
-                const best = candidates[0];
-                if (!best) return { ok: false };
-                return {
-                    ok: true,
-                    x: best.x,
-                    y: best.y,
-                    source: best.source,
-                    label: best.label,
-                };
-            }""",
-            {"needle": "Join the conversation", "expectedTitle": expected_title or ""},
-        )
-    except Exception:
-        candidate = None
-
-    if not candidate or not candidate.get("ok"):
-        return False
-
-    await page.mouse.click(candidate.get("x"), candidate.get("y"))
-
-    queue_current_event(
-        "click",
-        {
-            "method": "visible_text_region",
-            "target": "comment_composer_trigger",
-            "x": candidate.get("x"),
-            "y": candidate.get("y"),
-            "source": candidate.get("source"),
-            "label": candidate.get("label"),
-            "expected_title": expected_title,
-        },
-        phase="activation",
-        source="reddit_bot",
+    viewport = getattr(page, "viewport_size", None) or {"height": 873}
+    return await _click_visible_text_region(
+        page,
+        needle="Join the conversation",
+        action_name="comment_composer_trigger",
+        expected_title=expected_title,
+        max_top=viewport["height"] - 40,
     )
-    await page.wait_for_timeout(600)
-    return True
 
 
 async def _click_composer_region_from_layout(page, expected_title: Optional[str] = None) -> bool:
@@ -721,6 +743,259 @@ async def _click_composer_region_from_layout(page, expected_title: Optional[str]
     )
     await page.wait_for_timeout(800)
     return await _thread_context_present(page, expected_title)
+
+
+async def _find_subreddit_header_action(page) -> Optional[Dict[str, Any]]:
+    try:
+        result = await page.evaluate(
+            """() => {
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const visible = (rect) => rect && rect.width >= 20 && rect.height >= 20 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight && rect.left <= viewportWidth;
+                const section = Array.from(document.querySelectorAll('*')).find((node) => {
+                    const aria = String(node.getAttribute && node.getAttribute('aria-label') || '').toLowerCase();
+                    return aria.includes('community actions');
+                });
+                if (!section) return null;
+                const rect = section.getBoundingClientRect();
+                if (!visible(rect)) return null;
+                return {
+                    x: Math.round(Math.max(24, Math.min(viewportWidth - 24, rect.right - 58))),
+                    y: Math.round(Math.max(24, Math.min(viewportHeight - 24, rect.top + 18))),
+                    bounds: {
+                        left: rect.left,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                };
+            }"""
+        )
+    except Exception:
+        return None
+    return result or None
+
+
+async def _comment_action_row(
+    page,
+    *,
+    author: Optional[str],
+    expected_title: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    normalized_author = _normalize_text(author)
+    if not normalized_author:
+        return None
+    try:
+        result = await page.evaluate(
+            """({ author, expectedTitle }) => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const visibleRect = (rect) => rect && rect.width >= 6 && rect.height >= 6 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight && rect.left <= viewportWidth;
+                const roots = [];
+                const visitRoot = (root) => {
+                    if (!root || roots.includes(root)) return;
+                    roots.push(root);
+                    if (!root.querySelectorAll) return;
+                    for (const el of Array.from(root.querySelectorAll('*'))) {
+                        if (el.shadowRoot) visitRoot(el.shadowRoot);
+                    }
+                };
+                visitRoot(document);
+
+                let titleRect = null;
+                const titleNeedle = normalize(expectedTitle);
+                if (titleNeedle) {
+                    for (const root of roots) {
+                        const headings = root.querySelectorAll ? Array.from(root.querySelectorAll('h1, h2, h3')) : [];
+                        for (const heading of headings) {
+                            const text = normalize(heading.innerText || heading.textContent);
+                            if (!text) continue;
+                            if (text === titleNeedle || text.includes(titleNeedle) || titleNeedle.includes(text)) {
+                                const rect = heading.getBoundingClientRect();
+                                if (visibleRect(rect)) {
+                                    titleRect = rect;
+                                    break;
+                                }
+                            }
+                        }
+                        if (titleRect) break;
+                    }
+                }
+
+                const authors = [];
+                for (const root of roots) {
+                    const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('a, button, span, div')) : [];
+                    for (const node of nodes) {
+                        const text = normalize(node.innerText || node.textContent);
+                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        const rect = node.getBoundingClientRect();
+                        if (!visibleRect(rect)) continue;
+                        if (titleRect && rect.top <= titleRect.bottom - 6) continue;
+                        if (!text.includes(author) && !aria.includes(author)) continue;
+                        authors.push({
+                            left: rect.left,
+                            top: rect.top,
+                            right: rect.right,
+                            bottom: rect.bottom,
+                            x: Math.round(rect.left + rect.width / 2),
+                            y: Math.round(rect.top + rect.height / 2),
+                        });
+                    }
+                }
+                authors.sort((a, b) => a.top - b.top || a.left - b.left);
+                const authorRect = authors[0];
+                if (!authorRect) return null;
+
+                const replies = [];
+                for (const root of roots) {
+                    const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, a, div, span')) : [];
+                    for (const node of nodes) {
+                        const text = normalize(node.innerText || node.textContent);
+                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        const rect = node.getBoundingClientRect();
+                        if (!visibleRect(rect)) continue;
+                        if (!(text.includes('reply') || aria.includes('reply'))) continue;
+                        const verticalGap = rect.top - authorRect.bottom;
+                        if (verticalGap < 80 || verticalGap > 220) continue;
+                        if (rect.left < authorRect.left + 24) continue;
+                        replies.push({
+                            left: rect.left,
+                            top: rect.top,
+                            right: rect.right,
+                            width: rect.width,
+                            height: rect.height,
+                            x: Math.round(rect.left + rect.width / 2),
+                            y: Math.round(rect.top + rect.height / 2),
+                            verticalGap,
+                            text,
+                            aria,
+                        });
+                    }
+                }
+                replies.sort((a, b) => a.verticalGap - b.verticalGap || a.top - b.top || a.left - b.left);
+                const reply = replies[0];
+                if (!reply) return null;
+                return {
+                    author: authorRect,
+                    reply,
+                    vote: {
+                        x: Math.round(Math.max(22, reply.left - 76)),
+                        y: reply.y,
+                    },
+                };
+            }""",
+            {"author": normalized_author, "expectedTitle": expected_title or ""},
+        )
+    except Exception:
+        return None
+    return result or None
+
+
+async def _capture_row_signature(page, *, row_y: float, max_x: float) -> List[str]:
+    try:
+        result = await page.evaluate(
+            """({ rowY, maxX }) => {
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const visible = (rect) => rect && rect.width >= 4 && rect.height >= 4 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight && rect.left <= viewportWidth;
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const rows = [];
+                for (const node of Array.from(document.querySelectorAll('*'))) {
+                    const rect = node.getBoundingClientRect();
+                    if (!visible(rect)) continue;
+                    const centerY = rect.top + rect.height / 2;
+                    if (Math.abs(centerY - rowY) > 28) continue;
+                    if (rect.left > maxX) continue;
+                    const text = normalize(node.innerText || node.textContent);
+                    const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                    const tag = normalize(node.tagName);
+                    const cls = normalize(node.className);
+                    rows.push(`${tag}|${text}|${aria}|${cls}|${Math.round(rect.left)}|${Math.round(rect.top)}|${Math.round(rect.width)}|${Math.round(rect.height)}`);
+                }
+                rows.sort();
+                return rows;
+            }""",
+            {"rowY": float(row_y), "maxX": float(max_x)},
+        )
+    except Exception:
+        return []
+    return list(result or [])
+
+
+async def _scroll_until_post_actions_visible(page, *, max_scrolls: int = 6) -> bool:
+    for _ in range(max(1, max_scrolls)):
+        if await _first_visible_locator(page, COMMENT["share_button"]):
+            return True
+        await page.mouse.wheel(0, 520)
+        await page.wait_for_timeout(900)
+    return bool(await _first_visible_locator(page, COMMENT["share_button"]))
+
+
+async def _click_post_upvote_region(page, *, share_box: Dict[str, float]) -> bool:
+    click_x = max(24, int(float(share_box["x"]) - 186))
+    click_y = int(float(share_box["y"]) + (float(share_box["height"]) / 2))
+    await page.mouse.click(click_x, click_y)
+    queue_current_event(
+        "click",
+        {
+            "method": "post_row_geometry",
+            "action_name": "upvote_post",
+            "x": click_x,
+            "y": click_y,
+            "share_box": share_box,
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(900)
+    return True
+
+
+async def _click_comment_upvote_region(page, *, row: Dict[str, Any]) -> bool:
+    vote = dict(row.get("vote") or {})
+    if not vote:
+        return False
+    await page.mouse.click(vote["x"], vote["y"])
+    queue_current_event(
+        "click",
+        {
+            "method": "comment_row_geometry",
+            "action_name": "upvote_comment",
+            "x": vote.get("x"),
+            "y": vote.get("y"),
+            "reply": row.get("reply"),
+            "author": row.get("author"),
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(900)
+    return True
+
+
+async def _click_reply_row_button(page, *, row: Dict[str, Any]) -> bool:
+    reply = dict(row.get("reply") or {})
+    if not reply:
+        return False
+    await page.mouse.click(reply["x"], reply["y"])
+    queue_current_event(
+        "click",
+        {
+            "method": "comment_row_reply",
+            "action_name": "reply_comment",
+            "x": reply.get("x"),
+            "y": reply.get("y"),
+            "reply": reply,
+            "author": row.get("author"),
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(900)
+    return True
 
 
 async def _open_comment_composer(page, expected_title: Optional[str] = None) -> bool:
@@ -875,12 +1150,18 @@ async def upvote_post(
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             await _goto(page, url)
+            await _scroll_until_post_actions_visible(page)
             await dump_interactive_elements(page, "REDDIT UPVOTE POST")
             expected_title = await _current_thread_title(page)
             share_locator = await _first_visible_locator(page, COMMENT["share_button"])
             share_box = await share_locator.bounding_box() if share_locator else None
             share_y = float(share_box["y"] + (share_box["height"] / 2)) if share_box else None
             share_left = float(share_box["x"]) if share_box else None
+            before_signature = (
+                await _capture_row_signature(page, row_y=share_y, max_x=share_left)
+                if share_y is not None and share_left is not None
+                else []
+            )
 
             if await _verify_named_control_state(
                 page,
@@ -907,6 +1188,8 @@ async def upvote_post(
                 row_y=share_y,
                 left_of_x=share_left,
             )
+            if not clicked and share_box:
+                clicked = await _click_post_upvote_region(page, share_box=share_box)
             if not clicked:
                 await _capture_reddit_failure_state(page, "REDDIT POST UPVOTE MISSING")
                 return _result(
@@ -918,6 +1201,11 @@ async def upvote_post(
 
             await page.wait_for_timeout(1500)
             screenshot = await save_debug_screenshot(page, f"reddit_upvote_post_{session.profile_name}")
+            after_signature = (
+                await _capture_row_signature(page, row_y=share_y, max_x=share_left)
+                if share_y is not None and share_left is not None
+                else []
+            )
             success = await _verify_named_control_state(
                 page,
                 needles=["remove upvote", "upvoted"],
@@ -925,6 +1213,8 @@ async def upvote_post(
                 row_y=share_y,
                 left_of_x=share_left,
             )
+            if not success:
+                success = bool(before_signature and after_signature and before_signature != after_signature)
             return _result(
                 success=success,
                 action="upvote_post",
@@ -944,19 +1234,28 @@ async def upvote_comment(
     proxy_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     target_context = await _load_target_comment_context(target_comment_url)
-    anchor_text = (target_context or {}).get("body_snippet") or None
+    expected_title = (target_context or {}).get("title") or None
+    author = (target_context or {}).get("author") or None
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             await _goto(page, target_comment_url)
             await dump_interactive_elements(page, "REDDIT UPVOTE COMMENT")
+            row = await _comment_action_row(page, author=author, expected_title=expected_title)
+            reply = dict((row or {}).get("reply") or {})
+            before_signature = (
+                await _capture_row_signature(page, row_y=float(reply.get("y")), max_x=float(reply.get("left")))
+                if reply
+                else []
+            )
 
             if await _verify_named_control_state(
                 page,
                 needles=["remove upvote", "upvoted"],
-                anchor_text=anchor_text,
-                max_vertical_gap=180,
-                require_below_anchor=False,
+                anchor_text=author,
+                expected_title=expected_title,
+                max_vertical_gap=220,
+                require_below_anchor=True,
             ):
                 screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
                 return _result(
@@ -972,23 +1271,34 @@ async def upvote_comment(
                 page,
                 action_name="upvote_comment",
                 needles=["upvote"],
-                anchor_text=anchor_text,
-                max_vertical_gap=180,
-                require_below_anchor=False,
+                anchor_text=author,
+                expected_title=expected_title,
+                max_vertical_gap=220,
+                require_below_anchor=True,
             )
+            if not clicked and row:
+                clicked = await _click_comment_upvote_region(page, row=row)
             if not clicked:
                 await _capture_reddit_failure_state(page, "REDDIT COMMENT UPVOTE MISSING")
                 raise RuntimeError("Reddit comment upvote control not found")
 
             await page.wait_for_timeout(1500)
             screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
+            after_signature = (
+                await _capture_row_signature(page, row_y=float(reply.get("y")), max_x=float(reply.get("left")))
+                if reply
+                else []
+            )
             success = await _verify_named_control_state(
                 page,
                 needles=["remove upvote", "upvoted"],
-                anchor_text=anchor_text,
-                max_vertical_gap=180,
-                require_below_anchor=False,
+                anchor_text=author,
+                expected_title=expected_title,
+                max_vertical_gap=220,
+                require_below_anchor=True,
             )
+            if not success:
+                success = bool(before_signature and after_signature and before_signature != after_signature)
             return _result(
                 success=success,
                 action="upvote_comment",
@@ -1025,7 +1335,31 @@ async def join_subreddit(
 
             clicked = await _click_first(page, SUBREDDIT["join_button"], timeout_ms=3000)
             if not clicked:
-                clicked = await _click_named_control(page, action_name="join_subreddit", needles=["join"])
+                clicked = await _click_visible_text_region(
+                    page,
+                    needle="Join",
+                    action_name="join_subreddit",
+                    min_top=60,
+                    max_top=260,
+                )
+            if not clicked:
+                header_target = await _find_subreddit_header_action(page)
+                if header_target:
+                    await page.mouse.click(header_target["x"], header_target["y"])
+                    queue_current_event(
+                        "click",
+                        {
+                            "method": "subreddit_header_geometry",
+                            "action_name": "join_subreddit",
+                            "x": header_target.get("x"),
+                            "y": header_target.get("y"),
+                            "bounds": header_target.get("bounds"),
+                        },
+                        phase="activation",
+                        source="reddit_bot",
+                    )
+                    await page.wait_for_timeout(900)
+                    clicked = True
             if not clicked:
                 await _capture_reddit_failure_state(page, "REDDIT JOIN BUTTON MISSING")
                 raise RuntimeError("Reddit join button not found")
@@ -1192,23 +1526,27 @@ async def reply_to_comment(
 ) -> Dict[str, Any]:
     target_context = await _load_target_comment_context(target_comment_url)
     target_url = str((target_context or {}).get("thread_url") or target_comment_url)
-    anchor_text = (target_context or {}).get("body_snippet") or None
+    author = (target_context or {}).get("author") or None
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             await _goto(page, target_url)
             await dump_interactive_elements(page, "REDDIT REPLY TO COMMENT")
             expected_title = await _current_thread_title(page)
+            row = await _comment_action_row(page, author=author, expected_title=expected_title)
 
-            if not await _click_named_control(
+            clicked_reply = await _click_named_control(
                 page,
                 action_name="reply_comment",
                 needles=["reply"],
                 expected_title=expected_title,
-                anchor_text=anchor_text,
+                anchor_text=author,
                 max_vertical_gap=220,
                 require_below_anchor=True,
-            ):
+            )
+            if not clicked_reply and row:
+                clicked_reply = await _click_reply_row_button(page, row=row)
+            if not clicked_reply:
                 await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
                 raise RuntimeError("Reddit Reply button not found")
             await page.wait_for_timeout(1000)
