@@ -21,23 +21,23 @@ verification: production success with `final_verdict=success_confirmed`, screens
 
 2. prove `upvote_post`
 status: `in_progress`
-expected output: deterministic post action-row vote path after scrolling into the target row and resolving the left vote cluster, not the whole row
+expected output: deterministic post action-row vote path on a fresh explicit target post so the proof is not polluted by already-upvoted toggle state
 verification: one production success with target-post screenshot evidence and matching forensic timeline
 
 3. prove `upvote_comment`
-status: `in_progress`
+status: `pass`
 expected output: dedicated comment-row vote path anchored to the target comment container or first visible target reply row when context lookup is weak
 verification: one production success on a concrete comment permalink with screenshot evidence and matching forensic timeline
 
 4. prove `reply_comment`
 status: `in_progress`
-expected output: anchored reply path that opens the reply box on the intended comment row and keeps the app-banner occlusion out of the hit target
+expected output: anchored reply path that opens the reply box on the intended comment row and fills the inline reply composer directly before submit
 verification: one production success with screenshot showing the reply under the target comment and matching forensic timeline
 
 5. lock shared learnings
 status: `in_progress`
 expected output: reusable helpers for anchor detection, pointer clicks, row-state verification, and failure-state capture
-verification: all four actions proven in production without manual rescue
+verification: all four action proofs exist in production without manual rescue
 
 ## execution rule
 - if a production proof fails, inspect its forensics, adapt the code, redeploy, and rerun until the target action is genuinely proven

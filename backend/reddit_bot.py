@@ -536,21 +536,7 @@ async def _keyboard_type_and_verify(page, text: str, *, reply: bool = False) -> 
     try:
         await page.keyboard.type(text, delay=25)
         await page.wait_for_timeout(500)
-        typed = bool(
-            await page.evaluate(
-                """(needle) => {
-                    const probe = (value) => (value || '').toLowerCase();
-                    const target = probe(String(needle).slice(0, 40));
-                    const active = document.activeElement;
-                    if (!active) return false;
-                    const activeText = probe(active.value || active.textContent || active.innerText);
-                    if (activeText.includes(target)) return true;
-                    const bodyText = probe(document.body ? document.body.innerText : '');
-                    return bodyText.includes(target);
-                }""",
-                text,
-            )
-        )
+        typed = bool(await _typed_text_visible(page, text))
         if typed:
             queue_current_event(
                 "type",
@@ -562,6 +548,28 @@ async def _keyboard_type_and_verify(page, text: str, *, reply: bool = False) -> 
     except Exception:
         return False
     return False
+
+
+async def _typed_text_visible(page, text: str) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                """(needle) => {
+                    const probe = (value) => (value || '').toLowerCase();
+                    const target = probe(String(needle).slice(0, 40));
+                    const active = document.activeElement;
+                    if (active) {
+                        const activeText = probe(active.value || active.textContent || active.innerText);
+                        if (activeText.includes(target)) return true;
+                    }
+                    const bodyText = probe(document.body ? document.body.innerText : '');
+                    return bodyText.includes(target);
+                }""",
+                text,
+            )
+        )
+    except Exception:
+        return False
 
 
 async def _active_editable_present(page) -> bool:
@@ -1112,6 +1120,57 @@ async def _click_reply_row_button(page, *, row: Dict[str, Any]) -> bool:
     return True
 
 
+async def _dom_click_at_point(page, *, x: float, y: float, action_name: str) -> bool:
+    try:
+        clicked = await page.evaluate(
+            """({ x, y }) => {
+                const elements = Array.from(document.elementsFromPoint(x, y) || []);
+                const target = elements.find((node) => {
+                    if (!(node instanceof HTMLElement)) return false;
+                    const tag = String(node.tagName || '').toLowerCase();
+                    const role = String(node.getAttribute('role') || '').toLowerCase();
+                    return tag === 'button' || role === 'button';
+                });
+                if (!target) return null;
+                for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+                    target.dispatchEvent(
+                        new MouseEvent(type, {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: x,
+                            clientY: y,
+                        })
+                    );
+                }
+                return {
+                    text: String(target.innerText || target.textContent || '').trim(),
+                    aria: String(target.getAttribute('aria-label') || '').trim(),
+                    tag: String(target.tagName || '').toLowerCase(),
+                };
+            }""",
+            {"x": float(x), "y": float(y)},
+        )
+    except Exception:
+        clicked = None
+    if not clicked:
+        return False
+    queue_current_event(
+        "click",
+        {
+            "method": "dom_click_at_point",
+            "action_name": action_name,
+            "x": x,
+            "y": y,
+            "target": clicked,
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(700)
+    return True
+
+
 async def _reply_inline_box_present(page) -> bool:
     return bool(
         await _verify_named_control_state(
@@ -1168,6 +1227,63 @@ async def _focus_reply_inline_box(page) -> bool:
     )
     await page.wait_for_timeout(700)
     return True
+
+
+async def _click_reply_inline_placeholder(page, *, author: Optional[str]) -> bool:
+    needles: List[str] = []
+    normalized_author = _normalize_text(author)
+    if normalized_author:
+        needles.append(f"reply to u/{normalized_author}")
+    needles.extend(["reply to u/", "reply to"])
+    seen = set()
+    for needle in needles:
+        normalized = _normalize_text(needle)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        if await _click_visible_text_region(
+            page,
+            needle=needle,
+            action_name="reply_inline_placeholder",
+            min_top=420,
+        ):
+            return True
+    return False
+
+
+async def _ensure_reply_inline_box(
+    page,
+    *,
+    row: Optional[Dict[str, Any]],
+    author: Optional[str],
+    expected_title: Optional[str],
+) -> bool:
+    if await _reply_inline_box_present(page):
+        return True
+    if row and await _click_reply_row_button(page, row=row):
+        if await _reply_inline_box_present(page):
+            return True
+    reply = dict((row or {}).get("reply") or {})
+    if reply and await _dom_click_at_point(
+        page,
+        x=float(reply.get("x")),
+        y=float(reply.get("y")),
+        action_name="reply_comment_dom_retry",
+    ):
+        if await _reply_inline_box_present(page):
+            return True
+    if await _click_named_control(
+        page,
+        action_name="reply_comment_retry",
+        needles=["reply"],
+        expected_title=expected_title,
+        anchor_text=author,
+        max_vertical_gap=220,
+        require_below_anchor=True,
+    ):
+        if await _reply_inline_box_present(page):
+            return True
+    return False
 
 
 async def _open_comment_composer(page, expected_title: Optional[str] = None) -> bool:
@@ -1240,6 +1356,7 @@ async def _fill_comment_input(
     *,
     reply: bool = False,
     expected_title: Optional[str] = None,
+    target_author: Optional[str] = None,
     allow_global_trigger: bool = True,
 ) -> bool:
     selectors = COMMENT["reply_input"] if reply else COMMENT["composer_input"]
@@ -1248,6 +1365,9 @@ async def _fill_comment_input(
     if await _active_editable_present(page):
         return await _keyboard_type_and_verify(page, text, reply=reply)
     if reply and await _reply_inline_box_present(page):
+        if await _click_reply_inline_placeholder(page, author=target_author):
+            if await _keyboard_type_and_verify(page, text, reply=reply):
+                return True
         if await _focus_reply_inline_box(page):
             if await _active_editable_present(page):
                 return await _keyboard_type_and_verify(page, text, reply=reply)
@@ -1763,12 +1883,21 @@ async def reply_to_comment(
                 await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
                 raise RuntimeError("Reddit Reply button not found")
             await page.wait_for_timeout(1000)
+            if not await _ensure_reply_inline_box(
+                page,
+                row=row,
+                author=author,
+                expected_title=expected_title,
+            ):
+                await _capture_reddit_failure_state(page, "REDDIT REPLY BOX MISSING")
+                raise RuntimeError("Reddit reply box did not open")
 
             if not await _fill_comment_input(
                 page,
                 text,
                 reply=True,
                 expected_title=expected_title,
+                target_author=author,
                 allow_global_trigger=False,
             ):
                 await _capture_reddit_failure_state(page, "REDDIT REPLY INPUT MISSING")

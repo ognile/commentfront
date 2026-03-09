@@ -396,6 +396,112 @@ def test_fill_comment_input_reply_uses_inline_box_fallback(monkeypatch):
     ]
 
 
+def test_fill_comment_input_reply_uses_placeholder_click_before_focus(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_fill(target_page, selectors, value):
+        assert target_page is page
+        calls.append(("fill", tuple(selectors), value))
+        return False
+
+    async def fake_active(target_page):
+        assert target_page is page
+        calls.append(("active",))
+        return False
+
+    async def fake_inline_present(target_page):
+        assert target_page is page
+        calls.append(("inline_present",))
+        return True
+
+    async def fake_placeholder(target_page, *, author):
+        assert target_page is page
+        calls.append(("placeholder", author))
+        return True
+
+    async def fake_keyboard(target_page, text, reply=False):
+        assert target_page is page
+        calls.append(("keyboard", text, reply))
+        return True
+
+    async def fake_focus(_page):
+        raise AssertionError("focus fallback should not run when placeholder click works")
+
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill)
+    monkeypatch.setattr(reddit_bot, "_active_editable_present", fake_active)
+    monkeypatch.setattr(reddit_bot, "_reply_inline_box_present", fake_inline_present)
+    monkeypatch.setattr(reddit_bot, "_click_reply_inline_placeholder", fake_placeholder)
+    monkeypatch.setattr(reddit_bot, "_keyboard_type_and_verify", fake_keyboard)
+    monkeypatch.setattr(reddit_bot, "_focus_reply_inline_box", fake_focus)
+
+    ok = asyncio.run(
+        reddit_bot._fill_comment_input(
+            page,
+            "reply text",
+            reply=True,
+            expected_title="Endometrial biopsy",
+            target_author="aenflex",
+            allow_global_trigger=False,
+        )
+    )
+
+    assert ok is True
+    assert calls == [
+        ("fill", tuple(reddit_bot.COMMENT["reply_input"]), "reply text"),
+        ("active",),
+        ("inline_present",),
+        ("placeholder", "aenflex"),
+        ("keyboard", "reply text", True),
+    ]
+
+
+def test_ensure_reply_inline_box_uses_dom_retry_when_first_click_does_not_open(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_inline_present(target_page):
+        assert target_page is page
+        calls.append("present")
+        return len(calls) >= 5
+
+    async def fake_click_row(target_page, *, row):
+        assert target_page is page
+        calls.append(("row", row["reply"]["x"], row["reply"]["y"]))
+        return True
+
+    async def fake_dom_click(target_page, *, x, y, action_name):
+        assert target_page is page
+        calls.append(("dom", x, y, action_name))
+        return True
+
+    async def fake_named(_page, **kwargs):
+        raise AssertionError("named control retry should not run once dom retry works")
+
+    monkeypatch.setattr(reddit_bot, "_reply_inline_box_present", fake_inline_present)
+    monkeypatch.setattr(reddit_bot, "_click_reply_row_button", fake_click_row)
+    monkeypatch.setattr(reddit_bot, "_dom_click_at_point", fake_dom_click)
+    monkeypatch.setattr(reddit_bot, "_click_named_control", fake_named)
+
+    ok = asyncio.run(
+        reddit_bot._ensure_reply_inline_box(
+            page,
+            row={"reply": {"x": 152, "y": 702}},
+            author="aenflex",
+            expected_title="Endometrial biopsy",
+        )
+    )
+
+    assert ok is True
+    assert calls == [
+        "present",
+        ("row", 152, 702),
+        "present",
+        ("dom", 152.0, 702.0, "reply_comment_dom_retry"),
+        "present",
+    ]
+
+
 def test_vote_region_is_active_detects_true():
     class _Page:
         async def evaluate(self, script, arg):
