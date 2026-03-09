@@ -988,7 +988,7 @@ async def _scroll_until_post_actions_visible(page, *, max_scrolls: int = 6) -> b
 
 
 async def _click_post_upvote_region(page, *, share_box: Dict[str, float]) -> bool:
-    click_x = max(24, int(float(share_box["x"]) - 186))
+    click_x = max(24, int(float(share_box["x"]) - 224))
     click_y = int(float(share_box["y"]) + (float(share_box["height"]) / 2))
     await page.mouse.click(click_x, click_y)
     queue_current_event(
@@ -1286,6 +1286,62 @@ async def _click_reply_inline_placeholder(page, *, author: Optional[str]) -> boo
         ):
             return True
     return False
+
+
+async def _click_reply_inline_submit_button(page) -> bool:
+    try:
+        target = await page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const visible = (rect) => rect && rect.width >= 20 && rect.height >= 20 && rect.bottom >= 0 && rect.right >= 0;
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const cancel = buttons.find((node) => normalize(node.innerText || node.textContent) === 'cancel');
+                const commentCandidates = buttons.filter((node) => normalize(node.innerText || node.textContent) === 'comment');
+                let picked = null;
+                if (cancel) {
+                    const cancelRect = cancel.getBoundingClientRect();
+                    for (const node of commentCandidates) {
+                        const rect = node.getBoundingClientRect();
+                        if (!visible(rect)) continue;
+                        if (Math.abs(rect.top - cancelRect.top) > 20) continue;
+                        if (rect.left < cancelRect.right - 24) continue;
+                        picked = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), text: 'comment' };
+                        break;
+                    }
+                }
+                if (!picked) {
+                    const fallback = commentCandidates
+                        .map((node) => ({ node, rect: node.getBoundingClientRect() }))
+                        .filter(({ rect }) => visible(rect))
+                        .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+                        .pop();
+                    if (fallback) {
+                        picked = {
+                            x: Math.round(fallback.rect.left + fallback.rect.width / 2),
+                            y: Math.round(fallback.rect.top + fallback.rect.height / 2),
+                            text: 'comment',
+                        };
+                    }
+                }
+                return picked;
+            }"""
+        )
+    except Exception:
+        target = None
+    if not target:
+        return False
+    await page.mouse.click(target["x"], target["y"])
+    queue_current_event(
+        "click",
+        {
+            "method": "reply_inline_submit_geometry",
+            "target": target,
+        },
+        phase="submit",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(500)
+    return True
 
 
 async def _ensure_reply_inline_box(
@@ -1832,6 +1888,8 @@ async def create_post(
 
 
 async def _click_reply_submit(page, reply_text: str) -> bool:
+    if await _click_reply_inline_submit_button(page):
+        return True
     if await _click_named_control(
         page,
         action_name="reply_submit",

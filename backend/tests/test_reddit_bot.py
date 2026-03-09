@@ -310,12 +310,12 @@ def test_click_post_upvote_region_uses_share_box_geometry():
     ok = asyncio.run(
         reddit_bot._click_post_upvote_region(
             page,
-            share_box={"x": 230.0, "y": 356.0, "height": 32.0},
+            share_box={"x": 256.0, "y": 420.0, "height": 32.0},
         )
     )
 
     assert ok is True
-    assert page.mouse.clicks == [(44, 372)]
+    assert page.mouse.clicks == [(32, 436)]
     assert page.waits == [900]
 
 
@@ -553,6 +553,11 @@ def test_click_reply_submit_prefers_anchor_aware_click(monkeypatch):
     page = _FakePage()
     calls = []
 
+    async def fake_inline_submit(target_page):
+        assert target_page is page
+        calls.append(("inline_submit",))
+        return False
+
     async def fake_named(target_page, **kwargs):
         assert target_page is page
         calls.append(("named", kwargs["needles"], kwargs["anchor_text"]))
@@ -561,6 +566,7 @@ def test_click_reply_submit_prefers_anchor_aware_click(monkeypatch):
     async def fake_click_first(_page, _selectors, timeout_ms=4000):
         raise AssertionError("selector fallback should not run when anchored submit click works")
 
+    monkeypatch.setattr(reddit_bot, "_click_reply_inline_submit_button", fake_inline_submit)
     monkeypatch.setattr(reddit_bot, "_click_named_control", fake_named)
     monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
 
@@ -568,6 +574,7 @@ def test_click_reply_submit_prefers_anchor_aware_click(monkeypatch):
 
     assert ok is True
     assert calls == [
+        ("inline_submit",),
         ("named", ["comment"], "helpful reply text"),
     ]
 
