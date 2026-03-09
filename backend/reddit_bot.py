@@ -47,6 +47,10 @@ def _result(
     }
 
 
+def _normalize_text(value: Optional[str]) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
 @asynccontextmanager
 async def _session_page(session: RedditSession, proxy_url: Optional[str] = None):
     fingerprint = session.get_device_fingerprint()
@@ -121,7 +125,182 @@ async def _first_visible_locator(page, selectors):
     return None
 
 
-async def _click_composer_region_from_layout(page) -> bool:
+async def _current_thread_title(page) -> Optional[str]:
+    for selector in ("h1", "main h1", "article h1"):
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() > 0 and await locator.is_visible():
+                text = (await locator.inner_text()).strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+    return None
+
+
+async def _thread_context_present(page, expected_title: Optional[str]) -> bool:
+    normalized_title = _normalize_text(expected_title)
+    if not normalized_title:
+        return True
+    current_title = _normalize_text(await _current_thread_title(page))
+    return bool(
+        current_title
+        and (
+            current_title == normalized_title
+            or current_title in normalized_title
+            or normalized_title in current_title
+        )
+    )
+
+
+async def _click_composer_text_region(page, expected_title: Optional[str] = None) -> bool:
+    try:
+        candidate = await page.evaluate(
+            """({ needle, expectedTitle }) => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const phrase = normalize(needle);
+                const titleNeedle = normalize(expectedTitle);
+                const roots = [];
+                const visitRoot = (root) => {
+                    if (!root || roots.includes(root)) return;
+                    roots.push(root);
+                    if (!root.querySelectorAll) return;
+                    for (const el of Array.from(root.querySelectorAll('*'))) {
+                        if (el.shadowRoot) visitRoot(el.shadowRoot);
+                    }
+                };
+                visitRoot(document);
+
+                const visibleRect = (rect) => {
+                    if (!rect) return false;
+                    if (rect.width < 6 || rect.height < 6) return false;
+                    if (rect.bottom < 0 || rect.right < 0) return false;
+                    if (rect.top > viewportHeight || rect.left > viewportWidth) return false;
+                    return true;
+                };
+
+                let titleRect = null;
+                if (titleNeedle) {
+                    for (const root of roots) {
+                        const headings = root.querySelectorAll ? Array.from(root.querySelectorAll('h1, h2, h3')) : [];
+                        for (const heading of headings) {
+                            const text = normalize(heading.innerText || heading.textContent);
+                            if (!text) continue;
+                            if (text === titleNeedle || text.includes(titleNeedle) || titleNeedle.includes(text)) {
+                                const rect = heading.getBoundingClientRect();
+                                if (visibleRect(rect)) {
+                                    titleRect = rect;
+                                    break;
+                                }
+                            }
+                        }
+                        if (titleRect) break;
+                    }
+                }
+
+                const candidates = [];
+                const addCandidate = (rect, clickTarget, source, label) => {
+                    if (!visibleRect(rect)) return;
+                    if (titleRect && rect.top <= titleRect.bottom - 6) return;
+                    if (rect.top >= viewportHeight - 40) return;
+                    const centerX = Math.round(Math.max(12, Math.min(viewportWidth - 12, rect.left + rect.width / 2)));
+                    const centerY = Math.round(Math.max(12, Math.min(viewportHeight - 12, rect.top + rect.height / 2)));
+                    const verticalOffset = titleRect ? Math.max(0, rect.top - titleRect.bottom) : rect.top;
+                    candidates.push({
+                        x: centerX,
+                        y: centerY,
+                        source,
+                        label,
+                        top: rect.top,
+                        verticalOffset,
+                        clickTarget,
+                    });
+                };
+
+                for (const root of roots) {
+                    const elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
+                    for (const el of elements) {
+                        const text = normalize(el.innerText || el.textContent);
+                        const placeholder = normalize(el.getAttribute && el.getAttribute('placeholder'));
+                        const aria = normalize(el.getAttribute && el.getAttribute('aria-label'));
+                        if (text.includes(phrase) || placeholder.includes(phrase) || aria.includes(phrase)) {
+                            addCandidate(el.getBoundingClientRect(), el, 'element_text', text || placeholder || aria);
+                        }
+                    }
+                    if (!root.createTreeWalker) continue;
+                    const walker = root.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                        acceptNode(node) {
+                            return normalize(node.textContent).includes(phrase)
+                                ? NodeFilter.FILTER_ACCEPT
+                                : NodeFilter.FILTER_REJECT;
+                        },
+                    });
+                    let node = walker.nextNode();
+                    while (node) {
+                        const range = document.createRange();
+                        range.selectNodeContents(node);
+                        const rects = Array.from(range.getClientRects());
+                        for (const rect of rects) {
+                            addCandidate(rect, node.parentElement || node.parentNode, 'text_node', normalize(node.textContent));
+                        }
+                        node = walker.nextNode();
+                    }
+                }
+
+                candidates.sort((a, b) => {
+                    if (a.verticalOffset !== b.verticalOffset) return a.verticalOffset - b.verticalOffset;
+                    return a.top - b.top;
+                });
+
+                const best = candidates[0];
+                if (!best) return { ok: false };
+                let target = best.clickTarget;
+                if (target && target.nodeType === Node.TEXT_NODE) target = target.parentElement;
+                if (!target || !target.click) {
+                    target = document.elementFromPoint(best.x, best.y);
+                }
+                if (target && target.click) {
+                    target.click();
+                }
+                return {
+                    ok: true,
+                    x: best.x,
+                    y: best.y,
+                    source: best.source,
+                    label: best.label,
+                };
+            }""",
+            {"needle": "Join the conversation", "expectedTitle": expected_title or ""},
+        )
+    except Exception:
+        candidate = None
+
+    if not candidate or not candidate.get("ok"):
+        return False
+
+    queue_current_event(
+        "click",
+        {
+            "method": "visible_text_region",
+            "target": "comment_composer_trigger",
+            "x": candidate.get("x"),
+            "y": candidate.get("y"),
+            "source": candidate.get("source"),
+            "label": candidate.get("label"),
+            "expected_title": expected_title,
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(600)
+    return True
+
+
+async def _click_composer_region_from_layout(page, expected_title: Optional[str] = None) -> bool:
+    if not await _thread_context_present(page, expected_title):
+        return False
     share_locator = await _first_visible_locator(page, COMMENT["share_button"])
     if not share_locator:
         return False
@@ -160,10 +339,10 @@ async def _click_composer_region_from_layout(page) -> bool:
         source="reddit_bot",
     )
     await page.wait_for_timeout(800)
-    return True
+    return await _thread_context_present(page, expected_title)
 
 
-async def _open_comment_composer(page) -> bool:
+async def _open_comment_composer(page, expected_title: Optional[str] = None) -> bool:
     opened = await _click_first(page, COMMENT["composer_trigger"], timeout_ms=3000)
     if opened:
         queue_current_event(
@@ -173,7 +352,7 @@ async def _open_comment_composer(page) -> bool:
             source="reddit_bot",
         )
         await page.wait_for_timeout(600)
-        return True
+        return await _thread_context_present(page, expected_title)
 
     if not opened:
         try:
@@ -209,21 +388,29 @@ async def _open_comment_composer(page) -> bool:
             source="reddit_bot",
         )
         await page.wait_for_timeout(600)
-        return True
+        return await _thread_context_present(page, expected_title)
 
     if not opened:
         try:
-            opened = await _click_composer_region_from_layout(page)
+            opened = await _click_composer_text_region(page, expected_title)
+        except Exception:
+            opened = False
+    if opened:
+        return await _thread_context_present(page, expected_title)
+
+    if not opened:
+        try:
+            opened = await _click_composer_region_from_layout(page, expected_title)
         except Exception:
             opened = False
     return opened
 
 
-async def _fill_comment_input(page, text: str, *, reply: bool = False) -> bool:
+async def _fill_comment_input(page, text: str, *, reply: bool = False, expected_title: Optional[str] = None) -> bool:
     selectors = COMMENT["reply_input"] if reply else COMMENT["composer_input"]
     if await _fill_first(page, selectors, text):
         return True
-    if not await _open_comment_composer(page):
+    if not await _open_comment_composer(page, expected_title):
         return False
     await page.wait_for_timeout(400)
     if await _fill_first(page, selectors, text):
@@ -441,8 +628,9 @@ async def comment_on_post(
         try:
             await _goto(page, url)
             await dump_interactive_elements(page, "REDDIT COMMENT ON POST")
+            expected_title = await _current_thread_title(page)
 
-            if not await _fill_comment_input(page, text):
+            if not await _fill_comment_input(page, text, expected_title=expected_title):
                 await _capture_reddit_failure_state(page, "REDDIT COMMENT COMPOSER MISSING")
                 raise RuntimeError("Reddit comment composer not found")
 
@@ -477,13 +665,14 @@ async def reply_to_comment(
         try:
             await _goto(page, url)
             await dump_interactive_elements(page, "REDDIT REPLY TO COMMENT")
+            expected_title = await _current_thread_title(page)
 
             if not await _click_first(page, COMMENT["reply_button"], timeout_ms=4000):
                 await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
                 raise RuntimeError("Reddit Reply button not found")
             await page.wait_for_timeout(1000)
 
-            if not await _fill_comment_input(page, text, reply=True):
+            if not await _fill_comment_input(page, text, reply=True, expected_title=expected_title):
                 await _capture_reddit_failure_state(page, "REDDIT REPLY INPUT MISSING")
                 raise RuntimeError("Reddit reply input not found")
 
