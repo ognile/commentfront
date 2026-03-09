@@ -107,7 +107,7 @@ def test_orchestrator_marks_completed_and_records_target_history(tmp_path, monke
     orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
 
     async def fake_fetch_json(url):
-        if "hot/.json" in url:
+        if "search/.json" in url or "hot/.json" in url:
             return {
                 "data": {
                     "children": [

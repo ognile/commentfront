@@ -217,12 +217,12 @@ class RedditProgramOrchestrator:
 
         target_payload = await self._resolve_target(program, item)
         if target_payload.get("error"):
-            return self._finalize_without_execution(
+            return self._finalize_resolution_failure(
                 program,
                 item,
-                status="blocked",
-                error=target_payload["error"],
-                failure_class="quota_exhausted",
+                error=str(target_payload["error"]),
+                failure_class=str(target_payload.get("failure_class") or "target_unavailable"),
+                retryable=bool(target_payload.get("retryable", False)),
             )
 
         session = RedditSession(str(item.get("profile_name") or ""))
@@ -293,16 +293,19 @@ class RedditProgramOrchestrator:
         program["events"] = list(program.get("events", []))[-200:]
         return self.store.save_program(program)
 
-    def _finalize_without_execution(
+    def _finalize_resolution_failure(
         self,
         program: Dict[str, Any],
         item: Dict[str, Any],
         *,
-        status: str,
         error: str,
         failure_class: str,
+        retryable: bool,
     ) -> Dict[str, Any]:
-        item["status"] = status
+        policy = _execution_policy(program)
+        max_attempts = max(1, int(policy.get("max_attempts_per_item", 5)))
+        retry_delay_minutes = max(1, int(policy.get("retry_delay_minutes", 20)))
+
         item["error"] = error
         item["result"] = {
             "success": False,
@@ -310,6 +313,11 @@ class RedditProgramOrchestrator:
             "failure_class": failure_class,
             "final_verdict": "needs_review",
         }
+        if retryable and int(item.get("attempts", 0)) < max_attempts:
+            item["status"] = "pending"
+            item["scheduled_at"] = _utc_iso(_utc_now() + timedelta(minutes=retry_delay_minutes))
+        else:
+            item["status"] = "blocked"
         return self.store.save_program(program)
 
     def _compact_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -412,12 +420,20 @@ class RedditProgramOrchestrator:
             }
 
         if str(item.get("action") or "") == "reply_comment" and not str(item.get("text") or "").strip():
-            return {"error": "random reply template missing for reply_comment quota item"}
+            return {
+                "error": "random reply template missing for reply_comment quota item",
+                "failure_class": "configuration_error",
+                "retryable": False,
+            }
 
         if item.get("target_mode") == "discover_post":
             candidate = await self._discover_post_target(program, item)
             if not candidate:
-                return {"error": "no eligible reddit post targets available for this quota item"}
+                return {
+                    "error": "no eligible reddit post targets available for this quota item",
+                    "failure_class": "target_unavailable",
+                    "retryable": True,
+                }
             return {
                 "target_url": candidate.get("target_url"),
                 "target_comment_url": None,
@@ -431,7 +447,11 @@ class RedditProgramOrchestrator:
         if item.get("target_mode") == "discover_comment":
             candidate = await self._discover_comment_target(program, item)
             if not candidate:
-                return {"error": "no eligible reddit comment targets available for this quota item"}
+                return {
+                    "error": "no eligible reddit comment targets available for this quota item",
+                    "failure_class": "target_unavailable",
+                    "retryable": True,
+                }
             return {
                 "target_url": candidate.get("thread_url"),
                 "target_comment_url": candidate.get("target_comment_url"),
@@ -442,7 +462,11 @@ class RedditProgramOrchestrator:
                 "discovered_target": candidate,
             }
 
-        return {"error": f"unsupported reddit target mode: {item.get('target_mode')}"}
+        return {
+            "error": f"unsupported reddit target mode: {item.get('target_mode')}",
+            "failure_class": "configuration_error",
+            "retryable": False,
+        }
 
     def _target_already_used(self, program: Dict[str, Any], *, profile_name: str, local_date: str, target_ref: str) -> bool:
         allow_reuse = bool(_execution_policy(program).get("allow_target_reuse_within_day", False))
@@ -469,6 +493,59 @@ class RedditProgramOrchestrator:
             response.raise_for_status()
             return response.json()
 
+    async def _discover_posts_for_subreddit(
+        self,
+        *,
+        subreddit: str,
+        keywords: List[str],
+        max_posts: int,
+    ) -> List[Dict[str, Any]]:
+        urls: List[str] = []
+        if keywords:
+            query = quote(" ".join(keywords))
+            urls.append(
+                f"https://www.reddit.com/r/{quote(subreddit)}/search/.json?raw_json=1&restrict_sr=1&sort=hot&t=month&q={query}"
+            )
+        urls.append(f"https://www.reddit.com/r/{quote(subreddit)}/hot/.json?raw_json=1&limit={max_posts}")
+
+        ranked: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for url in urls:
+            try:
+                payload = await self._fetch_json(url)
+            except Exception as exc:
+                logger.warning(f"reddit post discovery failed for {subreddit}: {exc}")
+                continue
+            children = (((payload or {}).get("data") or {}).get("children") or [])
+            for child in children:
+                data = dict(child.get("data") or {})
+                permalink = str(data.get("permalink") or "").strip()
+                if not permalink:
+                    continue
+                if any(bool(data.get(flag)) for flag in ("locked", "archived", "stickied")):
+                    continue
+                title = str(data.get("title") or "").strip()
+                body = str(data.get("selftext") or "").strip()
+                if not self._keyword_match([title, body], keywords):
+                    continue
+                target_url = permalink if permalink.startswith("http") else f"https://www.reddit.com{permalink}"
+                if target_url in seen:
+                    continue
+                seen.add(target_url)
+                ranked.append(
+                    {
+                        "target_id": str(data.get("id") or target_url),
+                        "target_url": target_url,
+                        "subreddit": subreddit,
+                        "title": title,
+                        "score": int(data.get("score") or 0),
+                        "comment_count": int(data.get("num_comments") or 0),
+                        "source": "subreddit_search" if "search/.json" in url else "subreddit_hot",
+                    }
+                )
+        ranked.sort(key=lambda value: (value.get("comment_count", 0), value.get("score", 0)), reverse=True)
+        return ranked[:max_posts]
+
     async def _discover_post_target(self, program: Dict[str, Any], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         constraints = _program_filters(program)
         profile_name = str(item.get("profile_name") or "")
@@ -488,42 +565,16 @@ class RedditProgramOrchestrator:
 
         max_posts = max(1, int(_execution_policy(program).get("max_discovery_posts_per_subreddit", 6)))
         for subreddit in subreddits:
-            url = f"https://www.reddit.com/r/{quote(subreddit)}/hot/.json?raw_json=1&limit={max_posts}"
-            try:
-                payload = await self._fetch_json(url)
-            except Exception as exc:
-                logger.warning(f"reddit post discovery failed for {subreddit}: {exc}")
-                continue
-            children = (((payload or {}).get("data") or {}).get("children") or [])
-            ranked: List[Dict[str, Any]] = []
-            for child in children:
-                data = dict(child.get("data") or {})
-                permalink = str(data.get("permalink") or "").strip()
-                if not permalink:
-                    continue
-                if any(bool(data.get(flag)) for flag in ("locked", "archived", "stickied")):
-                    continue
-                title = str(data.get("title") or "").strip()
-                body = str(data.get("selftext") or "").strip()
-                if not self._keyword_match([title, body], keywords):
-                    continue
-                target_url = permalink if permalink.startswith("http") else f"https://www.reddit.com{permalink}"
+            ranked = await self._discover_posts_for_subreddit(
+                subreddit=subreddit,
+                keywords=keywords,
+                max_posts=max_posts,
+            )
+            for candidate in ranked:
+                target_url = str(candidate.get("target_url") or "")
                 if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url):
                     continue
-                ranked.append(
-                    {
-                        "target_id": str(data.get("id") or target_url),
-                        "target_url": target_url,
-                        "subreddit": subreddit,
-                        "title": title,
-                        "score": int(data.get("score") or 0),
-                        "comment_count": int(data.get("num_comments") or 0),
-                        "source": "subreddit_hot",
-                    }
-                )
-            ranked.sort(key=lambda value: (value.get("comment_count", 0), value.get("score", 0)), reverse=True)
-            if ranked:
-                return ranked[0]
+                return candidate
         return None
 
     def _walk_comment_nodes(self, nodes: List[Dict[str, Any]], *, subreddit: str, post_title: str, keywords: List[str]) -> List[Dict[str, Any]]:
@@ -605,32 +656,17 @@ class RedditProgramOrchestrator:
         max_comments = max(1, int(_execution_policy(program).get("max_comment_candidates_per_post", 8)))
 
         for subreddit in subreddits:
-            post_feed_url = f"https://www.reddit.com/r/{quote(subreddit)}/hot/.json?raw_json=1&limit={max_posts}"
-            try:
-                payload = await self._fetch_json(post_feed_url)
-            except Exception as exc:
-                logger.warning(f"reddit comment discovery failed for {subreddit}: {exc}")
-                continue
-            children = (((payload or {}).get("data") or {}).get("children") or [])
-            posts = []
-            for child in children:
-                data = dict(child.get("data") or {})
-                permalink = str(data.get("permalink") or "").strip()
-                title = str(data.get("title") or "").strip()
-                body = str(data.get("selftext") or "").strip()
-                if not permalink or any(bool(data.get(flag)) for flag in ("locked", "archived", "stickied")):
-                    continue
-                if not self._keyword_match([title, body], keywords):
-                    continue
-                post_url = permalink if permalink.startswith("http") else f"https://www.reddit.com{permalink}"
-                posts.append({"post_url": post_url, "title": title, "score": int(data.get("score") or 0)})
-            posts.sort(key=lambda value: value.get("score", 0), reverse=True)
+            posts = await self._discover_posts_for_subreddit(
+                subreddit=subreddit,
+                keywords=keywords,
+                max_posts=max_posts,
+            )
 
             for post in posts:
                 try:
-                    thread_payload = await self._fetch_json(_thread_json_url(post["post_url"]))
+                    thread_payload = await self._fetch_json(_thread_json_url(post["target_url"]))
                 except Exception as exc:
-                    logger.warning(f"reddit thread load failed for {post['post_url']}: {exc}")
+                    logger.warning(f"reddit thread load failed for {post['target_url']}: {exc}")
                     continue
                 comments_root = []
                 if isinstance(thread_payload, list) and len(thread_payload) > 1:
@@ -641,7 +677,7 @@ class RedditProgramOrchestrator:
                     target_ref = str(candidate.get("target_comment_url") or "")
                     if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_ref):
                         continue
-                    candidate["thread_url"] = post["post_url"]
+                    candidate["thread_url"] = post["target_url"]
                     filtered.append(candidate)
                     if len(filtered) >= max_comments:
                         break
