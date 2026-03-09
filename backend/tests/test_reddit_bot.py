@@ -310,3 +310,37 @@ def test_click_reply_row_button_uses_reply_center():
     assert ok is True
     assert page.mouse.clicks == [(152, 702)]
     assert page.waits == [900]
+
+
+def test_network_has_vote_mutation_detects_post_vote():
+    class _Recorder:
+        class _Capture:
+            events = [
+                {
+                    "kind": "request",
+                    "method": "POST",
+                    "url": "https://www.reddit.com/svc/shreddit/graphql",
+                    "post_data_excerpt": '{"operation":"UpdatePostVoteState","variables":{"input":{"postId":"t3_abc","voteState":"UP"}}}',
+                }
+            ]
+
+        network_capture = _Capture()
+
+    assert reddit_bot._network_has_vote_mutation(_Recorder(), target_kind="post") is True
+
+
+def test_network_has_vote_mutation_detects_comment_vote():
+    class _Recorder:
+        class _Capture:
+            events = [
+                {
+                    "kind": "request",
+                    "method": "POST",
+                    "url": "https://www.reddit.com/svc/shreddit/graphql",
+                    "post_data_excerpt": '{"variables":{"input":{"commentId":"t1_xyz","voteState":"UP"}}}',
+                }
+            ]
+
+        network_capture = _Capture()
+
+    assert reddit_bot._network_has_vote_mutation(_Recorder(), target_kind="comment") is True

@@ -827,12 +827,15 @@ async def _comment_action_row(
                 for (const root of roots) {
                     const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, a, div, span')) : [];
                     for (const node of nodes) {
+                        const tag = normalize(node.tagName);
                         const text = normalize(node.innerText || node.textContent);
                         const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
                         const rect = node.getBoundingClientRect();
                         if (!visibleRect(rect)) continue;
                         if (titleRect && rect.top <= titleRect.bottom + 18) continue;
-                        if (!(text.includes('reply') || aria.includes('reply'))) continue;
+                        if (tag !== 'button' && !aria.includes('reply')) continue;
+                        if (text !== 'reply' && aria !== 'reply') continue;
+                        if (rect.width > 140 || rect.height > 44) continue;
                         replies.push({
                             left: rect.left,
                             top: rect.top,
@@ -887,7 +890,7 @@ async def _comment_action_row(
                     author: authorRect,
                     reply,
                     vote: {
-                        x: Math.round(Math.max(22, reply.left - 76)),
+                        x: Math.round(Math.max(28, reply.left - 42)),
                         y: reply.y,
                     },
                 };
@@ -979,6 +982,30 @@ async def _click_comment_upvote_region(page, *, row: Dict[str, Any]) -> bool:
     )
     await page.wait_for_timeout(900)
     return True
+
+
+def _network_has_vote_mutation(
+    recorder,
+    *,
+    target_kind: str,
+    vote_state: str = "UP",
+) -> bool:
+    capture = getattr(recorder, "network_capture", None)
+    events = list(getattr(capture, "events", []) or [])
+    expected_key = '"postId"' if target_kind == "post" else '"commentId"'
+    expected_vote = f'"voteState":"{vote_state}"'
+    for event in events:
+        if event.get("kind") != "request":
+            continue
+        if str(event.get("method") or "").upper() != "POST":
+            continue
+        if "graphql" not in str(event.get("url") or "").lower():
+            continue
+        excerpt = str(event.get("post_data_excerpt") or "")
+        compact = excerpt.replace(" ", "")
+        if expected_key in compact and expected_vote in compact:
+            return True
+    return False
 
 
 async def _click_reply_row_button(page, *, row: Dict[str, Any]) -> bool:
@@ -1213,6 +1240,7 @@ async def upvote_post(
                 if share_y is not None and share_left is not None
                 else []
             )
+            recorder = get_current_forensic_recorder()
             success = await _verify_named_control_state(
                 page,
                 needles=["remove upvote", "upvoted"],
@@ -1221,7 +1249,10 @@ async def upvote_post(
                 left_of_x=share_left,
             )
             if not success:
-                success = bool(before_signature and after_signature and before_signature != after_signature)
+                success = bool(
+                    (before_signature and after_signature and before_signature != after_signature)
+                    or _network_has_vote_mutation(recorder, target_kind="post")
+                )
             return _result(
                 success=success,
                 action="upvote_post",
@@ -1296,6 +1327,7 @@ async def upvote_comment(
                 if reply
                 else []
             )
+            recorder = get_current_forensic_recorder()
             success = await _verify_named_control_state(
                 page,
                 needles=["remove upvote", "upvoted"],
@@ -1305,7 +1337,10 @@ async def upvote_comment(
                 require_below_anchor=True,
             )
             if not success:
-                success = bool(before_signature and after_signature and before_signature != after_signature)
+                success = bool(
+                    (before_signature and after_signature and before_signature != after_signature)
+                    or _network_has_vote_mutation(recorder, target_kind="comment")
+                )
             return _result(
                 success=success,
                 action="upvote_comment",
