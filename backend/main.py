@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, List, Optional, Dict, Set, Literal
 
 # Authentication imports
@@ -76,6 +76,8 @@ from reddit_login_bot import (
 )
 from reddit_bot import run_reddit_action
 from reddit_mission_store import RedditMissionScheduler, RedditMissionStore
+from reddit_program_orchestrator import RedditProgramOrchestrator, RedditProgramScheduler
+from reddit_program_store import RedditProgramStore
 from reddit_login_learning import RedditLoginLearningStore
 from reddit_convergence import (
     DEFAULT_UNLINKED_ORDER,
@@ -218,6 +220,16 @@ premium_scheduler = PremiumScheduler(
 # Initialize Reddit mission store/scheduler (runner wired below once helpers exist)
 reddit_mission_store = RedditMissionStore()
 reddit_mission_scheduler: Optional[RedditMissionScheduler] = None
+reddit_program_store = RedditProgramStore()
+reddit_program_orchestrator = RedditProgramOrchestrator(
+    store=reddit_program_store,
+    proxy_resolver=lambda: _resolve_effective_proxy(),
+    broadcast_update=broadcast_update,
+)
+reddit_program_scheduler = RedditProgramScheduler(
+    store=reddit_program_store,
+    orchestrator=reddit_program_orchestrator,
+)
 reddit_bulk_rollout_tasks: Dict[str, asyncio.Task] = {}
 reddit_convergence_tasks: Dict[str, asyncio.Task] = {}
 
@@ -1843,6 +1855,105 @@ class RedditMissionUpdateRequest(BaseModel):
     target_comment_url: Optional[str] = None
     subreddit: Optional[str] = None
     cadence: Optional[RedditMissionCadence] = None
+
+
+class RedditProgramRandomWindow(BaseModel):
+    start_hour: int = 8
+    end_hour: int = 22
+
+
+class RedditProgramProfileSelection(BaseModel):
+    profile_names: List[str]
+
+
+class RedditProgramTopicConstraints(BaseModel):
+    subreddits: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    explicit_post_targets: List[str] = Field(default_factory=list)
+    explicit_comment_targets: List[str] = Field(default_factory=list)
+    allow_own_content_targets: bool = False
+
+
+class RedditProgramAssignment(BaseModel):
+    id: Optional[str] = None
+    action: Literal[
+        "upvote_post",
+        "upvote_comment",
+        "join_subreddit",
+        "open_target",
+        "create_post",
+        "comment_post",
+        "reply_comment",
+    ]
+    profile_name: str
+    day_offset: int = 0
+    target_url: Optional[str] = None
+    target_comment_url: Optional[str] = None
+    text: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    subreddit: Optional[str] = None
+    verification_requirements: Optional[List[str]] = None
+
+
+class RedditProgramContentAssignments(BaseModel):
+    items: List[RedditProgramAssignment] = Field(default_factory=list)
+
+
+class RedditProgramEngagementQuotas(BaseModel):
+    upvotes_per_day: int = 0
+    reply_min_per_day: int = 0
+    reply_max_per_day: int = 0
+    random_reply_templates: List[str] = Field(default_factory=list)
+    random_upvote_action: Literal["upvote_post", "upvote_comment"] = "upvote_post"
+
+
+class RedditProgramSchedule(BaseModel):
+    start_at: Optional[str] = None
+    duration_days: int = 1
+    timezone: str = "Europe/Zurich"
+    random_windows: List[RedditProgramRandomWindow] = Field(default_factory=lambda: [RedditProgramRandomWindow()])
+
+
+class RedditProgramVerificationContract(BaseModel):
+    require_success_confirmed: bool = True
+    require_attempt_id: bool = True
+    required_evidence_summary: bool = True
+    required_target_reference: bool = True
+
+
+class RedditProgramExecutionPolicy(BaseModel):
+    strict_quotas: bool = True
+    allow_target_reuse_within_day: bool = False
+    cooldown_minutes: int = 15
+    max_actions_per_tick: int = 3
+    max_discovery_posts_per_subreddit: int = 6
+    max_comment_candidates_per_post: int = 8
+    retry_delay_minutes: int = 20
+    max_attempts_per_item: int = 5
+
+
+class RedditProgramCreateRequest(BaseModel):
+    profile_selection: RedditProgramProfileSelection
+    schedule: RedditProgramSchedule = Field(default_factory=RedditProgramSchedule)
+    topic_constraints: RedditProgramTopicConstraints = Field(default_factory=RedditProgramTopicConstraints)
+    content_assignments: RedditProgramContentAssignments = Field(default_factory=RedditProgramContentAssignments)
+    engagement_quotas: RedditProgramEngagementQuotas = Field(default_factory=RedditProgramEngagementQuotas)
+    verification_contract: RedditProgramVerificationContract = Field(default_factory=RedditProgramVerificationContract)
+    execution_policy: RedditProgramExecutionPolicy = Field(default_factory=RedditProgramExecutionPolicy)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RedditProgramUpdateRequest(BaseModel):
+    status: Optional[Literal["active", "paused", "cancelled", "completed"]] = None
+    profile_selection: Optional[RedditProgramProfileSelection] = None
+    schedule: Optional[RedditProgramSchedule] = None
+    topic_constraints: Optional[RedditProgramTopicConstraints] = None
+    content_assignments: Optional[RedditProgramContentAssignments] = None
+    engagement_quotas: Optional[RedditProgramEngagementQuotas] = None
+    verification_contract: Optional[RedditProgramVerificationContract] = None
+    execution_policy: Optional[RedditProgramExecutionPolicy] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class SessionCreateRequest(BaseModel):
@@ -5919,6 +6030,102 @@ def _resolve_effective_proxy(proxy_id: Optional[str] = None) -> Optional[str]:
     return proxy_url
 
 
+def _reddit_program_payload_from_request(request: RedditProgramCreateRequest) -> Dict[str, Any]:
+    return {
+        "profile_selection": request.profile_selection.model_dump(),
+        "schedule": request.schedule.model_dump(),
+        "topic_constraints": request.topic_constraints.model_dump(),
+        "content_assignments": request.content_assignments.model_dump(),
+        "engagement_quotas": request.engagement_quotas.model_dump(),
+        "verification_contract": request.verification_contract.model_dump(),
+        "execution_policy": request.execution_policy.model_dump(),
+        "metadata": dict(request.metadata or {}),
+    }
+
+
+def _validate_reddit_program_payload(payload: Dict[str, Any]) -> None:
+    profile_selection = dict(payload.get("profile_selection") or {})
+    schedule = dict(payload.get("schedule") or {})
+    topic_constraints = dict(payload.get("topic_constraints") or {})
+    content_assignments = dict(payload.get("content_assignments") or {})
+    engagement_quotas = dict(payload.get("engagement_quotas") or {})
+
+    profile_names = [
+        str(name).strip()
+        for name in list(profile_selection.get("profile_names") or [])
+        if str(name).strip()
+    ]
+    if not profile_names:
+        raise HTTPException(status_code=400, detail="profile_selection.profile_names must contain at least one reddit profile")
+
+    sessions_by_name = {
+        str(item.get("profile_name") or "").strip(): item
+        for item in list_saved_reddit_sessions()
+    }
+    missing_profiles = [name for name in profile_names if name not in sessions_by_name]
+    if missing_profiles:
+        raise HTTPException(status_code=400, detail=f"reddit sessions not found: {missing_profiles}")
+
+    invalid_profiles = [name for name in profile_names if not sessions_by_name[name].get("has_valid_session")]
+    if invalid_profiles:
+        raise HTTPException(status_code=400, detail=f"reddit sessions do not have valid persisted auth: {invalid_profiles}")
+
+    duration_days = int(schedule.get("duration_days", 1))
+    if duration_days < 1:
+        raise HTTPException(status_code=400, detail="schedule.duration_days must be >= 1")
+
+    assignments = list(content_assignments.get("items") or [])
+    for idx, assignment in enumerate(assignments):
+        action = str(assignment.get("action") or "").strip()
+        profile_name = str(assignment.get("profile_name") or "").strip()
+        if profile_name not in profile_names:
+            raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].profile_name must be included in profile_selection.profile_names")
+        day_offset = int(assignment.get("day_offset", 0))
+        if day_offset < 0 or day_offset >= duration_days:
+            raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].day_offset must be between 0 and duration_days - 1")
+        if action == "comment_post":
+            if not str(assignment.get("target_url") or "").strip():
+                raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].target_url is required for comment_post")
+            if not str(assignment.get("text") or "").strip():
+                raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].text is required for comment_post")
+        elif action == "reply_comment":
+            if not str(assignment.get("target_comment_url") or "").strip():
+                raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].target_comment_url is required for reply_comment")
+            if not str(assignment.get("text") or "").strip():
+                raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].text is required for reply_comment")
+        elif action == "upvote_post":
+            if not str(assignment.get("target_url") or "").strip():
+                raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].target_url is required for upvote_post")
+        elif action == "upvote_comment":
+            if not str(assignment.get("target_comment_url") or "").strip():
+                raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].target_comment_url is required for upvote_comment")
+        elif action == "join_subreddit":
+            if not str(assignment.get("target_url") or "").strip():
+                raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].target_url is required for join_subreddit")
+        elif action == "create_post":
+            if not str(assignment.get("title") or "").strip():
+                raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].title is required for create_post")
+
+    reply_max_per_day = int(engagement_quotas.get("reply_max_per_day", 0))
+    random_reply_templates = [
+        str(item).strip()
+        for item in list(engagement_quotas.get("random_reply_templates") or [])
+        if str(item).strip()
+    ]
+    if reply_max_per_day > 0 and not random_reply_templates:
+        raise HTTPException(status_code=400, detail="engagement_quotas.random_reply_templates is required when reply_max_per_day > 0")
+
+    if int(engagement_quotas.get("upvotes_per_day", 0)) > 0 or reply_max_per_day > 0:
+        subreddits = [str(item).strip() for item in list(topic_constraints.get("subreddits") or []) if str(item).strip()]
+        explicit_post_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_post_targets") or []) if str(item).strip()]
+        explicit_comment_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_comment_targets") or []) if str(item).strip()]
+        if not subreddits and not explicit_post_targets and not explicit_comment_targets:
+            raise HTTPException(
+                status_code=400,
+                detail="topic_constraints must include subreddits or explicit targets when random engagement quotas are enabled",
+            )
+
+
 def _get_active_reddit_bulk_rollout() -> Optional[tuple[str, asyncio.Task]]:
     for run_id, task in list(reddit_bulk_rollout_tasks.items()):
         if task.done():
@@ -6449,6 +6656,7 @@ async def create_reddit_mission(
             "profile_name": request.profile_name,
             "action": request.action,
             "target_url": request.target_url,
+            "target_comment_url": request.target_comment_url,
             "subreddit": request.subreddit,
             "brief": request.brief,
             "exact_text": request.exact_text,
@@ -6514,6 +6722,189 @@ async def reddit_mission_status(current_user: dict = Depends(get_current_user)) 
         "scheduler_running": bool(reddit_mission_scheduler and reddit_mission_scheduler._task and not reddit_mission_scheduler._task.done()),
         "mission_count": len(reddit_mission_store.list_missions()),
         "due_count": len(due),
+    }
+
+
+@app.post("/reddit/programs/preview")
+async def preview_reddit_program(
+    request: RedditProgramCreateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    payload = _reddit_program_payload_from_request(request)
+    _validate_reddit_program_payload(payload)
+    preview = reddit_program_store.preview_program(payload)
+    return {"success": True, "program": preview}
+
+
+@app.post("/reddit/programs/run-due")
+async def run_due_reddit_programs(current_user: dict = Depends(get_current_user)) -> Dict:
+    result = await reddit_program_scheduler.tick(source="manual")
+    return {"success": True, **result}
+
+
+@app.get("/reddit/programs/scheduler/status")
+async def get_reddit_program_scheduler_status(current_user: dict = Depends(get_current_user)) -> Dict:
+    return reddit_program_scheduler.get_status()
+
+
+@app.get("/reddit/programs")
+async def list_reddit_programs(current_user: dict = Depends(get_current_user)) -> Dict:
+    return {"programs": reddit_program_store.list_programs()}
+
+
+@app.post("/reddit/programs")
+async def create_reddit_program(
+    request: RedditProgramCreateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    payload = _reddit_program_payload_from_request(request)
+    payload["metadata"] = {
+        **dict(payload.get("metadata") or {}),
+        "created_by": current_user.get("username"),
+    }
+    _validate_reddit_program_payload(payload)
+    program = reddit_program_store.create_program(payload)
+    return {"success": True, "program": program}
+
+
+@app.get("/reddit/programs/{program_id}")
+async def get_reddit_program(
+    program_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    program = reddit_program_store.get_program(program_id)
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+    return {"program": program}
+
+
+@app.put("/reddit/programs/{program_id}")
+async def update_reddit_program(
+    program_id: str,
+    request: RedditProgramUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    existing = reddit_program_store.get_program(program_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+
+    updates: Dict[str, Any] = {}
+    if request.status is not None:
+        updates["status"] = request.status
+
+    mutable_keys = [
+        "profile_selection",
+        "schedule",
+        "topic_constraints",
+        "content_assignments",
+        "engagement_quotas",
+        "verification_contract",
+        "execution_policy",
+        "metadata",
+    ]
+    for key in mutable_keys:
+        value = getattr(request, key)
+        if value is not None:
+            updates[key] = value.model_dump() if hasattr(value, "model_dump") else value
+
+    spec_updates = {key: value for key, value in updates.items() if key in mutable_keys}
+    if spec_updates:
+        merged_payload = dict(existing.get("spec") or {})
+        merged_payload.update(spec_updates)
+        _validate_reddit_program_payload(merged_payload)
+
+    try:
+        program = reddit_program_store.update_program(program_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+    return {"success": True, "program": program}
+
+
+@app.post("/reddit/programs/{program_id}/run-now")
+async def run_reddit_program_now(
+    program_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    program = reddit_program_store.get_program(program_id)
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+    result = await reddit_program_orchestrator.process_program(program_id)
+    updated = reddit_program_store.get_program(program_id)
+    return {"success": True, "result": result, "program": updated}
+
+
+@app.post("/reddit/programs/{program_id}/pause")
+async def pause_reddit_program(
+    program_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    program = reddit_program_store.update_program(program_id, {"status": "paused"})
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+    return {"success": True, "program": program}
+
+
+@app.post("/reddit/programs/{program_id}/resume")
+async def resume_reddit_program(
+    program_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    program = reddit_program_store.update_program(program_id, {"status": "active"})
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+    return {"success": True, "program": program}
+
+
+@app.post("/reddit/programs/{program_id}/cancel")
+async def cancel_reddit_program(
+    program_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    program = reddit_program_store.update_program(program_id, {"status": "cancelled"})
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+    return {"success": True, "program": program}
+
+
+@app.get("/reddit/programs/{program_id}/status")
+async def get_reddit_program_status(
+    program_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    program = reddit_program_store.get_program(program_id)
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+    return {
+        "program_id": program_id,
+        "status": program.get("status"),
+        "next_run_at": program.get("next_run_at"),
+        "remaining_contract": program.get("remaining_contract"),
+        "daily_progress": program.get("daily_progress"),
+        "recent_attempt_ids": program.get("recent_attempt_ids"),
+    }
+
+
+@app.get("/reddit/programs/{program_id}/evidence")
+async def get_reddit_program_evidence(
+    program_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    program = reddit_program_store.get_program(program_id)
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+
+    forensic_group = await build_forensic_group({"run_id": program_id}, limit=200)
+    attempt_ids = list(program.get("recent_attempt_ids") or [])[:10]
+    details = await asyncio.gather(*(get_forensic_attempt_detail(attempt_id) for attempt_id in attempt_ids))
+    return {
+        "program_id": program_id,
+        "program_status": program.get("status"),
+        "forensics": forensic_group,
+        "recent_attempts": details,
+        "target_history": list(program.get("target_history") or [])[-50:],
     }
 
 
@@ -8243,6 +8634,8 @@ async def startup_event():
     if reddit_mission_scheduler:
         await reddit_mission_scheduler.start()
         logger.info("Reddit mission scheduler started on startup")
+    await reddit_program_scheduler.start()
+    logger.info("Reddit program scheduler started on startup")
 
 
 @app.on_event("shutdown")
@@ -8259,6 +8652,8 @@ async def shutdown_event():
     if reddit_mission_scheduler:
         await reddit_mission_scheduler.stop()
         logger.info("Reddit mission scheduler stopped on shutdown")
+    await reddit_program_scheduler.stop()
+    logger.info("Reddit program scheduler stopped on shutdown")
 
 
 # =========================================================================

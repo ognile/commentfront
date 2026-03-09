@@ -2138,6 +2138,12 @@ async def run_reddit_action(
             result = await upload_media_only(session, image_path=image_path, proxy_url=proxy_url)
     else:
         result = _result(success=False, action=normalized, profile_name=session.profile_name, error=f"Unsupported Reddit action: {action}")
+    if url and not result.get("target_url"):
+        result["target_url"] = url
+    if target_comment_url and not result.get("target_comment_url"):
+        result["target_comment_url"] = target_comment_url
+    if subreddit and not result.get("subreddit"):
+        result["subreddit"] = subreddit
     result["attempt_id"] = recorder.attempt_id
     result["trace_id"] = recorder.trace_id
     verdict = build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")

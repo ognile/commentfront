@@ -1,0 +1,727 @@
+"""
+Reddit program orchestration runtime with constrained target discovery.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+from urllib.parse import quote
+
+import httpx
+
+from forensics import is_infra_error_text
+from reddit_bot import REDDIT_HTTP_HEADERS, run_reddit_action
+from reddit_program_store import RedditProgramStore, refresh_reddit_program_state
+from reddit_session import RedditSession
+
+logger = logging.getLogger("RedditProgramOrchestrator")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_iso(value: Optional[datetime] = None) -> str:
+    dt = value or _utc_now()
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _short_text(value: Optional[str], limit: int = 160) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _thread_json_url(url: str) -> str:
+    clean = str(url or "").split("?", 1)[0].strip().rstrip("/")
+    return f"{clean}/.json?raw_json=1&limit=20"
+
+
+def _program_filters(program: Dict[str, Any]) -> Dict[str, Any]:
+    return dict(((program.get("spec") or {}).get("topic_constraints") or {}))
+
+
+def _execution_policy(program: Dict[str, Any]) -> Dict[str, Any]:
+    return dict(((program.get("spec") or {}).get("execution_policy") or {}))
+
+
+def _verification_contract(program: Dict[str, Any]) -> Dict[str, Any]:
+    return dict(((program.get("spec") or {}).get("verification_contract") or {}))
+
+
+def _target_ref(item: Dict[str, Any]) -> Optional[str]:
+    return (
+        str(item.get("target_comment_url") or "").strip()
+        or str(item.get("target_url") or "").strip()
+        or str(((item.get("discovered_target") or {}).get("target_comment_url") or "")).strip()
+        or str(((item.get("discovered_target") or {}).get("target_url") or "")).strip()
+        or None
+    )
+
+
+def _failure_classification(result: Dict[str, Any]) -> str:
+    if str(result.get("error") or "").lower().find("session not found") >= 0:
+        return "session_invalid"
+    verdict = str(result.get("final_verdict") or "")
+    if verdict == "infra_failure" or is_infra_error_text(result.get("error")):
+        return "infrastructure"
+    if "not found" in str(result.get("error") or "").lower():
+        return "target_unavailable"
+    if not result.get("attempt_id"):
+        return "verification_miss"
+    return "execution_failed"
+
+
+class RedditProgramOrchestrator:
+    def __init__(
+        self,
+        *,
+        store: RedditProgramStore,
+        proxy_resolver: Optional[Callable[[], Optional[str]]] = None,
+        broadcast_update: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+        action_runner=run_reddit_action,
+    ):
+        self.store = store
+        self.proxy_resolver = proxy_resolver or (lambda: None)
+        self.broadcast_update = broadcast_update
+        self.action_runner = action_runner
+        self._lock = asyncio.Lock()
+
+    async def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
+        if not self.broadcast_update:
+            return
+        try:
+            await self.broadcast_update(event_type, payload)
+        except Exception as exc:
+            logger.warning(f"reddit program broadcast failure ({event_type}): {exc}")
+
+    async def process_due_programs(self, *, max_programs: int = 2) -> Dict[str, int]:
+        processed = 0
+        failed = 0
+        async with self._lock:
+            for program in self.store.get_due_programs():
+                if processed >= max_programs:
+                    break
+                try:
+                    await self.process_program(program["id"], force_due=False)
+                    processed += 1
+                except Exception as exc:
+                    failed += 1
+                    logger.error(f"reddit program failed {program['id']}: {exc}", exc_info=True)
+        return {"processed": processed, "failed": failed}
+
+    async def process_program(self, program_id: str, *, force_due: bool = True) -> Dict[str, Any]:
+        program = self.store.get_program(program_id)
+        if not program:
+            raise ValueError(f"reddit program not found: {program_id}")
+
+        if program.get("status") != "active":
+            return {"program_id": program_id, "processed": 0, "status": program.get("status")}
+
+        await self._emit("reddit_program_start", {"program_id": program_id, "status": program.get("status")})
+
+        now = _utc_now()
+        processed = 0
+        for item in self._select_due_items(program, now=now, force_due=force_due):
+            updated = await self._run_work_item(program, item["id"])
+            program = updated
+            processed += 1
+
+        program["last_run_at"] = _utc_iso(now)
+        program["last_result"] = {"processed": processed}
+        saved = self.store.save_program(program)
+        await self._emit(
+            "reddit_program_complete",
+            {
+                "program_id": program_id,
+                "processed": processed,
+                "status": saved.get("status"),
+                "remaining_contract": saved.get("remaining_contract", {}),
+            },
+        )
+        return {"program_id": program_id, "processed": processed, "status": saved.get("status")}
+
+    def _select_due_items(self, program: Dict[str, Any], *, now: datetime, force_due: bool) -> List[Dict[str, Any]]:
+        work_items = list(((program.get("compiled") or {}).get("work_items") or []))
+        policy = _execution_policy(program)
+        max_actions = max(1, int(policy.get("max_actions_per_tick", 3)))
+        cooldown_minutes = max(0, int(policy.get("cooldown_minutes", 15)))
+        selected: List[Dict[str, Any]] = []
+        last_profile_at: Dict[str, datetime] = {}
+
+        for item in work_items:
+            if len(selected) >= max_actions:
+                break
+            if str(item.get("status") or "pending") != "pending":
+                continue
+            scheduled_at = _parse_iso(item.get("scheduled_at"))
+            if not force_due and scheduled_at and scheduled_at > now:
+                continue
+            profile_name = str(item.get("profile_name") or "")
+            profile_last = last_profile_at.get(profile_name) or self._latest_profile_attempt(program, profile_name)
+            if cooldown_minutes > 0 and profile_last and profile_last > now - timedelta(minutes=cooldown_minutes):
+                continue
+            selected.append(item)
+            last_profile_at[profile_name] = now
+
+        return selected
+
+    def _latest_profile_attempt(self, program: Dict[str, Any], profile_name: str) -> Optional[datetime]:
+        latest: Optional[datetime] = None
+        for item in (program.get("compiled") or {}).get("work_items", []):
+            if str(item.get("profile_name") or "") != profile_name:
+                continue
+            last_attempt = _parse_iso(item.get("last_attempt_at"))
+            if last_attempt and (latest is None or last_attempt > latest):
+                latest = last_attempt
+        return latest
+
+    async def _run_work_item(self, program: Dict[str, Any], work_item_id: str) -> Dict[str, Any]:
+        work_items = (program.get("compiled") or {}).get("work_items", [])
+        item = next((entry for entry in work_items if entry.get("id") == work_item_id), None)
+        if not item:
+            return program
+
+        item["status"] = "running"
+        item["attempts"] = int(item.get("attempts", 0)) + 1
+        item["last_attempt_at"] = _utc_iso()
+        program.setdefault("events", []).append(
+            {
+                "timestamp": _utc_iso(),
+                "type": "work_item_start",
+                "work_item_id": work_item_id,
+                "action": item.get("action"),
+                "profile_name": item.get("profile_name"),
+            }
+        )
+        program["events"] = list(program.get("events", []))[-200:]
+        program = self.store.save_program(program)
+        work_items = (program.get("compiled") or {}).get("work_items", [])
+        item = next((entry for entry in work_items if entry.get("id") == work_item_id), None)
+        if not item:
+            return program
+
+        target_payload = await self._resolve_target(program, item)
+        if target_payload.get("error"):
+            return self._finalize_without_execution(
+                program,
+                item,
+                status="blocked",
+                error=target_payload["error"],
+                failure_class="quota_exhausted",
+            )
+
+        session = RedditSession(str(item.get("profile_name") or ""))
+        if not session.load():
+            return self._finalize_without_execution(
+                program,
+                item,
+                status="blocked",
+                error=f"reddit session not found: {item.get('profile_name')}",
+                failure_class="session_invalid",
+            )
+
+        action = str(item.get("action") or "")
+        proxy_url = self.proxy_resolver() if callable(self.proxy_resolver) else None
+        result = await self.action_runner(
+            session,
+            action=action,
+            proxy_url=proxy_url,
+            url=target_payload.get("target_url"),
+            target_comment_url=target_payload.get("target_comment_url"),
+            text=target_payload.get("text"),
+            title=target_payload.get("title"),
+            body=target_payload.get("body"),
+            subreddit=target_payload.get("subreddit"),
+            forensic_context={
+                "run_id": program["id"],
+                "campaign_id": program["id"],
+                "job_id": work_item_id,
+                "engine": f"reddit_program_{action}",
+                "metadata": {
+                    "program_id": program["id"],
+                    "work_item_id": work_item_id,
+                    "local_date": item.get("local_date"),
+                    "source": item.get("source"),
+                },
+            },
+        )
+
+        item["discovered_target"] = target_payload.get("discovered_target")
+        if target_payload.get("target_url"):
+            item["target_url"] = target_payload.get("target_url")
+        if target_payload.get("target_comment_url"):
+            item["target_comment_url"] = target_payload.get("target_comment_url")
+
+        success, verification_error = self._result_satisfies_contract(program, item, result)
+        if success:
+            item["status"] = "completed"
+            item["completed_at"] = _utc_iso()
+            item["error"] = None
+            item["result"] = self._compact_result(result)
+            self._append_target_history(program, item, result)
+        else:
+            self._record_failure(program, item, result, verification_error)
+
+        program.setdefault("events", []).append(
+            {
+                "timestamp": _utc_iso(),
+                "type": "work_item_complete",
+                "work_item_id": work_item_id,
+                "action": item.get("action"),
+                "profile_name": item.get("profile_name"),
+                "success": item.get("status") == "completed",
+                "status": item.get("status"),
+                "error": item.get("error"),
+                "attempt_id": ((item.get("result") or {}).get("attempt_id") if isinstance(item.get("result"), dict) else None),
+            }
+        )
+        program["events"] = list(program.get("events", []))[-200:]
+        return self.store.save_program(program)
+
+    def _finalize_without_execution(
+        self,
+        program: Dict[str, Any],
+        item: Dict[str, Any],
+        *,
+        status: str,
+        error: str,
+        failure_class: str,
+    ) -> Dict[str, Any]:
+        item["status"] = status
+        item["error"] = error
+        item["result"] = {
+            "success": False,
+            "error": error,
+            "failure_class": failure_class,
+            "final_verdict": "needs_review",
+        }
+        return self.store.save_program(program)
+
+    def _compact_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "success": bool(result.get("success")),
+            "error": result.get("error"),
+            "attempt_id": result.get("attempt_id"),
+            "trace_id": result.get("trace_id"),
+            "final_verdict": result.get("final_verdict"),
+            "evidence_summary": result.get("evidence_summary"),
+            "current_url": result.get("current_url"),
+            "verification": result.get("verification"),
+            "action": result.get("action"),
+        }
+
+    def _result_satisfies_contract(
+        self,
+        program: Dict[str, Any],
+        item: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> tuple[bool, Optional[str]]:
+        contract = _verification_contract(program)
+        require_success_confirmed = bool(contract.get("require_success_confirmed", True))
+        require_attempt_id = bool(contract.get("require_attempt_id", True))
+        require_evidence_summary = bool(contract.get("required_evidence_summary", True))
+        require_target_reference = bool(contract.get("required_target_reference", True))
+
+        if not bool(result.get("success")):
+            return False, str(result.get("error") or "reddit action reported failure")
+        if require_success_confirmed and str(result.get("final_verdict") or "") != "success_confirmed":
+            return False, "reddit action was not verified as success_confirmed"
+        if require_attempt_id and not str(result.get("attempt_id") or "").strip():
+            return False, "reddit action did not produce attempt_id"
+        if require_evidence_summary and not str(result.get("evidence_summary") or "").strip():
+            return False, "reddit action did not produce evidence_summary"
+        if require_target_reference and not _target_ref(item):
+            return False, "reddit action has no persisted target reference"
+        return True, None
+
+    def _record_failure(
+        self,
+        program: Dict[str, Any],
+        item: Dict[str, Any],
+        result: Dict[str, Any],
+        verification_error: Optional[str],
+    ) -> None:
+        policy = _execution_policy(program)
+        max_attempts = max(1, int(policy.get("max_attempts_per_item", 5)))
+        retry_delay_minutes = max(1, int(policy.get("retry_delay_minutes", 20)))
+        classification = _failure_classification(result)
+        error = verification_error or str(result.get("error") or "reddit action failed")
+
+        item["result"] = self._compact_result(result)
+        item["error"] = error
+
+        if classification in {"session_invalid", "quota_exhausted"}:
+            item["status"] = "blocked"
+            return
+
+        if int(item.get("attempts", 0)) >= max_attempts:
+            item["status"] = "exhausted"
+            return
+
+        item["status"] = "pending"
+        item["scheduled_at"] = _utc_iso(_utc_now() + timedelta(minutes=retry_delay_minutes))
+        if classification in {"target_unavailable", "infrastructure"}:
+            item["discovered_target"] = None
+            if item.get("source", "").startswith("quota_random"):
+                item["target_url"] = None
+                item["target_comment_url"] = None
+
+    def _append_target_history(self, program: Dict[str, Any], item: Dict[str, Any], result: Dict[str, Any]) -> None:
+        target_ref = _target_ref(item)
+        if not target_ref:
+            return
+        entry = {
+            "timestamp": _utc_iso(),
+            "profile_name": item.get("profile_name"),
+            "local_date": item.get("local_date"),
+            "action": item.get("action"),
+            "target_ref": target_ref,
+            "target_url": item.get("target_url"),
+            "target_comment_url": item.get("target_comment_url"),
+            "attempt_id": result.get("attempt_id"),
+        }
+        history = list(program.get("target_history") or [])
+        history.append(entry)
+        program["target_history"] = history[-500:]
+
+    async def _resolve_target(self, program: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+        if item.get("target_mode") == "explicit":
+            return {
+                "target_url": item.get("target_url"),
+                "target_comment_url": item.get("target_comment_url"),
+                "text": item.get("text"),
+                "title": item.get("title"),
+                "body": item.get("body"),
+                "subreddit": item.get("subreddit"),
+                "discovered_target": None,
+            }
+
+        if str(item.get("action") or "") == "reply_comment" and not str(item.get("text") or "").strip():
+            return {"error": "random reply template missing for reply_comment quota item"}
+
+        if item.get("target_mode") == "discover_post":
+            candidate = await self._discover_post_target(program, item)
+            if not candidate:
+                return {"error": "no eligible reddit post targets available for this quota item"}
+            return {
+                "target_url": candidate.get("target_url"),
+                "target_comment_url": None,
+                "text": item.get("text"),
+                "title": item.get("title"),
+                "body": item.get("body"),
+                "subreddit": item.get("subreddit"),
+                "discovered_target": candidate,
+            }
+
+        if item.get("target_mode") == "discover_comment":
+            candidate = await self._discover_comment_target(program, item)
+            if not candidate:
+                return {"error": "no eligible reddit comment targets available for this quota item"}
+            return {
+                "target_url": candidate.get("thread_url"),
+                "target_comment_url": candidate.get("target_comment_url"),
+                "text": item.get("text"),
+                "title": item.get("title"),
+                "body": item.get("body"),
+                "subreddit": item.get("subreddit"),
+                "discovered_target": candidate,
+            }
+
+        return {"error": f"unsupported reddit target mode: {item.get('target_mode')}"}
+
+    def _target_already_used(self, program: Dict[str, Any], *, profile_name: str, local_date: str, target_ref: str) -> bool:
+        allow_reuse = bool(_execution_policy(program).get("allow_target_reuse_within_day", False))
+        if allow_reuse:
+            return False
+        for entry in list(program.get("target_history") or []):
+            if str(entry.get("profile_name") or "") != profile_name:
+                continue
+            if str(entry.get("local_date") or "") != local_date:
+                continue
+            if str(entry.get("target_ref") or "") == target_ref:
+                return True
+        return False
+
+    def _keyword_match(self, text_values: List[str], keywords: List[str]) -> bool:
+        lowered = " ".join(str(value or "").lower() for value in text_values)
+        if not keywords:
+            return True
+        return any(str(keyword).strip().lower() in lowered for keyword in keywords if str(keyword).strip())
+
+    async def _fetch_json(self, url: str) -> Any:
+        async with httpx.AsyncClient(headers=REDDIT_HTTP_HEADERS, follow_redirects=True, timeout=20.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.json()
+
+    async def _discover_post_target(self, program: Dict[str, Any], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        constraints = _program_filters(program)
+        profile_name = str(item.get("profile_name") or "")
+        local_date = str(item.get("local_date") or "")
+        keywords = [str(value).strip() for value in list(constraints.get("keywords") or []) if str(value).strip()]
+        subreddits = [str(value).strip().lstrip("r/").strip("/") for value in list(constraints.get("subreddits") or []) if str(value).strip()]
+
+        explicit_targets = [str(value).strip() for value in list(constraints.get("explicit_post_targets") or []) if str(value).strip()]
+        for target_url in explicit_targets:
+            if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url):
+                continue
+            return {
+                "target_id": target_url,
+                "target_url": target_url,
+                "source": "explicit_pool",
+            }
+
+        max_posts = max(1, int(_execution_policy(program).get("max_discovery_posts_per_subreddit", 6)))
+        for subreddit in subreddits:
+            url = f"https://www.reddit.com/r/{quote(subreddit)}/hot/.json?raw_json=1&limit={max_posts}"
+            try:
+                payload = await self._fetch_json(url)
+            except Exception as exc:
+                logger.warning(f"reddit post discovery failed for {subreddit}: {exc}")
+                continue
+            children = (((payload or {}).get("data") or {}).get("children") or [])
+            ranked: List[Dict[str, Any]] = []
+            for child in children:
+                data = dict(child.get("data") or {})
+                permalink = str(data.get("permalink") or "").strip()
+                if not permalink:
+                    continue
+                if any(bool(data.get(flag)) for flag in ("locked", "archived", "stickied")):
+                    continue
+                title = str(data.get("title") or "").strip()
+                body = str(data.get("selftext") or "").strip()
+                if not self._keyword_match([title, body], keywords):
+                    continue
+                target_url = permalink if permalink.startswith("http") else f"https://www.reddit.com{permalink}"
+                if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url):
+                    continue
+                ranked.append(
+                    {
+                        "target_id": str(data.get("id") or target_url),
+                        "target_url": target_url,
+                        "subreddit": subreddit,
+                        "title": title,
+                        "score": int(data.get("score") or 0),
+                        "comment_count": int(data.get("num_comments") or 0),
+                        "source": "subreddit_hot",
+                    }
+                )
+            ranked.sort(key=lambda value: (value.get("comment_count", 0), value.get("score", 0)), reverse=True)
+            if ranked:
+                return ranked[0]
+        return None
+
+    def _walk_comment_nodes(self, nodes: List[Dict[str, Any]], *, subreddit: str, post_title: str, keywords: List[str]) -> List[Dict[str, Any]]:
+        collected: List[Dict[str, Any]] = []
+        for child in list(nodes or []):
+            if child.get("kind") != "t1":
+                continue
+            data = dict(child.get("data") or {})
+            body = str(data.get("body") or "").strip()
+            author = str(data.get("author") or "").strip()
+            permalink = str(data.get("permalink") or "").strip()
+            if not body or body in {"[deleted]", "[removed]"} or not author or author == "[deleted]" or not permalink:
+                replies = data.get("replies")
+                if isinstance(replies, dict):
+                    collected.extend(
+                        self._walk_comment_nodes(
+                            replies.get("data", {}).get("children") or [],
+                            subreddit=subreddit,
+                            post_title=post_title,
+                            keywords=keywords,
+                        )
+                    )
+                continue
+            if not self._keyword_match([post_title, body], keywords):
+                replies = data.get("replies")
+                if isinstance(replies, dict):
+                    collected.extend(
+                        self._walk_comment_nodes(
+                            replies.get("data", {}).get("children") or [],
+                            subreddit=subreddit,
+                            post_title=post_title,
+                            keywords=keywords,
+                        )
+                    )
+                continue
+            target_comment_url = permalink if permalink.startswith("http") else f"https://www.reddit.com{permalink}"
+            collected.append(
+                {
+                    "target_id": str(data.get("id") or target_comment_url),
+                    "target_comment_url": target_comment_url,
+                    "thread_url": None,
+                    "subreddit": subreddit,
+                    "author": author,
+                    "body_excerpt": _short_text(body, 240),
+                    "score": int(data.get("score") or 0),
+                    "source": "thread_comment",
+                }
+            )
+            replies = data.get("replies")
+            if isinstance(replies, dict):
+                collected.extend(
+                    self._walk_comment_nodes(
+                        replies.get("data", {}).get("children") or [],
+                        subreddit=subreddit,
+                        post_title=post_title,
+                        keywords=keywords,
+                    )
+                )
+        return collected
+
+    async def _discover_comment_target(self, program: Dict[str, Any], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        constraints = _program_filters(program)
+        profile_name = str(item.get("profile_name") or "")
+        local_date = str(item.get("local_date") or "")
+        keywords = [str(value).strip() for value in list(constraints.get("keywords") or []) if str(value).strip()]
+        explicit_targets = [str(value).strip() for value in list(constraints.get("explicit_comment_targets") or []) if str(value).strip()]
+        for target_comment_url in explicit_targets:
+            if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_comment_url):
+                continue
+            return {
+                "target_id": target_comment_url,
+                "target_comment_url": target_comment_url,
+                "thread_url": None,
+                "source": "explicit_pool",
+            }
+
+        subreddits = [str(value).strip().lstrip("r/").strip("/") for value in list(constraints.get("subreddits") or []) if str(value).strip()]
+        max_posts = max(1, int(_execution_policy(program).get("max_discovery_posts_per_subreddit", 6)))
+        max_comments = max(1, int(_execution_policy(program).get("max_comment_candidates_per_post", 8)))
+
+        for subreddit in subreddits:
+            post_feed_url = f"https://www.reddit.com/r/{quote(subreddit)}/hot/.json?raw_json=1&limit={max_posts}"
+            try:
+                payload = await self._fetch_json(post_feed_url)
+            except Exception as exc:
+                logger.warning(f"reddit comment discovery failed for {subreddit}: {exc}")
+                continue
+            children = (((payload or {}).get("data") or {}).get("children") or [])
+            posts = []
+            for child in children:
+                data = dict(child.get("data") or {})
+                permalink = str(data.get("permalink") or "").strip()
+                title = str(data.get("title") or "").strip()
+                body = str(data.get("selftext") or "").strip()
+                if not permalink or any(bool(data.get(flag)) for flag in ("locked", "archived", "stickied")):
+                    continue
+                if not self._keyword_match([title, body], keywords):
+                    continue
+                post_url = permalink if permalink.startswith("http") else f"https://www.reddit.com{permalink}"
+                posts.append({"post_url": post_url, "title": title, "score": int(data.get("score") or 0)})
+            posts.sort(key=lambda value: value.get("score", 0), reverse=True)
+
+            for post in posts:
+                try:
+                    thread_payload = await self._fetch_json(_thread_json_url(post["post_url"]))
+                except Exception as exc:
+                    logger.warning(f"reddit thread load failed for {post['post_url']}: {exc}")
+                    continue
+                comments_root = []
+                if isinstance(thread_payload, list) and len(thread_payload) > 1:
+                    comments_root = (((thread_payload[1] or {}).get("data") or {}).get("children") or [])
+                candidates = self._walk_comment_nodes(comments_root, subreddit=subreddit, post_title=post["title"], keywords=keywords)
+                filtered: List[Dict[str, Any]] = []
+                for candidate in candidates[:max_comments * 3]:
+                    target_ref = str(candidate.get("target_comment_url") or "")
+                    if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_ref):
+                        continue
+                    candidate["thread_url"] = post["post_url"]
+                    filtered.append(candidate)
+                    if len(filtered) >= max_comments:
+                        break
+                filtered.sort(key=lambda value: value.get("score", 0), reverse=True)
+                if filtered:
+                    return filtered[0]
+        return None
+
+
+class RedditProgramScheduler:
+    def __init__(
+        self,
+        *,
+        store: RedditProgramStore,
+        orchestrator: RedditProgramOrchestrator,
+    ):
+        self.store = store
+        self.orchestrator = orchestrator
+        self._task: Optional[asyncio.Task] = None
+        self._stop = False
+        self._tick_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        if self._task and not self._task.done():
+            logger.info("reddit program scheduler already running")
+            return
+        recovered = self.store.recover_interrupted_work()
+        if recovered:
+            logger.warning(f"reddit program scheduler recovered {len(recovered)} interrupted program(s)")
+        self._stop = False
+        self.store.update_scheduler_state(is_running=True, last_error=None)
+        self._task = asyncio.create_task(self._loop())
+        logger.info("reddit program scheduler started")
+
+    async def stop(self) -> None:
+        self._stop = True
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        self.store.update_scheduler_state(is_running=False)
+        logger.info("reddit program scheduler stopped")
+
+    async def _loop(self) -> None:
+        while not self._stop:
+            try:
+                await self.tick(source="loop")
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error(f"reddit program scheduler loop error: {exc}")
+                self.store.update_scheduler_state(last_error=str(exc))
+            await asyncio.sleep(60)
+
+    async def tick(self, *, source: str = "manual") -> Dict[str, Any]:
+        async with self._tick_lock:
+            tick_at = _utc_iso()
+            summary = {"processed": 0, "failed": 0}
+            try:
+                summary = await self.orchestrator.process_due_programs(max_programs=2)
+                self.store.update_scheduler_state(
+                    last_tick_at=tick_at,
+                    last_error=None,
+                    last_processed_count=int(summary.get("processed", 0)),
+                )
+            except Exception as exc:
+                self.store.update_scheduler_state(last_tick_at=tick_at, last_error=str(exc))
+                raise
+            return {"source": source, "tick_at": tick_at, **summary}
+
+    def get_status(self) -> Dict[str, Any]:
+        programs = self.store.list_programs()
+        counts: Dict[str, int] = {}
+        for program in programs:
+            status = str(program.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+        return {
+            "scheduler": self.store.get_scheduler_state(),
+            "counts": counts,
+            "recent_programs": programs[:25],
+        }
