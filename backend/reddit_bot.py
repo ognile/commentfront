@@ -785,8 +785,6 @@ async def _comment_action_row(
     expected_title: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     normalized_author = _normalize_text(author)
-    if not normalized_author:
-        return None
     try:
         result = await page.evaluate(
             """({ author, expectedTitle }) => {
@@ -825,6 +823,34 @@ async def _comment_action_row(
                     }
                 }
 
+                const replies = [];
+                for (const root of roots) {
+                    const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, a, div, span')) : [];
+                    for (const node of nodes) {
+                        const text = normalize(node.innerText || node.textContent);
+                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        const rect = node.getBoundingClientRect();
+                        if (!visibleRect(rect)) continue;
+                        if (titleRect && rect.top <= titleRect.bottom + 18) continue;
+                        if (!(text.includes('reply') || aria.includes('reply'))) continue;
+                        replies.push({
+                            left: rect.left,
+                            top: rect.top,
+                            right: rect.right,
+                            width: rect.width,
+                            height: rect.height,
+                            x: Math.round(rect.left + rect.width / 2),
+                            y: Math.round(rect.top + rect.height / 2),
+                            text,
+                            aria,
+                        });
+                    }
+                }
+                replies.sort((a, b) => a.top - b.top || a.left - b.left);
+                const reply = replies[0];
+                if (!reply) return null;
+
+                let authorRect = null;
                 const authors = [];
                 for (const root of roots) {
                     const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('a, button, span, div')) : [];
@@ -834,39 +860,19 @@ async def _comment_action_row(
                         const rect = node.getBoundingClientRect();
                         if (!visibleRect(rect)) continue;
                         if (titleRect && rect.top <= titleRect.bottom - 6) continue;
-                        if (!text.includes(author) && !aria.includes(author)) continue;
+                        if (author) {
+                            if (!text.includes(author) && !aria.includes(author)) continue;
+                        } else if (!aria.includes("profile") && !text) {
+                            continue;
+                        }
+                        if (rect.top > reply.top) continue;
+                        const verticalGap = reply.top - rect.bottom;
+                        if (verticalGap < 0 || verticalGap > 220) continue;
                         authors.push({
                             left: rect.left,
                             top: rect.top,
                             right: rect.right,
                             bottom: rect.bottom,
-                            x: Math.round(rect.left + rect.width / 2),
-                            y: Math.round(rect.top + rect.height / 2),
-                        });
-                    }
-                }
-                authors.sort((a, b) => a.top - b.top || a.left - b.left);
-                const authorRect = authors[0];
-                if (!authorRect) return null;
-
-                const replies = [];
-                for (const root of roots) {
-                    const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, a, div, span')) : [];
-                    for (const node of nodes) {
-                        const text = normalize(node.innerText || node.textContent);
-                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
-                        const rect = node.getBoundingClientRect();
-                        if (!visibleRect(rect)) continue;
-                        if (!(text.includes('reply') || aria.includes('reply'))) continue;
-                        const verticalGap = rect.top - authorRect.bottom;
-                        if (verticalGap < 80 || verticalGap > 220) continue;
-                        if (rect.left < authorRect.left + 24) continue;
-                        replies.push({
-                            left: rect.left,
-                            top: rect.top,
-                            right: rect.right,
-                            width: rect.width,
-                            height: rect.height,
                             x: Math.round(rect.left + rect.width / 2),
                             y: Math.round(rect.top + rect.height / 2),
                             verticalGap,
@@ -875,9 +881,8 @@ async def _comment_action_row(
                         });
                     }
                 }
-                replies.sort((a, b) => a.verticalGap - b.verticalGap || a.top - b.top || a.left - b.left);
-                const reply = replies[0];
-                if (!reply) return null;
+                authors.sort((a, b) => a.verticalGap - b.verticalGap || a.top - b.top || a.left - b.left);
+                authorRect = authors[0] || null;
                 return {
                     author: authorRect,
                     reply,
@@ -1180,16 +1185,18 @@ async def upvote_post(
                     verification="already_upvoted",
                 )
 
-            clicked = await _click_named_control(
-                page,
-                action_name="upvote_post",
-                needles=["upvote"],
-                expected_title=expected_title,
-                row_y=share_y,
-                left_of_x=share_left,
-            )
-            if not clicked and share_box:
+            clicked = False
+            if share_box:
                 clicked = await _click_post_upvote_region(page, share_box=share_box)
+            if not clicked:
+                clicked = await _click_named_control(
+                    page,
+                    action_name="upvote_post",
+                    needles=["upvote"],
+                    expected_title=expected_title,
+                    row_y=share_y,
+                    left_of_x=share_left,
+                )
             if not clicked:
                 await _capture_reddit_failure_state(page, "REDDIT POST UPVOTE MISSING")
                 return _result(
