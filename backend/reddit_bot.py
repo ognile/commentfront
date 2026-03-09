@@ -1304,10 +1304,12 @@ async def _click_reply_inline_submit_button(page) -> bool:
                 if (cancel) {
                     const cancelRect = cancel.getBoundingClientRect();
                     for (const node of commentCandidates) {
-                        const rect = node.getBoundingClientRect();
+                        let rect = node.getBoundingClientRect();
                         if (!visible(rect)) continue;
                         if (Math.abs(rect.top - cancelRect.top) > 20) continue;
                         if (rect.left < cancelRect.right - 24) continue;
+                        node.scrollIntoView({ block: 'center', inline: 'nearest' });
+                        rect = node.getBoundingClientRect();
                         picked = {
                             x: Math.round(clamp(rect.left + rect.width / 2, 20, viewportWidth - 20)),
                             y: Math.round(clamp(rect.top + rect.height / 2, 20, viewportHeight - 20)),
@@ -1323,9 +1325,11 @@ async def _click_reply_inline_submit_button(page) -> bool:
                         .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
                         .pop();
                     if (fallback) {
+                        fallback.node.scrollIntoView({ block: 'center', inline: 'nearest' });
+                        const rect = fallback.node.getBoundingClientRect();
                         picked = {
-                            x: Math.round(clamp(fallback.rect.left + fallback.rect.width / 2, 20, viewportWidth - 20)),
-                            y: Math.round(clamp(fallback.rect.top + fallback.rect.height / 2, 20, viewportHeight - 20)),
+                            x: Math.round(clamp(rect.left + rect.width / 2, 20, viewportWidth - 20)),
+                            y: Math.round(clamp(rect.top + rect.height / 2, 20, viewportHeight - 20)),
                             text: 'comment',
                         };
                     }
