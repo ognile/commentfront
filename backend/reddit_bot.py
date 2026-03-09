@@ -1294,6 +1294,9 @@ async def _click_reply_inline_submit_button(page) -> bool:
             """() => {
                 const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
                 const visible = (rect) => rect && rect.width >= 20 && rect.height >= 20 && rect.bottom >= 0 && rect.right >= 0;
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
                 const buttons = Array.from(document.querySelectorAll('button'));
                 const cancel = buttons.find((node) => normalize(node.innerText || node.textContent) === 'cancel');
                 const commentCandidates = buttons.filter((node) => normalize(node.innerText || node.textContent) === 'comment');
@@ -1305,7 +1308,11 @@ async def _click_reply_inline_submit_button(page) -> bool:
                         if (!visible(rect)) continue;
                         if (Math.abs(rect.top - cancelRect.top) > 20) continue;
                         if (rect.left < cancelRect.right - 24) continue;
-                        picked = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), text: 'comment' };
+                        picked = {
+                            x: Math.round(clamp(rect.left + rect.width / 2, 20, viewportWidth - 20)),
+                            y: Math.round(clamp(rect.top + rect.height / 2, 20, viewportHeight - 20)),
+                            text: 'comment',
+                        };
                         break;
                     }
                 }
@@ -1317,8 +1324,8 @@ async def _click_reply_inline_submit_button(page) -> bool:
                         .pop();
                     if (fallback) {
                         picked = {
-                            x: Math.round(fallback.rect.left + fallback.rect.width / 2),
-                            y: Math.round(fallback.rect.top + fallback.rect.height / 2),
+                            x: Math.round(clamp(fallback.rect.left + fallback.rect.width / 2, 20, viewportWidth - 20)),
+                            y: Math.round(clamp(fallback.rect.top + fallback.rect.height / 2, 20, viewportHeight - 20)),
                             text: 'comment',
                         };
                     }
