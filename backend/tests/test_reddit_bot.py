@@ -11,12 +11,21 @@ class _FakePage:
     def __init__(self):
         self.waits = []
         self.evaluate_result = False
+        self.keyboard = _FakeKeyboard()
 
     async def wait_for_timeout(self, timeout_ms):
         self.waits.append(timeout_ms)
 
-    async def evaluate(self, script):
+    async def evaluate(self, script, *args):
         return self.evaluate_result
+
+
+class _FakeKeyboard:
+    def __init__(self):
+        self.typed = []
+
+    async def type(self, text, delay=0):
+        self.typed.append((text, delay))
 
 
 def test_fill_comment_input_opens_join_conversation_trigger(monkeypatch):
@@ -82,3 +91,33 @@ def test_open_comment_composer_falls_back_to_js_probe(monkeypatch):
 
     assert ok is True
     assert page.waits == [600]
+
+
+def test_fill_comment_input_falls_back_to_keyboard_after_composer_opens(monkeypatch):
+    page = _FakePage()
+    page.evaluate_result = True
+    calls = []
+
+    async def fake_fill(target_page, selectors, value):
+        assert target_page is page
+        calls.append(("fill", tuple(selectors), value))
+        return False
+
+    async def fake_open(target_page):
+        assert target_page is page
+        calls.append(("open",))
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill)
+    monkeypatch.setattr(reddit_bot, "_open_comment_composer", fake_open)
+
+    ok = asyncio.run(reddit_bot._fill_comment_input(page, "typed by keyboard"))
+
+    assert ok is True
+    assert calls == [
+        ("fill", tuple(reddit_bot.COMMENT["composer_input"]), "typed by keyboard"),
+        ("open",),
+        ("fill", tuple(reddit_bot.COMMENT["composer_input"]), "typed by keyboard"),
+    ]
+    assert page.keyboard.typed == [("typed by keyboard", 25)]
+    assert page.waits == [400, 500]

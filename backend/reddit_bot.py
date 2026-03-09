@@ -20,6 +20,7 @@ from reddit_session import RedditSession
 from forensics import (
     build_generic_verdict,
     get_current_forensic_recorder,
+    queue_current_event,
     reset_current_forensic_recorder,
     set_current_forensic_recorder,
     start_forensic_attempt,
@@ -109,8 +110,71 @@ async def _click_first(page, selectors, *, timeout_ms: int = 4000) -> bool:
     return False
 
 
+async def _first_visible_locator(page, selectors):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() > 0 and await locator.is_visible():
+                return locator
+        except Exception:
+            continue
+    return None
+
+
+async def _click_composer_region_from_layout(page) -> bool:
+    share_locator = await _first_visible_locator(page, COMMENT["share_button"])
+    if not share_locator:
+        return False
+    try:
+        share_box = await share_locator.bounding_box()
+    except Exception:
+        share_box = None
+    if not share_box:
+        return False
+
+    viewport = page.viewport_size or {"width": 393, "height": 873}
+    click_x = viewport["width"] / 2
+    click_y = share_box["y"] + share_box["height"] + 18
+
+    search_locator = await _first_visible_locator(page, COMMENT["search_comments_input"])
+    if search_locator:
+        try:
+            search_box = await search_locator.bounding_box()
+        except Exception:
+            search_box = None
+        if search_box:
+            click_y = (share_box["y"] + share_box["height"] + search_box["y"]) / 2
+
+    click_y = max(40, min(viewport["height"] - 40, click_y))
+    await page.mouse.click(click_x, click_y)
+    queue_current_event(
+        "click",
+        {
+            "method": "layout_region_fallback",
+            "target": "join_the_conversation_region",
+            "x": click_x,
+            "y": click_y,
+            "share_box": share_box,
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(800)
+    return True
+
+
 async def _open_comment_composer(page) -> bool:
     opened = await _click_first(page, COMMENT["composer_trigger"], timeout_ms=3000)
+    if opened:
+        queue_current_event(
+            "click",
+            {"method": "selector", "target": "comment_composer_trigger"},
+            phase="activation",
+            source="reddit_bot",
+        )
+        await page.wait_for_timeout(600)
+        return True
+
     if not opened:
         try:
             opened = bool(
@@ -138,7 +202,20 @@ async def _open_comment_composer(page) -> bool:
         except Exception:
             opened = False
     if opened:
+        queue_current_event(
+            "click",
+            {"method": "dom_probe", "target": "comment_composer_trigger"},
+            phase="activation",
+            source="reddit_bot",
+        )
         await page.wait_for_timeout(600)
+        return True
+
+    if not opened:
+        try:
+            opened = await _click_composer_region_from_layout(page)
+        except Exception:
+            opened = False
     return opened
 
 
@@ -146,9 +223,51 @@ async def _fill_comment_input(page, text: str, *, reply: bool = False) -> bool:
     selectors = COMMENT["reply_input"] if reply else COMMENT["composer_input"]
     if await _fill_first(page, selectors, text):
         return True
-    await _open_comment_composer(page)
+    if not await _open_comment_composer(page):
+        return False
     await page.wait_for_timeout(400)
-    return await _fill_first(page, selectors, text)
+    if await _fill_first(page, selectors, text):
+        return True
+    try:
+        await page.keyboard.type(text, delay=25)
+        await page.wait_for_timeout(500)
+        typed = bool(
+            await page.evaluate(
+                """(needle) => {
+                    const probe = (value) => (value || '').toLowerCase();
+                    const target = probe(String(needle).slice(0, 40));
+                    const active = document.activeElement;
+                    if (!active) return false;
+                    const activeText = probe(active.value || active.textContent || active.innerText);
+                    if (activeText.includes(target)) return true;
+                    const bodyText = probe(document.body ? document.body.innerText : '');
+                    return bodyText.includes(target);
+                }""",
+                text,
+            )
+        )
+        if typed:
+            queue_current_event(
+                "type",
+                {"method": "keyboard_fallback", "length": len(text), "reply": reply},
+                phase="typing",
+                source="reddit_bot",
+            )
+            return True
+    except Exception:
+        return False
+    return False
+
+
+async def _capture_reddit_failure_state(page, label: str) -> None:
+    try:
+        await dump_interactive_elements(page, label)
+    except Exception:
+        pass
+    try:
+        await save_debug_screenshot(page, label.lower().replace(" ", "_"))
+    except Exception:
+        pass
 
 
 async def _first_visible_comment_link(page) -> Optional[str]:
@@ -324,9 +443,11 @@ async def comment_on_post(
             await dump_interactive_elements(page, "REDDIT COMMENT ON POST")
 
             if not await _fill_comment_input(page, text):
+                await _capture_reddit_failure_state(page, "REDDIT COMMENT COMPOSER MISSING")
                 raise RuntimeError("Reddit comment composer not found")
 
             if not await _click_first(page, COMMENT["submit_button"], timeout_ms=4000):
+                await _capture_reddit_failure_state(page, "REDDIT COMMENT SUBMIT MISSING")
                 raise RuntimeError("Reddit Comment button not found")
 
             await page.wait_for_timeout(4000)
@@ -358,13 +479,16 @@ async def reply_to_comment(
             await dump_interactive_elements(page, "REDDIT REPLY TO COMMENT")
 
             if not await _click_first(page, COMMENT["reply_button"], timeout_ms=4000):
+                await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
                 raise RuntimeError("Reddit Reply button not found")
             await page.wait_for_timeout(1000)
 
             if not await _fill_comment_input(page, text, reply=True):
+                await _capture_reddit_failure_state(page, "REDDIT REPLY INPUT MISSING")
                 raise RuntimeError("Reddit reply input not found")
 
             if not await _click_first(page, COMMENT["submit_button"], timeout_ms=4000):
+                await _capture_reddit_failure_state(page, "REDDIT REPLY SUBMIT MISSING")
                 raise RuntimeError("Reddit reply submit button not found")
 
             await page.wait_for_timeout(4000)

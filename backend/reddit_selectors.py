@@ -109,6 +109,14 @@ COMMENT = {
         'button:has-text("Comment")',
         'button[aria-label*="comment" i]',
     ],
+    "share_button": [
+        'button:has-text("Share")',
+        'button[aria-label*="share" i]',
+    ],
+    "search_comments_input": [
+        'input[placeholder*="search comments" i]',
+        'input[aria-label*="search comments" i]',
+    ],
     "reply_button": [
         'button:has-text("Reply")',
         'button[aria-label*="reply" i]',
