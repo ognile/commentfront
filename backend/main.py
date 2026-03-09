@@ -75,6 +75,8 @@ from reddit_login_bot import (
     test_session as test_reddit_session,
 )
 from reddit_bot import run_reddit_action
+from reddit_growth_generation import WRITING_RULE_SOURCE_PATHS
+from reddit_program_notifications import build_program_email_body
 from reddit_mission_store import RedditMissionScheduler, RedditMissionStore
 from reddit_program_orchestrator import RedditProgramOrchestrator, RedditProgramScheduler
 from reddit_program_store import RedditProgramStore
@@ -1872,6 +1874,7 @@ class RedditProgramTopicConstraints(BaseModel):
     explicit_post_targets: List[str] = Field(default_factory=list)
     explicit_comment_targets: List[str] = Field(default_factory=list)
     allow_own_content_targets: bool = False
+    mandatory_join_urls: List[str] = Field(default_factory=list)
 
 
 class RedditProgramAssignment(BaseModel):
@@ -1902,10 +1905,30 @@ class RedditProgramContentAssignments(BaseModel):
 
 class RedditProgramEngagementQuotas(BaseModel):
     upvotes_per_day: int = 0
+    upvotes_min_per_day: int = 0
+    upvotes_max_per_day: int = 0
+    posts_min_per_day: int = 0
+    posts_max_per_day: int = 0
+    comment_upvote_min_per_day: int = 0
+    comment_upvote_max_per_day: int = 0
     reply_min_per_day: int = 0
     reply_max_per_day: int = 0
     random_reply_templates: List[str] = Field(default_factory=list)
     random_upvote_action: Literal["upvote_post", "upvote_comment"] = "upvote_post"
+
+
+class RedditProgramGenerationConfig(BaseModel):
+    style_sample_count: int = 3
+    writing_rule_paths: List[str] = Field(default_factory=lambda: list(WRITING_RULE_SOURCE_PATHS))
+    uniqueness_scope: Literal["program"] = "program"
+
+
+class RedditProgramNotificationConfig(BaseModel):
+    email_enabled: bool = True
+    email_account_mode: Literal["default_gog_account"] = "default_gog_account"
+    daily_summary_hour: int = 20
+    hard_failure_alerts_enabled: bool = True
+    recipient_email: Optional[str] = None
 
 
 class RedditProgramSchedule(BaseModel):
@@ -1939,6 +1962,8 @@ class RedditProgramCreateRequest(BaseModel):
     topic_constraints: RedditProgramTopicConstraints = Field(default_factory=RedditProgramTopicConstraints)
     content_assignments: RedditProgramContentAssignments = Field(default_factory=RedditProgramContentAssignments)
     engagement_quotas: RedditProgramEngagementQuotas = Field(default_factory=RedditProgramEngagementQuotas)
+    generation_config: RedditProgramGenerationConfig = Field(default_factory=RedditProgramGenerationConfig)
+    notification_config: RedditProgramNotificationConfig = Field(default_factory=RedditProgramNotificationConfig)
     verification_contract: RedditProgramVerificationContract = Field(default_factory=RedditProgramVerificationContract)
     execution_policy: RedditProgramExecutionPolicy = Field(default_factory=RedditProgramExecutionPolicy)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -1951,6 +1976,8 @@ class RedditProgramUpdateRequest(BaseModel):
     topic_constraints: Optional[RedditProgramTopicConstraints] = None
     content_assignments: Optional[RedditProgramContentAssignments] = None
     engagement_quotas: Optional[RedditProgramEngagementQuotas] = None
+    generation_config: Optional[RedditProgramGenerationConfig] = None
+    notification_config: Optional[RedditProgramNotificationConfig] = None
     verification_contract: Optional[RedditProgramVerificationContract] = None
     execution_policy: Optional[RedditProgramExecutionPolicy] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -6037,6 +6064,8 @@ def _reddit_program_payload_from_request(request: RedditProgramCreateRequest) ->
         "topic_constraints": request.topic_constraints.model_dump(),
         "content_assignments": request.content_assignments.model_dump(),
         "engagement_quotas": request.engagement_quotas.model_dump(),
+        "generation_config": request.generation_config.model_dump(),
+        "notification_config": request.notification_config.model_dump(),
         "verification_contract": request.verification_contract.model_dump(),
         "execution_policy": request.execution_policy.model_dump(),
         "metadata": dict(request.metadata or {}),
@@ -6049,6 +6078,8 @@ def _validate_reddit_program_payload(payload: Dict[str, Any]) -> None:
     topic_constraints = dict(payload.get("topic_constraints") or {})
     content_assignments = dict(payload.get("content_assignments") or {})
     engagement_quotas = dict(payload.get("engagement_quotas") or {})
+    generation_config = dict(payload.get("generation_config") or {})
+    notification_config = dict(payload.get("notification_config") or {})
 
     profile_names = [
         str(name).strip()
@@ -6106,24 +6137,35 @@ def _validate_reddit_program_payload(payload: Dict[str, Any]) -> None:
             if not str(assignment.get("title") or "").strip():
                 raise HTTPException(status_code=400, detail=f"content_assignments.items[{idx}].title is required for create_post")
 
-    reply_max_per_day = int(engagement_quotas.get("reply_max_per_day", 0))
-    random_reply_templates = [
-        str(item).strip()
-        for item in list(engagement_quotas.get("random_reply_templates") or [])
-        if str(item).strip()
-    ]
-    if reply_max_per_day > 0 and not random_reply_templates:
-        raise HTTPException(status_code=400, detail="engagement_quotas.random_reply_templates is required when reply_max_per_day > 0")
+    upvotes_min_per_day = max(0, int(engagement_quotas.get("upvotes_min_per_day", engagement_quotas.get("upvotes_per_day", 0) or 0)))
+    upvotes_max_per_day = max(upvotes_min_per_day, int(engagement_quotas.get("upvotes_max_per_day", max(upvotes_min_per_day, engagement_quotas.get("upvotes_per_day", 0) or 0))))
+    posts_min_per_day = max(0, int(engagement_quotas.get("posts_min_per_day", 0)))
+    posts_max_per_day = max(posts_min_per_day, int(engagement_quotas.get("posts_max_per_day", posts_min_per_day)))
+    comment_upvote_min_per_day = max(0, int(engagement_quotas.get("comment_upvote_min_per_day", 0)))
+    comment_upvote_max_per_day = max(comment_upvote_min_per_day, int(engagement_quotas.get("comment_upvote_max_per_day", comment_upvote_min_per_day)))
+    reply_min_per_day = max(0, int(engagement_quotas.get("reply_min_per_day", 0)))
+    reply_max_per_day = max(reply_min_per_day, int(engagement_quotas.get("reply_max_per_day", reply_min_per_day)))
+    if comment_upvote_max_per_day > upvotes_max_per_day and upvotes_max_per_day > 0:
+        raise HTTPException(status_code=400, detail="comment_upvote_max_per_day cannot exceed upvotes_max_per_day")
 
-    if int(engagement_quotas.get("upvotes_per_day", 0)) > 0 or reply_max_per_day > 0:
-        subreddits = [str(item).strip() for item in list(topic_constraints.get("subreddits") or []) if str(item).strip()]
-        explicit_post_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_post_targets") or []) if str(item).strip()]
-        explicit_comment_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_comment_targets") or []) if str(item).strip()]
-        if not subreddits and not explicit_post_targets and not explicit_comment_targets:
+    subreddits = [str(item).strip() for item in list(topic_constraints.get("subreddits") or []) if str(item).strip()]
+    explicit_post_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_post_targets") or []) if str(item).strip()]
+    explicit_comment_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_comment_targets") or []) if str(item).strip()]
+    mandatory_join_urls = [str(item).strip() for item in list(topic_constraints.get("mandatory_join_urls") or []) if str(item).strip()]
+
+    if posts_max_per_day > 0 or upvotes_max_per_day > 0 or reply_max_per_day > 0 or mandatory_join_urls:
+        if not subreddits and not explicit_post_targets and not explicit_comment_targets and not mandatory_join_urls:
             raise HTTPException(
                 status_code=400,
                 detail="topic_constraints must include subreddits or explicit targets when random engagement quotas are enabled",
             )
+
+    if int(generation_config.get("style_sample_count", 3)) < 1:
+        raise HTTPException(status_code=400, detail="generation_config.style_sample_count must be >= 1")
+
+    daily_summary_hour = int(notification_config.get("daily_summary_hour", 20))
+    if daily_summary_hour < 0 or daily_summary_hour > 23:
+        raise HTTPException(status_code=400, detail="notification_config.daily_summary_hour must be between 0 and 23")
 
 
 def _get_active_reddit_bulk_rollout() -> Optional[tuple[str, asyncio.Task]]:
@@ -6764,6 +6806,15 @@ async def create_reddit_program(
     }
     _validate_reddit_program_payload(payload)
     program = reddit_program_store.create_program(payload)
+    await reddit_program_orchestrator.notification_service.send_program_email(
+        program,
+        key="created",
+        kind="created",
+        subject=f"reddit program created: {program.get('id')}",
+        body=build_program_email_body(program, headline="reddit growth program created"),
+        metadata={"created_by": current_user.get("username")},
+    )
+    program = reddit_program_store.save_program(program)
     return {"success": True, "program": program}
 
 
@@ -6798,6 +6849,8 @@ async def update_reddit_program(
         "topic_constraints",
         "content_assignments",
         "engagement_quotas",
+        "generation_config",
+        "notification_config",
         "verification_contract",
         "execution_policy",
         "metadata",
@@ -6882,7 +6935,10 @@ async def get_reddit_program_status(
         "status": program.get("status"),
         "next_run_at": program.get("next_run_at"),
         "remaining_contract": program.get("remaining_contract"),
+        "contract_totals": program.get("contract_totals"),
         "daily_progress": program.get("daily_progress"),
+        "join_progress_matrix": program.get("join_progress_matrix"),
+        "notification_log": program.get("notification_log"),
         "recent_attempt_ids": program.get("recent_attempt_ids"),
     }
 
@@ -6902,6 +6958,9 @@ async def get_reddit_program_evidence(
     return {
         "program_id": program_id,
         "program_status": program.get("status"),
+        "contract_totals": program.get("contract_totals"),
+        "join_progress_matrix": program.get("join_progress_matrix"),
+        "notification_log": program.get("notification_log"),
         "forensics": forensic_group,
         "recent_attempts": details,
         "target_history": list(program.get("target_history") or [])[-50:],

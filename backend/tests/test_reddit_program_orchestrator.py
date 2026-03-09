@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -242,3 +243,90 @@ def test_orchestrator_blocks_community_restricted_items(tmp_path, monkeypatch):
 
     assert item["status"] == "blocked"
     assert item["error"] == "reddit community ban: can't comment on posts"
+
+
+def test_select_due_items_prioritizes_mandatory_joins(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            topic_constraints={
+                "subreddits": ["womenshealth"],
+                "keywords": ["biopsy"],
+                "mandatory_join_urls": ["https://www.reddit.com/r/WomensHealth/"],
+            },
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 1,
+                "posts_max_per_day": 1,
+                "upvotes_min_per_day": 1,
+                "upvotes_max_per_day": 1,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 1,
+                "reply_max_per_day": 1,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    selected = orchestrator._select_due_items(program, now=datetime.now(timezone.utc), force_due=True)
+
+    assert selected
+    assert all(item["action"] == "join_subreddit" for item in selected)
+
+
+def test_resolve_target_generates_reply_text_when_missing(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            topic_constraints={"subreddits": ["womenshealth"], "keywords": ["biopsy"]},
+            engagement_quotas={
+                "upvotes_per_day": 0,
+                "reply_min_per_day": 1,
+                "reply_max_per_day": 1,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "reply_comment")
+
+    async def fake_discover_comment(_program, _item):
+        return {
+            "target_comment_url": "https://www.reddit.com/r/womenshealth/comments/post/comment/c1/",
+            "thread_url": "https://www.reddit.com/r/womenshealth/comments/post/",
+            "subreddit": "womenshealth",
+            "author": "helper",
+            "body_excerpt": "i am worried about biopsy recovery",
+        }
+
+    async def fake_style_samples(_program, *, subreddit, keywords):
+        assert subreddit == "womenshealth"
+        return [{"target_url": "https://www.reddit.com/r/womenshealth/comments/abc123/sample/", "title": "sample", "body_excerpt": "sample text"}]
+
+    async def fake_generate_reply(**kwargs):
+        return type(
+            "GenerationResult",
+            (),
+            {
+                "success": True,
+                "text": "it may help to ask what pain control and aftercare they usually recommend before you go in.",
+                "style_summary": {"sample_count": 1},
+                "sample_urls": ["https://www.reddit.com/r/womenshealth/comments/abc123/sample/"],
+                "validation": {"ok": True, "violations": []},
+                "raw_response": '{"text":"ok"}',
+            },
+        )()
+
+    monkeypatch.setattr(orchestrator, "_discover_comment_target", fake_discover_comment)
+    monkeypatch.setattr(orchestrator, "_style_samples_for_subreddit", fake_style_samples)
+    monkeypatch.setattr(orchestrator.content_generator, "generate_reply", fake_generate_reply)
+
+    payload = asyncio.run(orchestrator._resolve_target(program, item))
+
+    assert payload["text"].startswith("it may help")
+    assert payload["generation_evidence"]["kind"] == "reply_comment"

@@ -47,6 +47,18 @@ def _normalize_profile_name(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
 
 
+def _normalize_subreddit_name(value: Optional[str]) -> str:
+    cleaned = str(value or "").strip()
+    cleaned = cleaned.replace("https://www.reddit.com/r/", "")
+    cleaned = cleaned.replace("https://reddit.com/r/", "")
+    cleaned = cleaned.strip("/").strip()
+    if cleaned.lower().startswith("r/"):
+        cleaned = cleaned[2:]
+    if "/" in cleaned:
+        cleaned = cleaned.split("/", 1)[0]
+    return cleaned
+
+
 def _random_windows_from_spec(schedule: Dict[str, Any]) -> List[Dict[str, int]]:
     windows = schedule.get("random_windows") or DEFAULT_RANDOM_WINDOW
     normalized: List[Dict[str, int]] = []
@@ -126,6 +138,12 @@ def compile_reddit_program_state(
     if random_upvote_action not in {"upvote_post", "upvote_comment"}:
         random_upvote_action = "upvote_post"
     upvotes_per_day = max(0, int(engagement_quotas.get("upvotes_per_day", 0)))
+    upvotes_min_per_day = max(0, int(engagement_quotas.get("upvotes_min_per_day", upvotes_per_day)))
+    upvotes_max_per_day = max(upvotes_min_per_day, int(engagement_quotas.get("upvotes_max_per_day", max(upvotes_per_day, upvotes_min_per_day))))
+    posts_min_per_day = max(0, int(engagement_quotas.get("posts_min_per_day", 0)))
+    posts_max_per_day = max(posts_min_per_day, int(engagement_quotas.get("posts_max_per_day", posts_min_per_day)))
+    comment_upvote_min_per_day = max(0, int(engagement_quotas.get("comment_upvote_min_per_day", 0)))
+    comment_upvote_max_per_day = max(comment_upvote_min_per_day, int(engagement_quotas.get("comment_upvote_max_per_day", comment_upvote_min_per_day)))
     reply_min_per_day = max(0, int(engagement_quotas.get("reply_min_per_day", 0)))
     reply_max_per_day = max(reply_min_per_day, int(engagement_quotas.get("reply_max_per_day", reply_min_per_day)))
     random_reply_templates = [
@@ -133,6 +151,22 @@ def compile_reddit_program_state(
         for item in list(engagement_quotas.get("random_reply_templates") or [])
         if str(item).strip()
     ]
+    mandatory_join_urls = [
+        str(item).strip()
+        for item in list(topic_constraints.get("mandatory_join_urls") or [])
+        if str(item).strip()
+    ]
+    allowed_subreddits = [
+        _normalize_subreddit_name(item)
+        for item in list(topic_constraints.get("subreddits") or [])
+        if _normalize_subreddit_name(item)
+    ]
+    for join_url in mandatory_join_urls:
+        subreddit = _normalize_subreddit_name(join_url)
+        if subreddit and subreddit not in allowed_subreddits:
+            allowed_subreddits.append(subreddit)
+    generation_config = dict(spec.get("generation_config") or {})
+    notification_config = dict(spec.get("notification_config") or {})
 
     seed = str(spec.get("seed") or program_id)
     work_items: List[Dict[str, Any]] = []
@@ -155,11 +189,60 @@ def compile_reddit_program_state(
             profile_seed = f"{seed}:{profile_name}:{local_date}"
             rng = random.Random(profile_seed)
             random_replies_for_day = rng.randint(reply_min_per_day, reply_max_per_day) if reply_max_per_day > 0 else 0
+            generated_posts_for_day = rng.randint(posts_min_per_day, posts_max_per_day) if posts_max_per_day > 0 else 0
+            total_upvotes_for_day = rng.randint(upvotes_min_per_day, upvotes_max_per_day) if upvotes_max_per_day > 0 else 0
+            if total_upvotes_for_day > 0:
+                max_comment_upvotes = min(comment_upvote_max_per_day, total_upvotes_for_day)
+                min_comment_upvotes = min(comment_upvote_min_per_day, max_comment_upvotes)
+                comment_upvotes_for_day = rng.randint(min_comment_upvotes, max_comment_upvotes) if max_comment_upvotes > 0 else 0
+            else:
+                comment_upvotes_for_day = 0
+            post_upvotes_for_day = max(0, total_upvotes_for_day - comment_upvotes_for_day)
             profile_plans[profile_name] = {
-                "planned_random_upvotes": upvotes_per_day,
+                "planned_post_upvotes": post_upvotes_for_day,
+                "planned_comment_upvotes": comment_upvotes_for_day,
                 "planned_random_replies": random_replies_for_day,
+                "planned_generated_posts": generated_posts_for_day,
+                "planned_mandatory_joins": len(mandatory_join_urls) if day_offset == 0 else 0,
                 "planned_exact_assignments": len(assignments_by_day_profile.get((day_offset, profile_name), [])),
             }
+
+            if day_offset == 0:
+                join_window = [{"start_hour": windows[0]["start_hour"], "end_hour": min(24, windows[0]["start_hour"] + 1)}]
+                for join_index, join_url in enumerate(mandatory_join_urls):
+                    work_items.append(
+                        {
+                            "id": f"work_{uuid.uuid4().hex[:12]}",
+                            "source": "mandatory_join",
+                            "assignment_id": f"{profile_name}_join_{join_index}",
+                            "profile_name": profile_name,
+                            "local_date": local_date,
+                            "scheduled_at": _scheduled_at_for_day(
+                                start_local=start_local,
+                                day_offset=day_offset,
+                                windows=join_window,
+                                rng=random.Random(f"{profile_seed}:join:{join_index}"),
+                                local_tz=local_tz,
+                            ),
+                            "status": "pending",
+                            "attempts": 0,
+                            "last_attempt_at": None,
+                            "completed_at": None,
+                            "action": "join_subreddit",
+                            "text": None,
+                            "title": None,
+                            "body": None,
+                            "subreddit": _normalize_subreddit_name(join_url),
+                            "target_url": join_url,
+                            "target_comment_url": None,
+                            "target_mode": "explicit",
+                            "day_offset": day_offset,
+                            "verification_requirements": [],
+                            "result": None,
+                            "error": None,
+                            "discovered_target": None,
+                        }
+                    )
 
             for assignment_index, assignment in enumerate(assignments_by_day_profile.get((day_offset, profile_name), [])):
                 work_items.append(
@@ -196,12 +279,11 @@ def compile_reddit_program_state(
                     }
                 )
 
-            for quota_index in range(upvotes_per_day):
-                target_mode = "discover_comment" if random_upvote_action == "upvote_comment" else "discover_post"
+            for quota_index in range(post_upvotes_for_day):
                 work_items.append(
                     {
                         "id": f"work_{uuid.uuid4().hex[:12]}",
-                        "source": "quota_random_upvote",
+                        "source": "quota_post_upvote",
                         "assignment_id": None,
                         "profile_name": profile_name,
                         "local_date": local_date,
@@ -209,21 +291,56 @@ def compile_reddit_program_state(
                             start_local=start_local,
                             day_offset=day_offset,
                             windows=windows,
-                            rng=random.Random(f"{profile_seed}:upvote:{quota_index}"),
+                            rng=random.Random(f"{profile_seed}:post_upvote:{quota_index}"),
                             local_tz=local_tz,
                         ),
                         "status": "pending",
                         "attempts": 0,
                         "last_attempt_at": None,
                         "completed_at": None,
-                        "action": random_upvote_action,
+                        "action": "upvote_post",
                         "text": None,
                         "title": None,
                         "body": None,
                         "subreddit": None,
                         "target_url": None,
                         "target_comment_url": None,
-                        "target_mode": target_mode,
+                        "target_mode": "discover_post",
+                        "day_offset": day_offset,
+                        "verification_requirements": [],
+                        "result": None,
+                        "error": None,
+                        "discovered_target": None,
+                    }
+                )
+
+            for quota_index in range(comment_upvotes_for_day):
+                work_items.append(
+                    {
+                        "id": f"work_{uuid.uuid4().hex[:12]}",
+                        "source": "quota_comment_upvote",
+                        "assignment_id": None,
+                        "profile_name": profile_name,
+                        "local_date": local_date,
+                        "scheduled_at": _scheduled_at_for_day(
+                            start_local=start_local,
+                            day_offset=day_offset,
+                            windows=windows,
+                            rng=random.Random(f"{profile_seed}:comment_upvote:{quota_index}"),
+                            local_tz=local_tz,
+                        ),
+                        "status": "pending",
+                        "attempts": 0,
+                        "last_attempt_at": None,
+                        "completed_at": None,
+                        "action": "upvote_comment",
+                        "text": None,
+                        "title": None,
+                        "body": None,
+                        "subreddit": None,
+                        "target_url": None,
+                        "target_comment_url": None,
+                        "target_mode": "discover_comment",
                         "day_offset": day_offset,
                         "verification_requirements": [],
                         "result": None,
@@ -270,6 +387,45 @@ def compile_reddit_program_state(
                     }
                 )
 
+            subreddit_pool = list(allowed_subreddits)
+            if not subreddit_pool and mandatory_join_urls:
+                subreddit_pool = [_normalize_subreddit_name(join_url) for join_url in mandatory_join_urls if _normalize_subreddit_name(join_url)]
+            for quota_index in range(generated_posts_for_day):
+                target_subreddit = subreddit_pool[quota_index % len(subreddit_pool)] if subreddit_pool else None
+                work_items.append(
+                    {
+                        "id": f"work_{uuid.uuid4().hex[:12]}",
+                        "source": "quota_generated_post",
+                        "assignment_id": None,
+                        "profile_name": profile_name,
+                        "local_date": local_date,
+                        "scheduled_at": _scheduled_at_for_day(
+                            start_local=start_local,
+                            day_offset=day_offset,
+                            windows=windows,
+                            rng=random.Random(f"{profile_seed}:post:{quota_index}"),
+                            local_tz=local_tz,
+                        ),
+                        "status": "pending",
+                        "attempts": 0,
+                        "last_attempt_at": None,
+                        "completed_at": None,
+                        "action": "create_post",
+                        "text": None,
+                        "title": None,
+                        "body": None,
+                        "subreddit": target_subreddit,
+                        "target_url": None,
+                        "target_comment_url": None,
+                        "target_mode": "generate_post",
+                        "day_offset": day_offset,
+                        "verification_requirements": [],
+                        "result": None,
+                        "error": None,
+                        "discovered_target": None,
+                    }
+                )
+
         day_plans.append(
             {
                 "day_offset": day_offset,
@@ -298,11 +454,12 @@ def compile_reddit_program_state(
                 "start_at": _utc_iso(start_at),
             },
             "topic_constraints": {
-                "subreddits": list(topic_constraints.get("subreddits") or []),
+                "subreddits": allowed_subreddits,
                 "keywords": list(topic_constraints.get("keywords") or []),
                 "explicit_post_targets": list(topic_constraints.get("explicit_post_targets") or []),
                 "explicit_comment_targets": list(topic_constraints.get("explicit_comment_targets") or []),
                 "allow_own_content_targets": bool(topic_constraints.get("allow_own_content_targets", False)),
+                "mandatory_join_urls": mandatory_join_urls,
             },
             "execution_policy": {
                 "strict_quotas": bool(execution_policy.get("strict_quotas", True)),
@@ -316,10 +473,28 @@ def compile_reddit_program_state(
             },
             "engagement_quotas": {
                 "upvotes_per_day": upvotes_per_day,
+                "upvotes_min_per_day": upvotes_min_per_day,
+                "upvotes_max_per_day": upvotes_max_per_day,
+                "posts_min_per_day": posts_min_per_day,
+                "posts_max_per_day": posts_max_per_day,
+                "comment_upvote_min_per_day": comment_upvote_min_per_day,
+                "comment_upvote_max_per_day": comment_upvote_max_per_day,
                 "reply_min_per_day": reply_min_per_day,
                 "reply_max_per_day": reply_max_per_day,
                 "random_reply_templates": random_reply_templates,
                 "random_upvote_action": random_upvote_action,
+            },
+            "generation_config": {
+                "style_sample_count": max(1, int(generation_config.get("style_sample_count", 3))),
+                "writing_rule_paths": list(generation_config.get("writing_rule_paths") or []),
+                "uniqueness_scope": str(generation_config.get("uniqueness_scope") or "program"),
+            },
+            "notification_config": {
+                "email_enabled": bool(notification_config.get("email_enabled", True)),
+                "email_account_mode": str(notification_config.get("email_account_mode") or "default_gog_account"),
+                "daily_summary_hour": max(0, min(23, int(notification_config.get("daily_summary_hour", 20)))),
+                "hard_failure_alerts_enabled": bool(notification_config.get("hard_failure_alerts_enabled", True)),
+                "recipient_email": str(notification_config.get("recipient_email") or "").strip() or None,
             },
         },
         "compiled": {
@@ -327,10 +502,14 @@ def compile_reddit_program_state(
             "work_items": work_items,
         },
         "target_history": [],
+        "generated_text_history": [],
         "recent_attempt_ids": [],
         "events": [],
+        "notification_log": [],
         "remaining_contract": {},
         "daily_progress": {},
+        "join_progress_matrix": {},
+        "contract_totals": {},
         "next_run_at": None,
     }
     refresh_reddit_program_state(program)
@@ -341,12 +520,15 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
     work_items = list(((program.get("compiled") or {}).get("work_items") or []))
     remaining: Dict[str, int] = {}
     daily_progress: Dict[str, Dict[str, Any]] = {}
+    contract_totals: Dict[str, int] = {}
+    join_progress_matrix: Dict[str, Dict[str, str]] = {}
     next_run_at: Optional[str] = None
     terminal_non_completed = False
 
     for item in work_items:
         status = str(item.get("status") or "pending")
         action = str(item.get("action") or "unknown")
+        contract_totals[action] = contract_totals.get(action, 0) + 1
         profile_name = str(item.get("profile_name") or "")
         local_date = str(item.get("local_date") or "")
         day_progress = daily_progress.setdefault(local_date, {})
@@ -373,6 +555,9 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
             if scheduled_at and (next_run_at is None or str(scheduled_at) < str(next_run_at)):
                 next_run_at = str(scheduled_at)
 
+        if action == "join_subreddit":
+            join_progress_matrix.setdefault(profile_name, {})[str(item.get("target_url") or "")] = status
+
     recent_attempt_ids = []
     for item in reversed(work_items):
         attempt_id = ((item.get("result") or {}).get("attempt_id") or "").strip()
@@ -393,6 +578,8 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
     program["status"] = status
     program["remaining_contract"] = remaining
     program["daily_progress"] = daily_progress
+    program["contract_totals"] = contract_totals
+    program["join_progress_matrix"] = join_progress_matrix
     program["recent_attempt_ids"] = recent_attempt_ids
     program["next_run_at"] = next_run_at if status == "active" else None
     program["updated_at"] = _utc_iso()
@@ -495,6 +682,8 @@ class RedditProgramStore:
                 "topic_constraints",
                 "content_assignments",
                 "engagement_quotas",
+                "generation_config",
+                "notification_config",
                 "verification_contract",
                 "execution_policy",
             }

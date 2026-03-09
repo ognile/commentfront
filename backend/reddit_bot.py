@@ -20,6 +20,7 @@ from reddit_login_bot import _dismiss_cookie_banner, _goto_with_retry
 from reddit_selectors import COMMENT, HOME, POST, SUBREDDIT
 from reddit_session import RedditSession
 from forensics import (
+    attach_current_json_artifact,
     build_generic_verdict,
     get_current_forensic_recorder,
     queue_current_event,
@@ -2248,6 +2249,7 @@ async def run_reddit_action(
     forensic_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized = str(action or "").strip().lower()
+    metadata = dict(((forensic_context or {}).get("metadata") or {}))
     recorder = await start_forensic_attempt(
         platform="reddit",
         engine=(forensic_context or {}).get("engine", f"reddit_{normalized}"),
@@ -2263,10 +2265,21 @@ async def run_reddit_action(
             "url": url,
             "target_comment_url": target_comment_url,
             "subreddit": subreddit,
-            **((forensic_context or {}).get("metadata") or {}),
+            **metadata,
         },
     )
     recorder_token = set_current_forensic_recorder(recorder)
+    generation_evidence = metadata.get("generation_evidence")
+    if generation_evidence:
+        await attach_current_json_artifact(
+            "generation_bundle",
+            "generation.json",
+            generation_evidence,
+            metadata={
+                "kind": generation_evidence.get("kind"),
+                "subreddit": generation_evidence.get("subreddit"),
+            },
+        )
     result: Dict[str, Any]
     if normalized == "browse_feed":
         result = await browse_feed(session, proxy_url=proxy_url)

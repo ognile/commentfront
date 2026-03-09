@@ -117,3 +117,42 @@ def test_update_program_rejects_recompile_after_execution_started(tmp_path):
         assert "cannot update the program spec after execution has started" in str(exc)
     else:
         raise AssertionError("expected program spec update to be rejected after execution started")
+
+
+def test_compiler_builds_posts_balanced_upvotes_and_mandatory_joins(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
+    program = store.create_program(
+        _spec(
+            profile_names=["reddit_alpha", "reddit_beta"],
+            topic_constraints={
+                "subreddits": ["WomensHealth", "Healthyhooha"],
+                "keywords": ["pcos"],
+                "mandatory_join_urls": [
+                    "https://www.reddit.com/r/WomensHealth/",
+                    "https://www.reddit.com/r/Healthyhooha/",
+                ],
+            },
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 1,
+                "posts_max_per_day": 1,
+                "upvotes_min_per_day": 6,
+                "upvotes_max_per_day": 6,
+                "comment_upvote_min_per_day": 2,
+                "comment_upvote_max_per_day": 2,
+                "reply_min_per_day": 2,
+                "reply_max_per_day": 2,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+
+    work_items = program["compiled"]["work_items"]
+
+    assert len([item for item in work_items if item["action"] == "create_post"]) == 6
+    assert len([item for item in work_items if item["action"] == "reply_comment"]) == 12
+    assert len([item for item in work_items if item["action"] == "upvote_comment"]) == 12
+    assert len([item for item in work_items if item["action"] == "upvote_post"]) == 24
+    assert len([item for item in work_items if item["action"] == "join_subreddit"]) == 4
+    assert set(program["join_progress_matrix"].keys()) == {"reddit_alpha", "reddit_beta"}

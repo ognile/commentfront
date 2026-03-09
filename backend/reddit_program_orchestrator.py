@@ -14,6 +14,11 @@ import httpx
 
 from forensics import is_infra_error_text
 from reddit_bot import REDDIT_HTTP_HEADERS, run_reddit_action
+from reddit_growth_generation import RedditGrowthContentGenerator, get_writing_rule_snapshot
+from reddit_program_notifications import (
+    RedditProgramNotificationService,
+    build_program_email_body,
+)
 from reddit_program_store import RedditProgramStore, refresh_reddit_program_state
 from reddit_session import RedditSession
 
@@ -63,6 +68,14 @@ def _verification_contract(program: Dict[str, Any]) -> Dict[str, Any]:
     return dict(((program.get("spec") or {}).get("verification_contract") or {}))
 
 
+def _generation_config(program: Dict[str, Any]) -> Dict[str, Any]:
+    return dict(((program.get("spec") or {}).get("generation_config") or {}))
+
+
+def _notification_config(program: Dict[str, Any]) -> Dict[str, Any]:
+    return dict(((program.get("spec") or {}).get("notification_config") or {}))
+
+
 def _target_ref(item: Dict[str, Any]) -> Optional[str]:
     return (
         str(item.get("target_comment_url") or "").strip()
@@ -99,11 +112,15 @@ class RedditProgramOrchestrator:
         proxy_resolver: Optional[Callable[[], Optional[str]]] = None,
         broadcast_update: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
         action_runner=run_reddit_action,
+        content_generator: Optional[RedditGrowthContentGenerator] = None,
+        notification_service: Optional[RedditProgramNotificationService] = None,
     ):
         self.store = store
         self.proxy_resolver = proxy_resolver or (lambda: None)
         self.broadcast_update = broadcast_update
         self.action_runner = action_runner
+        self.content_generator = content_generator or RedditGrowthContentGenerator()
+        self.notification_service = notification_service or RedditProgramNotificationService()
         self._lock = asyncio.Lock()
 
     async def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
@@ -149,6 +166,7 @@ class RedditProgramOrchestrator:
         program["last_run_at"] = _utc_iso(now)
         program["last_result"] = {"processed": processed}
         saved = self.store.save_program(program)
+        saved = await self._maybe_send_rollup_notifications(saved)
         await self._emit(
             "reddit_program_complete",
             {
@@ -177,6 +195,8 @@ class RedditProgramOrchestrator:
             if not force_due and scheduled_at and scheduled_at > now:
                 continue
             profile_name = str(item.get("profile_name") or "")
+            if self._profile_requires_mandatory_join(program, profile_name=profile_name) and str(item.get("action") or "") != "join_subreddit":
+                continue
             profile_last = last_profile_at.get(profile_name) or self._latest_profile_attempt(program, profile_name)
             if cooldown_minutes > 0 and profile_last and profile_last > now - timedelta(minutes=cooldown_minutes):
                 continue
@@ -194,6 +214,19 @@ class RedditProgramOrchestrator:
             if last_attempt and (latest is None or last_attempt > latest):
                 latest = last_attempt
         return latest
+
+    def _profile_requires_mandatory_join(self, program: Dict[str, Any], *, profile_name: str) -> bool:
+        mandatory = list((_program_filters(program).get("mandatory_join_urls") or []))
+        if not mandatory:
+            return False
+        for item in (program.get("compiled") or {}).get("work_items", []):
+            if str(item.get("profile_name") or "") != profile_name:
+                continue
+            if str(item.get("action") or "") != "join_subreddit":
+                continue
+            if str(item.get("status") or "pending") != "completed":
+                return True
+        return False
 
     async def _run_work_item(self, program: Dict[str, Any], work_item_id: str) -> Dict[str, Any]:
         work_items = (program.get("compiled") or {}).get("work_items", [])
@@ -242,6 +275,10 @@ class RedditProgramOrchestrator:
 
         action = str(item.get("action") or "")
         proxy_url = self.proxy_resolver() if callable(self.proxy_resolver) else None
+        generation_evidence = dict(target_payload.get("generation_evidence") or {})
+        if generation_evidence:
+            item["generation_evidence"] = generation_evidence
+            self._remember_generated_text(program, generation_evidence)
         result = await self.action_runner(
             session,
             action=action,
@@ -262,6 +299,7 @@ class RedditProgramOrchestrator:
                     "work_item_id": work_item_id,
                     "local_date": item.get("local_date"),
                     "source": item.get("source"),
+                    "generation_evidence": generation_evidence or None,
                 },
             },
         )
@@ -296,7 +334,9 @@ class RedditProgramOrchestrator:
             }
         )
         program["events"] = list(program.get("events", []))[-200:]
-        return self.store.save_program(program)
+        saved = self.store.save_program(program)
+        saved = await self._maybe_send_item_notification(saved, work_item_id=work_item_id)
+        return saved
 
     def _finalize_resolution_failure(
         self,
@@ -324,6 +364,33 @@ class RedditProgramOrchestrator:
         else:
             item["status"] = "blocked"
         return self.store.save_program(program)
+
+    def _finalize_without_execution(
+        self,
+        program: Dict[str, Any],
+        item: Dict[str, Any],
+        *,
+        status: str,
+        error: str,
+        failure_class: str,
+    ) -> Dict[str, Any]:
+        item["status"] = status
+        item["error"] = error
+        item["result"] = {
+            "success": False,
+            "error": error,
+            "failure_class": failure_class,
+            "final_verdict": "failed_confirmed",
+        }
+        return self.store.save_program(program)
+
+    def _remember_generated_text(self, program: Dict[str, Any], generation_evidence: Dict[str, Any]) -> None:
+        candidates = list(program.get("generated_text_history") or [])
+        for field in ("text", "title", "body", "combined_text"):
+            value = str(generation_evidence.get(field) or "").strip()
+            if value and value not in candidates:
+                candidates.append(value)
+        program["generated_text_history"] = candidates[-500:]
 
     def _compact_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -390,9 +457,14 @@ class RedditProgramOrchestrator:
         item["scheduled_at"] = _utc_iso(_utc_now() + timedelta(minutes=retry_delay_minutes))
         if classification in {"target_unavailable", "infrastructure"}:
             item["discovered_target"] = None
-            if item.get("source", "").startswith("quota_random"):
+            if item.get("source", "").startswith("quota_") or item.get("source") == "mandatory_join":
                 item["target_url"] = None
                 item["target_comment_url"] = None
+        if item.get("source") in {"quota_generated_post", "quota_random_reply"}:
+            item["text"] = None
+            item["title"] = None
+            item["body"] = None
+            item["generation_evidence"] = None
 
     def _append_target_history(self, program: Dict[str, Any], item: Dict[str, Any], result: Dict[str, Any]) -> None:
         target_ref = _target_ref(item)
@@ -412,6 +484,76 @@ class RedditProgramOrchestrator:
         history.append(entry)
         program["target_history"] = history[-500:]
 
+    async def _maybe_send_item_notification(self, program: Dict[str, Any], *, work_item_id: str) -> Dict[str, Any]:
+        config = _notification_config(program)
+        if not bool(config.get("hard_failure_alerts_enabled", True)):
+            return program
+        item = next((entry for entry in ((program.get("compiled") or {}).get("work_items") or []) if entry.get("id") == work_item_id), None)
+        if not item:
+            return program
+        if str(item.get("status") or "") not in {"blocked", "exhausted"}:
+            return program
+        action = str(item.get("action") or "unknown")
+        subject = f"reddit program hard failure: {program.get('id')} / {action}"
+        body = build_program_email_body(
+            program,
+            headline=f"hard failure for {action} on {item.get('profile_name')}: {item.get('error')}",
+        )
+        await self.notification_service.send_program_email(
+            program,
+            key=f"hard_failure:{work_item_id}:{item.get('attempts')}",
+            kind="hard_failure",
+            subject=subject,
+            body=body,
+            metadata={
+                "work_item_id": work_item_id,
+                "action": action,
+                "profile_name": item.get("profile_name"),
+                "status": item.get("status"),
+            },
+        )
+        return self.store.save_program(program)
+
+    async def _maybe_send_rollup_notifications(self, program: Dict[str, Any]) -> Dict[str, Any]:
+        program = await self._maybe_send_daily_summaries(program)
+        program = await self._maybe_send_terminal_notification(program)
+        return program
+
+    async def _maybe_send_daily_summaries(self, program: Dict[str, Any]) -> Dict[str, Any]:
+        daily_progress = dict(program.get("daily_progress") or {})
+        for local_date in sorted(daily_progress.keys()):
+            if any(
+                str(item.get("local_date") or "") == local_date and str(item.get("status") or "") in {"pending", "running"}
+                for item in ((program.get("compiled") or {}).get("work_items") or [])
+            ):
+                continue
+            subject = f"reddit program day summary: {program.get('id')} / {local_date}"
+            body = build_program_email_body(program, headline=f"daily summary for {local_date}")
+            await self.notification_service.send_program_email(
+                program,
+                key=f"daily_summary:{local_date}",
+                kind="daily_summary",
+                subject=subject,
+                body=body,
+                metadata={"local_date": local_date},
+            )
+        return self.store.save_program(program)
+
+    async def _maybe_send_terminal_notification(self, program: Dict[str, Any]) -> Dict[str, Any]:
+        if str(program.get("status") or "") not in {"completed", "exhausted", "cancelled"}:
+            return program
+        subject = f"reddit program {program.get('status')}: {program.get('id')}"
+        body = build_program_email_body(program, headline=f"program {program.get('status')}")
+        await self.notification_service.send_program_email(
+            program,
+            key=f"terminal:{program.get('status')}",
+            kind="terminal",
+            subject=subject,
+            body=body,
+            metadata={"status": program.get("status")},
+        )
+        return self.store.save_program(program)
+
     async def _resolve_target(self, program: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
         if item.get("target_mode") == "explicit":
             return {
@@ -422,14 +564,11 @@ class RedditProgramOrchestrator:
                 "body": item.get("body"),
                 "subreddit": item.get("subreddit"),
                 "discovered_target": None,
+                "generation_evidence": item.get("generation_evidence"),
             }
 
-        if str(item.get("action") or "") == "reply_comment" and not str(item.get("text") or "").strip():
-            return {
-                "error": "random reply template missing for reply_comment quota item",
-                "failure_class": "configuration_error",
-                "retryable": False,
-            }
+        if item.get("target_mode") == "generate_post":
+            return await self._build_generated_post_payload(program, item)
 
         if item.get("target_mode") == "discover_post":
             candidate = await self._discover_post_target(program, item)
@@ -447,6 +586,7 @@ class RedditProgramOrchestrator:
                 "body": item.get("body"),
                 "subreddit": item.get("subreddit"),
                 "discovered_target": candidate,
+                "generation_evidence": item.get("generation_evidence"),
             }
 
         if item.get("target_mode") == "discover_comment":
@@ -457,14 +597,23 @@ class RedditProgramOrchestrator:
                     "failure_class": "target_unavailable",
                     "retryable": True,
                 }
+            reply_text = item.get("text")
+            generation_evidence = item.get("generation_evidence")
+            if str(item.get("action") or "") == "reply_comment" and not str(reply_text or "").strip():
+                generated = await self._build_generated_reply_payload(program, item, candidate)
+                if generated.get("error"):
+                    return generated
+                reply_text = generated.get("text")
+                generation_evidence = generated.get("generation_evidence")
             return {
                 "target_url": candidate.get("thread_url"),
                 "target_comment_url": candidate.get("target_comment_url"),
-                "text": item.get("text"),
+                "text": reply_text,
                 "title": item.get("title"),
                 "body": item.get("body"),
                 "subreddit": item.get("subreddit"),
                 "discovered_target": candidate,
+                "generation_evidence": generation_evidence,
             }
 
         return {
@@ -472,6 +621,99 @@ class RedditProgramOrchestrator:
             "failure_class": "configuration_error",
             "retryable": False,
         }
+
+    async def _build_generated_post_payload(self, program: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+        subreddit = str(item.get("subreddit") or "").strip()
+        subreddits = [str(value).strip() for value in list(_program_filters(program).get("subreddits") or []) if str(value).strip()]
+        if not subreddit:
+            subreddit = subreddits[0] if subreddits else ""
+        if not subreddit:
+            return {
+                "error": "no subreddit is available for generated reddit post",
+                "failure_class": "configuration_error",
+                "retryable": False,
+            }
+        keywords = [str(value).strip() for value in list(_program_filters(program).get("keywords") or []) if str(value).strip()]
+        style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+        recent_texts = list(program.get("generated_text_history") or [])
+        generated = await self.content_generator.generate_post(
+            subreddit=subreddit,
+            keywords=keywords,
+            style_samples=style_samples,
+            recent_texts=recent_texts,
+        )
+        if not generated.success:
+            return {
+                "error": str(generated.error or "generated reddit post failed"),
+                "failure_class": "generation_failed",
+                "retryable": True,
+            }
+        evidence = {
+            "kind": "create_post",
+            "subreddit": subreddit,
+            "title": generated.title,
+            "body": generated.body,
+            "combined_text": "\n".join(part for part in [generated.title, generated.body] if part).strip(),
+            "style_summary": generated.style_summary,
+            "sample_urls": generated.sample_urls,
+            "validation": generated.validation,
+            "writing_rules": get_writing_rule_snapshot(),
+            "raw_response": generated.raw_response,
+        }
+        return {
+            "target_url": None,
+            "target_comment_url": None,
+            "text": None,
+            "title": generated.title,
+            "body": generated.body,
+            "subreddit": subreddit,
+            "discovered_target": None,
+            "generation_evidence": evidence,
+        }
+
+    async def _build_generated_reply_payload(self, program: Dict[str, Any], item: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
+        subreddit = str(candidate.get("subreddit") or item.get("subreddit") or "").strip()
+        keywords = [str(value).strip() for value in list(_program_filters(program).get("keywords") or []) if str(value).strip()]
+        style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+        recent_texts = list(program.get("generated_text_history") or [])
+        generated = await self.content_generator.generate_reply(
+            subreddit=subreddit,
+            target_excerpt=str(candidate.get("body_excerpt") or ""),
+            target_author=str(candidate.get("author") or ""),
+            keywords=keywords,
+            style_samples=style_samples,
+            recent_texts=recent_texts,
+        )
+        if not generated.success:
+            return {
+                "error": str(generated.error or "generated reddit reply failed"),
+                "failure_class": "generation_failed",
+                "retryable": True,
+            }
+        evidence = {
+            "kind": "reply_comment",
+            "subreddit": subreddit,
+            "text": generated.text,
+            "combined_text": generated.text,
+            "style_summary": generated.style_summary,
+            "sample_urls": generated.sample_urls,
+            "validation": generated.validation,
+            "target_comment_url": candidate.get("target_comment_url"),
+            "writing_rules": get_writing_rule_snapshot(),
+            "raw_response": generated.raw_response,
+        }
+        return {
+            "text": generated.text,
+            "generation_evidence": evidence,
+        }
+
+    async def _style_samples_for_subreddit(self, program: Dict[str, Any], *, subreddit: str, keywords: List[str]) -> List[Dict[str, Any]]:
+        sample_count = max(1, int(_generation_config(program).get("style_sample_count", 3)))
+        return await self._discover_posts_for_subreddit(
+            subreddit=subreddit,
+            keywords=keywords,
+            max_posts=sample_count,
+        )
 
     def _target_already_used(self, program: Dict[str, Any], *, profile_name: str, local_date: str, target_ref: str) -> bool:
         allow_reuse = bool(_execution_policy(program).get("allow_target_reuse_within_day", False))
