@@ -643,6 +643,19 @@ async def _fill_first(page, selectors, value: str) -> bool:
     return False
 
 
+def _box_in_viewport(page, box: Optional[Dict[str, float]]) -> bool:
+    if not box:
+        return False
+    viewport = getattr(page, "viewport_size", None) or {"width": 393, "height": 873}
+    left = float(box.get("x") or 0.0)
+    top = float(box.get("y") or 0.0)
+    width = float(box.get("width") or 0.0)
+    height = float(box.get("height") or 0.0)
+    right = left + width
+    bottom = top + height
+    return bool(width >= 6 and height >= 6 and bottom >= 0 and right >= 0 and top <= viewport["height"] and left <= viewport["width"])
+
+
 async def _click_first(page, selectors, *, timeout_ms: int = 4000) -> bool:
     for selector in selectors:
         try:
@@ -661,6 +674,30 @@ async def _first_visible_locator(page, selectors):
             locator = page.locator(selector).first
             if await locator.count() > 0 and await locator.is_visible():
                 return locator
+        except Exception:
+            continue
+    return None
+
+
+async def _first_viewport_locator(page, selectors):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+            for idx in range(min(count, 8)):
+                candidate = locator.nth(idx)
+                if not await candidate.is_visible():
+                    continue
+                box = await candidate.bounding_box()
+                if _box_in_viewport(page, box):
+                    return candidate
+            if count > 0:
+                candidate = locator.first
+                if await candidate.is_visible():
+                    await candidate.scroll_into_view_if_needed()
+                    box = await candidate.bounding_box()
+                    if _box_in_viewport(page, box):
+                        return candidate
         except Exception:
             continue
     return None
@@ -943,11 +980,11 @@ async def _capture_row_signature(page, *, row_y: float, max_x: float) -> List[st
 
 async def _scroll_until_post_actions_visible(page, *, max_scrolls: int = 6) -> bool:
     for _ in range(max(1, max_scrolls)):
-        if await _first_visible_locator(page, COMMENT["share_button"]):
+        if await _first_viewport_locator(page, COMMENT["share_button"]):
             return True
         await page.mouse.wheel(0, 520)
         await page.wait_for_timeout(900)
-    return bool(await _first_visible_locator(page, COMMENT["share_button"]))
+    return bool(await _first_viewport_locator(page, COMMENT["share_button"]))
 
 
 async def _click_post_upvote_region(page, *, share_box: Dict[str, float]) -> bool:
@@ -1450,7 +1487,7 @@ async def upvote_post(
             await _scroll_until_post_actions_visible(page)
             await dump_interactive_elements(page, "REDDIT UPVOTE POST")
             expected_title = await _current_thread_title(page)
-            share_locator = await _first_visible_locator(page, COMMENT["share_button"])
+            share_locator = await _first_viewport_locator(page, COMMENT["share_button"])
             share_box = await share_locator.bounding_box() if share_locator else None
             share_y = float(share_box["y"] + (share_box["height"] / 2)) if share_box else None
             share_left = float(share_box["x"]) if share_box else None
@@ -1795,6 +1832,15 @@ async def create_post(
 
 
 async def _click_reply_submit(page, reply_text: str) -> bool:
+    if await _click_named_control(
+        page,
+        action_name="reply_submit",
+        needles=["comment"],
+        anchor_text=reply_text[:80],
+        max_vertical_gap=180,
+        require_below_anchor=True,
+    ):
+        return True
     if await _click_first(page, COMMENT["reply_submit_button"], timeout_ms=4000):
         queue_current_event(
             "click",

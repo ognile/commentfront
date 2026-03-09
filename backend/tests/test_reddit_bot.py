@@ -37,6 +37,43 @@ class _FakeMouse:
         self.clicks.append((x, y))
 
 
+class _FakeViewportLocator:
+    def __init__(self, box, *, visible=True):
+        self._box = box
+        self._visible = visible
+        self.scrolled = False
+
+    async def count(self):
+        return 1
+
+    async def is_visible(self):
+        return self._visible
+
+    async def bounding_box(self):
+        if self.scrolled and self._box:
+            return {"x": 230, "y": 356, "width": 83, "height": 32}
+        return self._box
+
+    async def scroll_into_view_if_needed(self):
+        self.scrolled = True
+
+    @property
+    def first(self):
+        return self
+
+    def nth(self, _idx):
+        return self
+
+
+class _FakeViewportPage:
+    def __init__(self, locator):
+        self._locator = locator
+        self.viewport_size = {"width": 393, "height": 873}
+
+    def locator(self, _selector):
+        return self._locator
+
+
 def test_fill_comment_input_opens_join_conversation_trigger(monkeypatch):
     page = _FakePage()
     calls = []
@@ -499,6 +536,39 @@ def test_ensure_reply_inline_box_uses_dom_retry_when_first_click_does_not_open(m
         "present",
         ("dom", 152.0, 702.0, "reply_comment_dom_retry"),
         "present",
+    ]
+
+
+def test_first_viewport_locator_scrolls_offscreen_candidate_into_view():
+    locator = _FakeViewportLocator({"x": 256, "y": 1828, "width": 83, "height": 32})
+    page = _FakeViewportPage(locator)
+
+    found = asyncio.run(reddit_bot._first_viewport_locator(page, reddit_bot.COMMENT["share_button"]))
+
+    assert found is locator
+    assert locator.scrolled is True
+
+
+def test_click_reply_submit_prefers_anchor_aware_click(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_named(target_page, **kwargs):
+        assert target_page is page
+        calls.append(("named", kwargs["needles"], kwargs["anchor_text"]))
+        return True
+
+    async def fake_click_first(_page, _selectors, timeout_ms=4000):
+        raise AssertionError("selector fallback should not run when anchored submit click works")
+
+    monkeypatch.setattr(reddit_bot, "_click_named_control", fake_named)
+    monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
+
+    ok = asyncio.run(reddit_bot._click_reply_submit(page, "helpful reply text"))
+
+    assert ok is True
+    assert calls == [
+        ("named", ["comment"], "helpful reply text"),
     ]
 
 
