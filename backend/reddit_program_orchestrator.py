@@ -457,7 +457,8 @@ class RedditProgramOrchestrator:
         item["scheduled_at"] = _utc_iso(_utc_now() + timedelta(minutes=retry_delay_minutes))
         if classification in {"target_unavailable", "infrastructure"}:
             item["discovered_target"] = None
-            if item.get("source", "").startswith("quota_") or item.get("source") == "mandatory_join":
+            # Keep explicit targets such as mandatory joins intact across retries.
+            if item.get("source", "").startswith("quota_"):
                 item["target_url"] = None
                 item["target_comment_url"] = None
         if item.get("source") in {"quota_generated_post", "quota_random_reply"}:

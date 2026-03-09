@@ -330,3 +330,47 @@ def test_resolve_target_generates_reply_text_when_missing(tmp_path, monkeypatch)
 
     assert payload["text"].startswith("it may help")
     assert payload["generation_evidence"]["kind"] == "reply_comment"
+
+
+def test_record_failure_keeps_mandatory_join_target_url(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            topic_constraints={
+                "subreddits": ["womenshealth"],
+                "keywords": ["biopsy"],
+                "mandatory_join_urls": ["https://www.reddit.com/r/WomensHealth/"],
+            },
+            engagement_quotas={
+                "upvotes_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "join_subreddit")
+
+    assert item["target_url"] == "https://www.reddit.com/r/WomensHealth/"
+
+    orchestrator._record_failure(
+        program,
+        item,
+        {
+            "success": False,
+            "action": "join_subreddit",
+            "error": "net::ERR_EMPTY_RESPONSE",
+            "failure_class": "infrastructure",
+            "attempt_id": "attempt-join",
+            "trace_id": "trace-join",
+            "final_verdict": "failed_confirmed",
+            "evidence_summary": "join failed transiently",
+        },
+        None,
+    )
+
+    assert item["status"] == "pending"
+    assert item["target_url"] == "https://www.reddit.com/r/WomensHealth/"
