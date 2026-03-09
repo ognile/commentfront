@@ -6,6 +6,7 @@
 ## stable tactics
 - for reddit mobile, fix the shared executor first; do not fork duplicate action paths to work around wrapper-state bugs
 - when a reddit action fails, inspect the screenshot before changing selectors; navigation drift, modal overlays, and verification drift look different and need different fixes
+- after a failed production run, rotate the next run to a new profile or a new target set even when the code changed; that keeps recovery paths unique and gives cleaner evidence
 
 ## failure patterns
 - thread urls can silently degrade into subreddit feeds on some sessions; verify thread context before assuming a missing composer means the post page is loaded
