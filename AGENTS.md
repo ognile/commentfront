@@ -148,3 +148,19 @@ Local changes mean NOTHING until deployed:
 3. `git add` + `git commit` + `git push`
 4. Verify Railway deployment succeeds (check `mcp__railway__list-deployments`)
 5. THEN test from frontend
+
+### 7. FINAL-STATE EXECUTION, NOT PATH-LOCKED EXECUTION
+
+When the user asks for an achieved outcome, the job is to reach that final state, not to stop at the first implementation path that fails.
+
+Required behavior:
+1. define the exact terminal success state in concrete terms
+2. if the primary path fails, use the evidence to derive the next-best path immediately
+3. keep looping: observe → learn → adapt → re-execute until the final state is achieved or a hard external impossibility is proven
+4. do not report partial tool progress as success when the requested end state is still unmet
+5. when a manual or fallback path is required to achieve the result today, convert what was learned into a durable product/code path so the same class of task becomes one-shotted on prod later
+
+This repo should steadily move toward:
+- fewer operator-only recoveries
+- more deterministic one-shot production commands
+- tighter forensic feedback loops that make adaptive retries and selector evolution straightforward for future runs
