@@ -344,3 +344,53 @@ def test_network_has_vote_mutation_detects_comment_vote():
         network_capture = _Capture()
 
     assert reddit_bot._network_has_vote_mutation(_Recorder(), target_kind="comment") is True
+
+
+def test_fill_comment_input_reply_uses_inline_box_fallback(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_fill(target_page, selectors, value):
+        assert target_page is page
+        calls.append(("fill", tuple(selectors), value))
+        return False
+
+    async def fake_active(target_page):
+        assert target_page is page
+        calls.append(("active",))
+        return len([entry for entry in calls if entry == ("active",)]) > 1
+
+    async def fake_inline_present(target_page):
+        assert target_page is page
+        calls.append(("inline_present",))
+        return True
+
+    async def fake_focus(target_page):
+        assert target_page is page
+        calls.append(("focus_inline",))
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill)
+    monkeypatch.setattr(reddit_bot, "_active_editable_present", fake_active)
+    monkeypatch.setattr(reddit_bot, "_reply_inline_box_present", fake_inline_present)
+    monkeypatch.setattr(reddit_bot, "_focus_reply_inline_box", fake_focus)
+    monkeypatch.setattr(reddit_bot, "_keyboard_type_and_verify", lambda _page, text, reply=False: asyncio.sleep(0, result=True))
+
+    ok = asyncio.run(
+        reddit_bot._fill_comment_input(
+            page,
+            "reply text",
+            reply=True,
+            expected_title="Endometrial biopsy",
+            allow_global_trigger=False,
+        )
+    )
+
+    assert ok is True
+    assert calls == [
+        ("fill", tuple(reddit_bot.COMMENT["reply_input"]), "reply text"),
+        ("active",),
+        ("inline_present",),
+        ("focus_inline",),
+        ("active",),
+    ]

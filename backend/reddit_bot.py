@@ -984,6 +984,49 @@ async def _click_comment_upvote_region(page, *, row: Dict[str, Any]) -> bool:
     return True
 
 
+async def _vote_point_is_active(page, *, x: float, y: float) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                """({ x, y }) => {
+                    const activeColor = (value) => {
+                        const match = String(value || '').match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/i);
+                        if (!match) return false;
+                        const r = Number(match[1]);
+                        const g = Number(match[2]);
+                        const b = Number(match[3]);
+                        return r >= 160 && g <= 120 && b <= 110;
+                    };
+                    const samples = [
+                        [x, y],
+                        [x + 10, y],
+                        [x + 18, y],
+                        [x + 28, y],
+                    ];
+                    for (const [px, py] of samples) {
+                        for (const node of Array.from(document.elementsFromPoint(px, py) || [])) {
+                            const attrs = [
+                                node.innerText || node.textContent || '',
+                                node.getAttribute && node.getAttribute('aria-label'),
+                                node.getAttribute && node.getAttribute('title'),
+                                node.className || '',
+                            ].join(' ').toLowerCase();
+                            if (attrs.includes('remove upvote') || attrs.includes('upvoted')) return true;
+                            const style = getComputedStyle(node);
+                            if ([style.color, style.fill, style.stroke, style.backgroundColor].some(activeColor)) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }""",
+                {"x": float(x), "y": float(y)},
+            )
+        )
+    except Exception:
+        return False
+
+
 def _network_has_vote_mutation(
     recorder,
     *,
@@ -1027,6 +1070,64 @@ async def _click_reply_row_button(page, *, row: Dict[str, Any]) -> bool:
         source="reddit_bot",
     )
     await page.wait_for_timeout(900)
+    return True
+
+
+async def _reply_inline_box_present(page) -> bool:
+    return bool(
+        await _verify_named_control_state(
+            page,
+            needles=["cancel"],
+            max_vertical_gap=None,
+            require_below_anchor=False,
+        )
+        and await _verify_named_control_state(
+            page,
+            needles=["comment"],
+            max_vertical_gap=None,
+            require_below_anchor=False,
+        )
+    )
+
+
+async def _focus_reply_inline_box(page) -> bool:
+    try:
+        candidate = await page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const visible = (rect) => rect && rect.width >= 20 && rect.height >= 20 && rect.bottom >= 0 && rect.right >= 0;
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const cancel = buttons.find((node) => normalize(node.innerText || node.textContent) === 'cancel');
+                const comment = buttons.find((node) => normalize(node.innerText || node.textContent) === 'comment');
+                if (!cancel || !comment) return null;
+                const cancelRect = cancel.getBoundingClientRect();
+                const commentRect = comment.getBoundingClientRect();
+                if (!visible(cancelRect) || !visible(commentRect)) return null;
+                const left = Math.min(cancelRect.left, commentRect.left) - 180;
+                const right = Math.max(cancelRect.right, commentRect.right);
+                const box = {
+                    x: Math.max(24, Math.round((Math.max(24, left) + right) / 2)),
+                    y: Math.max(60, Math.round(cancelRect.top - 70)),
+                };
+                return box;
+            }"""
+        )
+    except Exception:
+        candidate = None
+    if not candidate:
+        return False
+    await page.mouse.click(candidate["x"], candidate["y"])
+    queue_current_event(
+        "click",
+        {
+            "method": "reply_inline_box_layout",
+            "x": candidate.get("x"),
+            "y": candidate.get("y"),
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(700)
     return True
 
 
@@ -1107,6 +1208,10 @@ async def _fill_comment_input(
         return True
     if await _active_editable_present(page):
         return await _keyboard_type_and_verify(page, text, reply=reply)
+    if reply and await _reply_inline_box_present(page):
+        if await _focus_reply_inline_box(page):
+            if await _active_editable_present(page):
+                return await _keyboard_type_and_verify(page, text, reply=reply)
     if not allow_global_trigger:
         return False
     if not await _open_comment_composer(page, expected_title):
@@ -1189,11 +1294,22 @@ async def upvote_post(
             share_box = await share_locator.bounding_box() if share_locator else None
             share_y = float(share_box["y"] + (share_box["height"] / 2)) if share_box else None
             share_left = float(share_box["x"]) if share_box else None
+            vote_x = max(24, int(float(share_box["x"]) - 186)) if share_box else None
             before_signature = (
                 await _capture_row_signature(page, row_y=share_y, max_x=share_left)
                 if share_y is not None and share_left is not None
                 else []
             )
+            if vote_x is not None and share_y is not None and await _vote_point_is_active(page, x=vote_x, y=share_y):
+                screenshot = await save_debug_screenshot(page, f"reddit_upvote_post_{session.profile_name}")
+                return _result(
+                    success=True,
+                    action="upvote_post",
+                    profile_name=session.profile_name,
+                    screenshot=screenshot,
+                    current_url=page.url,
+                    verification="already_upvoted",
+                )
 
             if await _verify_named_control_state(
                 page,
@@ -1281,11 +1397,22 @@ async def upvote_comment(
             await dump_interactive_elements(page, "REDDIT UPVOTE COMMENT")
             row = await _comment_action_row(page, author=author, expected_title=expected_title)
             reply = dict((row or {}).get("reply") or {})
+            vote = dict((row or {}).get("vote") or {})
             before_signature = (
                 await _capture_row_signature(page, row_y=float(reply.get("y")), max_x=float(reply.get("left")))
                 if reply
                 else []
             )
+            if vote and await _vote_point_is_active(page, x=float(vote.get("x")), y=float(vote.get("y"))):
+                screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
+                return _result(
+                    success=True,
+                    action="upvote_comment",
+                    profile_name=session.profile_name,
+                    screenshot=screenshot,
+                    current_url=page.url,
+                    verification="already_upvoted",
+                )
 
             if await _verify_named_control_state(
                 page,
