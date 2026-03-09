@@ -1027,6 +1027,45 @@ async def _vote_point_is_active(page, *, x: float, y: float) -> bool:
         return False
 
 
+async def _vote_region_is_active(page, *, left: float, right: float, y: float) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                """({ left, right, y }) => {
+                    const activeColor = (value) => {
+                        const match = String(value || '').match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/i);
+                        if (!match) return false;
+                        const r = Number(match[1]);
+                        const g = Number(match[2]);
+                        const b = Number(match[3]);
+                        return r >= 160 && g <= 120 && b <= 110;
+                    };
+                    for (let px = left; px <= right; px += 12) {
+                        for (let py = y - 10; py <= y + 10; py += 10) {
+                            for (const node of Array.from(document.elementsFromPoint(px, py) || [])) {
+                                const attrs = [
+                                    node.innerText || node.textContent || '',
+                                    node.getAttribute && node.getAttribute('aria-label'),
+                                    node.getAttribute && node.getAttribute('title'),
+                                    node.className || '',
+                                ].join(' ').toLowerCase();
+                                if (attrs.includes('remove upvote') || attrs.includes('upvoted')) return true;
+                                const style = getComputedStyle(node);
+                                if ([style.color, style.fill, style.stroke, style.backgroundColor].some(activeColor)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                }""",
+                {"left": float(left), "right": float(right), "y": float(y)},
+            )
+        )
+    except Exception:
+        return False
+
+
 def _network_has_vote_mutation(
     recorder,
     *,
@@ -1212,6 +1251,7 @@ async def _fill_comment_input(
         if await _focus_reply_inline_box(page):
             if await _active_editable_present(page):
                 return await _keyboard_type_and_verify(page, text, reply=reply)
+            return await _keyboard_type_and_verify(page, text, reply=reply)
     if not allow_global_trigger:
         return False
     if not await _open_comment_composer(page, expected_title):
@@ -1300,7 +1340,11 @@ async def upvote_post(
                 if share_y is not None and share_left is not None
                 else []
             )
-            if vote_x is not None and share_y is not None and await _vote_point_is_active(page, x=vote_x, y=share_y):
+            if (
+                vote_x is not None
+                and share_y is not None
+                and await _vote_region_is_active(page, left=max(18, vote_x - 16), right=max(72, share_left - 24), y=share_y)
+            ):
                 screenshot = await save_debug_screenshot(page, f"reddit_upvote_post_{session.profile_name}")
                 return _result(
                     success=True,

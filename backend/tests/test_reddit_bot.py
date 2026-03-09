@@ -394,3 +394,15 @@ def test_fill_comment_input_reply_uses_inline_box_fallback(monkeypatch):
         ("focus_inline",),
         ("active",),
     ]
+
+
+def test_vote_region_is_active_detects_true():
+    class _Page:
+        async def evaluate(self, script, arg):
+            assert arg["left"] == 18.0
+            assert arg["right"] == 120.0
+            assert arg["y"] == 372.0
+            return True
+
+    ok = asyncio.run(reddit_bot._vote_region_is_active(_Page(), left=18, right=120, y=372))
+    assert ok is True
