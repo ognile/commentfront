@@ -18,20 +18,20 @@
 - finish end to end: local verification, github push, deployment completion, and production verification.
 
 ## current state
-- production is live on [commentfront.vercel.app](https://commentfront.vercel.app) with commit `14c784d6b219042890896268c2c35021a9bc7004`.
-- the tab now pins the real rollout and groups old programs better, but the current production screenshot still shows major operator-ux defects:
-  - oversized control area and too many stacked cards
-  - awkward selected-day presentation
-  - proof drilldown wastes vertical space
-  - raw urls dominate the layout instead of acting like compact action links
-  - session/credential rail is still too form-heavy for the actual operator use case
+- production is live on [commentfront.vercel.app](https://commentfront.vercel.app) with commit `d9188997214abad13243fcc9013812049f40f0ed`.
+- the reddit tab now behaves like a real monitor instead of a generic form page:
+  - selected day reads in one line as `day x of y`
+  - the monitor header is denser and no longer wastes space on oversized cards
+  - the per-profile board compresses progress/proof into fewer, more legible columns
+  - proof drilldown renders compact target, screenshot, and attempt links instead of dumping raw urls
+  - the utility rail leads with session health and credential linkage, while setup/manual tools are collapsed
 - live backend state still includes one real rollout, one proof packet, and extra old/check programs, so the ui must continue to filter and demote that noise.
 
 ## active todo
-1. experiment 1: collapse the monitor chrome into a denser hierarchy with cleaner day selection and smaller metric surfaces.
-2. experiment 2: redesign profile proof drilldown so target/proof/attempt links are compact, clickable, and readable at a glance.
-3. experiment 3: refocus the utility rail on linked credentials + valid sessions, pushing setup/manual tools into collapsible sections.
-4. run full local verification, push, wait for deploy, and visually re-check production against the exact screenshot defects.
+1. complete. experiment 1 shipped in `d9188997214abad13243fcc9013812049f40f0ed` and was verified locally and in production.
+2. complete. experiment 2 shipped in `d9188997214abad13243fcc9013812049f40f0ed` and preserves clickable proof access.
+3. complete. experiment 3 shipped in `d9188997214abad13243fcc9013812049f40f0ed` and keeps setup/manual tools available behind collapsible sections.
+4. complete. local tests, github push, deploy verification, and production browser verification all passed.
 
 ## current understanding
 - the main problem is not missing data; it is poor information hierarchy.
@@ -42,11 +42,18 @@
 ## proven wins
 - rollout-first program sorting is already working in production, keeping `reddit_program_6f091d39c2` selected by default.
 - the current board already proves the backend surface is sufficient for a high-leverage monitor: per-day profile rows plus clickable proof artifacts exist and load against live data.
-- production screenshots and live browser verification are available for the pre-redesign baseline:
+- density and hierarchy fixes are now proven in both local and production browser checks:
+  - single-line selected-day label
+  - denser profile table with compact progress/proof summaries
+  - compact target, screenshot, and attempt links in the expanded proof rows
+  - utility rail reordered around session validity and credential linkage
+- screenshots and live browser verification are available for both baseline and shipped redesign:
   - `/var/folders/66/tj1q_3hd6bq6xyzyszqswq000000gn/T/playwright-mcp-output/1773157785088/page-2026-03-10T16-08-14-780Z.png`
-  - `/var/folders/66/tj1q_3hd6bq6xyzyszqswq000000gn/T/playwright-mcp-output/1773157785088/page-2026-03-10T16-06-33-999Z.png`
+  - `/var/folders/66/tj1q_3hd6bq6xyzyszqswq000000gn/T/playwright-mcp-output/1773157785088/page-2026-03-10T17-55-19-361Z.png`
+  - `/var/folders/66/tj1q_3hd6bq6xyzyszqswq000000gn/T/playwright-mcp-output/1773157785088/page-2026-03-10T17-57-07-693Z.png`
+  - commit `d9188997214abad13243fcc9013812049f40f0ed`
 
 ## open risks
-- aggressive density changes can make the board harder to click if spacing collapses too far.
-- the utility rail still needs to stay functional for import/session creation even while being visually demoted.
+- prod still contains extra historical/check programs, so program-switcher copy and grouping must keep demoting that noise clearly.
+- future proof rows with unusually long reddit paths still need ongoing scrutiny so compact link labels stay readable without hiding the actual destination.
 - the websocket 403 noise in browser verification is orthogonal to the redesign, but it pollutes console-driven verification and should not be confused with monitor regressions.
