@@ -444,7 +444,7 @@
         <div class="hero-grid">
           <div class="chip">anchor thread<strong>insane vaginitis / rural shipping delay</strong></div>
           <div class="chip">approval axis<strong>role spread + persona intensity</strong></div>
-          <div class="chip">locked constraint<strong>4 proper case / 6 lowercase</strong></div>
+          <div class="chip">locked constraint<strong>mixed case + wider length spread</strong></div>
         </div>
       </div>
 
@@ -511,8 +511,8 @@
               <span class="metric-value">10</span>
             </div>
             <div class="metric">
-              <div class="metric-label">shared pattern</div>
-              <span class="metric-value">same timing</span>
+              <div class="metric-label">length spread</div>
+              <span class="metric-value" id="metric-length">3-55 words</span>
             </div>
           </div>
           <div class="scenario-note" id="scenario-note">
@@ -593,6 +593,7 @@
               <span class="comment-name">${comment.profile_name}</span>
               <span class="comment-meta">${comment.relative}</span>
               <span class="comment-meta">${comment.timestamp}</span>
+              <span class="comment-meta">${comment.wordCount} words</span>
               <span class="persona-tag" style="background:${hexToSoft(personaColors[comment.profile_name])}; color:${personaColors[comment.profile_name]};">${lookupSignature(comment.profile_name)}</span>
               <span class="persona-tag" style="background:rgba(31,26,22,0.08); color:#564b41;">${comment.role.replaceAll("_", " ")}</span>
             </div>
@@ -631,6 +632,7 @@
       document.getElementById("scenario-title").textContent = scenario.title;
       document.getElementById("metric-feel").textContent = scenario.feel;
       document.getElementById("metric-intensity").textContent = scenario.intensity;
+      document.getElementById("metric-length").textContent = scenario.lengthSpread;
       document.getElementById("scenario-note").textContent = scenario.note;
     }
 
@@ -649,13 +651,15 @@
               note: data.scenarios.scenario_a.design_intent,
               feel: data.scenarios.scenario_a.thread_read,
               intensity: data.scenarios.scenario_a.persona_intensity,
+              lengthSpread: wordSpread(data.scenarios.scenario_a.comments),
               comments: data.scenarios.scenario_a.comments.map(comment => ({
                 profile_name: comment.profile_name,
                 timestamp: comment.timestamp_label,
                 relative: comment.relative_label,
                 role: comment.role,
                 text: comment.text,
-                rationale: comment.rationale
+                rationale: comment.rationale,
+                wordCount: countWords(comment.text)
               }))
             },
             "scenario-b": {
@@ -663,13 +667,15 @@
               note: data.scenarios.scenario_b.design_intent,
               feel: data.scenarios.scenario_b.thread_read,
               intensity: data.scenarios.scenario_b.persona_intensity,
+              lengthSpread: wordSpread(data.scenarios.scenario_b.comments),
               comments: data.scenarios.scenario_b.comments.map(comment => ({
                 profile_name: comment.profile_name,
                 timestamp: comment.timestamp_label,
                 relative: comment.relative_label,
                 role: comment.role,
                 text: comment.text,
-                rationale: comment.rationale
+                rationale: comment.rationale,
+                wordCount: countWords(comment.text)
               }))
             }
           }
@@ -682,6 +688,15 @@
       .catch(error => {
         document.body.innerHTML = `<pre style="padding:24px;font-family:monospace;">failed to load dossier: ${String(error)}</pre>`;
       });
+
+    function countWords(text) {
+      return text.trim().split(/\s+/).filter(Boolean).length;
+    }
+
+    function wordSpread(comments) {
+      const counts = comments.map(comment => countWords(comment.text));
+      return `${Math.min(...counts)}-${Math.max(...counts)} words`;
+    }
   </script>
 </body>
 </html>

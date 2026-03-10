@@ -9,11 +9,13 @@
 - pair a human-readable review surface with a machine-readable dossier so the approved output can map directly into implementation
 - show rationale inline but keep it collapsible so the first read is about thread feel, not analyst notes
 - encode in-thread social role and case policy explicitly in the dossier instead of assuming they will emerge from prose style alone
+- show per-comment word counts or an equivalent visible length signal when the user is judging whether the thread is still too uniform
 
 ## failure patterns
 - abstract comment lists are too easy to approve by mistake because they hide how repetitive the thread feels when rendered together
 - proving rule-file paths without proving exact hashes is too weak when the user explicitly forbids paraphrase drift
 - cadence diversity without role diversity still reads like one author wearing ten masks
+- role diversity still fails if too many comments open with the same helper move or stay trapped in the same medium-length band
 
 ## verification patterns
 - validate the dossier with a real json parser before calling the artifact done
