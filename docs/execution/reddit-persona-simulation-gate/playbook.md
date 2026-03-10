@@ -10,6 +10,7 @@
 - show rationale inline but keep it collapsible so the first read is about thread feel, not analyst notes
 - encode in-thread social role and case policy explicitly in the dossier instead of assuming they will emerge from prose style alone
 - show per-comment word counts or an equivalent visible length signal when the user is judging whether the thread is still too uniform
+- once the user approves one scenario, freeze that scenario explicitly in the artifact metadata and use it as the downstream implementation target
 
 ## failure patterns
 - abstract comment lists are too easy to approve by mistake because they hide how repetitive the thread feels when rendered together

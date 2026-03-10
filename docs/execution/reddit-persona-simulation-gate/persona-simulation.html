@@ -445,6 +445,7 @@
           <div class="chip">anchor thread<strong>insane vaginitis / rural shipping delay</strong></div>
           <div class="chip">approval axis<strong>role spread + persona intensity</strong></div>
           <div class="chip">locked constraint<strong>mixed case + wider length spread</strong></div>
+          <div class="chip">approved target<strong>scenario b locked</strong></div>
         </div>
       </div>
 
@@ -493,8 +494,8 @@
               <h2 id="scenario-title">scenario a / moderate persona separation</h2>
             </div>
             <div class="scenario-tabs" role="tablist" aria-label="scenario switcher">
-              <button class="tab active" data-target="scenario-a" role="tab" aria-selected="true">scenario a</button>
-              <button class="tab" data-target="scenario-b" role="tab" aria-selected="false">scenario b</button>
+              <button class="tab" data-target="scenario-a" role="tab" aria-selected="false">scenario a</button>
+              <button class="tab active" data-target="scenario-b" role="tab" aria-selected="true">scenario b</button>
             </div>
           </div>
           <div class="metrics-grid">
@@ -524,10 +525,10 @@
           <div class="eyebrow">rendered thread</div>
           <h2>all 10 profiles under one post</h2>
 
-          <div id="scenario-a" class="scenario-panel active">
+          <div id="scenario-a" class="scenario-panel">
             <div class="thread-list" id="thread-a"></div>
           </div>
-          <div id="scenario-b" class="scenario-panel">
+          <div id="scenario-b" class="scenario-panel active">
             <div class="thread-list" id="thread-b"></div>
           </div>
         </section>
@@ -683,7 +684,7 @@
         renderLedger();
         renderThread("thread-a", "scenario-a");
         renderThread("thread-b", "scenario-b");
-        activateScenario("scenario-a");
+        activateScenario("scenario-b");
       })
       .catch(error => {
         document.body.innerHTML = `<pre style="padding:24px;font-family:monospace;">failed to load dossier: ${String(error)}</pre>`;

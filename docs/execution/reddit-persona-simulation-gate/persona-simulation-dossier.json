@@ -1,8 +1,11 @@
 {
   "approval_gate": {
     "name": "reddit persona simulation approval gate",
-    "status": "awaiting_user_review",
-    "approval_rule": "no production redesign plan is finalized until the revised role-diverse scenario pack is approved"
+    "status": "approved",
+    "approved_scenario": "scenario_b",
+    "approved_at": "2026-03-10T22:15:00+01:00",
+    "approval_rule": "no production redesign plan is finalized until the revised role-diverse scenario pack is approved",
+    "implementation_target": "scenario b / harder role spread with visible social friction"
   },
   "anchor_thread": {
     "post_url": "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/",
