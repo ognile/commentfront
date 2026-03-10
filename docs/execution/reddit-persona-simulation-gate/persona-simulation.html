@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reddit Persona Simulation Gate</title>
+  <style>
+    :root {
+      --bg: #f5efe4;
+      --paper: #fffaf2;
+      --ink: #1f1a16;
+      --muted: #6b6158;
+      --line: rgba(53, 41, 28, 0.15);
+      --accent: #b85c38;
+      --accent-soft: rgba(184, 92, 56, 0.12);
+      --olive: #47593f;
+      --olive-soft: rgba(71, 89, 63, 0.14);
+      --gold: #c89b3c;
+      --shadow: 0 20px 60px rgba(65, 45, 28, 0.12);
+      --font-display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      --font-body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      --font-mono: "SF Mono", "Menlo", "Consolas", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top right, rgba(200, 155, 60, 0.18), transparent 22%),
+        radial-gradient(circle at left 20%, rgba(71, 89, 63, 0.12), transparent 28%),
+        linear-gradient(180deg, #f8f2e8 0%, #f2eadc 100%);
+      color: var(--ink);
+      font-family: var(--font-body);
+      line-height: 1.45;
+    }
+
+    .shell {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 28px 28px 52px;
+    }
+
+    .masthead {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 420px);
+      gap: 18px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    .hero,
+    .rule-card,
+    .post-card,
+    .metrics,
+    .thread-card,
+    .ledger-card {
+      background: rgba(255, 250, 242, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .hero {
+      padding: 26px 28px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -40px -60px auto;
+      width: 180px;
+      height: 180px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(184, 92, 56, 0.18), transparent 70%);
+    }
+
+    .eyebrow,
+    .chip,
+    .persona-tag,
+    .metric-label,
+    .comment-meta,
+    .small-label {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 11px;
+    }
+
+    .eyebrow { color: var(--accent); font-weight: 700; margin-bottom: 10px; }
+
+    h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 600; line-height: 1.05; }
+    h1 { font-size: clamp(2.2rem, 5vw, 4rem); max-width: 12ch; }
+    h2 { font-size: clamp(1.4rem, 3vw, 2.2rem); }
+    h3 { font-size: 1.1rem; }
+
+    .hero p,
+    .post-card p,
+    .rule-card p,
+    .comment-copy,
+    .ledger-text,
+    .rationale {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .hero-copy {
+      margin-top: 14px;
+      max-width: 68ch;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 22px;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.45);
+      color: var(--muted);
+    }
+
+    .chip strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 15px;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--ink);
+    }
+
+    .rule-card {
+      padding: 22px 24px;
+      background: linear-gradient(180deg, rgba(71, 89, 63, 0.08), rgba(255,250,242,0.95));
+    }
+
+    .rule-list {
+      margin: 14px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 12px;
+    }
+
+    .rule-list li {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.66);
+      border: 1px solid rgba(71, 89, 63, 0.15);
+    }
+
+    .main {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(320px, 420px);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .left-stack,
+    .right-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .post-card,
+    .metrics,
+    .thread-card,
+    .ledger-card {
+      padding: 22px 24px;
+    }
+
+    .post-grid {
+      margin-top: 16px;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1.2fr 1fr;
+    }
+
+    .post-box {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px 16px;
+      background: rgba(255,255,255,0.65);
+    }
+
+    .post-box strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+
+    .post-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      word-break: break-all;
+    }
+
+    .scenario-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .scenario-tabs {
+      display: inline-flex;
+      gap: 8px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.66);
+      border-radius: 999px;
+    }
+
+    .tab {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 11px 16px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: 160ms ease;
+    }
+
+    .tab.active {
+      background: var(--ink);
+      color: #fff;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.72);
+    }
+
+    .metric-value {
+      display: block;
+      font-family: var(--font-display);
+      font-size: 1.65rem;
+      margin-top: 8px;
+      color: var(--ink);
+    }
+
+    .thread-card {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .thread-card::before {
+      content: "";
+      position: absolute;
+      inset: 24px auto 24px 42px;
+      width: 1px;
+      background: linear-gradient(180deg, rgba(200,155,60,0.25), rgba(71,89,63,0.1));
+    }
+
+    .thread-list {
+      display: grid;
+      gap: 14px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .comment {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr);
+      gap: 14px;
+      padding: 18px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.76);
+    }
+
+    .avatar {
+      width: 56px;
+      height: 56px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      color: #fff;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.25);
+    }
+
+    .comment-top {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: baseline;
+      margin-bottom: 10px;
+    }
+
+    .comment-name {
+      font-size: 1.1rem;
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .comment-meta { color: var(--muted); }
+
+    .persona-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .comment-copy {
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    details {
+      margin-top: 12px;
+      border-top: 1px dashed rgba(53, 41, 28, 0.18);
+      padding-top: 10px;
+    }
+
+    summary {
+      cursor: pointer;
+      color: var(--olive);
+      font-weight: 700;
+      list-style: none;
+    }
+
+    summary::-webkit-details-marker { display: none; }
+
+    .rationale {
+      margin-top: 8px;
+      color: var(--muted);
+    }
+
+    .ledger-card {
+      position: sticky;
+      top: 18px;
+    }
+
+    .ledger-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+      max-height: 70vh;
+      overflow: auto;
+      padding-right: 6px;
+    }
+
+    .ledger-item {
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.7);
+    }
+
+    .ledger-item strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--ink);
+    }
+
+    .ledger-text {
+      font-size: 14px;
+    }
+
+    .scenario-note {
+      margin-top: 12px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: var(--olive-soft);
+      color: var(--ink);
+      border: 1px solid rgba(71, 89, 63, 0.16);
+      font-size: 14px;
+    }
+
+    .footer-note {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      font-family: var(--font-mono);
+      word-break: break-word;
+    }
+
+    .scenario-panel { display: none; }
+    .scenario-panel.active { display: block; }
+
+    @media (max-width: 1100px) {
+      .masthead,
+      .main,
+      .post-grid,
+      .metrics-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .ledger-card {
+        position: static;
+      }
+    }
+
+    @media (max-width: 700px) {
+      .shell { padding: 18px 14px 38px; }
+      .hero,
+      .rule-card,
+      .post-card,
+      .metrics,
+      .thread-card,
+      .ledger-card { padding: 18px; border-radius: 20px; }
+      .comment { grid-template-columns: 48px minmax(0, 1fr); padding: 16px; }
+      .avatar { width: 48px; height: 48px; border-radius: 16px; }
+      .thread-card::before { left: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="masthead">
+      <div class="hero">
+        <div class="eyebrow">approval gate / one real post / ten exact profiles</div>
+        <h1>reddit persona simulation before any production redesign gets locked.</h1>
+        <p class="hero-copy">
+          this is the review surface for the thread that exposed the current system failure. same anchor post, same 10 profiles, same timestamp pattern. the only real difference is persona intensity, so you can inspect the whole thread and decide which direction actually feels acceptable.
+        </p>
+        <div class="hero-grid">
+          <div class="chip">anchor thread<strong>insane vaginitis / rural shipping delay</strong></div>
+          <div class="chip">approval axis<strong>moderate vs stronger persona separation</strong></div>
+          <div class="chip">locked constraint<strong>rule files stay source-of-truth</strong></div>
+        </div>
+      </div>
+
+      <aside class="rule-card">
+        <div class="eyebrow">verbatim rule sources</div>
+        <h2>proof of source-of-truth ingestion</h2>
+        <ul class="rule-list">
+          <li>
+            <div class="small-label">great-writing-patterns.md</div>
+            <div class="footer-note">sha256: 5b8cb44fceb640b2224a04c950a2f79ebebef863e9ac5b43401e73d3123df94f</div>
+          </li>
+          <li>
+            <div class="small-label">negative-patterns.md</div>
+            <div class="footer-note">sha256: 0676cd003f0d8c9382378c364a26e99327c21272aad65bd95bee67a3e78e18a2</div>
+          </li>
+          <li>
+            <div class="small-label">vocabulary-guidance.md</div>
+            <div class="footer-note">sha256: 74a10459bc0d72cfddb6ed26cfa4727069904c39e13888b0e9c3cc94396b0bc5</div>
+          </li>
+        </ul>
+      </aside>
+    </section>
+
+    <section class="main">
+      <div class="left-stack">
+        <article class="post-card">
+          <div class="eyebrow">real anchor post</div>
+          <h2>help!!! insane vaginitis. yes, a doctor already saw me. still struggling.</h2>
+          <div class="post-grid">
+            <div class="post-box">
+              <strong>post context</strong>
+              <p>tldr: had a yeast infection treated with fluconazole, but the itching kept escalating and the vulvar skin now feels like open wounds.</p>
+            </div>
+            <div class="post-box">
+              <strong>live target-comment context</strong>
+              <p>rural area, walmart does not have it, amazon plus usps pickup means a two-week wait from the next town over.</p>
+            </div>
+          </div>
+          <div class="footer-note">anchor post: <a class="post-link" href="https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/">https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/</a></div>
+        </article>
+
+        <section class="metrics">
+          <div class="scenario-header">
+            <div>
+              <div class="eyebrow">scenario comparison</div>
+              <h2 id="scenario-title">scenario a / moderate persona separation</h2>
+            </div>
+            <div class="scenario-tabs" role="tablist" aria-label="scenario switcher">
+              <button class="tab active" data-target="scenario-a" role="tab" aria-selected="true">scenario a</button>
+              <button class="tab" data-target="scenario-b" role="tab" aria-selected="false">scenario b</button>
+            </div>
+          </div>
+          <div class="metrics-grid">
+            <div class="metric">
+              <div class="metric-label">thread feel</div>
+              <span class="metric-value" id="metric-feel">organic</span>
+            </div>
+            <div class="metric">
+              <div class="metric-label">persona intensity</div>
+              <span class="metric-value" id="metric-intensity">moderate</span>
+            </div>
+            <div class="metric">
+              <div class="metric-label">comment count</div>
+              <span class="metric-value">10</span>
+            </div>
+            <div class="metric">
+              <div class="metric-label">shared pattern</div>
+              <span class="metric-value">same timing</span>
+            </div>
+          </div>
+          <div class="scenario-note" id="scenario-note">
+            distinct enough to avoid cloning while still feeling like one plausible subreddit thread.
+          </div>
+        </section>
+
+        <section class="thread-card">
+          <div class="eyebrow">rendered thread</div>
+          <h2>all 10 profiles under one post</h2>
+
+          <div id="scenario-a" class="scenario-panel active">
+            <div class="thread-list" id="thread-a"></div>
+          </div>
+          <div id="scenario-b" class="scenario-panel">
+            <div class="thread-list" id="thread-b"></div>
+          </div>
+        </section>
+      </div>
+
+      <aside class="right-stack">
+        <section class="ledger-card">
+          <div class="eyebrow">persona ledger</div>
+          <h2>stable blueprints across both scenarios</h2>
+          <p class="ledger-text">the names, timestamps, and post stay fixed. what changes is how visibly each profile leans into its own signature.</p>
+          <div class="ledger-list" id="ledger"></div>
+          <div class="footer-note">machine-readable dossier: persona-simulation-dossier.json</div>
+        </section>
+      </aside>
+    </section>
+  </div>
+
+  <script>
+    const personaColors = {
+      reddit_amy_schaefera: "#856244",
+      reddit_catherine_emmar: "#6f7f50",
+      reddit_cloudia_merra: "#9b5741",
+      reddit_connor_esla: "#4f6a7a",
+      reddit_jenee_waters: "#91546c",
+      reddit_kaylee_andreas: "#a7752a",
+      reddit_lauren_stewrt: "#6f5d8f",
+      reddit_mary_miaby: "#4f6d57",
+      reddit_neera_allvere: "#6e8a42",
+      reddit_victor_saunders: "#78624b"
+    };
+
+    const dossier = {
+      profiles: [
+        { profile_name: "reddit_amy_schaefera", core_signature: "brief, no-frills triage voice", detail: "1 to 2 compact sentences. plain practical nouns. nearly no modifiers." },
+        { profile_name: "reddit_catherine_emmar", core_signature: "soft clinical framing", detail: "2 measured sentences. calm health language. procedural without sounding formal." },
+        { profile_name: "reddit_cloudia_merra", core_signature: "chatty empath with one sensory detail", detail: "2 to 3 flowing sentences. one mini-story or body-feel detail." },
+        { profile_name: "reddit_connor_esla", core_signature: "logistics-first problem solver", detail: "dense practical moves. stores, calls, supply routes, next-step bias." },
+        { profile_name: "reddit_jenee_waters", core_signature: "reflective support", detail: "opens with how the situation lands in daily life, then gives one grounded move." },
+        { profile_name: "reddit_kaylee_andreas", core_signature: "quick relief-first suggestions", detail: "short lines. immediate comfort. no theory rabbit hole." },
+        { profile_name: "reddit_lauren_stewrt", core_signature: "older-sister warmth", detail: "home-life detail, sturdy tone, grounded domestic adjustments." },
+        { profile_name: "reddit_mary_miaby", core_signature: "burden-framing", detail: "pressure, errands, exhaustion, then a practical release valve." },
+        { profile_name: "reddit_neera_allvere", core_signature: "small gentle fix", detail: "quiet one-step comfort. tiny scale. low drama." },
+        { profile_name: "reddit_victor_saunders", core_signature: "rustic utilitarian", detail: "plain place-based problem solving with shelf-level realism." }
+      ],
+      scenarios: {
+        "scenario-a": {
+          title: "scenario a / moderate persona separation",
+          note: "distinct enough to avoid cloning while still feeling like one plausible subreddit thread.",
+          feel: "organic",
+          intensity: "moderate",
+          comments: [
+            { profile_name: "reddit_amy_schaefera", timestamp: "mar 10, 2026 10:14 cet", relative: "8h ago", text: "if the skin is raw, a plain barrier cream from the baby aisle can buy you a little breathing room while you wait. zinc oxide looks messy, but it can keep pee and friction from lighting everything up even more.", rationale: "amy stays terse and utilitarian, names one product type, and does not expand beyond immediate relief." },
+            { profile_name: "reddit_catherine_emmar", timestamp: "mar 10, 2026 10:48 cet", relative: "7h ago", text: "open wounds plus ongoing itching after fluconazole would make me ask for a swab or culture, not another blind guess. if they can call something into the pharmacy in the next town, this might move faster than waiting on amazon.", rationale: "catherine keeps a calm clinical frame, nudges toward a test, and ties it back to the rural pharmacy constraint." },
+            { profile_name: "reddit_cloudia_merra", timestamp: "mar 10, 2026 11:19 cet", relative: "7h ago", text: "i had a stretch where even walking around the grocery store felt impossible because everything was rubbing. if you have a peri bottle or even a clean water bottle, pouring lukewarm water while you pee can make this a lot less brutal.", rationale: "cloudia brings one sensory mini-story, then pivots into a concrete comfort tactic." },
+            { profile_name: "reddit_connor_esla", timestamp: "mar 10, 2026 11:57 cet", relative: "6h ago", text: "if walmart is out, call the small pharmacy first instead of checking the app over and over. a lot of them can order zinc oxide, lidocaine-free barrier ointment, or the exact antifungal by the next morning.", rationale: "connor is logistics-first, focused on supply routes and ordering behavior instead of emotional framing." },
+            { profile_name: "reddit_jenee_waters", timestamp: "mar 10, 2026 12:24 cet", relative: "6h ago", text: "being stuck in a rural area makes every vaginal health problem feel twice as big. if you are this uncomfortable, i would ring urgent care again and be blunt that the skin is open now, because this has moved past basic annoyance.", rationale: "jenee opens with the life-context burden and then frames a firm but still supportive escalation step." },
+            { profile_name: "reddit_kaylee_andreas", timestamp: "mar 10, 2026 13:11 cet", relative: "5h ago", text: "a cool sitz bath might calm things down tonight. even ten minutes can take the edge off when the burning gets constant.", rationale: "kaylee stays very short, relief-first, and avoids adding extra theory." },
+            { profile_name: "reddit_lauren_stewrt", timestamp: "mar 10, 2026 14:06 cet", relative: "4h ago", text: "the part that jumps out to me is how raw the skin sounds now. i would skip pads, liners, and anything scented for a few days and wear the loosest cotton shorts you have at home.", rationale: "lauren reads like a grounded older sister, anchored in home-life detail and simple removal of irritants." },
+            { profile_name: "reddit_mary_miaby", timestamp: "mar 10, 2026 15:22 cet", relative: "3h ago", text: "the extra driving, the mail delay, and the pain all piling up would wear anyone down. if the pharmacy in the next town has a phone number online, i would ask whether they can transfer or special-order whatever the er gave you so you are not stuck waiting two weeks.", rationale: "mary centers the weight and friction of the situation, then gives one supply-side move." },
+            { profile_name: "reddit_neera_allvere", timestamp: "mar 10, 2026 16:41 cet", relative: "2h ago", text: "petroleum jelly before you pee can help protect broken skin for a little while. it is not a treatment, but it can make the next bathroom trip less miserable.", rationale: "neera stays gentle and tiny in scope, offering one small relief move without overclaiming." },
+            { profile_name: "reddit_victor_saunders", timestamp: "mar 10, 2026 17:36 cet", relative: "1h ago", text: "if fluconazole did nothing and the skin is split open, i would not assume this is still the same infection. i would go back in and ask them to rule out bv, contact irritation, or something that needs a different cream.", rationale: "victor sounds plain and decisive, with a diagnosis-path correction instead of soft empathy." }
+          ]
+        },
+        "scenario-b": {
+          title: "scenario b / stronger persona separation",
+          note: "make the same 10 profiles feel clearly different at first glance while staying believable for the thread.",
+          feel: "wider range",
+          intensity: "strong",
+          comments: [
+            { profile_name: "reddit_amy_schaefera", timestamp: "mar 10, 2026 10:14 cet", relative: "8h ago", text: "if it feels raw, baby-aisle zinc cream tonight. ugly, but it can save your skin from more burning.", rationale: "amy compresses even harder here, making her brevity one of the thread's strongest signatures." },
+            { profile_name: "reddit_catherine_emmar", timestamp: "mar 10, 2026 10:48 cet", relative: "7h ago", text: "persistent itching plus fissured skin after fluconazole would push me toward a swab, wet mount, or culture before another blind treatment. i would call the next-town pharmacy and ask what they can fill same day while you line that up.", rationale: "catherine goes more precise and procedure-minded without sounding robotic." },
+            { profile_name: "reddit_cloudia_merra", timestamp: "mar 10, 2026 11:19 cet", relative: "7h ago", text: "i had one week where even the seam in my jeans felt mean, so i really feel for you. the one thing that helped me get through peeing was warm water from a peri bottle at the same time, because it stopped this sharp sting spiral.", rationale: "cloudia becomes more visibly personal and sensory, which sharpens her chatty-empath blueprint." },
+            { profile_name: "reddit_connor_esla", timestamp: "mar 10, 2026 11:57 cet", relative: "6h ago", text: "rural mail delay is a nightmare for anything gyne related. i would work the phones before i waited on amazon: independent pharmacy, grocery pharmacy, then urgent care, because one of them may have miconazole, zinc paste, or a compounded barrier cream sooner.", rationale: "connor widens the operational search path and becomes more recognizably system-driven." },
+            { profile_name: "reddit_jenee_waters", timestamp: "mar 10, 2026 12:24 cet", relative: "6h ago", text: "having to act normal when your whole pelvic area is screaming is such a lonely kind of misery. if they told you yeast once and sent you home, i would go back and say the wounds are the part that scares you now.", rationale: "jenee leans harder into emotional-social burden and uses fewer practical details than scenario a." },
+            { profile_name: "reddit_kaylee_andreas", timestamp: "mar 10, 2026 13:11 cet", relative: "5h ago", text: "cool bath. loose shorts. no rubbing tonight if you can help it.", rationale: "kaylee becomes almost note-like, which makes her profile unmistakably distinct in the stack." },
+            { profile_name: "reddit_lauren_stewrt", timestamp: "mar 10, 2026 14:06 cet", relative: "4h ago", text: "years ago i got so irritated after a detergent mix-up that i slept on a towel with no underwear because any seam was too much. i would cut every extra product for a few days and go plain water, plain soap for the rest of your body, and the loosest fabric you own.", rationale: "lauren pushes further into a domestic anecdote, making her older-sister voice much more visible." },
+            { profile_name: "reddit_mary_miaby", timestamp: "mar 10, 2026 15:22 cet", relative: "3h ago", text: "the way rural errands turn into a whole expedition makes this feel even heavier when you already hurt. if you can, let the pharmacy staff help you problem-solve the supply side instead of carrying this alone, because sometimes they know which store or clinic still has the medication on the shelf.", rationale: "mary turns up her burden-framing and keeps the sentence flow more emotionally loaded." },
+            { profile_name: "reddit_neera_allvere", timestamp: "mar 10, 2026 16:41 cet", relative: "2h ago", text: "before you pee, put on a little petroleum jelly and keep a cup of lukewarm water nearby. tiny thing, but this can soften the next ten minutes.", rationale: "neera becomes even quieter and more micro-scale, centered on one tiny moment of relief." },
+            { profile_name: "reddit_victor_saunders", timestamp: "mar 10, 2026 17:36 cet", relative: "1h ago", text: "if walmart is empty, check the farm store, gas station pharmacy shelf, or the oldest independent drugstore in the next town before you wait two weeks. boring barrier products are sometimes easier to find than the branded yeast items.", rationale: "victor gets more place-based and improvisational, which sharpens his rustic utilitarian signature." }
+          ]
+        }
+      }
+    };
+
+    function initials(profileName) {
+      return profileName
+        .replace("reddit_", "")
+        .split("_")
+        .map(part => part[0].toUpperCase())
+        .join("")
+        .slice(0, 2);
+    }
+
+    function renderLedger() {
+      const root = document.getElementById("ledger");
+      root.innerHTML = dossier.profiles.map(profile => `
+        <article class="ledger-item">
+          <strong>${profile.profile_name}</strong>
+          <div class="persona-tag" style="background:${hexToSoft(personaColors[profile.profile_name])}; color:${personaColors[profile.profile_name]};">${profile.core_signature}</div>
+          <p class="ledger-text" style="margin-top:8px;">${profile.detail}</p>
+        </article>
+      `).join("");
+    }
+
+    function renderThread(targetId, scenarioKey) {
+      const root = document.getElementById(targetId);
+      const scenario = dossier.scenarios[scenarioKey];
+      root.innerHTML = scenario.comments.map(comment => `
+        <article class="comment">
+          <div class="avatar" style="background:${personaColors[comment.profile_name]};">${initials(comment.profile_name)}</div>
+          <div>
+            <div class="comment-top">
+              <span class="comment-name">${comment.profile_name}</span>
+              <span class="comment-meta">${comment.relative}</span>
+              <span class="comment-meta">${comment.timestamp}</span>
+              <span class="persona-tag" style="background:${hexToSoft(personaColors[comment.profile_name])}; color:${personaColors[comment.profile_name]};">${lookupSignature(comment.profile_name)}</span>
+            </div>
+            <p class="comment-copy">${comment.text}</p>
+            <details>
+              <summary>why this fits</summary>
+              <p class="rationale">${comment.rationale}</p>
+            </details>
+          </div>
+        </article>
+      `).join("");
+    }
+
+    function lookupSignature(profileName) {
+      return dossier.profiles.find(profile => profile.profile_name === profileName)?.core_signature || "";
+    }
+
+    function hexToSoft(hex) {
+      const clean = hex.replace("#", "");
+      const r = parseInt(clean.slice(0, 2), 16);
+      const g = parseInt(clean.slice(2, 4), 16);
+      const b = parseInt(clean.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, 0.14)`;
+    }
+
+    function activateScenario(key) {
+      document.querySelectorAll(".scenario-panel").forEach(panel => {
+        panel.classList.toggle("active", panel.id === key);
+      });
+      document.querySelectorAll(".tab").forEach(tab => {
+        const active = tab.dataset.target === key;
+        tab.classList.toggle("active", active);
+        tab.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      const scenario = dossier.scenarios[key];
+      document.getElementById("scenario-title").textContent = scenario.title;
+      document.getElementById("metric-feel").textContent = scenario.feel;
+      document.getElementById("metric-intensity").textContent = scenario.intensity;
+      document.getElementById("scenario-note").textContent = scenario.note;
+    }
+
+    document.querySelectorAll(".tab").forEach(tab => {
+      tab.addEventListener("click", () => activateScenario(tab.dataset.target));
+    });
+
+    renderLedger();
+    renderThread("thread-a", "scenario-a");
+    renderThread("thread-b", "scenario-b");
+    activateScenario("scenario-a");
+  </script>
+</body>
+</html>
