@@ -146,6 +146,9 @@ export function RedditUtilityRail({
   onSaveMission,
   onRunMission,
 }: RedditUtilityRailProps) {
+  const linkedCredentials = credentials.filter((credential) => credential.session_connected).length
+  const validSessions = sessions.filter((session) => session.valid).length
+
   return (
     <div className="space-y-4 xl:sticky xl:top-6">
       <Card className="border-[#d8d3c5] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(247,242,232,0.98))] shadow-sm">
@@ -153,70 +156,20 @@ export function RedditUtilityRail({
           <CardTitle className="text-base text-[#1f1f1a]">sessions & credentials</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>import credentials</Label>
-            <Textarea
-              value={seedLines}
-              onChange={(event) => onSeedLinesChange(event.target.value)}
-              placeholder="username:password:email:email_password:totp_secret:https://www.reddit.com/user/username/"
-              className="min-h-[110px] border-[#d8d3c5] bg-white"
-            />
-            <Button onClick={onSeed} disabled={seeding || !seedLines.trim()} className="w-full">
-              {seeding ? 'importing...' : 'import reddit credentials'}
-            </Button>
-          </div>
-
-          <div className="space-y-2">
-            <Label>link credential to session</Label>
-            <Select value={selectedCredentialId} onValueChange={onSelectCredential}>
-              <SelectTrigger className="border-[#d8d3c5] bg-white">
-                <SelectValue placeholder="choose credential" />
-              </SelectTrigger>
-              <SelectContent>
-                {credentials.map((credential) => (
-                  <SelectItem key={credential.credential_id} value={credential.credential_id}>
-                    {credential.username || credential.uid}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button onClick={onCreateSession} disabled={creatingSession || !selectedCredentialId} className="w-full">
-              {creatingSession ? 'creating session...' : 'create reddit session'}
-            </Button>
-          </div>
-
-          <div className="space-y-2">
-            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">credentials</div>
-            <div className="space-y-2">
-              {credentials.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-[#d8d3c5] p-3 text-sm text-[#6e6759]">
-                  {loading ? 'loading...' : 'no reddit credentials yet'}
-                </div>
-              ) : credentials.map((credential) => (
-                <div key={credential.credential_id} className="rounded-xl border border-[#e6decd] bg-white p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate font-medium text-[#1f1f1a]">{credential.username || credential.uid}</div>
-                      <div className="truncate text-xs text-[#7a7365]">{credential.email || 'no email stored'}</div>
-                    </div>
-                    <Badge variant={credential.session_connected ? 'default' : 'outline'}>
-                      {credential.session_connected ? 'linked' : 'unlinked'}
-                    </Badge>
-                  </div>
-                </div>
-              ))}
-            </div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <Badge variant="secondary">{validSessions}/{sessions.length || 0} valid sessions</Badge>
+            <Badge variant="outline">{linkedCredentials}/{credentials.length || 0} linked credentials</Badge>
           </div>
 
           <div className="space-y-2">
             <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">sessions</div>
-            <div className="space-y-2">
+            <div className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
               {sessions.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-[#d8d3c5] p-3 text-sm text-[#6e6759]">
                   {loading ? 'loading...' : 'no reddit sessions yet'}
                 </div>
               ) : sessions.map((session) => (
-                <div key={session.profile_name} className="rounded-xl border border-[#e6decd] bg-white p-3">
+                <div key={session.profile_name} className="rounded-xl border border-[#e6decd] bg-white p-2.5">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="truncate font-medium text-[#1f1f1a]">{session.display_name || session.profile_name}</div>
@@ -238,7 +191,7 @@ export function RedditUtilityRail({
                           })
                         }
                         disabled={!session.valid || !onOpenRemoteControl}
-                        className="h-8 w-8 border-[#d8d3c5] bg-white"
+                        className="h-7 w-7 border-[#d8d3c5] bg-white"
                       >
                         <Mouse className="h-3.5 w-3.5" />
                       </Button>
@@ -248,6 +201,70 @@ export function RedditUtilityRail({
               ))}
             </div>
           </div>
+
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">credentials</div>
+            <div className="max-h-[280px] space-y-2 overflow-y-auto pr-1">
+              {credentials.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-[#d8d3c5] p-3 text-sm text-[#6e6759]">
+                  {loading ? 'loading...' : 'no reddit credentials yet'}
+                </div>
+              ) : credentials.map((credential) => (
+                <div key={credential.credential_id} className="rounded-xl border border-[#e6decd] bg-white p-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-[#1f1f1a]">{credential.username || credential.uid}</div>
+                      <div className="truncate text-xs text-[#7a7365]">{credential.email || 'no email stored'}</div>
+                    </div>
+                    <Badge variant={credential.session_connected ? 'default' : 'outline'}>
+                      {credential.session_connected ? 'linked' : 'unlinked'}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <details className="group rounded-2xl border border-[#e6decd] bg-white">
+            <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5 text-sm font-semibold text-[#1f1f1a]">
+              <span>credential setup</span>
+              <span className="text-[11px] uppercase tracking-[0.14em] text-[#8a7f6a] group-open:hidden">show</span>
+              <span className="hidden text-[11px] uppercase tracking-[0.14em] text-[#8a7f6a] group-open:inline">hide</span>
+            </summary>
+            <div className="space-y-4 border-t border-[#ede5d5] p-3">
+              <div className="space-y-2">
+                <Label>link credential to session</Label>
+                <Select value={selectedCredentialId} onValueChange={onSelectCredential}>
+                  <SelectTrigger className="border-[#d8d3c5] bg-white">
+                    <SelectValue placeholder="choose credential" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {credentials.map((credential) => (
+                      <SelectItem key={credential.credential_id} value={credential.credential_id}>
+                        {credential.username || credential.uid}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button onClick={onCreateSession} disabled={creatingSession || !selectedCredentialId} className="w-full">
+                  {creatingSession ? 'creating session...' : 'create reddit session'}
+                </Button>
+              </div>
+
+              <div className="space-y-2">
+                <Label>import credentials</Label>
+                <Textarea
+                  value={seedLines}
+                  onChange={(event) => onSeedLinesChange(event.target.value)}
+                  placeholder="username:password:email:email_password:totp_secret:https://www.reddit.com/user/username/"
+                  className="min-h-[96px] border-[#d8d3c5] bg-white"
+                />
+                <Button onClick={onSeed} disabled={seeding || !seedLines.trim()} className="w-full">
+                  {seeding ? 'importing...' : 'import reddit credentials'}
+                </Button>
+              </div>
+            </div>
+          </details>
         </CardContent>
       </Card>
 

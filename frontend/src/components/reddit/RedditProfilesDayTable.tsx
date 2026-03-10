@@ -23,6 +23,11 @@ function proofTone(value: number, total: number): 'default' | 'secondary' | 'out
   return 'outline'
 }
 
+function completionRatio(completed: number, total: number): string {
+  if (total <= 0) return '0%'
+  return `${Math.round((completed / total) * 100)}%`
+}
+
 function renderActionMix(counts: Record<string, number>, actions: string[]) {
   return (
     <div className="flex flex-wrap gap-2">
@@ -56,16 +61,14 @@ export function RedditProfilesDayTable({
 }: RedditProfilesDayTableProps) {
   return (
     <div className="rounded-2xl border border-[#d8d3c5] bg-white shadow-sm">
-      <Table>
+      <Table className="table-fixed">
         <TableHeader className="sticky top-0 z-10 bg-[#f7f2e8]">
           <TableRow className="border-[#e3dccd] hover:bg-transparent">
-            <TableHead className="w-[180px]">profile</TableHead>
-            <TableHead className="min-w-[320px]">planned actions</TableHead>
-            <TableHead className="w-[110px]">completed</TableHead>
-            <TableHead className="w-[110px]">pending</TableHead>
-            <TableHead className="w-[110px]">blocked</TableHead>
-            <TableHead className="w-[280px]">proof coverage</TableHead>
-            <TableHead className="w-[110px] text-right">details</TableHead>
+            <TableHead className="h-10 w-[190px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">profile</TableHead>
+            <TableHead className="h-10 px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">required mix</TableHead>
+            <TableHead className="h-10 w-[220px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">progress</TableHead>
+            <TableHead className="h-10 w-[260px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">proof</TableHead>
+            <TableHead className="h-10 w-[110px] px-3 text-right text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">details</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -75,24 +78,29 @@ export function RedditProfilesDayTable({
             return (
               <Fragment key={profile.profile_name}>
                 <TableRow key={profile.profile_name} className="border-[#eee6d6] bg-white hover:bg-[#fcf8f0]">
-                  <TableCell>
+                  <TableCell className="px-3 py-3">
                     <div className="space-y-1">
                       <div className="font-semibold text-[#1f1f1a]">{profile.profile_name}</div>
                       <div className="text-xs text-[#7a7365]">{profile.planned_total} required actions</div>
                     </div>
                   </TableCell>
-                  <TableCell>{renderActionMix(profile.planned, actionKeys)}</TableCell>
-                  <TableCell>
-                    <Badge variant={countTone(profile.completed_total)}>{profile.completed_total}</Badge>
+                  <TableCell className="px-3 py-3">{renderActionMix(profile.planned, actionKeys)}</TableCell>
+                  <TableCell className="px-3 py-3">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant={countTone(profile.completed_total)}>done {profile.completed_total}</Badge>
+                        <Badge variant={countTone(profile.pending_total)}>left {profile.pending_total}</Badge>
+                        <Badge variant={profile.blocked_total > 0 ? 'destructive' : 'outline'}>
+                          blocked {profile.blocked_total}
+                        </Badge>
+                      </div>
+                      <div className="text-xs text-[#7a7365]">
+                        {completionRatio(profile.completed_total, profile.planned_total)} complete
+                      </div>
+                    </div>
                   </TableCell>
-                  <TableCell>
-                    <Badge variant={countTone(profile.pending_total)}>{profile.pending_total}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={profile.blocked_total > 0 ? 'destructive' : 'outline'}>{profile.blocked_total}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-2">
+                  <TableCell className="px-3 py-3">
+                    <div className="flex flex-wrap gap-1.5">
                       <Badge variant={proofTone(profile.proof_coverage.with_url, profile.proof_coverage.required_actions)}>
                         url {profile.proof_coverage.with_url}/{profile.proof_coverage.required_actions}
                       </Badge>
@@ -107,12 +115,12 @@ export function RedditProfilesDayTable({
                       </Badge>
                     </div>
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="px-3 py-3 text-right">
                     <Button
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
                       onClick={() => onToggleProfile(profile.profile_name)}
-                      className="text-[#6b6353]"
+                      className="border-[#d8d3c5] bg-white text-[#6b6353]"
                     >
                       {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                       {open ? 'hide' : 'open'}
@@ -121,7 +129,7 @@ export function RedditProfilesDayTable({
                 </TableRow>
                 {open ? (
                   <TableRow className="border-[#eee6d6] bg-[#faf6ee] hover:bg-[#faf6ee]">
-                    <TableCell colSpan={7} className="p-4">
+                    <TableCell colSpan={5} className="p-3">
                       <RedditProfileActionRows rows={rows} />
                     </TableCell>
                   </TableRow>

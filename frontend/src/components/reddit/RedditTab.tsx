@@ -329,7 +329,7 @@ export function RedditTab({ onOpenRemoteControl }: RedditTabProps) {
 
   return (
     <div className="mt-6 space-y-6">
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start">
         <RedditOpsWorkspace
           programs={programs}
           selectedProgramId={selectedProgramId}

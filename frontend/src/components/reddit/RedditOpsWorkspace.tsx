@@ -30,6 +30,18 @@ function totalCount(counts: Record<string, number>): number {
   return Object.values(counts || {}).reduce((sum, value) => sum + value, 0)
 }
 
+function formatNextRun(value: string | null | undefined): string | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed)
+}
+
 interface RedditOpsWorkspaceProps {
   programs: RedditProgramListItem[]
   selectedProgramId: string
@@ -74,6 +86,7 @@ export function RedditOpsWorkspace({
   const totalRequiredProof = filteredProfiles.reduce((sum, row) => sum + row.proof_coverage.required_actions, 0)
   const totalConfirmedProof = filteredProfiles.reduce((sum, row) => sum + row.proof_coverage.success_confirmed, 0)
   const selectedDayIndex = Math.max(0, (program?.available_days || []).findIndex((day) => day === selectedLocalDate))
+  const nextRunLabel = formatNextRun(program?.next_run_at)
 
   return (
     <div className="space-y-5">
@@ -87,10 +100,10 @@ export function RedditOpsWorkspace({
       />
 
       <Card className="border-[#d8d3c5] bg-[linear-gradient(180deg,rgba(250,246,238,0.98),rgba(255,255,255,0.98))] shadow-sm">
-        <CardContent className="space-y-4 p-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <CardContent className="space-y-3 p-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
             <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8a7f6a]">program controls</div>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8a7f6a]">monitor controls</div>
               <div className="flex flex-wrap items-center gap-2">
                 {program ? <Badge variant={statusTone(program.status)} className="capitalize">{program.status}</Badge> : null}
                 <Badge variant="outline">remaining {totalRemaining}</Badge>
@@ -98,12 +111,15 @@ export function RedditOpsWorkspace({
                 <Badge variant={totalRequiredProof > 0 && totalConfirmedProof === totalRequiredProof ? 'default' : 'secondary'}>
                   confirmed proof {totalConfirmedProof}/{totalRequiredProof}
                 </Badge>
-                {program?.next_run_at ? <Badge variant="outline">next run {program.next_run_at}</Badge> : null}
+                {nextRunLabel ? <Badge variant="outline">next {nextRunLabel}</Badge> : null}
+              </div>
+              <div className="text-sm text-[#6e6759]">
+                selected day shows the exact per-profile packet for that date, with proof rows hidden until you open a profile.
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-[auto_auto_minmax(220px,1fr)]">
-              <div className="space-y-2 sm:col-span-3">
+            <div className="grid gap-3 xl:min-w-[560px] xl:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="space-y-2 xl:col-span-2">
                 <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">day</div>
                 <div className="overflow-x-auto pb-1">
                   <div className="flex min-w-max gap-2">
@@ -116,7 +132,7 @@ export function RedditOpsWorkspace({
                           type="button"
                           onClick={() => onSelectLocalDate(day)}
                           className={[
-                            'flex min-w-[124px] items-center gap-3 rounded-2xl border px-3 py-2 text-left transition',
+                            'flex min-w-[116px] items-center gap-3 rounded-2xl border px-3 py-2 text-left transition',
                             active
                               ? 'border-[#1f1f1a] bg-[#1f1f1a] text-white shadow-sm'
                               : 'border-[#d8d3c5] bg-white text-[#5c564a] hover:border-[#b7ad99]',
@@ -140,20 +156,6 @@ export function RedditOpsWorkspace({
                 </div>
               </div>
               <div className="space-y-2">
-                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">profiles</div>
-                <div className="flex items-center gap-2 rounded-xl border border-[#d8d3c5] bg-white px-3 py-2 text-sm text-[#5c564a]">
-                  <Clock3 className="h-4 w-4" />
-                  {filteredProfiles.length} visible
-                </div>
-              </div>
-              <div className="space-y-2">
-                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">selected day</div>
-                <div className="flex items-center gap-2 rounded-xl border border-[#d8d3c5] bg-white px-3 py-2 text-sm text-[#5c564a]">
-                  <CalendarDays className="h-4 w-4" />
-                  day {selectedDayIndex + 1} of {(program?.available_days || []).length}
-                </div>
-              </div>
-              <div className="space-y-2 sm:col-span-2">
                 <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">search</div>
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a7f6a]" />
@@ -165,29 +167,43 @@ export function RedditOpsWorkspace({
                   />
                 </div>
               </div>
+              <div className="grid gap-2 sm:grid-cols-3 xl:col-span-2">
+                <div className="flex items-center gap-2 rounded-xl border border-[#d8d3c5] bg-white px-3 py-2 text-sm text-[#5c564a]">
+                  <Clock3 className="h-4 w-4" />
+                  {filteredProfiles.length} profiles visible
+                </div>
+                <div className="flex items-center gap-2 rounded-xl border border-[#d8d3c5] bg-white px-3 py-2 text-sm text-[#5c564a]">
+                  <CalendarDays className="h-4 w-4" />
+                  day {selectedDayIndex + 1} of {(program?.available_days || []).length}
+                </div>
+                <div className="flex items-center gap-2 rounded-xl border border-[#d8d3c5] bg-white px-3 py-2 text-sm text-[#5c564a]">
+                  <CheckCircle2 className="h-4 w-4" />
+                  {totalConfirmedProof}/{totalRequiredProof || 0} proof confirmed
+                </div>
+              </div>
             </div>
           </div>
 
-          <div className="grid gap-3 xl:grid-cols-4">
-            <div className="rounded-2xl border border-[#e6decd] bg-white p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">state</div>
-              <div className="mt-2 flex items-center gap-2 text-lg font-semibold text-[#1f1f1a]">
-                <CheckCircle2 className="h-5 w-5 text-[#2f6f3e]" />
+          <div className="grid gap-2 lg:grid-cols-4">
+            <div className="rounded-2xl border border-[#e6decd] bg-white px-3 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">state</div>
+              <div className="mt-1 flex items-center gap-2 text-base font-semibold text-[#1f1f1a]">
+                <CheckCircle2 className="h-4 w-4 text-[#2f6f3e]" />
                 {program?.status || 'no program'}
               </div>
             </div>
-            <div className="rounded-2xl border border-[#e6decd] bg-white p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">remaining contract</div>
-              <div className="mt-2 text-2xl font-semibold text-[#1f1f1a]">{totalRemaining}</div>
+            <div className="rounded-2xl border border-[#e6decd] bg-white px-3 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">remaining</div>
+              <div className="mt-1 text-base font-semibold text-[#1f1f1a]">{totalRemaining}</div>
             </div>
-            <div className="rounded-2xl border border-[#e6decd] bg-white p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">proof coverage</div>
-              <div className="mt-2 text-2xl font-semibold text-[#1f1f1a]">{totalConfirmedProof}/{totalRequiredProof}</div>
+            <div className="rounded-2xl border border-[#e6decd] bg-white px-3 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">proof</div>
+              <div className="mt-1 text-base font-semibold text-[#1f1f1a]">{totalConfirmedProof}/{totalRequiredProof}</div>
             </div>
-            <div className="rounded-2xl border border-[#e6decd] bg-white p-4">
-              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">failure count</div>
-              <div className="mt-2 flex items-center gap-2 text-2xl font-semibold text-[#1f1f1a]">
-                <AlertCircle className={`h-5 w-5 ${totalFailures > 0 ? 'text-[#b42318]' : 'text-[#8a7f6a]'}`} />
+            <div className="rounded-2xl border border-[#e6decd] bg-white px-3 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">failures</div>
+              <div className="mt-1 flex items-center gap-2 text-base font-semibold text-[#1f1f1a]">
+                <AlertCircle className={`h-4 w-4 ${totalFailures > 0 ? 'text-[#b42318]' : 'text-[#8a7f6a]'}`} />
                 {totalFailures}
               </div>
             </div>
