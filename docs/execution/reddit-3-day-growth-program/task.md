@@ -61,6 +61,7 @@
 - target-discovery misses should stay pending and rediscoverable, not burn attempts or page you immediately
 - the hardened realism path is working: generated reply text is now grounded in local thread/subreddit context and the prod evidence no longer shows operator/test-harness phrasing
 - the remaining create-post issue is now contractual bookkeeping: a successful create-post needs its resulting reddit thread url persisted, otherwise the verification contract rejects it even when the browser action succeeded
+- the remaining single-profile blocker is narrower now: `upvote_post` can miss an already-active vote state on some reddit surfaces, toggle it off, and then falsely exhaust the program even though the correct recovery path is to restore `UP`
 
 ## proven wins
 - local code now contains:
@@ -95,9 +96,17 @@
 - frontend `npm test`
 - frontend `npm run build`
 - frontend `npm run lint` warning-only
+- local verification for the toggle-off recovery patch passed:
+- backend compile clean
+- `33` focused reddit bot tests green
+- `70` broader reddit/program tests green
+- frontend `npm test`
+- frontend `npm run build`
+- frontend `npm run lint` warning-only
 
 ## open risks
 - the live 3-day program still has to prove sustained quota movement under scheduler control; today it has only just started
 - daily summary email timing still needs production confirmation because day-boundary summary behavior depends on actual program state transitions
 - the full 3-day run cannot be fully complete until wall-clock time passes, so the execution proof in this turn can only reach “live, active, and already consuming work” for the full program
 - `create_post` still needs one more deployed accounting fix so successful generated posts always satisfy the program contract and close quota cleanly
+- the single-profile “all actions in one program run” bar is still blocked until the `upvote_post` recovery patch is deployed and proven on a fresh realism run

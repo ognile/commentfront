@@ -1934,6 +1934,7 @@ async def upvote_post(
                 else []
             )
             recorder = get_current_forensic_recorder()
+            toggled_off_existing = _network_has_vote_mutation(recorder, target_kind="post", vote_state="NONE")
             success = await _verify_named_control_state(
                 page,
                 needles=["remove upvote", "upvoted"],
@@ -1946,6 +1947,35 @@ async def upvote_post(
                     (before_signature and after_signature and before_signature != after_signature)
                     or _network_has_vote_mutation(recorder, target_kind="post")
                 )
+            if not success and toggled_off_existing and share_box:
+                queue_current_event(
+                    "recovery",
+                    {
+                        "action_name": "upvote_post",
+                        "reason": "toggle_off_existing_upvote",
+                    },
+                    phase="verification",
+                    source="reddit_bot",
+                )
+                await _click_post_upvote_region(page, share_box=share_box)
+                await page.wait_for_timeout(1500)
+                screenshot = await save_debug_screenshot(page, f"reddit_upvote_post_{session.profile_name}")
+                success = await _verify_named_control_state(
+                    page,
+                    needles=["remove upvote", "upvoted"],
+                    expected_title=expected_title,
+                    row_y=share_y,
+                    left_of_x=share_left,
+                )
+                if not success and vote_x is not None and share_y is not None:
+                    success = await _vote_region_is_active(
+                        page,
+                        left=max(18, vote_x - 16),
+                        right=max(72, share_left - 24),
+                        y=share_y,
+                    )
+                if not success:
+                    success = _network_has_vote_mutation(recorder, target_kind="post", vote_state="UP")
             return _result(
                 success=success,
                 action="upvote_post",

@@ -7,6 +7,7 @@
 - add only proven reusable tactics here
 - keep explicit target references intact across retries; only clear discovered targets that can be safely rediscovered
 - for `create_post`, persist the created reddit thread url as the target reference immediately; otherwise a successful browser action can be incorrectly rejected by higher-level quota accounting
+- when a vote mutation comes back as `NONE` after an intended upvote, treat it as a missed already-active state and recover immediately; don’t let a detector miss exhaust the contractual action
 
 ## failure patterns
 - add recurring traps here
