@@ -604,6 +604,7 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
 
     work_items = list(((program.get("compiled") or {}).get("work_items") or []))
     remaining: Dict[str, int] = {}
+    retryable_remaining: Dict[str, int] = {}
     daily_progress: Dict[str, Dict[str, Any]] = {}
     contract_totals: Dict[str, int] = {}
     join_progress_matrix: Dict[str, Dict[str, str]] = {}
@@ -636,6 +637,7 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
             profile_progress["completed"][action] = profile_progress["completed"].get(action, 0) + 1
         elif status in {"blocked", "exhausted", "cancelled"}:
             profile_progress["blocked"][action] = profile_progress["blocked"].get(action, 0) + 1
+            remaining[action] = remaining.get(action, 0) + 1
             terminal_non_completed = True
             failures_by_action[action] = failures_by_action.get(action, 0) + 1
             failures_by_profile[profile_name] = failures_by_profile.get(profile_name, 0) + 1
@@ -647,6 +649,7 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
         else:
             profile_progress["pending"][action] = profile_progress["pending"].get(action, 0) + 1
             remaining[action] = remaining.get(action, 0) + 1
+            retryable_remaining[action] = retryable_remaining.get(action, 0) + 1
             scheduled_at = item.get("scheduled_at")
             if scheduled_at and (next_run_at is None or str(scheduled_at) < str(next_run_at)):
                 next_run_at = str(scheduled_at)
@@ -664,7 +667,7 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
 
     status = str(program.get("status") or "active")
     if status not in {"paused", "cancelled"}:
-        if remaining:
+        if retryable_remaining:
             status = "active"
         elif terminal_non_completed:
             status = "exhausted"

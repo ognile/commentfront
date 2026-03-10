@@ -156,3 +156,46 @@ def test_compiler_builds_posts_balanced_upvotes_and_mandatory_joins(tmp_path):
     assert len([item for item in work_items if item["action"] == "upvote_post"]) == 24
     assert len([item for item in work_items if item["action"] == "join_subreddit"]) == 4
     assert set(program["join_progress_matrix"].keys()) == {"reddit_alpha", "reddit_beta"}
+
+
+def test_exhausted_items_still_count_against_remaining_contract(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
+    program = store.create_program(
+        _spec(
+            profile_names=["reddit_alpha"],
+            schedule={
+                "start_at": "2026-03-09T08:00:00Z",
+                "duration_days": 1,
+                "timezone": "Europe/Zurich",
+                "random_windows": [{"start_hour": 9, "end_hour": 12}],
+            },
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 1,
+                "upvotes_max_per_day": 1,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "upvote_post")
+    item["status"] = "exhausted"
+    item["error"] = "verification failed"
+    item["result"] = {
+        "success": False,
+        "error": "verification failed",
+        "failure_class": "execution_failed",
+        "final_verdict": "failed_confirmed",
+    }
+
+    refreshed = store.save_program(program)
+
+    assert refreshed["status"] == "exhausted"
+    assert refreshed["remaining_contract"]["upvote_post"] == 1
+    assert refreshed["daily_progress"]["2026-03-09"]["reddit_alpha"]["blocked"]["upvote_post"] == 1
