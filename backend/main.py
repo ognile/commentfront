@@ -35,6 +35,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import uuid
 from urllib.parse import urlparse, parse_qs
+from zoneinfo import ZoneInfo
 import nest_asyncio
 
 # Patch asyncio to allow nested event loops (crucial for Playwright in FastAPI)
@@ -6980,6 +6981,258 @@ async def get_reddit_program_status(
         "notification_log": program.get("notification_log"),
         "recent_attempt_ids": program.get("recent_attempt_ids"),
     }
+
+
+def _reddit_program_available_days(program: Dict[str, Any]) -> List[str]:
+    daily_progress = dict(program.get("daily_progress") or {})
+    days = sorted(str(day) for day in daily_progress.keys() if str(day or "").strip())
+    if days:
+        return days
+    seen: Set[str] = set()
+    for item in ((program.get("compiled") or {}).get("work_items") or []):
+        local_date = str(item.get("local_date") or "").strip()
+        if local_date:
+            seen.add(local_date)
+    return sorted(seen)
+
+
+def _reddit_program_selected_local_date(program: Dict[str, Any], requested_local_date: Optional[str]) -> Optional[str]:
+    available_days = _reddit_program_available_days(program)
+    if not available_days:
+        return None
+    if requested_local_date:
+        requested = str(requested_local_date).strip()
+        if requested not in available_days:
+            raise HTTPException(status_code=400, detail="Unknown reddit program local_date")
+        return requested
+
+    timezone_name = str((((program.get("spec") or {}).get("schedule") or {}).get("timezone") or "UTC")).strip() or "UTC"
+    try:
+        current_local_date = datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+    except Exception:
+        current_local_date = datetime.utcnow().date().isoformat()
+    if current_local_date in available_days:
+        return current_local_date
+
+    past_or_current = [day for day in available_days if day <= current_local_date]
+    if past_or_current:
+        return past_or_current[-1]
+    return available_days[0]
+
+
+def _reddit_item_target_url(item: Dict[str, Any]) -> Optional[str]:
+    value = (
+        str(item.get("target_url") or "").strip()
+        or str(((item.get("result") or {}).get("target_url") or "")).strip()
+        or str((((item.get("discovered_target") or {}).get("target_url") or ""))).strip()
+    )
+    return value or None
+
+
+def _reddit_item_target_comment_url(item: Dict[str, Any]) -> Optional[str]:
+    value = (
+        str(item.get("target_comment_url") or "").strip()
+        or str(((item.get("result") or {}).get("target_comment_url") or "")).strip()
+        or str((((item.get("discovered_target") or {}).get("target_comment_url") or ""))).strip()
+    )
+    return value or None
+
+
+def _reddit_item_target_ref(item: Dict[str, Any]) -> Optional[str]:
+    return _reddit_item_target_comment_url(item) or _reddit_item_target_url(item)
+
+
+def _operator_screenshot_artifact_url(detail: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not detail:
+        return None
+    for artifact in list(detail.get("artifacts") or []):
+        if str(artifact.get("artifact_type") or "") == "screenshot":
+            return str(artifact.get("download_url") or "").strip() or None
+    return None
+
+
+async def _build_reddit_program_operator_view(
+    program: Dict[str, Any],
+    *,
+    local_date: Optional[str] = None,
+    profile_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    selected_local_date = _reddit_program_selected_local_date(program, local_date)
+    work_items = list(((program.get("compiled") or {}).get("work_items") or []))
+    profile_filter = str(profile_name or "").strip() or None
+    filtered_items = [
+        item for item in work_items
+        if (selected_local_date is None or str(item.get("local_date") or "") == selected_local_date)
+        and (profile_filter is None or str(item.get("profile_name") or "") == profile_filter)
+    ]
+
+    execution_policy = dict(((program.get("spec") or {}).get("execution_policy") or {}))
+    max_attempts_per_item = max(1, int(execution_policy.get("max_attempts_per_item", 1) or 1))
+    relevant_work_item_ids = {
+        str(item.get("id") or "").strip()
+        for item in filtered_items
+        if str(item.get("id") or "").strip()
+    }
+    grouped_attempts = await list_forensic_attempts(
+        filters={"run_id": str(program.get("id") or "")},
+        limit=max(200, min(2000, len(filtered_items) * max_attempts_per_item + 50)),
+    ) if relevant_work_item_ids else []
+
+    attempt_history_by_work_item: Dict[str, List[Dict[str, Any]]] = {}
+    for attempt in grouped_attempts:
+        metadata = dict(attempt.get("metadata") or {})
+        work_item_id = str(metadata.get("work_item_id") or "").strip()
+        if work_item_id not in relevant_work_item_ids:
+            continue
+        attempt_history_by_work_item.setdefault(work_item_id, []).append(
+            {
+                "attempt_id": attempt.get("attempt_id"),
+                "status": attempt.get("status"),
+                "final_verdict": attempt.get("final_verdict"),
+                "failure_class": attempt.get("failure_class"),
+                "started_at": attempt.get("started_at"),
+                "ended_at": attempt.get("ended_at"),
+            }
+        )
+
+    latest_attempt_ids: List[str] = []
+    for item in filtered_items:
+        attempt_id = str(((item.get("result") or {}).get("attempt_id") or "")).strip()
+        if attempt_id and attempt_id not in latest_attempt_ids:
+            latest_attempt_ids.append(attempt_id)
+    latest_details = await asyncio.gather(*(get_forensic_attempt_detail(attempt_id) for attempt_id in latest_attempt_ids)) if latest_attempt_ids else []
+    latest_detail_by_attempt_id = {
+        str((detail.get("attempt") or {}).get("attempt_id") or ""): detail
+        for detail in latest_details
+        if detail and (detail.get("attempt") or {}).get("attempt_id")
+    }
+
+    profile_order = list((((program.get("spec") or {}).get("profile_selection") or {}).get("profile_names") or []))
+    profile_position = {name: index for index, name in enumerate(profile_order)}
+    action_rows: List[Dict[str, Any]] = []
+    rows_by_profile: Dict[str, List[Dict[str, Any]]] = {}
+    for item in filtered_items:
+        result = dict(item.get("result") or {})
+        attempt_id = str(result.get("attempt_id") or "").strip() or None
+        detail = latest_detail_by_attempt_id.get(attempt_id or "", {})
+        attempt = dict((detail or {}).get("attempt") or {})
+        verdict = dict((detail or {}).get("verdict") or {})
+        target_url = _reddit_item_target_url(item)
+        target_comment_url = _reddit_item_target_comment_url(item)
+        target_ref = target_comment_url or target_url
+        screenshot_artifact_url = _operator_screenshot_artifact_url(detail)
+        final_verdict = (
+            str(result.get("final_verdict") or "").strip()
+            or str(verdict.get("final_verdict") or "").strip()
+            or str(attempt.get("final_verdict") or "").strip()
+            or None
+        )
+        row = {
+            "work_item_id": item.get("id"),
+            "local_date": item.get("local_date"),
+            "profile_name": item.get("profile_name"),
+            "action": item.get("action"),
+            "subreddit": (
+                item.get("subreddit")
+                or ((item.get("discovered_target") or {}).get("subreddit"))
+                or result.get("subreddit")
+                or ((attempt.get("metadata") or {}).get("subreddit"))
+            ),
+            "status": item.get("status"),
+            "final_verdict": final_verdict,
+            "attempts": int(item.get("attempts") or 0),
+            "attempt_id": attempt_id,
+            "target_url": target_url,
+            "target_comment_url": target_comment_url,
+            "target_ref": target_ref,
+            "screenshot_artifact_url": screenshot_artifact_url,
+            "scheduled_at": item.get("scheduled_at"),
+            "completed_at": item.get("completed_at"),
+            "error": item.get("error") or result.get("error") or attempt.get("error"),
+            "proof_flags": {
+                "has_url": bool(target_ref),
+                "has_screenshot": bool(screenshot_artifact_url),
+                "has_attempt": bool(attempt_id),
+                "success_confirmed": final_verdict == "success_confirmed",
+            },
+            "attempt_history": attempt_history_by_work_item.get(str(item.get("id") or ""), []),
+        }
+        action_rows.append(row)
+        rows_by_profile.setdefault(str(item.get("profile_name") or ""), []).append(row)
+
+    action_rows.sort(
+        key=lambda row: (
+            profile_position.get(str(row.get("profile_name") or ""), 10_000),
+            str(row.get("scheduled_at") or ""),
+            str(row.get("action") or ""),
+            str(row.get("work_item_id") or ""),
+        )
+    )
+
+    selected_day_progress = dict(((program.get("daily_progress") or {}).get(selected_local_date or "") or {}))
+    summary_profile_names = [
+        profile for profile in profile_order
+        if profile in selected_day_progress and (profile_filter is None or profile == profile_filter)
+    ]
+    for profile in selected_day_progress.keys():
+        if profile not in summary_profile_names and (profile_filter is None or profile == profile_filter):
+            summary_profile_names.append(profile)
+
+    profiles_by_day: List[Dict[str, Any]] = []
+    for current_profile_name in summary_profile_names:
+        progress = dict(selected_day_progress.get(current_profile_name) or {})
+        rows = list(rows_by_profile.get(current_profile_name) or [])
+        proof_coverage = {
+            "required_actions": len(rows),
+            "with_url": sum(1 for row in rows if row["proof_flags"]["has_url"]),
+            "with_screenshot": sum(1 for row in rows if row["proof_flags"]["has_screenshot"]),
+            "with_attempt": sum(1 for row in rows if row["proof_flags"]["has_attempt"]),
+            "success_confirmed": sum(1 for row in rows if row["proof_flags"]["success_confirmed"]),
+        }
+        profiles_by_day.append(
+            {
+                "profile_name": current_profile_name,
+                "planned": dict(progress.get("planned") or {}),
+                "completed": dict(progress.get("completed") or {}),
+                "pending": dict(progress.get("pending") or {}),
+                "blocked": dict(progress.get("blocked") or {}),
+                "planned_total": sum(int(value) for value in dict(progress.get("planned") or {}).values()),
+                "completed_total": sum(int(value) for value in dict(progress.get("completed") or {}).values()),
+                "pending_total": sum(int(value) for value in dict(progress.get("pending") or {}).values()),
+                "blocked_total": sum(int(value) for value in dict(progress.get("blocked") or {}).values()),
+                "proof_coverage": proof_coverage,
+            }
+        )
+
+    return {
+        "program": {
+            "id": program.get("id"),
+            "status": program.get("status"),
+            "next_run_at": program.get("next_run_at"),
+            "contract_totals": program.get("contract_totals"),
+            "remaining_contract": program.get("remaining_contract"),
+            "available_days": _reddit_program_available_days(program),
+            "selected_local_date": selected_local_date,
+            "available_actions": sorted(str(action) for action in dict(program.get("contract_totals") or {}).keys()),
+            "notification_log": program.get("notification_log"),
+            "failure_summary": program.get("failure_summary") or {},
+        },
+        "profiles_by_day": profiles_by_day,
+        "action_rows": action_rows,
+    }
+
+
+@app.get("/reddit/programs/{program_id}/operator-view")
+async def get_reddit_program_operator_view(
+    program_id: str,
+    local_date: Optional[str] = Query(default=None),
+    profile_name: Optional[str] = Query(default=None),
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    program = reddit_program_store.get_program(program_id)
+    if not program:
+        raise HTTPException(status_code=404, detail="Reddit program not found")
+    return await _build_reddit_program_operator_view(program, local_date=local_date, profile_name=profile_name)
 
 
 @app.get("/reddit/programs/{program_id}/evidence")

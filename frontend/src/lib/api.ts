@@ -7,6 +7,14 @@ import { getAccessToken, getRefreshToken, setAccessToken, setRefreshToken, clear
 export const API_BASE = import.meta.env.VITE_API_BASE || "https://commentbot-production.up.railway.app";
 export const WS_BASE = API_BASE.replace('https://', 'wss://').replace('http://', 'ws://');
 
+export function resolveApiUrl(path: string | null | undefined): string | null {
+  const value = (path || '').trim();
+  if (!value) return null;
+  if (value.startsWith('http://') || value.startsWith('https://')) return value;
+  if (value.startsWith('/')) return `${API_BASE}${value}`;
+  return `${API_BASE}/${value}`;
+}
+
 interface ApiOptions extends RequestInit {
   skipAuth?: boolean;
   _isRetry?: boolean;

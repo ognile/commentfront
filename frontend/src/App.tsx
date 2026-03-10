@@ -3142,7 +3142,7 @@ function App() {
 
       {/* Content layer */}
       <div className="relative z-10 p-6 lg:p-8">
-        <div className="max-w-[1200px] mx-auto space-y-6">
+        <div className="mx-auto max-w-[1560px] space-y-6">
 
           {/* Header Card */}
           <Card className="p-5">
