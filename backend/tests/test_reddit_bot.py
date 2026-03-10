@@ -435,6 +435,54 @@ def test_create_post_returns_community_restricted(monkeypatch):
     assert "community ban" in result["error"]
 
 
+def test_create_post_accepts_subreddit_feed_permalink_when_post_appears_in_feed(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/Healthyhooha/"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_fill_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_post_requires_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_find_created_post_permalink_on_feed",
+        lambda *_args, **_kwargs: asyncio.sleep(
+            0,
+            result="https://www.reddit.com/r/Healthyhooha/comments/example/new_post/",
+        ),
+    )
+
+    session = type(
+        "Session",
+        (),
+        {
+            "profile_name": "reddit_mary_miaby",
+            "get_username": lambda self: "Mary_Miaby",
+        },
+    )()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="hello title",
+            body="body text",
+            subreddit="Healthyhooha",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["current_url"] == "https://www.reddit.com/r/Healthyhooha/"
+    assert result["target_url"] == "https://www.reddit.com/r/Healthyhooha/comments/example/new_post/"
+
+
 def test_create_post_retries_submit_after_required_flair(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/PCOS/submit?type=TEXT"
@@ -944,6 +992,89 @@ def test_upvote_post_recovers_after_toggle_off_existing_vote(monkeypatch):
     assert len(click_log) == 2
     assert reddit_bot._network_has_vote_mutation(recorder, target_kind="post", vote_state="NONE") is True
     assert reddit_bot._network_has_vote_mutation(recorder, target_kind="post", vote_state="UP") is True
+
+
+def test_upvote_comment_recovers_after_toggle_off_existing_vote(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/"
+    screenshots = iter(["shot-before.png", "shot-after.png"])
+    click_log = []
+
+    class _Recorder:
+        class _Capture:
+            events = []
+
+        network_capture = _Capture()
+
+    recorder = _Recorder()
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_click_comment_upvote_region(_page, *, row):
+        click_log.append(dict(row))
+        vote_state = "NONE" if len(click_log) == 1 else "UP"
+        recorder.network_capture.events.append(
+            {
+                "kind": "request",
+                "method": "POST",
+                "url": "https://www.reddit.com/svc/shreddit/graphql",
+                "post_data_excerpt": (
+                    '{"operation":"UpdateCommentVoteState","variables":{"input":{"commentId":"t1_xyz","voteState":"%s"}}}'
+                    % vote_state
+                ),
+            }
+        )
+        return True
+
+    monkeypatch.setattr(
+        reddit_bot,
+        "_load_target_comment_context",
+        lambda _url: asyncio.sleep(
+            0,
+            result={
+                "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/",
+                "author": "helper_user",
+                "body_snippet": "helpful reply target",
+                "title": "example post",
+            },
+        ),
+    )
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_comment_action_row",
+        lambda *_args, **_kwargs: asyncio.sleep(
+            0,
+            result={
+                "reply": {"left": 70, "y": 700, "x": 110},
+                "vote": {"x": 28, "y": 700},
+            },
+        ),
+    )
+    monkeypatch.setattr(reddit_bot, "_vote_point_is_active", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_verify_named_control_state", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_click_named_control", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_click_comment_upvote_region", fake_click_comment_upvote_region)
+    monkeypatch.setattr(reddit_bot, "_capture_row_signature", lambda *_args, **_kwargs: asyncio.sleep(0, result=["same"]))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result=next(screenshots)))
+    monkeypatch.setattr(reddit_bot, "get_current_forensic_recorder", lambda: recorder)
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.upvote_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["target_url"] == "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/"
+    assert result["target_comment_url"] == "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/"
+    assert len(click_log) == 2
 
 
 def test_fill_comment_input_reply_uses_inline_box_fallback(monkeypatch):

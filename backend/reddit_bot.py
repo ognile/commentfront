@@ -63,6 +63,95 @@ def _normalize_text(value: Optional[str]) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
+def _reddit_username_candidates(*values: Optional[str]) -> List[str]:
+    candidates: List[str] = []
+    seen = set()
+    for value in values:
+        normalized = _normalize_text(value)
+        if not normalized:
+            continue
+        variants = [normalized]
+        if normalized.startswith("u/"):
+            variants.append(normalized[2:])
+        if normalized.startswith("reddit_"):
+            variants.append(normalized[len("reddit_"):])
+        for variant in variants:
+            variant = variant.strip()
+            if not variant or variant in seen:
+                continue
+            seen.add(variant)
+            candidates.append(variant)
+    return candidates
+
+
+async def _find_created_post_permalink_on_feed(
+    page,
+    *,
+    title: str,
+    body: Optional[str],
+    actor_username: Optional[str],
+    profile_name: Optional[str],
+) -> Optional[str]:
+    title_needle = _normalize_text(title)
+    body_needle = _normalize_text(body)[:80]
+    username_needles = _reddit_username_candidates(actor_username, profile_name)
+    if not title_needle:
+        return None
+    try:
+        return await page.evaluate(
+            """({ titleNeedle, bodyNeedle, usernameNeedles }) => {
+                const normalize = (value) =>
+                    String(value || "")
+                        .toLowerCase()
+                        .replace(/\\s+/g, " ")
+                        .trim();
+
+                const authorMatches = (article) => {
+                    if (!usernameNeedles.length) {
+                        return true;
+                    }
+                    return Array.from(article.querySelectorAll("a, span, div")).some((node) => {
+                        const text = normalize(node.innerText || "");
+                        const aria = normalize(node.getAttribute("aria-label") || "");
+                        return usernameNeedles.some((needle) =>
+                            text === needle ||
+                            text.includes(`u/${needle}`) ||
+                            aria.includes(`author: u/${needle}`) ||
+                            aria.includes(`u/${needle}`)
+                        );
+                    });
+                };
+
+                for (const article of Array.from(document.querySelectorAll("article"))) {
+                    const articleText = normalize(article.innerText || "");
+                    if (!articleText.includes(titleNeedle)) {
+                        continue;
+                    }
+                    if (bodyNeedle && !articleText.includes(bodyNeedle)) {
+                        continue;
+                    }
+                    if (!authorMatches(article)) {
+                        continue;
+                    }
+                    const permalink = Array.from(article.querySelectorAll("a[href]"))
+                        .map((node) => node.getAttribute("href") || "")
+                        .find((href) => href.includes("/comments/"));
+                    if (permalink) {
+                        return new URL(permalink, window.location.origin).toString();
+                    }
+                }
+                return null;
+            }""",
+            {
+                "titleNeedle": title_needle,
+                "bodyNeedle": body_needle,
+                "usernameNeedles": username_needles,
+            },
+        )
+    except Exception:
+        return None
+
+
 async def _detect_community_comment_ban(page) -> Optional[str]:
     try:
         body_text = _normalize_text(await page.locator("body").inner_text())
@@ -2216,6 +2305,7 @@ async def upvote_comment(
                     else []
                 )
                 recorder = get_current_forensic_recorder()
+                toggled_off_existing = _network_has_vote_mutation(recorder, target_kind="comment", vote_state="NONE")
                 success = await _verify_named_control_state(
                     page,
                     needles=["remove upvote", "upvoted"],
@@ -2229,6 +2319,48 @@ async def upvote_comment(
                         (before_signature and after_signature and before_signature != after_signature)
                         or _network_has_vote_mutation(recorder, target_kind="comment")
                     )
+                if not success and toggled_off_existing:
+                    queue_current_event(
+                        "recovery",
+                        {
+                            "action_name": "upvote_comment",
+                            "reason": "toggle_off_existing_upvote",
+                        },
+                        phase="verification",
+                        source="reddit_bot",
+                    )
+                    recovered = await _click_comment_upvote_region(page, row=row)
+                    if not recovered:
+                        recovered = await _click_named_control(
+                            page,
+                            action_name="upvote_comment",
+                            needles=["upvote"],
+                            anchor_text=author,
+                            expected_title=expected_title,
+                            max_vertical_gap=220,
+                            require_below_anchor=True,
+                        )
+                    if recovered:
+                        await page.wait_for_timeout(1500)
+                        screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
+                        recovery_signature = (
+                            await _capture_row_signature(page, row_y=float(reply.get("y")), max_x=float(reply.get("left")))
+                            if reply
+                            else []
+                        )
+                        success = await _verify_named_control_state(
+                            page,
+                            needles=["remove upvote", "upvoted"],
+                            anchor_text=author,
+                            expected_title=expected_title,
+                            max_vertical_gap=220,
+                            require_below_anchor=True,
+                        )
+                        if not success:
+                            success = bool(
+                                (before_signature and recovery_signature and before_signature != recovery_signature)
+                                or _network_has_vote_mutation(recorder, target_kind="comment", vote_state="UP")
+                            )
                 if success:
                     return _result(
                         success=True,
@@ -2414,7 +2546,17 @@ async def create_post(
             await page.wait_for_timeout(5000)
             screenshot = await save_debug_screenshot(page, f"reddit_create_post_{session.profile_name}")
             current_url = page.url
-            success = "/comments/" in current_url or "posted" in (await page.locator("body").inner_text()).lower()
+            actor_username = session.get_username() if hasattr(session, "get_username") else None
+            created_post_url = current_url if "/comments/" in current_url else None
+            if not created_post_url:
+                created_post_url = await _find_created_post_permalink_on_feed(
+                    page,
+                    title=title,
+                    body=body,
+                    actor_username=actor_username,
+                    profile_name=getattr(session, "profile_name", None),
+                )
+            success = bool(created_post_url)
             if not success:
                 await _raise_if_community_comment_banned(page, capture_context="REDDIT POST COMMUNITY BAN")
                 await dump_interactive_elements(page, "REDDIT POST VERIFY FAILED")
@@ -2424,7 +2566,7 @@ async def create_post(
                 profile_name=session.profile_name,
                 screenshot=screenshot,
                 current_url=current_url,
-                target_url=current_url if success and "/comments/" in current_url else None,
+                target_url=created_post_url,
                 error=None if success else "Reddit post submission verification failed",
             )
         except RedditCommunityBanError as exc:
