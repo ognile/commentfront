@@ -27,11 +27,32 @@ interface RedditTabProps {
   onOpenRemoteControl?: (session: RemoteSessionTarget) => void
 }
 
+type RedditProgramMetadata = NonNullable<NonNullable<RedditProgramListItem['spec']>['metadata']>
+
+function metadata(program: RedditProgramListItem): RedditProgramMetadata {
+  return program.spec?.metadata || {}
+}
+
+function programPriority(program: RedditProgramListItem): number {
+  const details = metadata(program)
+  const isTrackerProgram = details.tracker_slug === 'reddit-3-day-growth-program'
+  const isCurrentRollout = program.status === 'active' && details.mode === 'production' && typeof details.proof_gate_program_id === 'string'
+  const isProofPacket = details.proof_gate === 'single_profile_latest_runtime'
+  const isSummaryOnlyCheck = details.purpose === 'summary_only_failure_check'
+  const isActive = program.status === 'active'
+
+  if (isCurrentRollout) return 500
+  if (isProofPacket) return 400
+  if (isActive && isTrackerProgram) return 300
+  if (isActive && !isSummaryOnlyCheck) return 200
+  if (isActive && isSummaryOnlyCheck) return 100
+  return 0
+}
+
 function sortPrograms(programs: RedditProgramListItem[]): RedditProgramListItem[] {
   return [...programs].sort((left, right) => {
-    const leftActive = left.status === 'active' ? 1 : 0
-    const rightActive = right.status === 'active' ? 1 : 0
-    if (leftActive !== rightActive) return rightActive - leftActive
+    const priorityDelta = programPriority(right) - programPriority(left)
+    if (priorityDelta !== 0) return priorityDelta
     return String(right.updated_at || right.created_at || '').localeCompare(String(left.updated_at || left.created_at || ''))
   })
 }

@@ -222,7 +222,7 @@ describe('RedditTab', () => {
     render(<RedditTab />)
 
     expect(await screen.findByText('reddit_day_one')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /2026-03-11/i }))
+    fireEvent.click(screen.getByRole('button', { name: /day 2.*mar 11.*wed/i }))
 
     await waitFor(() => {
       expect(screen.getByText('reddit_day_two')).toBeInTheDocument()

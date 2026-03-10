@@ -48,7 +48,18 @@ export interface RedditProgramListItem {
   created_at?: string | null
   updated_at?: string | null
   spec?: {
-    metadata?: Record<string, unknown>
+    metadata?: {
+      tracker_slug?: string
+      mode?: string
+      purpose?: string
+      proof_gate?: string
+      proof_gate_program_id?: string
+      proof_gate_commit?: string
+      supersedes_program_id?: string
+      deploy_commit?: string
+      created_by?: string
+      [key: string]: unknown
+    }
   }
 }
 

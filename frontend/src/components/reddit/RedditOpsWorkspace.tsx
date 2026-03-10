@@ -3,11 +3,21 @@ import { AlertCircle, CalendarDays, CheckCircle2, Clock3, Search } from 'lucide-
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
 
 import { RedditProgramSwitcher } from '@/components/reddit/RedditProgramSwitcher'
 import { RedditProfilesDayTable } from '@/components/reddit/RedditProfilesDayTable'
 import type { RedditOperatorViewResponse, RedditProgramListItem } from '@/components/reddit/types'
+
+function formatDayLabel(day: string): { short: string; detail: string } {
+  const parsed = new Date(`${day}T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) {
+    return { short: day, detail: '' }
+  }
+  return {
+    short: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(parsed),
+    detail: new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(parsed),
+  }
+}
 
 function statusTone(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
   if (status === 'completed') return 'default'
@@ -63,6 +73,7 @@ export function RedditOpsWorkspace({
   const totalRemaining = program ? totalCount(program.remaining_contract || {}) : 0
   const totalRequiredProof = filteredProfiles.reduce((sum, row) => sum + row.proof_coverage.required_actions, 0)
   const totalConfirmedProof = filteredProfiles.reduce((sum, row) => sum + row.proof_coverage.success_confirmed, 0)
+  const selectedDayIndex = Math.max(0, (program?.available_days || []).findIndex((day) => day === selectedLocalDate))
 
   return (
     <div className="space-y-5">
@@ -92,21 +103,40 @@ export function RedditOpsWorkspace({
             </div>
 
             <div className="grid gap-3 sm:grid-cols-[auto_auto_minmax(220px,1fr)]">
-              <div className="space-y-2">
+              <div className="space-y-2 sm:col-span-3">
                 <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">day</div>
-                <div className="flex flex-wrap gap-2">
-                  {(program?.available_days || []).map((day) => (
-                    <Button
-                      key={day}
-                      variant={day === selectedLocalDate ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => onSelectLocalDate(day)}
-                      className={day === selectedLocalDate ? '' : 'border-[#d8d3c5] bg-white text-[#5c564a]'}
-                    >
-                      <CalendarDays className="mr-1 h-3.5 w-3.5" />
-                      {day}
-                    </Button>
-                  ))}
+                <div className="overflow-x-auto pb-1">
+                  <div className="flex min-w-max gap-2">
+                    {(program?.available_days || []).map((day, index) => {
+                      const label = formatDayLabel(day)
+                      const active = day === selectedLocalDate
+                      return (
+                        <button
+                          key={day}
+                          type="button"
+                          onClick={() => onSelectLocalDate(day)}
+                          className={[
+                            'flex min-w-[124px] items-center gap-3 rounded-2xl border px-3 py-2 text-left transition',
+                            active
+                              ? 'border-[#1f1f1a] bg-[#1f1f1a] text-white shadow-sm'
+                              : 'border-[#d8d3c5] bg-white text-[#5c564a] hover:border-[#b7ad99]',
+                          ].join(' ')}
+                        >
+                          <div className={[
+                            'flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold',
+                            active ? 'bg-white/15 text-white' : 'bg-[#f4efe4] text-[#6e6759]',
+                          ].join(' ')}>
+                            {index + 1}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-[11px] uppercase tracking-[0.14em] opacity-70">day {index + 1}</div>
+                            <div className="text-sm font-semibold">{label.short}</div>
+                            <div className="text-xs opacity-70">{label.detail}</div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
               <div className="space-y-2">
@@ -117,6 +147,13 @@ export function RedditOpsWorkspace({
                 </div>
               </div>
               <div className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">selected day</div>
+                <div className="flex items-center gap-2 rounded-xl border border-[#d8d3c5] bg-white px-3 py-2 text-sm text-[#5c564a]">
+                  <CalendarDays className="h-4 w-4" />
+                  day {selectedDayIndex + 1} of {(program?.available_days || []).length}
+                </div>
+              </div>
+              <div className="space-y-2 sm:col-span-2">
                 <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">search</div>
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a7f6a]" />
@@ -163,13 +200,23 @@ export function RedditOpsWorkspace({
           <CardContent className="p-8 text-center text-[#6e6759]">loading reddit operator view...</CardContent>
         </Card>
       ) : filteredProfiles.length > 0 && program ? (
-        <RedditProfilesDayTable
-          profiles={filteredProfiles}
-          actionRows={filteredActionRows}
-          actionKeys={program.available_actions}
-          expandedProfile={expandedProfile}
-          onToggleProfile={onToggleProfile}
-        />
+        <div className="space-y-3">
+          <div className="flex items-end justify-between">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8a7f6a]">profiles by day</div>
+              <div className="text-sm text-[#6e6759]">
+                one row per profile, with exact proof drilldown behind each row.
+              </div>
+            </div>
+          </div>
+          <RedditProfilesDayTable
+            profiles={filteredProfiles}
+            actionRows={filteredActionRows}
+            actionKeys={program.available_actions}
+            expandedProfile={expandedProfile}
+            onToggleProfile={onToggleProfile}
+          />
+        </div>
       ) : (
         <Card className="border-[#d8d3c5] bg-white shadow-sm">
           <CardContent className="p-8 text-center text-[#6e6759]">no reddit program data yet.</CardContent>
