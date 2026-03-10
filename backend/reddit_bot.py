@@ -872,6 +872,136 @@ async def _fill_first(page, selectors, value: str) -> bool:
     return False
 
 
+async def _post_requires_flair(page) -> bool:
+    try:
+        body = (await page.locator("body").inner_text()).lower()
+    except Exception:
+        return False
+    return "post must contain post flair" in body or "add post flair" in body
+
+
+async def _click_first_post_flair_option(page) -> bool:
+    try:
+        target = await page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const visible = (rect) =>
+                    rect &&
+                    rect.width >= 18 &&
+                    rect.height >= 18 &&
+                    rect.bottom >= 0 &&
+                    rect.right >= 0 &&
+                    rect.top <= viewportHeight &&
+                    rect.left <= viewportWidth;
+                const banned = new Set([
+                    'add flair and tags',
+                    'add flair',
+                    'apply',
+                    'save',
+                    'done',
+                    'cancel',
+                    'close',
+                    'back',
+                    'post',
+                    'create post',
+                    'drafts',
+                    'text',
+                    'images & video',
+                    'link',
+                    'ama',
+                    'nsfw',
+                    'spoiler',
+                    'schedule',
+                    'save draft',
+                ]);
+                const nodes = Array.from(document.querySelectorAll('button, [role="button"], [role="option"], label, a, div'));
+                const candidates = [];
+                for (const node of nodes) {
+                    const rect = node.getBoundingClientRect();
+                    if (!visible(rect)) continue;
+                    const text = normalize(node.innerText || node.textContent);
+                    const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                    const combined = text || aria;
+                    if (!combined || banned.has(combined)) continue;
+                    if (combined.includes('add flair') || combined.includes('create post') || combined.includes('save draft')) continue;
+                    if (rect.top < 120) continue;
+                    let score = 0;
+                    if (node.getAttribute && node.getAttribute('role') === 'option') score += 6;
+                    if (node.tagName === 'BUTTON') score += 4;
+                    if (rect.width >= 90 && rect.height >= 28) score += 3;
+                    if (combined.length <= 40) score += 2;
+                    if (combined.includes('advice') || combined.includes('question') || combined.includes('discussion')) score += 2;
+                    candidates.push({
+                        x: Math.round(rect.left + rect.width / 2),
+                        y: Math.round(rect.top + rect.height / 2),
+                        text: combined,
+                        score,
+                        top: rect.top,
+                    });
+                }
+                candidates.sort((a, b) => b.score - a.score || a.top - b.top);
+                return candidates[0] || null;
+            }"""
+        )
+    except Exception:
+        return False
+    if not target:
+        return False
+    await page.mouse.click(float(target["x"]), float(target["y"]))
+    queue_current_event(
+        "click",
+        {
+            "method": "flair_option_geometry",
+            "action_name": "create_post_flair_option",
+            "x": target.get("x"),
+            "y": target.get("y"),
+            "matched": target.get("text"),
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(700)
+    return True
+
+
+async def _ensure_post_flair(page) -> bool:
+    if not await _post_requires_flair(page):
+        return True
+    opened = await _click_first(page, POST["flair_button"], timeout_ms=4000)
+    if not opened:
+        opened = await _click_visible_text_region(
+            page,
+            needle="Add flair and tags",
+            action_name="create_post_flair_open",
+            min_top=120,
+        )
+    if not opened:
+        return False
+    await page.wait_for_timeout(900)
+    selected = await _click_first_post_flair_option(page)
+    if not selected:
+        return False
+    applied = await _click_first(page, POST["flair_apply_button"], timeout_ms=3000)
+    if not applied:
+        applied = await _click_visible_text_region(
+            page,
+            needle="Apply",
+            action_name="create_post_flair_apply",
+            min_top=120,
+        )
+    if not applied:
+        applied = await _click_visible_text_region(
+            page,
+            needle="Save",
+            action_name="create_post_flair_save",
+            min_top=120,
+        )
+    await page.wait_for_timeout(1200)
+    return not await _post_requires_flair(page)
+
+
 def _box_in_viewport(page, box: Optional[Dict[str, float]]) -> bool:
     if not box:
         return False
@@ -2272,6 +2402,14 @@ async def create_post(
             await _raise_if_community_comment_banned(page, capture_context="REDDIT POST COMMUNITY BAN")
             if not await _click_first(page, POST["post_button"], timeout_ms=5000):
                 raise RuntimeError("Reddit Post button not found")
+
+            await page.wait_for_timeout(1800)
+            if await _post_requires_flair(page):
+                if not await _ensure_post_flair(page):
+                    await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED")
+                    raise RuntimeError("Reddit post flair selection failed")
+                if not await _click_first(page, POST["post_button"], timeout_ms=5000):
+                    raise RuntimeError("Reddit Post button not found after flair selection")
 
             await page.wait_for_timeout(5000)
             screenshot = await save_debug_screenshot(page, f"reddit_create_post_{session.profile_name}")

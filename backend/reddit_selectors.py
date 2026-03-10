@@ -92,6 +92,16 @@ POST = {
         'button:has-text("Post")',
         'button[aria-label="Post"]',
     ],
+    "flair_button": [
+        'button:has-text("Add flair and tags")',
+        'button:has-text("Add flair")',
+        'button[aria-label*="flair" i]',
+    ],
+    "flair_apply_button": [
+        'button:has-text("Apply")',
+        'button:has-text("Save")',
+        'button:has-text("Done")',
+    ],
     "media_input": [
         'input[type="file"]',
     ],
