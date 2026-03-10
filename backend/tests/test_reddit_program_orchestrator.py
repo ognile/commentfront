@@ -589,3 +589,42 @@ def test_finalize_resolution_failure_does_not_consume_attempt_on_generation_fail
 
     assert item["attempts"] == 0
     assert item["status"] == "pending"
+
+
+def test_create_post_success_uses_current_url_as_target_reference(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 1,
+                "posts_max_per_day": 1,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+
+    async def fake_runner(_session, *, action, **_kwargs):
+        assert action == "create_post"
+        return {
+            **_success_result(action, current_url="https://www.reddit.com/r/womenshealth/comments/post123/a_new_question/"),
+            "target_url": None,
+        }
+
+    monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
+    monkeypatch.setattr(RedditSession, "get_username", lambda self: "reddit_amy")
+    orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "create_post")
+
+    updated = asyncio.run(orchestrator._run_work_item(program, item["id"]))
+    item = next(entry for entry in updated["compiled"]["work_items"] if entry["id"] == item["id"])
+
+    assert item["status"] == "completed"
+    assert item["target_url"] == "https://www.reddit.com/r/womenshealth/comments/post123/a_new_question/"

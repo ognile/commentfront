@@ -351,6 +351,13 @@ class RedditProgramOrchestrator:
             item["target_url"] = target_payload.get("target_url")
         if target_payload.get("target_comment_url"):
             item["target_comment_url"] = target_payload.get("target_comment_url")
+        if (
+            action == "create_post"
+            and bool(result.get("success"))
+            and not str(item.get("target_url") or "").strip()
+            and str(result.get("current_url") or "").strip()
+        ):
+            item["target_url"] = str(result.get("target_url") or result.get("current_url") or "").strip()
 
         success, verification_error = self._result_satisfies_contract(program, item, result)
         if success:

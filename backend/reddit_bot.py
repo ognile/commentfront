@@ -2256,6 +2256,7 @@ async def create_post(
                 profile_name=session.profile_name,
                 screenshot=screenshot,
                 current_url=current_url,
+                target_url=current_url if success and "/comments/" in current_url else None,
                 error=None if success else "Reddit post submission verification failed",
             )
         except RedditCommunityBanError as exc:
