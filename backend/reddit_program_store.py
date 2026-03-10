@@ -18,6 +18,13 @@ from safe_io import atomic_write_json, safe_read_json
 
 DEFAULT_TIMEZONE = "America/New_York"
 DEFAULT_RANDOM_WINDOW = [{"start_hour": 8, "end_hour": 22}]
+DEFAULT_REDDIT_REALISM_POLICY = {
+    "forbid_own_content_interactions": True,
+    "require_conversation_context": True,
+    "require_subreddit_style_match": True,
+    "forbid_operator_language": True,
+    "forbid_meta_testing_language": True,
+}
 
 
 def _utc_now() -> datetime:
@@ -57,6 +64,40 @@ def _normalize_subreddit_name(value: Optional[str]) -> str:
     if "/" in cleaned:
         cleaned = cleaned.split("/", 1)[0]
     return cleaned
+
+
+def _item_subreddit(item: Dict[str, Any]) -> str:
+    value = (
+        item.get("subreddit")
+        or ((item.get("discovered_target") or {}).get("subreddit"))
+        or ((item.get("result") or {}).get("subreddit"))
+        or item.get("target_url")
+        or item.get("target_comment_url")
+        or ((item.get("result") or {}).get("target_url"))
+        or ((item.get("result") or {}).get("target_comment_url"))
+    )
+    return _normalize_subreddit_name(value)
+
+
+def _item_failure_class(item: Dict[str, Any]) -> str:
+    result = dict(item.get("result") or {})
+    failure_class = str(result.get("failure_class") or "").strip()
+    if failure_class:
+        return failure_class
+    error = str(item.get("error") or result.get("error") or "").lower()
+    if "community" in error and "ban" in error:
+        return "community_restricted"
+    if "session" in error:
+        return "session_invalid"
+    if "policy" in error:
+        return "policy_invalid"
+    if "generation" in error:
+        return "generation_failed"
+    if "target" in error or "not found" in error:
+        return "target_unavailable"
+    if "net::" in error or "timeout" in error or "bad gateway" in error:
+        return "infrastructure"
+    return "execution_failed"
 
 
 def _random_windows_from_spec(schedule: Dict[str, Any]) -> List[Dict[str, int]]:
@@ -167,6 +208,7 @@ def compile_reddit_program_state(
             allowed_subreddits.append(subreddit)
     generation_config = dict(spec.get("generation_config") or {})
     notification_config = dict(spec.get("notification_config") or {})
+    realism_policy = dict(spec.get("realism_policy") or {})
 
     seed = str(spec.get("seed") or program_id)
     work_items: List[Dict[str, Any]] = []
@@ -489,11 +531,43 @@ def compile_reddit_program_state(
                 "writing_rule_paths": list(generation_config.get("writing_rule_paths") or []),
                 "uniqueness_scope": str(generation_config.get("uniqueness_scope") or "program"),
             },
+            "realism_policy": {
+                "forbid_own_content_interactions": bool(
+                    realism_policy.get(
+                        "forbid_own_content_interactions",
+                        DEFAULT_REDDIT_REALISM_POLICY["forbid_own_content_interactions"],
+                    )
+                ),
+                "require_conversation_context": bool(
+                    realism_policy.get(
+                        "require_conversation_context",
+                        DEFAULT_REDDIT_REALISM_POLICY["require_conversation_context"],
+                    )
+                ),
+                "require_subreddit_style_match": bool(
+                    realism_policy.get(
+                        "require_subreddit_style_match",
+                        DEFAULT_REDDIT_REALISM_POLICY["require_subreddit_style_match"],
+                    )
+                ),
+                "forbid_operator_language": bool(
+                    realism_policy.get(
+                        "forbid_operator_language",
+                        DEFAULT_REDDIT_REALISM_POLICY["forbid_operator_language"],
+                    )
+                ),
+                "forbid_meta_testing_language": bool(
+                    realism_policy.get(
+                        "forbid_meta_testing_language",
+                        DEFAULT_REDDIT_REALISM_POLICY["forbid_meta_testing_language"],
+                    )
+                ),
+            },
             "notification_config": {
                 "email_enabled": bool(notification_config.get("email_enabled", True)),
                 "email_account_mode": str(notification_config.get("email_account_mode") or "default_gog_account"),
                 "daily_summary_hour": max(0, min(23, int(notification_config.get("daily_summary_hour", 20)))),
-                "hard_failure_alerts_enabled": bool(notification_config.get("hard_failure_alerts_enabled", True)),
+                "hard_failure_alerts_enabled": bool(notification_config.get("hard_failure_alerts_enabled", False)),
                 "recipient_email": str(notification_config.get("recipient_email") or "").strip() or None,
             },
         },
@@ -510,6 +584,7 @@ def compile_reddit_program_state(
         "daily_progress": {},
         "join_progress_matrix": {},
         "contract_totals": {},
+        "failure_summary": {},
         "next_run_at": None,
     }
     refresh_reddit_program_state(program)
@@ -517,6 +592,16 @@ def compile_reddit_program_state(
 
 
 def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
+    spec = program.setdefault("spec", {})
+    realism_policy = dict(spec.get("realism_policy") or {})
+    spec["realism_policy"] = {
+        key: bool(realism_policy.get(key, default_value))
+        for key, default_value in DEFAULT_REDDIT_REALISM_POLICY.items()
+    }
+    notification_config = dict(spec.get("notification_config") or {})
+    notification_config["hard_failure_alerts_enabled"] = bool(notification_config.get("hard_failure_alerts_enabled", False))
+    spec["notification_config"] = notification_config
+
     work_items = list(((program.get("compiled") or {}).get("work_items") or []))
     remaining: Dict[str, int] = {}
     daily_progress: Dict[str, Dict[str, Any]] = {}
@@ -524,6 +609,10 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
     join_progress_matrix: Dict[str, Dict[str, str]] = {}
     next_run_at: Optional[str] = None
     terminal_non_completed = False
+    failures_by_action: Dict[str, int] = {}
+    failures_by_profile: Dict[str, int] = {}
+    failures_by_subreddit: Dict[str, int] = {}
+    failures_by_class: Dict[str, int] = {}
 
     for item in work_items:
         status = str(item.get("status") or "pending")
@@ -548,6 +637,13 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
         elif status in {"blocked", "exhausted", "cancelled"}:
             profile_progress["blocked"][action] = profile_progress["blocked"].get(action, 0) + 1
             terminal_non_completed = True
+            failures_by_action[action] = failures_by_action.get(action, 0) + 1
+            failures_by_profile[profile_name] = failures_by_profile.get(profile_name, 0) + 1
+            subreddit = _item_subreddit(item)
+            if subreddit:
+                failures_by_subreddit[subreddit] = failures_by_subreddit.get(subreddit, 0) + 1
+            failure_class = _item_failure_class(item)
+            failures_by_class[failure_class] = failures_by_class.get(failure_class, 0) + 1
         else:
             profile_progress["pending"][action] = profile_progress["pending"].get(action, 0) + 1
             remaining[action] = remaining.get(action, 0) + 1
@@ -580,6 +676,12 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
     program["daily_progress"] = daily_progress
     program["contract_totals"] = contract_totals
     program["join_progress_matrix"] = join_progress_matrix
+    program["failure_summary"] = {
+        "by_action": failures_by_action,
+        "by_profile": failures_by_profile,
+        "by_subreddit": failures_by_subreddit,
+        "by_class": failures_by_class,
+    }
     program["recent_attempt_ids"] = recent_attempt_ids
     program["next_run_at"] = next_run_at if status == "active" else None
     program["updated_at"] = _utc_iso()

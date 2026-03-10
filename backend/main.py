@@ -1923,11 +1923,19 @@ class RedditProgramGenerationConfig(BaseModel):
     uniqueness_scope: Literal["program"] = "program"
 
 
+class RedditProgramRealismPolicy(BaseModel):
+    forbid_own_content_interactions: bool = True
+    require_conversation_context: bool = True
+    require_subreddit_style_match: bool = True
+    forbid_operator_language: bool = True
+    forbid_meta_testing_language: bool = True
+
+
 class RedditProgramNotificationConfig(BaseModel):
     email_enabled: bool = True
     email_account_mode: Literal["default_gog_account"] = "default_gog_account"
     daily_summary_hour: int = 20
-    hard_failure_alerts_enabled: bool = True
+    hard_failure_alerts_enabled: bool = False
     recipient_email: Optional[str] = None
 
 
@@ -1963,6 +1971,7 @@ class RedditProgramCreateRequest(BaseModel):
     content_assignments: RedditProgramContentAssignments = Field(default_factory=RedditProgramContentAssignments)
     engagement_quotas: RedditProgramEngagementQuotas = Field(default_factory=RedditProgramEngagementQuotas)
     generation_config: RedditProgramGenerationConfig = Field(default_factory=RedditProgramGenerationConfig)
+    realism_policy: RedditProgramRealismPolicy = Field(default_factory=RedditProgramRealismPolicy)
     notification_config: RedditProgramNotificationConfig = Field(default_factory=RedditProgramNotificationConfig)
     verification_contract: RedditProgramVerificationContract = Field(default_factory=RedditProgramVerificationContract)
     execution_policy: RedditProgramExecutionPolicy = Field(default_factory=RedditProgramExecutionPolicy)
@@ -1977,6 +1986,7 @@ class RedditProgramUpdateRequest(BaseModel):
     content_assignments: Optional[RedditProgramContentAssignments] = None
     engagement_quotas: Optional[RedditProgramEngagementQuotas] = None
     generation_config: Optional[RedditProgramGenerationConfig] = None
+    realism_policy: Optional[RedditProgramRealismPolicy] = None
     notification_config: Optional[RedditProgramNotificationConfig] = None
     verification_contract: Optional[RedditProgramVerificationContract] = None
     execution_policy: Optional[RedditProgramExecutionPolicy] = None
@@ -6065,6 +6075,7 @@ def _reddit_program_payload_from_request(request: RedditProgramCreateRequest) ->
         "content_assignments": request.content_assignments.model_dump(),
         "engagement_quotas": request.engagement_quotas.model_dump(),
         "generation_config": request.generation_config.model_dump(),
+        "realism_policy": request.realism_policy.model_dump(),
         "notification_config": request.notification_config.model_dump(),
         "verification_contract": request.verification_contract.model_dump(),
         "execution_policy": request.execution_policy.model_dump(),
@@ -6166,6 +6177,30 @@ def _validate_reddit_program_payload(payload: Dict[str, Any]) -> None:
     daily_summary_hour = int(notification_config.get("daily_summary_hour", 20))
     if daily_summary_hour < 0 or daily_summary_hour > 23:
         raise HTTPException(status_code=400, detail="notification_config.daily_summary_hour must be between 0 and 23")
+
+
+def _recent_generation_evidence(program: Dict[str, Any], *, limit: int = 12) -> List[Dict[str, Any]]:
+    collected: List[Dict[str, Any]] = []
+    for item in reversed(list(((program.get("compiled") or {}).get("work_items") or []))):
+        evidence = item.get("generation_evidence")
+        if not evidence:
+            continue
+        collected.append(
+            {
+                "work_item_id": item.get("id"),
+                "action": item.get("action"),
+                "profile_name": item.get("profile_name"),
+                "local_date": item.get("local_date"),
+                "status": item.get("status"),
+                "subreddit": item.get("subreddit") or ((item.get("discovered_target") or {}).get("subreddit")),
+                "target_url": item.get("target_url"),
+                "target_comment_url": item.get("target_comment_url"),
+                "generation_evidence": evidence,
+            }
+        )
+        if len(collected) >= limit:
+            break
+    return collected
 
 
 def _get_active_reddit_bulk_rollout() -> Optional[tuple[str, asyncio.Task]]:
@@ -6850,6 +6885,7 @@ async def update_reddit_program(
         "content_assignments",
         "engagement_quotas",
         "generation_config",
+        "realism_policy",
         "notification_config",
         "verification_contract",
         "execution_policy",
@@ -6938,6 +6974,9 @@ async def get_reddit_program_status(
         "contract_totals": program.get("contract_totals"),
         "daily_progress": program.get("daily_progress"),
         "join_progress_matrix": program.get("join_progress_matrix"),
+        "realism_policy": ((program.get("spec") or {}).get("realism_policy") or {}),
+        "failure_summary": program.get("failure_summary") or {},
+        "recent_generation_evidence": _recent_generation_evidence(program),
         "notification_log": program.get("notification_log"),
         "recent_attempt_ids": program.get("recent_attempt_ids"),
     }
@@ -6960,6 +6999,9 @@ async def get_reddit_program_evidence(
         "program_status": program.get("status"),
         "contract_totals": program.get("contract_totals"),
         "join_progress_matrix": program.get("join_progress_matrix"),
+        "realism_policy": ((program.get("spec") or {}).get("realism_policy") or {}),
+        "failure_summary": program.get("failure_summary") or {},
+        "recent_generation_evidence": _recent_generation_evidence(program, limit=24),
         "notification_log": program.get("notification_log"),
         "forensics": forensic_group,
         "recent_attempts": details,

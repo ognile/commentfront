@@ -5,6 +5,7 @@ reddit growth-program content generation and validation.
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import os
@@ -38,6 +39,28 @@ GOOD_WRITING_PRINCIPLES = [
     "prefer 'this' over 'that' when it fits",
     "keep replies helpful, specific, and relevant to the thread or subreddit",
     "avoid over-selling, preachiness, or generic motivational language",
+]
+
+OPERATOR_META_PATTERNS = [
+    "checking profile",
+    "checking eligibility",
+    "profile eligibility",
+    "eligibility check",
+    "test post",
+    "testing post",
+    "testing reply",
+    "automation check",
+    "bot check",
+    "flight check",
+    "debug post",
+    "debugging this",
+]
+
+GENERIC_FILLER_PATTERNS = [
+    "just wanted to share",
+    "thought i would ask",
+    "does anyone have advice",
+    "any thoughts",
 ]
 
 BANNED_PATTERNS = [
@@ -81,6 +104,41 @@ BANNED_VOCABULARY = [
     "listen to your body",
 ]
 
+STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "for",
+    "from",
+    "have",
+    "how",
+    "i",
+    "if",
+    "in",
+    "is",
+    "it",
+    "me",
+    "my",
+    "of",
+    "on",
+    "or",
+    "so",
+    "that",
+    "the",
+    "this",
+    "to",
+    "was",
+    "with",
+    "you",
+    "your",
+}
+
 
 def _collapse_whitespace(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -96,6 +154,8 @@ def get_writing_rule_snapshot() -> Dict[str, Any]:
         "positive_principles": list(GOOD_WRITING_PRINCIPLES),
         "banned_patterns": list(BANNED_PATTERNS),
         "banned_vocabulary": list(BANNED_VOCABULARY),
+        "operator_meta_patterns": list(OPERATOR_META_PATTERNS),
+        "generic_filler_patterns": list(GENERIC_FILLER_PATTERNS),
         "style_requirements": {
             "lowercase_only": True,
             "no_em_dash": True,
@@ -105,9 +165,76 @@ def get_writing_rule_snapshot() -> Dict[str, Any]:
     }
 
 
-def validate_generated_text(text: str, *, recent_texts: Optional[List[str]] = None) -> Dict[str, Any]:
+def _meaningful_tokens(value: Optional[str]) -> List[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9']+", _normalize_text(value))
+        if len(token) >= 3 and token not in STOPWORDS
+    ]
+
+
+def _term_frequencies(texts: List[str]) -> Dict[str, int]:
+    counter: collections.Counter[str] = collections.Counter()
+    for text in texts:
+        counter.update(_meaningful_tokens(text))
+    return dict(counter)
+
+
+def _top_context_terms(texts: List[str], limit: int = 10) -> List[str]:
+    frequencies = _term_frequencies(texts)
+    return [term for term, _count in sorted(frequencies.items(), key=lambda item: (-item[1], item[0]))[:limit]]
+
+
+def _token_overlap(left: str, right: str) -> float:
+    left_tokens = set(_meaningful_tokens(left))
+    right_tokens = set(_meaningful_tokens(right))
+    if not left_tokens or not right_tokens:
+        return 0.0
+    intersection = len(left_tokens & right_tokens)
+    return intersection / max(1, min(len(left_tokens), len(right_tokens)))
+
+
+def summarize_conversation_context(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
+    texts: List[str] = []
+    summary_samples: List[Dict[str, Any]] = []
+    for sample in list(samples or [])[:4]:
+        title = _collapse_whitespace(sample.get("title"))
+        excerpt = _collapse_whitespace(
+            sample.get("body_excerpt")
+            or sample.get("body")
+            or sample.get("selftext")
+            or sample.get("excerpt")
+        )
+        author = _collapse_whitespace(sample.get("author"))
+        combined = "\n".join(part for part in [title, excerpt] if part).strip()
+        if combined:
+            texts.append(combined)
+        summary_samples.append(
+            {
+                "url": sample.get("target_url") or sample.get("target_comment_url") or sample.get("thread_url"),
+                "title": title,
+                "excerpt": excerpt,
+                "author": author or None,
+                "type": sample.get("type") or None,
+            }
+        )
+    return {
+        "sample_count": len(summary_samples),
+        "top_terms": _top_context_terms(texts),
+        "samples": summary_samples,
+    }
+
+
+def validate_generated_text(
+    text: str,
+    *,
+    recent_texts: Optional[List[str]] = None,
+    nearby_texts: Optional[List[str]] = None,
+    require_context_overlap: bool = False,
+) -> Dict[str, Any]:
     normalized = _normalize_text(text)
     violations: List[str] = []
+    nearby_texts = [str(item or "").strip() for item in list(nearby_texts or []) if str(item or "").strip()]
 
     if not normalized:
         violations.append("text is empty")
@@ -124,19 +251,52 @@ def validate_generated_text(text: str, *, recent_texts: Optional[List[str]] = No
         if phrase_norm and phrase_norm in normalized:
             violations.append(f"contains banned vocabulary: {phrase}")
 
+    for phrase in OPERATOR_META_PATTERNS:
+        phrase_norm = _normalize_text(phrase)
+        if phrase_norm and phrase_norm in normalized:
+            violations.append(f"contains operator/meta language: {phrase}")
+
+    for phrase in GENERIC_FILLER_PATTERNS:
+        phrase_norm = _normalize_text(phrase)
+        if phrase_norm and phrase_norm in normalized:
+            violations.append(f"contains generic filler: {phrase}")
+
     for previous in list(recent_texts or []):
         if normalized and normalized == _normalize_text(previous):
             violations.append("duplicates prior generated text in this program")
+            break
+
+    nearby_duplicate = False
+    for previous in nearby_texts:
+        if not previous:
+            continue
+        if normalized and normalized == _normalize_text(previous):
+            nearby_duplicate = True
+            violations.append("duplicates nearby subreddit content")
+            break
+        if _token_overlap(text, previous) >= 0.8:
+            nearby_duplicate = True
+            violations.append("is too similar to nearby subreddit content")
             break
 
     lowered_source = str(text or "")
     if lowered_source != lowered_source.lower():
         violations.append("text is not fully lowercase")
 
+    context_overlap_terms: List[str] = []
+    if require_context_overlap and nearby_texts:
+        context_terms = set(_top_context_terms(nearby_texts, limit=12))
+        overlap = sorted(set(_meaningful_tokens(text)) & context_terms)
+        context_overlap_terms = overlap
+        if not overlap:
+            violations.append("does not reference the local conversation strongly enough")
+
     return {
         "ok": not violations,
         "violations": violations,
         "normalized_text": normalized,
+        "nearby_duplicate": nearby_duplicate,
+        "context_overlap_terms": context_overlap_terms,
     }
 
 
@@ -194,6 +354,7 @@ class GenerationResult:
     raw_response: Optional[str] = None
     validation: Optional[Dict[str, Any]] = None
     style_summary: Optional[Dict[str, Any]] = None
+    conversation_summary: Optional[Dict[str, Any]] = None
     sample_urls: Optional[List[str]] = None
     error: Optional[str] = None
 
@@ -231,6 +392,7 @@ class RedditGrowthContentGenerator:
         target_author: Optional[str],
         keywords: List[str],
         style_samples: List[Dict[str, Any]],
+        conversation_context: List[Dict[str, Any]],
         recent_texts: List[str],
     ) -> str:
         return f"""
@@ -241,9 +403,11 @@ hard rules:
 - all text must be lowercase
 - no em dash
 - do not use any banned pattern or banned vocabulary
+- do not sound like an operator, tester, bot, or automation system
 - make it sound like a normal, thoughtful person
 - do not repeat exact wording from prior generations
 - keep the reply relevant to the target comment and subreddit
+- make it clearly about this local conversation, not a generic support line
 - 1 to 3 sentences max
 
 positive writing principles:
@@ -264,6 +428,9 @@ target comment:
 style samples from high-traction posts/comments:
 {json.dumps(summarize_style_samples(style_samples), ensure_ascii=True, indent=2)}
 
+local conversation context from this subreddit/thread:
+{json.dumps(summarize_conversation_context(conversation_context), ensure_ascii=True, indent=2)}
+
 prior generated texts to avoid duplicating:
 {json.dumps(recent_texts[-12:], ensure_ascii=True, indent=2)}
 
@@ -280,6 +447,7 @@ return json with this exact shape:
         subreddit: str,
         keywords: List[str],
         style_samples: List[Dict[str, Any]],
+        conversation_context: List[Dict[str, Any]],
         recent_texts: List[str],
     ) -> str:
         return f"""
@@ -290,10 +458,13 @@ hard rules:
 - all text must be lowercase
 - no em dash
 - do not use any banned pattern or banned vocabulary
+- do not sound like an operator, tester, bot, or automation system
 - make it sound like a normal user posting in a women's-health-related subreddit
 - do not repeat exact wording from prior generations
 - keep it helpful, believable, and human-scale
 - title should be specific and natural
+- the post must fit what people are currently talking about in this subreddit
+- it should add a useful new angle or a genuinely relevant question that is not a near-duplicate of the nearby posts
 - body can be empty or 1 to 4 short sentences
 
 positive writing principles:
@@ -310,6 +481,9 @@ topic keywords:
 
 style samples from high-traction posts/comments:
 {json.dumps(summarize_style_samples(style_samples), ensure_ascii=True, indent=2)}
+
+nearby subreddit conversation context:
+{json.dumps(summarize_conversation_context(conversation_context), ensure_ascii=True, indent=2)}
 
 prior generated texts to avoid duplicating:
 {json.dumps(recent_texts[-12:], ensure_ascii=True, indent=2)}
@@ -330,11 +504,17 @@ return json with this exact shape:
         target_author: Optional[str],
         keywords: List[str],
         style_samples: List[Dict[str, Any]],
+        conversation_context: List[Dict[str, Any]],
         recent_texts: List[str],
         max_attempts: int = 3,
     ) -> GenerationResult:
         style_summary = summarize_style_samples(style_samples)
+        conversation_summary = summarize_conversation_context(conversation_context)
         sample_urls = [str(sample.get("target_url") or sample.get("target_comment_url") or "").strip() for sample in style_samples if str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()]
+        nearby_texts = [
+            "\n".join(part for part in [sample.get("title"), sample.get("excerpt"), sample.get("body_excerpt"), sample.get("body")] if part).strip()
+            for sample in list(conversation_context or [])
+        ]
         last_error = "generation failed"
         for _attempt in range(max_attempts):
             raw = await self._generate_json(
@@ -344,6 +524,7 @@ return json with this exact shape:
                     target_author=target_author,
                     keywords=keywords,
                     style_samples=style_samples,
+                    conversation_context=conversation_context,
                     recent_texts=recent_texts,
                 )
             )
@@ -353,7 +534,12 @@ return json with this exact shape:
                 last_error = f"generation returned invalid json: {exc}"
                 continue
             text = _collapse_whitespace(payload.get("text"))
-            validation = validate_generated_text(text, recent_texts=recent_texts)
+            validation = validate_generated_text(
+                text,
+                recent_texts=recent_texts,
+                nearby_texts=nearby_texts,
+                require_context_overlap=True,
+            )
             if validation["ok"]:
                 return GenerationResult(
                     success=True,
@@ -362,6 +548,7 @@ return json with this exact shape:
                     raw_response=raw,
                     validation=validation,
                     style_summary=style_summary,
+                    conversation_summary=conversation_summary,
                     sample_urls=sample_urls,
                 )
             last_error = "; ".join(validation["violations"])
@@ -372,6 +559,7 @@ return json with this exact shape:
             raw_response=None,
             validation={"ok": False, "violations": [last_error]},
             style_summary=style_summary,
+            conversation_summary=conversation_summary,
             sample_urls=sample_urls,
             error=last_error,
         )
@@ -382,11 +570,17 @@ return json with this exact shape:
         subreddit: str,
         keywords: List[str],
         style_samples: List[Dict[str, Any]],
+        conversation_context: List[Dict[str, Any]],
         recent_texts: List[str],
         max_attempts: int = 3,
     ) -> GenerationResult:
         style_summary = summarize_style_samples(style_samples)
+        conversation_summary = summarize_conversation_context(conversation_context)
         sample_urls = [str(sample.get("target_url") or sample.get("target_comment_url") or "").strip() for sample in style_samples if str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()]
+        nearby_texts = [
+            "\n".join(part for part in [sample.get("title"), sample.get("excerpt"), sample.get("body_excerpt"), sample.get("body")] if part).strip()
+            for sample in list(conversation_context or [])
+        ]
         last_error = "generation failed"
         for _attempt in range(max_attempts):
             raw = await self._generate_json(
@@ -394,6 +588,7 @@ return json with this exact shape:
                     subreddit=subreddit,
                     keywords=keywords,
                     style_samples=style_samples,
+                    conversation_context=conversation_context,
                     recent_texts=recent_texts,
                 )
             )
@@ -405,7 +600,12 @@ return json with this exact shape:
             title = _collapse_whitespace(payload.get("title"))
             body = _collapse_whitespace(payload.get("body"))
             combined = f"{title}\n{body}".strip()
-            validation = validate_generated_text(combined, recent_texts=recent_texts)
+            validation = validate_generated_text(
+                combined,
+                recent_texts=recent_texts,
+                nearby_texts=nearby_texts,
+                require_context_overlap=True,
+            )
             if title and validation["ok"]:
                 return GenerationResult(
                     success=True,
@@ -415,6 +615,7 @@ return json with this exact shape:
                     raw_response=raw,
                     validation=validation,
                     style_summary=style_summary,
+                    conversation_summary=conversation_summary,
                     sample_urls=sample_urls,
                 )
             last_error = "; ".join(validation["violations"] or ["title is required"])
@@ -425,6 +626,7 @@ return json with this exact shape:
             raw_response=None,
             validation={"ok": False, "violations": [last_error]},
             style_summary=style_summary,
+            conversation_summary=conversation_summary,
             sample_urls=sample_urls,
             error=last_error,
         )

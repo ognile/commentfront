@@ -398,7 +398,7 @@ def test_resolve_target_generates_reply_text_when_missing(tmp_path, monkeypatch)
     orchestrator = RedditProgramOrchestrator(store=store)
     item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "reply_comment")
 
-    async def fake_discover_comment(_program, _item):
+    async def fake_discover_comment(_program, _item, actor_username=None):
         return {
             "target_comment_url": "https://www.reddit.com/r/womenshealth/comments/post/comment/c1/",
             "thread_url": "https://www.reddit.com/r/womenshealth/comments/post/",
@@ -419,6 +419,7 @@ def test_resolve_target_generates_reply_text_when_missing(tmp_path, monkeypatch)
                 "success": True,
                 "text": "it may help to ask what pain control and aftercare they usually recommend before you go in.",
                 "style_summary": {"sample_count": 1},
+                "conversation_summary": {"sample_count": 2, "top_terms": ["biopsy"]},
                 "sample_urls": ["https://www.reddit.com/r/womenshealth/comments/abc123/sample/"],
                 "validation": {"ok": True, "violations": []},
                 "raw_response": '{"text":"ok"}',
@@ -433,6 +434,7 @@ def test_resolve_target_generates_reply_text_when_missing(tmp_path, monkeypatch)
 
     assert payload["text"].startswith("it may help")
     assert payload["generation_evidence"]["kind"] == "reply_comment"
+    assert payload["generation_evidence"]["conversation_summary"]["sample_count"] == 2
 
 
 def test_record_failure_keeps_mandatory_join_target_url(tmp_path):
@@ -477,3 +479,113 @@ def test_record_failure_keeps_mandatory_join_target_url(tmp_path):
 
     assert item["status"] == "pending"
     assert item["target_url"] == "https://www.reddit.com/r/WomensHealth/"
+
+
+def test_discover_comment_target_skips_own_content_in_production(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            topic_constraints={"subreddits": ["womenshealth"], "keywords": ["biopsy"]},
+            engagement_quotas={
+                "upvotes_per_day": 0,
+                "reply_min_per_day": 1,
+                "reply_max_per_day": 1,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "reply_comment")
+
+    async def fake_discover_posts_for_subreddit(*, subreddit, keywords, max_posts):
+        return [
+            {
+                "target_id": "p1",
+                "target_url": "https://www.reddit.com/r/womenshealth/comments/p1/thread/",
+                "subreddit": subreddit,
+                "title": "biopsy question",
+                "body_excerpt": "still cramping after biopsy",
+                "author": "different_user",
+                "score": 5,
+                "comment_count": 2,
+                "source": "subreddit_hot",
+            }
+        ]
+
+    async def fake_fetch_json(url):
+        return [
+            {},
+            {
+                "data": {
+                    "children": [
+                        {
+                            "kind": "t1",
+                            "data": {
+                                "id": "comment1",
+                                "body": "i had a similar recovery timeline",
+                                "author": "reddit_amy_actual",
+                                "permalink": "/r/womenshealth/comments/p1/thread/comment/comment1/",
+                                "score": 8,
+                            },
+                        },
+                        {
+                            "kind": "t1",
+                            "data": {
+                                "id": "comment2",
+                                "body": "my cramps eased up after two days",
+                                "author": "other_user",
+                                "permalink": "/r/womenshealth/comments/p1/thread/comment/comment2/",
+                                "score": 6,
+                            },
+                        },
+                    ]
+                }
+            },
+        ]
+
+    monkeypatch.setattr(orchestrator, "_discover_posts_for_subreddit", fake_discover_posts_for_subreddit)
+    monkeypatch.setattr(orchestrator, "_fetch_json", fake_fetch_json)
+
+    candidate = asyncio.run(orchestrator._discover_comment_target(program, item, actor_username="reddit_amy_actual"))
+
+    assert candidate is not None
+    assert candidate["author"] == "other_user"
+
+
+def test_finalize_resolution_failure_does_not_consume_attempt_on_generation_failure(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 1,
+                "posts_max_per_day": 1,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "create_post")
+    item["attempts"] = 1
+
+    updated = orchestrator._finalize_resolution_failure(
+        program,
+        item,
+        error="generated reddit post failed",
+        failure_class="generation_failed",
+        retryable=True,
+        consume_attempt=False,
+    )
+    item = next(entry for entry in updated["compiled"]["work_items"] if entry["id"] == item["id"])
+
+    assert item["attempts"] == 0
+    assert item["status"] == "pending"

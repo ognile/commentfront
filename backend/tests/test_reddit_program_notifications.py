@@ -44,3 +44,34 @@ def test_send_program_email_records_sent_log():
     assert len(client.calls) == 1
     assert program["notification_log"][0]["state"] == "sent"
     assert program["notification_log"][0]["metadata"]["message_id"] == "msg_123"
+
+
+def test_send_program_email_records_summary_only_without_sending():
+    program = {
+        "id": "reddit_program_test",
+        "spec": {
+            "notification_config": {
+                "email_enabled": True,
+                "recipient_email": "nikitalienov@gmail.com",
+            }
+        },
+        "notification_log": [],
+    }
+    client = _FakeGmailClient()
+    service = RedditProgramNotificationService(gmail_client=client)
+
+    import asyncio
+
+    asyncio.run(
+        service.send_program_email(
+            program,
+            key="hard_failure:summary",
+            kind="hard_failure",
+            subject="summary only",
+            body="body",
+            metadata={"summary_only": True},
+        )
+    )
+
+    assert client.calls == []
+    assert program["notification_log"][0]["state"] == "summary_only"

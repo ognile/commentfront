@@ -58,11 +58,18 @@ def test_reddit_program_status_exposes_join_and_notification_fields(tmp_path, mo
                 "writing_rule_paths": [],
                 "uniqueness_scope": "program",
             },
+            "realism_policy": {
+                "forbid_own_content_interactions": True,
+                "require_conversation_context": True,
+                "require_subreddit_style_match": True,
+                "forbid_operator_language": True,
+                "forbid_meta_testing_language": True,
+            },
             "notification_config": {
                 "email_enabled": True,
                 "email_account_mode": "default_gog_account",
                 "daily_summary_hour": 20,
-                "hard_failure_alerts_enabled": True,
+                "hard_failure_alerts_enabled": False,
                 "recipient_email": "nikitalienov@gmail.com",
             },
             "verification_contract": {
@@ -90,3 +97,6 @@ def test_reddit_program_status_exposes_join_and_notification_fields(tmp_path, mo
     assert "join_progress_matrix" in response
     assert "notification_log" in response
     assert "contract_totals" in response
+    assert "failure_summary" in response
+    assert "recent_generation_evidence" in response
+    assert response["realism_policy"]["forbid_own_content_interactions"] is True

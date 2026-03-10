@@ -84,6 +84,22 @@ def _notification_config(program: Dict[str, Any]) -> Dict[str, Any]:
     return dict(((program.get("spec") or {}).get("notification_config") or {}))
 
 
+def _realism_policy(program: Dict[str, Any]) -> Dict[str, Any]:
+    policy = dict(((program.get("spec") or {}).get("realism_policy") or {}))
+    return {
+        "forbid_own_content_interactions": bool(policy.get("forbid_own_content_interactions", True)),
+        "require_conversation_context": bool(policy.get("require_conversation_context", True)),
+        "require_subreddit_style_match": bool(policy.get("require_subreddit_style_match", True)),
+        "forbid_operator_language": bool(policy.get("forbid_operator_language", True)),
+        "forbid_meta_testing_language": bool(policy.get("forbid_meta_testing_language", True)),
+    }
+
+
+def _program_mode(program: Dict[str, Any]) -> str:
+    metadata = dict((program.get("spec") or {}).get("metadata") or program.get("metadata") or {})
+    return str(metadata.get("mode") or "production").strip().lower()
+
+
 def _target_ref(item: Dict[str, Any]) -> Optional[str]:
     return (
         str(item.get("target_comment_url") or "").strip()
@@ -110,6 +126,22 @@ def _failure_classification(result: Dict[str, Any]) -> str:
     if not result.get("attempt_id"):
         return "verification_miss"
     return "execution_failed"
+
+
+def _normalize_actor_username(value: Optional[str]) -> str:
+    return str(value or "").strip().lstrip("u/").lstrip("/").lower()
+
+
+def _thread_root_from_comment_url(url: Optional[str]) -> Optional[str]:
+    clean = str(url or "").split("?", 1)[0].strip().rstrip("/")
+    marker = "/comments/"
+    if marker not in clean:
+        return None
+    parts = clean.split(marker, 1)
+    suffix = parts[1].split("/")
+    if len(suffix) < 2:
+        return None
+    return f"{parts[0]}{marker}{suffix[0]}/{suffix[1]}/"
 
 
 class RedditProgramOrchestrator:
@@ -261,16 +293,6 @@ class RedditProgramOrchestrator:
         if not item:
             return program
 
-        target_payload = await self._resolve_target(program, item)
-        if target_payload.get("error"):
-            return self._finalize_resolution_failure(
-                program,
-                item,
-                error=str(target_payload["error"]),
-                failure_class=str(target_payload.get("failure_class") or "target_unavailable"),
-                retryable=bool(target_payload.get("retryable", False)),
-            )
-
         session = RedditSession(str(item.get("profile_name") or ""))
         if not session.load():
             return self._finalize_without_execution(
@@ -279,6 +301,18 @@ class RedditProgramOrchestrator:
                 status="blocked",
                 error=f"reddit session not found: {item.get('profile_name')}",
                 failure_class="session_invalid",
+            )
+
+        actor_username = session.get_username()
+        target_payload = await self._resolve_target(program, item, actor_username=actor_username)
+        if target_payload.get("error"):
+            return self._finalize_resolution_failure(
+                program,
+                item,
+                error=str(target_payload["error"]),
+                failure_class=str(target_payload.get("failure_class") or "target_unavailable"),
+                retryable=bool(target_payload.get("retryable", False)),
+                consume_attempt=bool(target_payload.get("consume_attempt", False)),
             )
 
         action = str(item.get("action") or "")
@@ -324,7 +358,7 @@ class RedditProgramOrchestrator:
             item["completed_at"] = _utc_iso()
             item["error"] = None
             item["result"] = self._compact_result(result)
-            self._append_target_history(program, item, result)
+            self._append_target_history(program, item, result, actor_username=actor_username)
         else:
             self._record_failure(program, item, result, verification_error)
 
@@ -354,11 +388,14 @@ class RedditProgramOrchestrator:
         error: str,
         failure_class: str,
         retryable: bool,
+        consume_attempt: bool = True,
     ) -> Dict[str, Any]:
         policy = _execution_policy(program)
         max_attempts = max(1, int(policy.get("max_attempts_per_item", 5)))
         retry_delay_minutes = max(1, int(policy.get("retry_delay_minutes", 20)))
 
+        if not consume_attempt:
+            item["attempts"] = max(0, int(item.get("attempts", 0)) - 1)
         item["error"] = error
         item["result"] = {
             "success": False,
@@ -400,15 +437,76 @@ class RedditProgramOrchestrator:
                 candidates.append(value)
         program["generated_text_history"] = candidates[-500:]
 
+    def _own_content_allowed(self, program: Dict[str, Any]) -> bool:
+        if _program_mode(program) in {"qa", "test"}:
+            return True
+        return not bool(_realism_policy(program).get("forbid_own_content_interactions", True))
+
+    def _thread_already_used_by_profile(
+        self,
+        program: Dict[str, Any],
+        *,
+        profile_name: str,
+        local_date: str,
+        thread_url: Optional[str],
+        actions: Optional[set[str]] = None,
+    ) -> bool:
+        normalized_thread = str(thread_url or "").strip().rstrip("/")
+        if not normalized_thread:
+            return False
+        allowed_actions = actions or {"create_post", "comment_post", "reply_comment"}
+        for entry in list(program.get("target_history") or []):
+            if str(entry.get("profile_name") or "") != profile_name:
+                continue
+            if str(entry.get("local_date") or "") != local_date:
+                continue
+            if str(entry.get("action") or "") not in allowed_actions:
+                continue
+            entry_thread = str(entry.get("thread_url") or entry.get("target_url") or "").strip().rstrip("/")
+            if entry_thread == normalized_thread:
+                return True
+        return False
+
+    def _candidate_violates_realism(
+        self,
+        program: Dict[str, Any],
+        *,
+        item: Dict[str, Any],
+        candidate: Dict[str, Any],
+        actor_username: Optional[str],
+    ) -> Optional[str]:
+        actor = _normalize_actor_username(actor_username)
+        if not self._own_content_allowed(program) and actor:
+            candidate_author = _normalize_actor_username(candidate.get("author"))
+            post_author = _normalize_actor_username(candidate.get("post_author"))
+            if actor and actor in {candidate_author, post_author}:
+                return "own content interaction is forbidden in production"
+
+        action = str(item.get("action") or "")
+        if action == "reply_comment":
+            thread_url = str(candidate.get("thread_url") or _thread_root_from_comment_url(candidate.get("target_comment_url")) or "").strip()
+            if self._thread_already_used_by_profile(
+                program,
+                profile_name=str(item.get("profile_name") or ""),
+                local_date=str(item.get("local_date") or ""),
+                thread_url=thread_url,
+            ):
+                return "same-profile thread loop is not allowed for reply targets"
+        return None
+
     def _compact_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "success": bool(result.get("success")),
             "error": result.get("error"),
+            "failure_class": result.get("failure_class"),
             "attempt_id": result.get("attempt_id"),
             "trace_id": result.get("trace_id"),
             "final_verdict": result.get("final_verdict"),
             "evidence_summary": result.get("evidence_summary"),
             "current_url": result.get("current_url"),
+            "target_url": result.get("target_url"),
+            "target_comment_url": result.get("target_comment_url"),
+            "subreddit": result.get("subreddit"),
             "verification": result.get("verification"),
             "action": result.get("action"),
         }
@@ -443,6 +541,8 @@ class RedditProgramOrchestrator:
         item: Dict[str, Any],
         result: Dict[str, Any],
         verification_error: Optional[str],
+        *,
+        consume_attempt: bool = True,
     ) -> None:
         policy = _execution_policy(program)
         max_attempts = max(1, int(policy.get("max_attempts_per_item", 5)))
@@ -450,6 +550,8 @@ class RedditProgramOrchestrator:
         classification = _failure_classification(result)
         error = verification_error or str(result.get("error") or "reddit action failed")
 
+        if not consume_attempt:
+            item["attempts"] = max(0, int(item.get("attempts", 0)) - 1)
         item["result"] = self._compact_result(result)
         item["error"] = error
 
@@ -527,18 +629,21 @@ class RedditProgramOrchestrator:
         item["error"] = f"rerouting after community restriction in r/{subreddit}" if subreddit else "rerouting after community restriction"
         return True
 
-    def _append_target_history(self, program: Dict[str, Any], item: Dict[str, Any], result: Dict[str, Any]) -> None:
+    def _append_target_history(self, program: Dict[str, Any], item: Dict[str, Any], result: Dict[str, Any], *, actor_username: Optional[str] = None) -> None:
         target_ref = _target_ref(item)
         if not target_ref:
             return
         entry = {
             "timestamp": _utc_iso(),
             "profile_name": item.get("profile_name"),
+            "actor_username": actor_username,
             "local_date": item.get("local_date"),
             "action": item.get("action"),
             "target_ref": target_ref,
+            "thread_url": item.get("thread_url") or ((item.get("discovered_target") or {}).get("thread_url")) or _thread_root_from_comment_url(item.get("target_comment_url")),
             "target_url": item.get("target_url"),
             "target_comment_url": item.get("target_comment_url"),
+            "subreddit": item.get("subreddit") or ((item.get("discovered_target") or {}).get("subreddit")) or result.get("subreddit"),
             "attempt_id": result.get("attempt_id"),
         }
         history = list(program.get("target_history") or [])
@@ -546,31 +651,26 @@ class RedditProgramOrchestrator:
         program["target_history"] = history[-500:]
 
     async def _maybe_send_item_notification(self, program: Dict[str, Any], *, work_item_id: str) -> Dict[str, Any]:
-        config = _notification_config(program)
-        if not bool(config.get("hard_failure_alerts_enabled", True)):
-            return program
         item = next((entry for entry in ((program.get("compiled") or {}).get("work_items") or []) if entry.get("id") == work_item_id), None)
         if not item:
             return program
         if str(item.get("status") or "") not in {"blocked", "exhausted"}:
             return program
-        action = str(item.get("action") or "unknown")
-        subject = f"reddit program hard failure: {program.get('id')} / {action}"
-        body = build_program_email_body(
-            program,
-            headline=f"hard failure for {action} on {item.get('profile_name')}: {item.get('error')}",
-        )
         await self.notification_service.send_program_email(
             program,
-            key=f"hard_failure:{work_item_id}:{item.get('attempts')}",
+            key=f"hard_failure_summary_only:{work_item_id}:{item.get('attempts')}",
             kind="hard_failure",
-            subject=subject,
-            body=body,
+            subject=f"reddit program hard failure: {program.get('id')} / {item.get('action')}",
+            body=build_program_email_body(
+                program,
+                headline=f"hard failure for {item.get('action')} on {item.get('profile_name')}: {item.get('error')}",
+            ),
             metadata={
                 "work_item_id": work_item_id,
-                "action": action,
+                "action": item.get("action"),
                 "profile_name": item.get("profile_name"),
                 "status": item.get("status"),
+                "summary_only": True,
             },
         )
         return self.store.save_program(program)
@@ -615,7 +715,7 @@ class RedditProgramOrchestrator:
         )
         return self.store.save_program(program)
 
-    async def _resolve_target(self, program: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+    async def _resolve_target(self, program: Dict[str, Any], item: Dict[str, Any], *, actor_username: Optional[str] = None) -> Dict[str, Any]:
         if item.get("target_mode") == "explicit":
             return {
                 "target_url": item.get("target_url"),
@@ -632,7 +732,7 @@ class RedditProgramOrchestrator:
             return await self._build_generated_post_payload(program, item)
 
         if item.get("target_mode") == "discover_post":
-            candidate = await self._discover_post_target(program, item)
+            candidate = await self._discover_post_target(program, item, actor_username=actor_username)
             if not candidate:
                 return {
                     "error": "no eligible reddit post targets available for this quota item",
@@ -645,13 +745,13 @@ class RedditProgramOrchestrator:
                 "text": item.get("text"),
                 "title": item.get("title"),
                 "body": item.get("body"),
-                "subreddit": item.get("subreddit"),
+                "subreddit": candidate.get("subreddit") or item.get("subreddit"),
                 "discovered_target": candidate,
                 "generation_evidence": item.get("generation_evidence"),
             }
 
         if item.get("target_mode") == "discover_comment":
-            candidate = await self._discover_comment_target(program, item)
+            candidate = await self._discover_comment_target(program, item, actor_username=actor_username)
             if not candidate:
                 return {
                     "error": "no eligible reddit comment targets available for this quota item",
@@ -699,11 +799,13 @@ class RedditProgramOrchestrator:
             }
         keywords = [str(value).strip() for value in list(_program_filters(program).get("keywords") or []) if str(value).strip()]
         style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+        conversation_context = await self._conversation_context_for_subreddit(program, subreddit=subreddit, keywords=keywords)
         recent_texts = list(program.get("generated_text_history") or [])
         generated = await self.content_generator.generate_post(
             subreddit=subreddit,
             keywords=keywords,
             style_samples=style_samples,
+            conversation_context=conversation_context,
             recent_texts=recent_texts,
         )
         if not generated.success:
@@ -711,6 +813,7 @@ class RedditProgramOrchestrator:
                 "error": str(generated.error or "generated reddit post failed"),
                 "failure_class": "generation_failed",
                 "retryable": True,
+                "consume_attempt": False,
             }
         evidence = {
             "kind": "create_post",
@@ -719,8 +822,15 @@ class RedditProgramOrchestrator:
             "body": generated.body,
             "combined_text": "\n".join(part for part in [generated.title, generated.body] if part).strip(),
             "style_summary": generated.style_summary,
+            "conversation_summary": generated.conversation_summary,
+            "conversation_samples": conversation_context,
             "sample_urls": generated.sample_urls,
             "validation": generated.validation,
+            "policy_validation": generated.validation,
+            "novelty_validation": {
+                "nearby_duplicate": bool((generated.validation or {}).get("nearby_duplicate")),
+                "context_overlap_terms": list((generated.validation or {}).get("context_overlap_terms") or []),
+            },
             "writing_rules": get_writing_rule_snapshot(),
             "raw_response": generated.raw_response,
         }
@@ -739,6 +849,7 @@ class RedditProgramOrchestrator:
         subreddit = str(candidate.get("subreddit") or item.get("subreddit") or "").strip()
         keywords = [str(value).strip() for value in list(_program_filters(program).get("keywords") or []) if str(value).strip()]
         style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+        conversation_context = await self._conversation_context_for_comment_target(candidate)
         recent_texts = list(program.get("generated_text_history") or [])
         generated = await self.content_generator.generate_reply(
             subreddit=subreddit,
@@ -746,6 +857,7 @@ class RedditProgramOrchestrator:
             target_author=str(candidate.get("author") or ""),
             keywords=keywords,
             style_samples=style_samples,
+            conversation_context=conversation_context,
             recent_texts=recent_texts,
         )
         if not generated.success:
@@ -753,6 +865,7 @@ class RedditProgramOrchestrator:
                 "error": str(generated.error or "generated reddit reply failed"),
                 "failure_class": "generation_failed",
                 "retryable": True,
+                "consume_attempt": False,
             }
         evidence = {
             "kind": "reply_comment",
@@ -760,8 +873,15 @@ class RedditProgramOrchestrator:
             "text": generated.text,
             "combined_text": generated.text,
             "style_summary": generated.style_summary,
+            "conversation_summary": generated.conversation_summary,
+            "conversation_samples": conversation_context,
             "sample_urls": generated.sample_urls,
             "validation": generated.validation,
+            "policy_validation": generated.validation,
+            "novelty_validation": {
+                "nearby_duplicate": bool((generated.validation or {}).get("nearby_duplicate")),
+                "context_overlap_terms": list((generated.validation or {}).get("context_overlap_terms") or []),
+            },
             "target_comment_url": candidate.get("target_comment_url"),
             "writing_rules": get_writing_rule_snapshot(),
             "raw_response": generated.raw_response,
@@ -778,6 +898,72 @@ class RedditProgramOrchestrator:
             keywords=keywords,
             max_posts=sample_count,
         )
+
+    async def _conversation_context_for_subreddit(self, program: Dict[str, Any], *, subreddit: str, keywords: List[str]) -> List[Dict[str, Any]]:
+        return await self._discover_posts_for_subreddit(
+            subreddit=subreddit,
+            keywords=keywords,
+            max_posts=4,
+        )
+
+    async def _conversation_context_for_comment_target(self, candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
+        samples: List[Dict[str, Any]] = [
+            {
+                "type": "thread_post",
+                "target_url": candidate.get("thread_url"),
+                "title": candidate.get("post_title"),
+                "body_excerpt": candidate.get("post_body_excerpt"),
+                "author": candidate.get("post_author"),
+            },
+            {
+                "type": "target_comment",
+                "target_comment_url": candidate.get("target_comment_url"),
+                "excerpt": candidate.get("body_excerpt"),
+                "author": candidate.get("author"),
+            },
+        ]
+        if candidate.get("parent_excerpt"):
+            samples.append(
+                {
+                    "type": "parent_comment",
+                    "target_url": candidate.get("thread_url"),
+                    "excerpt": candidate.get("parent_excerpt"),
+                    "author": candidate.get("parent_author"),
+                }
+            )
+        thread_url = str(candidate.get("thread_url") or "").strip()
+        if thread_url:
+            try:
+                thread_payload = await self._fetch_json(_thread_json_url(thread_url))
+            except Exception as exc:
+                logger.warning(f"reddit thread context load failed for {thread_url}: {exc}")
+                return samples
+            comments_root = []
+            if isinstance(thread_payload, list) and len(thread_payload) > 1:
+                comments_root = (((thread_payload[1] or {}).get("data") or {}).get("children") or [])
+            extras = self._walk_comment_nodes(
+                comments_root,
+                subreddit=str(candidate.get("subreddit") or ""),
+                post_title=str(candidate.get("post_title") or ""),
+                post_body_excerpt=str(candidate.get("post_body_excerpt") or ""),
+                post_author=str(candidate.get("post_author") or ""),
+                keywords=[],
+            )
+            target_comment_url = str(candidate.get("target_comment_url") or "").rstrip("/")
+            for extra in extras:
+                if str(extra.get("target_comment_url") or "").rstrip("/") == target_comment_url:
+                    continue
+                samples.append(
+                    {
+                        "type": "nearby_comment",
+                        "target_comment_url": extra.get("target_comment_url"),
+                        "excerpt": extra.get("body_excerpt"),
+                        "author": extra.get("author"),
+                    }
+                )
+                if len(samples) >= 4:
+                    break
+        return samples[:4]
 
     def _target_already_used(self, program: Dict[str, Any], *, profile_name: str, local_date: str, target_ref: str) -> bool:
         allow_reuse = bool(_execution_policy(program).get("allow_target_reuse_within_day", False))
@@ -882,15 +1068,19 @@ class RedditProgramOrchestrator:
                         "target_url": target_url,
                         "subreddit": subreddit,
                         "title": title,
+                        "body_excerpt": _short_text(body, 280),
+                        "author": str(data.get("author") or "").strip(),
                         "score": int(data.get("score") or 0),
                         "comment_count": int(data.get("num_comments") or 0),
+                        "locked": bool(data.get("locked")),
+                        "archived": bool(data.get("archived")),
                         "source": "subreddit_search" if "search/.json" in url else "subreddit_hot",
                     }
                 )
         ranked.sort(key=lambda value: (value.get("comment_count", 0), value.get("score", 0)), reverse=True)
         return ranked[:max_posts]
 
-    async def _discover_post_target(self, program: Dict[str, Any], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _discover_post_target(self, program: Dict[str, Any], item: Dict[str, Any], *, actor_username: Optional[str] = None) -> Optional[Dict[str, Any]]:
         constraints = _program_filters(program)
         profile_name = str(item.get("profile_name") or "")
         local_date = str(item.get("local_date") or "")
@@ -918,10 +1108,24 @@ class RedditProgramOrchestrator:
                 target_url = str(candidate.get("target_url") or "")
                 if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url):
                     continue
+                realism_error = self._candidate_violates_realism(program, item=item, candidate=candidate, actor_username=actor_username)
+                if realism_error:
+                    continue
                 return candidate
         return None
 
-    def _walk_comment_nodes(self, nodes: List[Dict[str, Any]], *, subreddit: str, post_title: str, keywords: List[str]) -> List[Dict[str, Any]]:
+    def _walk_comment_nodes(
+        self,
+        nodes: List[Dict[str, Any]],
+        *,
+        subreddit: str,
+        post_title: str,
+        post_body_excerpt: str,
+        post_author: str,
+        keywords: List[str],
+        parent_author: Optional[str] = None,
+        parent_excerpt: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         collected: List[Dict[str, Any]] = []
         for child in list(nodes or []):
             if child.get("kind") != "t1":
@@ -938,7 +1142,11 @@ class RedditProgramOrchestrator:
                             replies.get("data", {}).get("children") or [],
                             subreddit=subreddit,
                             post_title=post_title,
+                            post_body_excerpt=post_body_excerpt,
+                            post_author=post_author,
                             keywords=keywords,
+                            parent_author=author or parent_author,
+                            parent_excerpt=body or parent_excerpt,
                         )
                     )
                 continue
@@ -950,7 +1158,11 @@ class RedditProgramOrchestrator:
                             replies.get("data", {}).get("children") or [],
                             subreddit=subreddit,
                             post_title=post_title,
+                            post_body_excerpt=post_body_excerpt,
+                            post_author=post_author,
                             keywords=keywords,
+                            parent_author=author or parent_author,
+                            parent_excerpt=body or parent_excerpt,
                         )
                     )
                 continue
@@ -963,6 +1175,11 @@ class RedditProgramOrchestrator:
                     "subreddit": subreddit,
                     "author": author,
                     "body_excerpt": _short_text(body, 240),
+                    "parent_author": parent_author,
+                    "parent_excerpt": _short_text(parent_excerpt, 240),
+                    "post_title": post_title,
+                    "post_body_excerpt": _short_text(post_body_excerpt, 240),
+                    "post_author": post_author,
                     "score": int(data.get("score") or 0),
                     "source": "thread_comment",
                 }
@@ -974,12 +1191,16 @@ class RedditProgramOrchestrator:
                         replies.get("data", {}).get("children") or [],
                         subreddit=subreddit,
                         post_title=post_title,
+                        post_body_excerpt=post_body_excerpt,
+                        post_author=post_author,
                         keywords=keywords,
+                        parent_author=author,
+                        parent_excerpt=body,
                     )
                 )
         return collected
 
-    async def _discover_comment_target(self, program: Dict[str, Any], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _discover_comment_target(self, program: Dict[str, Any], item: Dict[str, Any], *, actor_username: Optional[str] = None) -> Optional[Dict[str, Any]]:
         constraints = _program_filters(program)
         profile_name = str(item.get("profile_name") or "")
         local_date = str(item.get("local_date") or "")
@@ -1015,13 +1236,23 @@ class RedditProgramOrchestrator:
                 comments_root = []
                 if isinstance(thread_payload, list) and len(thread_payload) > 1:
                     comments_root = (((thread_payload[1] or {}).get("data") or {}).get("children") or [])
-                candidates = self._walk_comment_nodes(comments_root, subreddit=subreddit, post_title=post["title"], keywords=keywords)
+                candidates = self._walk_comment_nodes(
+                    comments_root,
+                    subreddit=subreddit,
+                    post_title=post["title"],
+                    post_body_excerpt=str(post.get("body_excerpt") or ""),
+                    post_author=str(post.get("author") or ""),
+                    keywords=keywords,
+                )
                 filtered: List[Dict[str, Any]] = []
                 for candidate in candidates[:max_comments * 3]:
                     target_ref = str(candidate.get("target_comment_url") or "")
                     if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_ref):
                         continue
                     candidate["thread_url"] = post["target_url"]
+                    realism_error = self._candidate_violates_realism(program, item=item, candidate=candidate, actor_username=actor_username)
+                    if realism_error:
+                        continue
                     filtered.append(candidate)
                     if len(filtered) >= max_comments:
                         break

@@ -22,3 +22,38 @@ def test_validate_generated_text_rejects_duplicate_generation():
 
     assert result["ok"] is False
     assert any("duplicates prior generated text" in item for item in result["violations"])
+
+
+def test_validate_generated_text_rejects_operator_meta_language():
+    result = validate_generated_text("checking profile eligibility before posting this.")
+
+    assert result["ok"] is False
+    assert any("operator/meta language" in item for item in result["violations"])
+
+
+def test_validate_generated_text_rejects_nearby_duplicate_and_requires_context_overlap():
+    result = validate_generated_text(
+        "boric acid timing question after my period",
+        nearby_texts=[
+            "boric acid timing question after my period",
+            "has anyone waited a few days after their period before using boric acid again?",
+        ],
+        require_context_overlap=True,
+    )
+
+    assert result["ok"] is False
+    assert any("nearby subreddit content" in item for item in result["violations"])
+
+
+def test_validate_generated_text_flags_missing_context_overlap():
+    result = validate_generated_text(
+        "i am trying to decide what gym shoes to buy this month",
+        nearby_texts=[
+            "my biopsy recovery has been more crampy than i expected",
+            "did anyone else bleed for a couple days after the biopsy?",
+        ],
+        require_context_overlap=True,
+    )
+
+    assert result["ok"] is False
+    assert any("local conversation" in item for item in result["violations"])

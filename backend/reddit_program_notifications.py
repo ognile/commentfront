@@ -135,6 +135,7 @@ def build_program_counts(program: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_program_email_body(program: Dict[str, Any], *, headline: str) -> str:
     counts = build_program_counts(program)
+    failure_summary = dict(program.get("failure_summary") or {})
     lines: List[str] = [
         headline,
         "",
@@ -153,6 +154,9 @@ def build_program_email_body(program: Dict[str, Any], *, headline: str) -> str:
             "",
             "remaining contract:",
             json.dumps(program.get("remaining_contract") or {}, ensure_ascii=True, indent=2),
+            "",
+            "grouped failures:",
+            json.dumps(failure_summary or {}, ensure_ascii=True, indent=2),
             "",
             "recent attempt ids:",
             json.dumps(list(program.get("recent_attempt_ids") or [])[:12], ensure_ascii=True, indent=2),
@@ -179,6 +183,18 @@ class RedditProgramNotificationService:
             return False
 
         config = _notification_config(program)
+        summary_only = bool((metadata or {}).get("summary_only"))
+        if summary_only:
+            append_notification_log(
+                program,
+                key=key,
+                kind=kind,
+                subject=subject,
+                recipient=None,
+                state="summary_only",
+                metadata=metadata,
+            )
+            return True
         if not bool(config.get("email_enabled", True)):
             append_notification_log(
                 program,
