@@ -245,6 +245,109 @@ def test_orchestrator_blocks_community_restricted_items(tmp_path, monkeypatch):
     assert item["error"] == "reddit community ban: can't comment on posts"
 
 
+def test_orchestrator_reroutes_generated_post_after_community_restriction(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            topic_constraints={"subreddits": ["womenshealth", "healthyhooha"], "keywords": ["biopsy"]},
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 1,
+                "posts_max_per_day": 1,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+            execution_policy={
+                "strict_quotas": True,
+                "allow_target_reuse_within_day": False,
+                "cooldown_minutes": 0,
+                "max_actions_per_tick": 5,
+                "max_discovery_posts_per_subreddit": 4,
+                "max_comment_candidates_per_post": 4,
+                "retry_delay_minutes": 5,
+                "max_attempts_per_item": 3,
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "create_post")
+    item["subreddit"] = "womenshealth"
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    orchestrator._record_failure(
+        program,
+        item,
+        {
+            "success": False,
+            "action": "create_post",
+            "error": "reddit community ban: can't contribute to community",
+            "failure_class": "community_restricted",
+            "attempt_id": "attempt-ban",
+            "trace_id": "trace-ban",
+            "final_verdict": "failed_confirmed",
+            "evidence_summary": "community ban detected",
+            "subreddit": "womenshealth",
+            "current_url": "https://www.reddit.com/r/WomensHealth/submit?type=TEXT",
+        },
+        None,
+    )
+
+    assert item["status"] == "pending"
+    assert item["subreddit"] == "healthyhooha"
+    assert "womenshealth" in program["community_block_matrix"]["reddit_amy"]
+
+
+def test_discovery_excludes_profile_blocked_subreddits(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            topic_constraints={"subreddits": ["womenshealth", "healthyhooha"], "keywords": ["biopsy"]},
+            content_assignments={"items": []},
+            engagement_quotas={
+                "upvotes_min_per_day": 1,
+                "upvotes_max_per_day": 1,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    program["community_block_matrix"] = {"reddit_amy": ["womenshealth"]}
+    orchestrator = RedditProgramOrchestrator(store=store)
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "upvote_post")
+
+    seen = []
+
+    async def fake_discover_posts_for_subreddit(*, subreddit, keywords, max_posts):
+        seen.append(subreddit)
+        return [
+            {
+                "target_id": "p1",
+                "target_url": f"https://www.reddit.com/r/{subreddit}/comments/p1/example/",
+                "subreddit": subreddit,
+                "title": "example",
+                "score": 5,
+                "comment_count": 4,
+                "source": "subreddit_hot",
+            }
+        ]
+
+    monkeypatch.setattr(orchestrator, "_discover_posts_for_subreddit", fake_discover_posts_for_subreddit)
+    candidate = asyncio.run(orchestrator._discover_post_target(program, item))
+
+    assert candidate is not None
+    assert seen == ["healthyhooha"]
+    assert candidate["subreddit"] == "healthyhooha"
+
+
 def test_select_due_items_prioritizes_mandatory_joins(tmp_path):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(

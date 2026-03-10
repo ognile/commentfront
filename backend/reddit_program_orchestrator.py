@@ -51,6 +51,14 @@ def _short_text(value: Optional[str], limit: int = 160) -> Optional[str]:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+def _subreddit_from_url(url: Optional[str]) -> Optional[str]:
+    match = str(url or "").split("?", 1)[0]
+    parts = [segment for segment in match.split("/") if segment]
+    if len(parts) >= 2 and parts[0].lower() == "r":
+        return str(parts[1]).strip().lstrip("r/").strip("/") or None
+    return None
+
+
 def _thread_json_url(url: str) -> str:
     clean = str(url or "").split("?", 1)[0].strip().rstrip("/")
     return f"{clean}/.json?raw_json=1&limit=20"
@@ -445,6 +453,8 @@ class RedditProgramOrchestrator:
         item["result"] = self._compact_result(result)
         item["error"] = error
 
+        if classification == "community_restricted" and self._reroute_after_community_block(program, item=item, result=result):
+            return
         if classification in {"session_invalid", "quota_exhausted", "community_restricted"}:
             item["status"] = "blocked"
             return
@@ -466,6 +476,56 @@ class RedditProgramOrchestrator:
             item["title"] = None
             item["body"] = None
             item["generation_evidence"] = None
+
+    def _reroute_after_community_block(
+        self,
+        program: Dict[str, Any],
+        *,
+        item: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> bool:
+        source = str(item.get("source") or "")
+        if source not in {"quota_generated_post", "quota_random_reply", "quota_post_upvote", "quota_comment_upvote"}:
+            return False
+
+        profile_name = str(item.get("profile_name") or "")
+        subreddit = (
+            str(item.get("subreddit") or "").strip()
+            or str(((item.get("discovered_target") or {}).get("subreddit") or "")).strip()
+            or _subreddit_from_url(item.get("target_url"))
+            or _subreddit_from_url(item.get("target_comment_url"))
+            or _subreddit_from_url(result.get("target_url"))
+            or _subreddit_from_url(result.get("target_comment_url"))
+            or _subreddit_from_url(result.get("current_url"))
+        )
+        self._remember_community_block(program, profile_name=profile_name, subreddit=subreddit)
+        available = self._available_subreddits_for_profile(program, profile_name=profile_name)
+        if not available:
+            return False
+
+        retry_delay_minutes = max(1, int(_execution_policy(program).get("retry_delay_minutes", 20)))
+        item["status"] = "pending"
+        item["scheduled_at"] = _utc_iso(_utc_now() + timedelta(minutes=retry_delay_minutes))
+        item["discovered_target"] = None
+        item["target_url"] = None
+        item["target_comment_url"] = None
+
+        if source == "quota_generated_post":
+            current_subreddit = str(item.get("subreddit") or "").strip().lower()
+            next_subreddit = next(
+                (candidate for candidate in available if candidate.lower() != current_subreddit),
+                available[0],
+            )
+            item["subreddit"] = next_subreddit
+            item["title"] = None
+            item["body"] = None
+            item["generation_evidence"] = None
+        elif source == "quota_random_reply":
+            item["text"] = None
+            item["generation_evidence"] = None
+
+        item["error"] = f"rerouting after community restriction in r/{subreddit}" if subreddit else "rerouting after community restriction"
+        return True
 
     def _append_target_history(self, program: Dict[str, Any], item: Dict[str, Any], result: Dict[str, Any]) -> None:
         target_ref = _target_ref(item)
@@ -624,8 +684,11 @@ class RedditProgramOrchestrator:
         }
 
     async def _build_generated_post_payload(self, program: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+        profile_name = str(item.get("profile_name") or "")
         subreddit = str(item.get("subreddit") or "").strip()
-        subreddits = [str(value).strip() for value in list(_program_filters(program).get("subreddits") or []) if str(value).strip()]
+        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name)
+        if subreddit and subreddit.lower() not in {value.lower() for value in subreddits}:
+            subreddit = ""
         if not subreddit:
             subreddit = subreddits[0] if subreddits else ""
         if not subreddit:
@@ -729,6 +792,39 @@ class RedditProgramOrchestrator:
                 return True
         return False
 
+    def _blocked_subreddits_for_profile(self, program: Dict[str, Any], *, profile_name: str) -> set[str]:
+        matrix = dict(program.get("community_block_matrix") or {})
+        return {
+            str(value).strip().lower()
+            for value in list(matrix.get(profile_name) or [])
+            if str(value).strip()
+        }
+
+    def _remember_community_block(self, program: Dict[str, Any], *, profile_name: str, subreddit: Optional[str]) -> None:
+        normalized = str(subreddit or "").strip().lower()
+        if not normalized:
+            return
+        matrix = dict(program.get("community_block_matrix") or {})
+        blocked = [str(value).strip().lower() for value in list(matrix.get(profile_name) or []) if str(value).strip()]
+        if normalized not in blocked:
+            blocked.append(normalized)
+        matrix[profile_name] = blocked
+        program["community_block_matrix"] = matrix
+
+    def _available_subreddits_for_profile(self, program: Dict[str, Any], *, profile_name: str) -> List[str]:
+        configured = [str(value).strip().lstrip("r/").strip("/") for value in list(_program_filters(program).get("subreddits") or []) if str(value).strip()]
+        if not configured:
+            configured = [
+                str(value).strip().lstrip("r/").strip("/")
+                for value in [
+                    _subreddit_from_url(url)
+                    for url in list(_program_filters(program).get("mandatory_join_urls") or [])
+                ]
+                if str(value).strip()
+            ]
+        blocked = self._blocked_subreddits_for_profile(program, profile_name=profile_name)
+        return [subreddit for subreddit in configured if subreddit.lower() not in blocked]
+
     def _keyword_match(self, text_values: List[str], keywords: List[str]) -> bool:
         lowered = " ".join(str(value or "").lower() for value in text_values)
         if not keywords:
@@ -799,7 +895,7 @@ class RedditProgramOrchestrator:
         profile_name = str(item.get("profile_name") or "")
         local_date = str(item.get("local_date") or "")
         keywords = [str(value).strip() for value in list(constraints.get("keywords") or []) if str(value).strip()]
-        subreddits = [str(value).strip().lstrip("r/").strip("/") for value in list(constraints.get("subreddits") or []) if str(value).strip()]
+        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name)
 
         explicit_targets = [str(value).strip() for value in list(constraints.get("explicit_post_targets") or []) if str(value).strip()]
         for target_url in explicit_targets:
@@ -899,7 +995,7 @@ class RedditProgramOrchestrator:
                 "source": "explicit_pool",
             }
 
-        subreddits = [str(value).strip().lstrip("r/").strip("/") for value in list(constraints.get("subreddits") or []) if str(value).strip()]
+        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name)
         max_posts = max(1, int(_execution_policy(program).get("max_discovery_posts_per_subreddit", 6)))
         max_comments = max(1, int(_execution_policy(program).get("max_comment_candidates_per_post", 8)))
 

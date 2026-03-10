@@ -73,6 +73,10 @@ async def _detect_community_comment_ban(page) -> Optional[str]:
         ("you are currently banned from this community and can't comment on posts", "reddit community ban: can't comment on posts"),
         ("you’re currently banned from this community and can’t comment on posts", "reddit community ban: can't comment on posts"),
         ("you are currently banned from this community and can’t comment on posts", "reddit community ban: can't comment on posts"),
+        ("you've been banned from contributing to this community", "reddit community ban: can't contribute to community"),
+        ("you have been banned from contributing to this community", "reddit community ban: can't contribute to community"),
+        ("you’ve been banned from contributing to this community", "reddit community ban: can't contribute to community"),
+        ("banned from contributing to this community", "reddit community ban: can't contribute to community"),
     ]
     for needle, reason in patterns:
         if needle in body_text:
@@ -1078,11 +1082,13 @@ async def _comment_action_row(
     *,
     author: Optional[str],
     expected_title: Optional[str] = None,
+    body_snippet: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     normalized_author = _normalize_text(author)
+    normalized_body_snippet = _normalize_text(body_snippet)
     try:
         result = await page.evaluate(
-            """({ author, expectedTitle }) => {
+            """({ author, expectedTitle, bodySnippet }) => {
                 const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
                 const viewportWidth = window.innerWidth || 393;
                 const viewportHeight = window.innerHeight || 873;
@@ -1146,7 +1152,6 @@ async def _comment_action_row(
                 }
                 replies.sort((a, b) => a.top - b.top || a.left - b.left);
                 const reply = replies[0];
-                if (!reply) return null;
 
                 let authorRect = null;
                 const authors = [];
@@ -1181,16 +1186,57 @@ async def _comment_action_row(
                 }
                 authors.sort((a, b) => a.verticalGap - b.verticalGap || a.top - b.top || a.left - b.left);
                 authorRect = authors[0] || null;
+                let bodyRect = null;
+                const snippetNeedle = normalize(bodySnippet);
+                if (snippetNeedle) {
+                    const bodyCandidates = [];
+                    for (const root of roots) {
+                        const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('p, div, span')) : [];
+                        for (const node of nodes) {
+                            const text = normalize(node.innerText || node.textContent);
+                            const rect = node.getBoundingClientRect();
+                            if (!visibleRect(rect) || !text) continue;
+                            if (!text.includes(snippetNeedle) && !snippetNeedle.includes(text)) continue;
+                            if (authorRect && rect.top < authorRect.bottom - 12) continue;
+                            bodyCandidates.push({
+                                left: rect.left,
+                                top: rect.top,
+                                right: rect.right,
+                                bottom: rect.bottom,
+                                width: rect.width,
+                                height: rect.height,
+                                x: Math.round(rect.left + rect.width / 2),
+                                y: Math.round(rect.top + rect.height / 2),
+                                text,
+                            });
+                        }
+                    }
+                    bodyCandidates.sort((a, b) => a.top - b.top || a.left - b.left);
+                    bodyRect = bodyCandidates[0] || null;
+                }
+                const actionAnchor = bodyRect || authorRect;
+                if (!reply && !actionAnchor) return null;
+                const voteY = reply
+                    ? reply.y
+                    : Math.round(Math.max(24, Math.min(viewportHeight - 24, ((actionAnchor && actionAnchor.bottom) || 0) + 22)));
+                const voteX = reply
+                    ? Math.round(Math.max(28, reply.left - 42))
+                    : Math.round(Math.max(26, Math.min(64, (((actionAnchor && actionAnchor.left) || 0) - 10))));
                 return {
                     author: authorRect,
+                    body: bodyRect,
                     reply,
                     vote: {
-                        x: Math.round(Math.max(28, reply.left - 42)),
-                        y: reply.y,
+                        x: voteX,
+                        y: voteY,
                     },
                 };
             }""",
-            {"author": normalized_author, "expectedTitle": expected_title or ""},
+            {
+                "author": normalized_author,
+                "expectedTitle": expected_title or "",
+                "bodySnippet": normalized_body_snippet or "",
+            },
         )
     except Exception:
         return None
@@ -1921,12 +1967,17 @@ async def upvote_comment(
     target_context = await _load_target_comment_context(target_comment_url)
     expected_title = (target_context or {}).get("title") or None
     author = (target_context or {}).get("author") or None
+    body_snippet = (target_context or {}).get("body_snippet") or None
+    target_url = str((target_context or {}).get("thread_url") or target_comment_url)
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
-            await _goto(page, target_comment_url)
+            await _goto(page, target_url)
+            if not await _ensure_thread_context(page, url=target_url, expected_title=expected_title):
+                await _capture_reddit_failure_state(page, "REDDIT COMMENT THREAD CONTEXT MISSING")
+                raise RuntimeError("Reddit target thread did not load")
             await dump_interactive_elements(page, "REDDIT UPVOTE COMMENT")
-            row = await _comment_action_row(page, author=author, expected_title=expected_title)
+            row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
             reply = dict((row or {}).get("reply") or {})
             vote = dict((row or {}).get("vote") or {})
             before_signature = (
@@ -2006,6 +2057,8 @@ async def upvote_comment(
                 screenshot=screenshot,
                 current_url=page.url,
                 error=None if success else "Reddit comment upvote verification failed",
+                target_url=target_url,
+                target_comment_url=target_comment_url,
             )
         except Exception as exc:
             return _result(success=False, action="upvote_comment", profile_name=session.profile_name, error=str(exc))
@@ -2153,6 +2206,7 @@ async def create_post(
                     raise RuntimeError("Reddit media upload input not found")
                 await page.wait_for_timeout(2500)
 
+            await _raise_if_community_comment_banned(page, capture_context="REDDIT POST COMMUNITY BAN")
             if not await _click_first(page, POST["post_button"], timeout_ms=5000):
                 raise RuntimeError("Reddit Post button not found")
 
@@ -2161,6 +2215,7 @@ async def create_post(
             current_url = page.url
             success = "/comments/" in current_url or "posted" in (await page.locator("body").inner_text()).lower()
             if not success:
+                await _raise_if_community_comment_banned(page, capture_context="REDDIT POST COMMUNITY BAN")
                 await dump_interactive_elements(page, "REDDIT POST VERIFY FAILED")
             return _result(
                 success=success,
@@ -2169,6 +2224,18 @@ async def create_post(
                 screenshot=screenshot,
                 current_url=current_url,
                 error=None if success else "Reddit post submission verification failed",
+            )
+        except RedditCommunityBanError as exc:
+            return _result(
+                success=False,
+                action="create_post",
+                profile_name=session.profile_name,
+                error=str(exc),
+                failure_class="community_restricted",
+                throttled=True,
+                throttle_reason=str(exc),
+                current_url=page.url,
+                subreddit=subreddit,
             )
         except Exception as exc:
             return _result(success=False, action="create_post", profile_name=session.profile_name, error=str(exc))

@@ -240,6 +240,15 @@ def test_detect_community_comment_ban_returns_reason():
     assert reason == "reddit community ban: can't comment on posts"
 
 
+def test_detect_community_comment_ban_returns_contributing_reason():
+    page = _FakePage()
+    page.body_text = "you've been banned from contributing to this community"
+
+    reason = asyncio.run(reddit_bot._detect_community_comment_ban(page))
+
+    assert reason == "reddit community ban: can't contribute to community"
+
+
 def test_dismiss_reddit_open_app_sheet_clicks_close_button():
     page = _FakePage()
     page.evaluate_result = True
@@ -385,6 +394,112 @@ def test_create_post_uses_semantic_body_fallback_when_body_selector_is_missing(m
 
     assert result["success"] is True
     assert result["current_url"] == "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
+
+
+def test_create_post_returns_community_restricted(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/WomensHealth/submit?type=TEXT"
+    page.body_text = "you've been banned from contributing to this community"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_fill_first(_page, selectors, value):
+        if tuple(selectors) == tuple(reddit_bot.POST["title_input"]):
+            return True
+        if tuple(selectors) == tuple(reddit_bot.POST["body_input"]):
+            return True
+        raise AssertionError(f"unexpected selectors: {selectors}")
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill_first)
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_capture_reddit_failure_state", lambda *_args, **_kwargs: asyncio.sleep(0))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="hello title",
+            body="body text",
+            subreddit="WomensHealth",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["failure_class"] == "community_restricted"
+    assert result["throttled"] is True
+    assert "community ban" in result["error"]
+
+
+def test_upvote_comment_prefers_thread_url_context(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/"
+    calls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, url):
+        calls.append(("goto", url))
+
+    async def fake_ensure_thread(_page, *, url, expected_title):
+        calls.append(("ensure_thread", url, expected_title))
+        return True
+
+    async def fake_dump(_page, _context):
+        return None
+
+    async def fake_comment_row(_page, *, author, expected_title=None, body_snippet=None):
+        calls.append(("row", author, expected_title, body_snippet))
+        return {
+            "author": {"x": 120, "y": 120},
+            "reply": {"left": 70, "y": 700},
+            "vote": {"x": 28, "y": 700},
+        }
+
+    monkeypatch.setattr(
+        reddit_bot,
+        "_load_target_comment_context",
+        lambda _url: asyncio.sleep(
+            0,
+            result={
+                "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/",
+                "author": "helper_user",
+                "body_snippet": "helpful reply target",
+                "title": "example post",
+            },
+        ),
+    )
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "_ensure_thread_context", fake_ensure_thread)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
+    monkeypatch.setattr(reddit_bot, "_comment_action_row", fake_comment_row)
+    monkeypatch.setattr(reddit_bot, "_vote_point_is_active", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_verify_named_control_state", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_click_named_control", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_click_comment_upvote_region", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_capture_row_signature", lambda *_args, **_kwargs: asyncio.sleep(0, result=["before"]))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(reddit_bot, "_network_has_vote_mutation", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(reddit_bot, "get_current_forensic_recorder", lambda: object())
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.upvote_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["target_url"] == "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/"
+    assert calls[0] == ("goto", "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/")
 
 
 def test_click_composer_text_region_uses_evaluate_candidate():
