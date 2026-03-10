@@ -1968,98 +1968,131 @@ async def upvote_comment(
     expected_title = (target_context or {}).get("title") or None
     author = (target_context or {}).get("author") or None
     body_snippet = (target_context or {}).get("body_snippet") or None
-    target_url = str((target_context or {}).get("thread_url") or target_comment_url)
+    thread_url = str((target_context or {}).get("thread_url") or "").strip()
+    target_surfaces = [str(target_comment_url).strip()]
+    if thread_url and thread_url not in target_surfaces:
+        target_surfaces.append(thread_url)
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
-            await _goto(page, target_url)
-            if not await _ensure_thread_context(page, url=target_url, expected_title=expected_title):
-                await _capture_reddit_failure_state(page, "REDDIT COMMENT THREAD CONTEXT MISSING")
-                raise RuntimeError("Reddit target thread did not load")
-            await dump_interactive_elements(page, "REDDIT UPVOTE COMMENT")
-            row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
-            reply = dict((row or {}).get("reply") or {})
-            vote = dict((row or {}).get("vote") or {})
-            before_signature = (
-                await _capture_row_signature(page, row_y=float(reply.get("y")), max_x=float(reply.get("left")))
-                if reply
-                else []
-            )
-            if vote and await _vote_point_is_active(page, x=float(vote.get("x")), y=float(vote.get("y"))):
+            last_error = "Reddit comment upvote control not found"
+            for idx, surface_url in enumerate(target_surfaces):
+                await _goto(page, surface_url)
+                if surface_url == thread_url:
+                    if not await _ensure_thread_context(page, url=surface_url, expected_title=expected_title):
+                        last_error = "Reddit target thread did not load"
+                        continue
+                await dump_interactive_elements(page, "REDDIT UPVOTE COMMENT")
+                row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+                if not row:
+                    last_error = "Reddit target comment context not found"
+                    if idx + 1 < len(target_surfaces):
+                        continue
+                    await _capture_reddit_failure_state(page, "REDDIT COMMENT TARGET MISSING")
+                    raise RuntimeError(last_error)
+                reply = dict((row or {}).get("reply") or {})
+                vote = dict((row or {}).get("vote") or {})
+                before_signature = (
+                    await _capture_row_signature(page, row_y=float(reply.get("y")), max_x=float(reply.get("left")))
+                    if reply
+                    else []
+                )
+                if vote and await _vote_point_is_active(page, x=float(vote.get("x")), y=float(vote.get("y"))):
+                    screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
+                    return _result(
+                        success=True,
+                        action="upvote_comment",
+                        profile_name=session.profile_name,
+                        screenshot=screenshot,
+                        current_url=page.url,
+                        verification="already_upvoted",
+                        target_url=thread_url or surface_url,
+                        target_comment_url=target_comment_url,
+                    )
+
+                if await _verify_named_control_state(
+                    page,
+                    needles=["remove upvote", "upvoted"],
+                    anchor_text=author,
+                    expected_title=expected_title,
+                    max_vertical_gap=220,
+                    require_below_anchor=True,
+                ):
+                    screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
+                    return _result(
+                        success=True,
+                        action="upvote_comment",
+                        profile_name=session.profile_name,
+                        screenshot=screenshot,
+                        current_url=page.url,
+                        verification="already_upvoted",
+                        target_url=thread_url or surface_url,
+                        target_comment_url=target_comment_url,
+                    )
+
+                clicked = await _click_named_control(
+                    page,
+                    action_name="upvote_comment",
+                    needles=["upvote"],
+                    anchor_text=author,
+                    expected_title=expected_title,
+                    max_vertical_gap=220,
+                    require_below_anchor=True,
+                )
+                if not clicked and row:
+                    clicked = await _click_comment_upvote_region(page, row=row)
+                if not clicked:
+                    last_error = "Reddit comment upvote control not found"
+                    if idx + 1 < len(target_surfaces):
+                        continue
+                    await _capture_reddit_failure_state(page, "REDDIT COMMENT UPVOTE MISSING")
+                    raise RuntimeError(last_error)
+
+                await page.wait_for_timeout(1500)
                 screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
+                after_signature = (
+                    await _capture_row_signature(page, row_y=float(reply.get("y")), max_x=float(reply.get("left")))
+                    if reply
+                    else []
+                )
+                recorder = get_current_forensic_recorder()
+                success = await _verify_named_control_state(
+                    page,
+                    needles=["remove upvote", "upvoted"],
+                    anchor_text=author,
+                    expected_title=expected_title,
+                    max_vertical_gap=220,
+                    require_below_anchor=True,
+                )
+                if not success:
+                    success = bool(
+                        (before_signature and after_signature and before_signature != after_signature)
+                        or _network_has_vote_mutation(recorder, target_kind="comment")
+                    )
+                if success:
+                    return _result(
+                        success=True,
+                        action="upvote_comment",
+                        profile_name=session.profile_name,
+                        screenshot=screenshot,
+                        current_url=page.url,
+                        target_url=thread_url or surface_url,
+                        target_comment_url=target_comment_url,
+                    )
+                last_error = "Reddit comment upvote verification failed"
+                if idx + 1 < len(target_surfaces):
+                    continue
                 return _result(
-                    success=True,
+                    success=False,
                     action="upvote_comment",
                     profile_name=session.profile_name,
                     screenshot=screenshot,
                     current_url=page.url,
-                    verification="already_upvoted",
+                    error=last_error,
+                    target_url=thread_url or surface_url,
+                    target_comment_url=target_comment_url,
                 )
-
-            if await _verify_named_control_state(
-                page,
-                needles=["remove upvote", "upvoted"],
-                anchor_text=author,
-                expected_title=expected_title,
-                max_vertical_gap=220,
-                require_below_anchor=True,
-            ):
-                screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
-                return _result(
-                    success=True,
-                    action="upvote_comment",
-                    profile_name=session.profile_name,
-                    screenshot=screenshot,
-                    current_url=page.url,
-                    verification="already_upvoted",
-                )
-
-            clicked = await _click_named_control(
-                page,
-                action_name="upvote_comment",
-                needles=["upvote"],
-                anchor_text=author,
-                expected_title=expected_title,
-                max_vertical_gap=220,
-                require_below_anchor=True,
-            )
-            if not clicked and row:
-                clicked = await _click_comment_upvote_region(page, row=row)
-            if not clicked:
-                await _capture_reddit_failure_state(page, "REDDIT COMMENT UPVOTE MISSING")
-                raise RuntimeError("Reddit comment upvote control not found")
-
-            await page.wait_for_timeout(1500)
-            screenshot = await save_debug_screenshot(page, f"reddit_upvote_comment_{session.profile_name}")
-            after_signature = (
-                await _capture_row_signature(page, row_y=float(reply.get("y")), max_x=float(reply.get("left")))
-                if reply
-                else []
-            )
-            recorder = get_current_forensic_recorder()
-            success = await _verify_named_control_state(
-                page,
-                needles=["remove upvote", "upvoted"],
-                anchor_text=author,
-                expected_title=expected_title,
-                max_vertical_gap=220,
-                require_below_anchor=True,
-            )
-            if not success:
-                success = bool(
-                    (before_signature and after_signature and before_signature != after_signature)
-                    or _network_has_vote_mutation(recorder, target_kind="comment")
-                )
-            return _result(
-                success=success,
-                action="upvote_comment",
-                profile_name=session.profile_name,
-                screenshot=screenshot,
-                current_url=page.url,
-                error=None if success else "Reddit comment upvote verification failed",
-                target_url=target_url,
-                target_comment_url=target_comment_url,
-            )
+            raise RuntimeError(last_error)
         except Exception as exc:
             return _result(success=False, action="upvote_comment", profile_name=session.profile_name, error=str(exc))
 
@@ -2333,77 +2366,121 @@ async def reply_to_comment(
     proxy_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     target_context = await _load_target_comment_context(target_comment_url)
-    target_url = str((target_context or {}).get("thread_url") or target_comment_url)
+    thread_url = str((target_context or {}).get("thread_url") or "").strip()
+    target_surfaces = [str(target_comment_url).strip()]
+    if thread_url and thread_url not in target_surfaces:
+        target_surfaces.append(thread_url)
     author = (target_context or {}).get("author") or None
+    body_snippet = (target_context or {}).get("body_snippet") or None
+    expected_title = (target_context or {}).get("title") or None
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
-            await _goto(page, target_url)
-            await dump_interactive_elements(page, "REDDIT REPLY TO COMMENT")
-            expected_title = await _current_thread_title(page)
-            await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
-            row = await _comment_action_row(page, author=author, expected_title=expected_title)
-
-            clicked_reply = await _click_named_control(
-                page,
-                action_name="reply_comment",
-                needles=["reply"],
-                expected_title=expected_title,
-                anchor_text=author,
-                max_vertical_gap=220,
-                require_below_anchor=True,
-            )
-            if not clicked_reply and row:
-                clicked_reply = await _click_reply_row_button(page, row=row)
-            if not clicked_reply:
+            last_error = "Reddit Reply button not found"
+            for idx, surface_url in enumerate(target_surfaces):
+                await _goto(page, surface_url)
+                if surface_url == thread_url and thread_url:
+                    if not await _ensure_thread_context(page, url=surface_url, expected_title=expected_title):
+                        last_error = "Reddit target thread did not load"
+                        continue
+                await dump_interactive_elements(page, "REDDIT REPLY TO COMMENT")
                 await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
-                await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
-                raise RuntimeError("Reddit Reply button not found")
-            await page.wait_for_timeout(1000)
-            await _dismiss_reddit_open_app_sheet(page)
-            if not await _ensure_reply_inline_box(
-                page,
-                row=row,
-                author=author,
-                expected_title=expected_title,
-            ):
+                row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+                if not row:
+                    last_error = "Reddit target comment context not found"
+                    if idx + 1 < len(target_surfaces):
+                        continue
+                    await _capture_reddit_failure_state(page, "REDDIT REPLY TARGET MISSING")
+                    raise RuntimeError(last_error)
+
+                clicked_reply = await _click_named_control(
+                    page,
+                    action_name="reply_comment",
+                    needles=["reply"],
+                    expected_title=expected_title,
+                    anchor_text=author,
+                    max_vertical_gap=220,
+                    require_below_anchor=True,
+                )
+                if not clicked_reply and row:
+                    clicked_reply = await _click_reply_row_button(page, row=row)
+                if not clicked_reply:
+                    last_error = "Reddit Reply button not found"
+                    if idx + 1 < len(target_surfaces):
+                        continue
+                    await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
+                    await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
+                    raise RuntimeError(last_error)
+                await page.wait_for_timeout(1000)
                 await _dismiss_reddit_open_app_sheet(page)
-                await page.wait_for_timeout(500)
                 if not await _ensure_reply_inline_box(
                     page,
                     row=row,
                     author=author,
                     expected_title=expected_title,
                 ):
-                    await _capture_reddit_failure_state(page, "REDDIT REPLY BOX MISSING")
-                    raise RuntimeError("Reddit reply box did not open")
+                    await _dismiss_reddit_open_app_sheet(page)
+                    await page.wait_for_timeout(500)
+                    if not await _ensure_reply_inline_box(
+                        page,
+                        row=row,
+                        author=author,
+                        expected_title=expected_title,
+                    ):
+                        last_error = "Reddit reply box did not open"
+                        if idx + 1 < len(target_surfaces):
+                            continue
+                        await _capture_reddit_failure_state(page, "REDDIT REPLY BOX MISSING")
+                        raise RuntimeError(last_error)
 
-            if not await _fill_comment_input(
-                page,
-                text,
-                reply=True,
-                expected_title=expected_title,
-                target_author=author,
-                allow_global_trigger=False,
-            ):
-                await _capture_reddit_failure_state(page, "REDDIT REPLY INPUT MISSING")
-                raise RuntimeError("Reddit reply input not found")
+                if not await _fill_comment_input(
+                    page,
+                    text,
+                    reply=True,
+                    expected_title=expected_title,
+                    target_author=author,
+                    allow_global_trigger=False,
+                ):
+                    last_error = "Reddit reply input not found"
+                    if idx + 1 < len(target_surfaces):
+                        continue
+                    await _capture_reddit_failure_state(page, "REDDIT REPLY INPUT MISSING")
+                    raise RuntimeError(last_error)
 
-            if not await _click_reply_submit(page, text):
-                await _capture_reddit_failure_state(page, "REDDIT REPLY SUBMIT MISSING")
-                raise RuntimeError("Reddit reply submit button not found")
+                if not await _click_reply_submit(page, text):
+                    last_error = "Reddit reply submit button not found"
+                    if idx + 1 < len(target_surfaces):
+                        continue
+                    await _capture_reddit_failure_state(page, "REDDIT REPLY SUBMIT MISSING")
+                    raise RuntimeError(last_error)
 
-            await page.wait_for_timeout(4000)
-            screenshot = await save_debug_screenshot(page, f"reddit_reply_{session.profile_name}")
-            success = await _verify_text_visible(page, text)
-            return _result(
-                success=success,
-                action="reply_comment",
-                profile_name=session.profile_name,
-                screenshot=screenshot,
-                current_url=page.url,
-                error=None if success else "Reddit reply verification failed",
-            )
+                await page.wait_for_timeout(4000)
+                screenshot = await save_debug_screenshot(page, f"reddit_reply_{session.profile_name}")
+                success = await _verify_text_visible(page, text)
+                if success:
+                    return _result(
+                        success=True,
+                        action="reply_comment",
+                        profile_name=session.profile_name,
+                        screenshot=screenshot,
+                        current_url=page.url,
+                        target_url=thread_url or surface_url,
+                        target_comment_url=target_comment_url,
+                    )
+                last_error = "Reddit reply verification failed"
+                if idx + 1 < len(target_surfaces):
+                    continue
+                return _result(
+                    success=False,
+                    action="reply_comment",
+                    profile_name=session.profile_name,
+                    screenshot=screenshot,
+                    current_url=page.url,
+                    error=last_error,
+                    target_url=thread_url or surface_url,
+                    target_comment_url=target_comment_url,
+                )
+            raise RuntimeError(last_error)
         except RedditCommunityBanError as exc:
             return _result(
                 success=False,
@@ -2414,7 +2491,7 @@ async def reply_to_comment(
                 throttled=True,
                 throttle_reason=str(exc),
                 current_url=page.url,
-                target_url=target_url,
+                target_url=thread_url or target_comment_url,
                 target_comment_url=target_comment_url,
             )
         except Exception as exc:

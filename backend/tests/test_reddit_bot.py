@@ -435,9 +435,9 @@ def test_create_post_returns_community_restricted(monkeypatch):
     assert "community ban" in result["error"]
 
 
-def test_upvote_comment_prefers_thread_url_context(monkeypatch):
+def test_upvote_comment_prefers_target_comment_surface(monkeypatch):
     page = _FakePage()
-    page.url = "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/"
+    page.url = "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/"
     calls = []
 
     @asynccontextmanager
@@ -499,7 +499,70 @@ def test_upvote_comment_prefers_thread_url_context(monkeypatch):
 
     assert result["success"] is True
     assert result["target_url"] == "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/"
-    assert calls[0] == ("goto", "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/")
+    assert calls[0] == ("goto", "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/")
+    assert not any(call[0] == "ensure_thread" for call in calls)
+
+
+def test_reply_comment_prefers_target_comment_surface(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/"
+    calls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, url):
+        calls.append(("goto", url))
+
+    async def fake_dump(_page, _context):
+        return None
+
+    async def fake_comment_row(_page, *, author, expected_title=None, body_snippet=None):
+        calls.append(("row", author, expected_title, body_snippet))
+        return {
+            "author": {"x": 120, "y": 120},
+            "reply": {"left": 70, "y": 700, "x": 110},
+        }
+
+    monkeypatch.setattr(
+        reddit_bot,
+        "_load_target_comment_context",
+        lambda _url: asyncio.sleep(
+            0,
+            result={
+                "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/",
+                "author": "helper_user",
+                "body_snippet": "helpful reply target",
+                "title": "example post",
+            },
+        ),
+    )
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_comment_action_row", fake_comment_row)
+    monkeypatch.setattr(reddit_bot, "_click_named_control", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_ensure_reply_inline_box", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_comment_input", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_click_reply_submit", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(reddit_bot, "_verify_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.reply_to_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/",
+            text="reply text",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["target_url"] == "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/"
+    assert calls[0] == ("goto", "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/")
 
 
 def test_click_composer_text_region_uses_evaluate_candidate():
@@ -895,7 +958,7 @@ def test_reply_to_comment_retries_after_dismissing_open_app_sheet(monkeypatch):
     async def fake_raise_if_banned(_page, capture_context=None):
         return None
 
-    async def fake_comment_row(_page, author=None, expected_title=None):
+    async def fake_comment_row(_page, author=None, expected_title=None, body_snippet=None):
         return {"reply": {"x": 152, "y": 702}}
 
     async def fake_click_named(_page, **kwargs):
