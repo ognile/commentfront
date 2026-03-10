@@ -8,10 +8,12 @@
 - keep the underlying post and timestamp pattern fixed when the review goal is to compare persona intensity
 - pair a human-readable review surface with a machine-readable dossier so the approved output can map directly into implementation
 - show rationale inline but keep it collapsible so the first read is about thread feel, not analyst notes
+- encode in-thread social role and case policy explicitly in the dossier instead of assuming they will emerge from prose style alone
 
 ## failure patterns
 - abstract comment lists are too easy to approve by mistake because they hide how repetitive the thread feels when rendered together
 - proving rule-file paths without proving exact hashes is too weak when the user explicitly forbids paraphrase drift
+- cadence diversity without role diversity still reads like one author wearing ten masks
 
 ## verification patterns
 - validate the dossier with a real json parser before calling the artifact done

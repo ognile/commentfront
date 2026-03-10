@@ -443,8 +443,8 @@
         </p>
         <div class="hero-grid">
           <div class="chip">anchor thread<strong>insane vaginitis / rural shipping delay</strong></div>
-          <div class="chip">approval axis<strong>moderate vs stronger persona separation</strong></div>
-          <div class="chip">locked constraint<strong>rule files stay source-of-truth</strong></div>
+          <div class="chip">approval axis<strong>role spread + persona intensity</strong></div>
+          <div class="chip">locked constraint<strong>4 proper case / 6 lowercase</strong></div>
         </div>
       </div>
 
@@ -537,7 +537,7 @@
         <section class="ledger-card">
           <div class="eyebrow">persona ledger</div>
           <h2>stable blueprints across both scenarios</h2>
-          <p class="ledger-text">the names, timestamps, and post stay fixed. what changes is how visibly each profile leans into its own signature.</p>
+          <p class="ledger-text">the names, timestamps, and post stay fixed. what changes is how visibly each profile leans into its role, signature, and case behavior.</p>
           <div class="ledger-list" id="ledger"></div>
           <div class="footer-note">machine-readable dossier: persona-simulation-dossier.json</div>
         </section>
@@ -559,58 +559,7 @@
       reddit_victor_saunders: "#78624b"
     };
 
-    const dossier = {
-      profiles: [
-        { profile_name: "reddit_amy_schaefera", core_signature: "brief, no-frills triage voice", detail: "1 to 2 compact sentences. plain practical nouns. nearly no modifiers." },
-        { profile_name: "reddit_catherine_emmar", core_signature: "soft clinical framing", detail: "2 measured sentences. calm health language. procedural without sounding formal." },
-        { profile_name: "reddit_cloudia_merra", core_signature: "chatty empath with one sensory detail", detail: "2 to 3 flowing sentences. one mini-story or body-feel detail." },
-        { profile_name: "reddit_connor_esla", core_signature: "logistics-first problem solver", detail: "dense practical moves. stores, calls, supply routes, next-step bias." },
-        { profile_name: "reddit_jenee_waters", core_signature: "reflective support", detail: "opens with how the situation lands in daily life, then gives one grounded move." },
-        { profile_name: "reddit_kaylee_andreas", core_signature: "quick relief-first suggestions", detail: "short lines. immediate comfort. no theory rabbit hole." },
-        { profile_name: "reddit_lauren_stewrt", core_signature: "older-sister warmth", detail: "home-life detail, sturdy tone, grounded domestic adjustments." },
-        { profile_name: "reddit_mary_miaby", core_signature: "burden-framing", detail: "pressure, errands, exhaustion, then a practical release valve." },
-        { profile_name: "reddit_neera_allvere", core_signature: "small gentle fix", detail: "quiet one-step comfort. tiny scale. low drama." },
-        { profile_name: "reddit_victor_saunders", core_signature: "rustic utilitarian", detail: "plain place-based problem solving with shelf-level realism." }
-      ],
-      scenarios: {
-        "scenario-a": {
-          title: "scenario a / moderate persona separation",
-          note: "distinct enough to avoid cloning while still feeling like one plausible subreddit thread.",
-          feel: "organic",
-          intensity: "moderate",
-          comments: [
-            { profile_name: "reddit_amy_schaefera", timestamp: "mar 10, 2026 10:14 cet", relative: "8h ago", text: "if the skin is raw, a plain barrier cream from the baby aisle can buy you a little breathing room while you wait. zinc oxide looks messy, but it can keep pee and friction from lighting everything up even more.", rationale: "amy stays terse and utilitarian, names one product type, and does not expand beyond immediate relief." },
-            { profile_name: "reddit_catherine_emmar", timestamp: "mar 10, 2026 10:48 cet", relative: "7h ago", text: "open wounds plus ongoing itching after fluconazole would make me ask for a swab or culture, not another blind guess. if they can call something into the pharmacy in the next town, this might move faster than waiting on amazon.", rationale: "catherine keeps a calm clinical frame, nudges toward a test, and ties it back to the rural pharmacy constraint." },
-            { profile_name: "reddit_cloudia_merra", timestamp: "mar 10, 2026 11:19 cet", relative: "7h ago", text: "i had a stretch where even walking around the grocery store felt impossible because everything was rubbing. if you have a peri bottle or even a clean water bottle, pouring lukewarm water while you pee can make this a lot less brutal.", rationale: "cloudia brings one sensory mini-story, then pivots into a concrete comfort tactic." },
-            { profile_name: "reddit_connor_esla", timestamp: "mar 10, 2026 11:57 cet", relative: "6h ago", text: "if walmart is out, call the small pharmacy first instead of checking the app over and over. a lot of them can order zinc oxide, lidocaine-free barrier ointment, or the exact antifungal by the next morning.", rationale: "connor is logistics-first, focused on supply routes and ordering behavior instead of emotional framing." },
-            { profile_name: "reddit_jenee_waters", timestamp: "mar 10, 2026 12:24 cet", relative: "6h ago", text: "being stuck in a rural area makes every vaginal health problem feel twice as big. if you are this uncomfortable, i would ring urgent care again and be blunt that the skin is open now, because this has moved past basic annoyance.", rationale: "jenee opens with the life-context burden and then frames a firm but still supportive escalation step." },
-            { profile_name: "reddit_kaylee_andreas", timestamp: "mar 10, 2026 13:11 cet", relative: "5h ago", text: "a cool sitz bath might calm things down tonight. even ten minutes can take the edge off when the burning gets constant.", rationale: "kaylee stays very short, relief-first, and avoids adding extra theory." },
-            { profile_name: "reddit_lauren_stewrt", timestamp: "mar 10, 2026 14:06 cet", relative: "4h ago", text: "the part that jumps out to me is how raw the skin sounds now. i would skip pads, liners, and anything scented for a few days and wear the loosest cotton shorts you have at home.", rationale: "lauren reads like a grounded older sister, anchored in home-life detail and simple removal of irritants." },
-            { profile_name: "reddit_mary_miaby", timestamp: "mar 10, 2026 15:22 cet", relative: "3h ago", text: "the extra driving, the mail delay, and the pain all piling up would wear anyone down. if the pharmacy in the next town has a phone number online, i would ask whether they can transfer or special-order whatever the er gave you so you are not stuck waiting two weeks.", rationale: "mary centers the weight and friction of the situation, then gives one supply-side move." },
-            { profile_name: "reddit_neera_allvere", timestamp: "mar 10, 2026 16:41 cet", relative: "2h ago", text: "petroleum jelly before you pee can help protect broken skin for a little while. it is not a treatment, but it can make the next bathroom trip less miserable.", rationale: "neera stays gentle and tiny in scope, offering one small relief move without overclaiming." },
-            { profile_name: "reddit_victor_saunders", timestamp: "mar 10, 2026 17:36 cet", relative: "1h ago", text: "if fluconazole did nothing and the skin is split open, i would not assume this is still the same infection. i would go back in and ask them to rule out bv, contact irritation, or something that needs a different cream.", rationale: "victor sounds plain and decisive, with a diagnosis-path correction instead of soft empathy." }
-          ]
-        },
-        "scenario-b": {
-          title: "scenario b / stronger persona separation",
-          note: "make the same 10 profiles feel clearly different at first glance while staying believable for the thread.",
-          feel: "wider range",
-          intensity: "strong",
-          comments: [
-            { profile_name: "reddit_amy_schaefera", timestamp: "mar 10, 2026 10:14 cet", relative: "8h ago", text: "if it feels raw, baby-aisle zinc cream tonight. ugly, but it can save your skin from more burning.", rationale: "amy compresses even harder here, making her brevity one of the thread's strongest signatures." },
-            { profile_name: "reddit_catherine_emmar", timestamp: "mar 10, 2026 10:48 cet", relative: "7h ago", text: "persistent itching plus fissured skin after fluconazole would push me toward a swab, wet mount, or culture before another blind treatment. i would call the next-town pharmacy and ask what they can fill same day while you line that up.", rationale: "catherine goes more precise and procedure-minded without sounding robotic." },
-            { profile_name: "reddit_cloudia_merra", timestamp: "mar 10, 2026 11:19 cet", relative: "7h ago", text: "i had one week where even the seam in my jeans felt mean, so i really feel for you. the one thing that helped me get through peeing was warm water from a peri bottle at the same time, because it stopped this sharp sting spiral.", rationale: "cloudia becomes more visibly personal and sensory, which sharpens her chatty-empath blueprint." },
-            { profile_name: "reddit_connor_esla", timestamp: "mar 10, 2026 11:57 cet", relative: "6h ago", text: "rural mail delay is a nightmare for anything gyne related. i would work the phones before i waited on amazon: independent pharmacy, grocery pharmacy, then urgent care, because one of them may have miconazole, zinc paste, or a compounded barrier cream sooner.", rationale: "connor widens the operational search path and becomes more recognizably system-driven." },
-            { profile_name: "reddit_jenee_waters", timestamp: "mar 10, 2026 12:24 cet", relative: "6h ago", text: "having to act normal when your whole pelvic area is screaming is such a lonely kind of misery. if they told you yeast once and sent you home, i would go back and say the wounds are the part that scares you now.", rationale: "jenee leans harder into emotional-social burden and uses fewer practical details than scenario a." },
-            { profile_name: "reddit_kaylee_andreas", timestamp: "mar 10, 2026 13:11 cet", relative: "5h ago", text: "cool bath. loose shorts. no rubbing tonight if you can help it.", rationale: "kaylee becomes almost note-like, which makes her profile unmistakably distinct in the stack." },
-            { profile_name: "reddit_lauren_stewrt", timestamp: "mar 10, 2026 14:06 cet", relative: "4h ago", text: "years ago i got so irritated after a detergent mix-up that i slept on a towel with no underwear because any seam was too much. i would cut every extra product for a few days and go plain water, plain soap for the rest of your body, and the loosest fabric you own.", rationale: "lauren pushes further into a domestic anecdote, making her older-sister voice much more visible." },
-            { profile_name: "reddit_mary_miaby", timestamp: "mar 10, 2026 15:22 cet", relative: "3h ago", text: "the way rural errands turn into a whole expedition makes this feel even heavier when you already hurt. if you can, let the pharmacy staff help you problem-solve the supply side instead of carrying this alone, because sometimes they know which store or clinic still has the medication on the shelf.", rationale: "mary turns up her burden-framing and keeps the sentence flow more emotionally loaded." },
-            { profile_name: "reddit_neera_allvere", timestamp: "mar 10, 2026 16:41 cet", relative: "2h ago", text: "before you pee, put on a little petroleum jelly and keep a cup of lukewarm water nearby. tiny thing, but this can soften the next ten minutes.", rationale: "neera becomes even quieter and more micro-scale, centered on one tiny moment of relief." },
-            { profile_name: "reddit_victor_saunders", timestamp: "mar 10, 2026 17:36 cet", relative: "1h ago", text: "if walmart is empty, check the farm store, gas station pharmacy shelf, or the oldest independent drugstore in the next town before you wait two weeks. boring barrier products are sometimes easier to find than the branded yeast items.", rationale: "victor gets more place-based and improvisational, which sharpens his rustic utilitarian signature." }
-          ]
-        }
-      }
-    };
+    let dossier = null;
 
     function initials(profileName) {
       return profileName
@@ -626,8 +575,9 @@
       root.innerHTML = dossier.profiles.map(profile => `
         <article class="ledger-item">
           <strong>${profile.profile_name}</strong>
-          <div class="persona-tag" style="background:${hexToSoft(personaColors[profile.profile_name])}; color:${personaColors[profile.profile_name]};">${profile.core_signature}</div>
-          <p class="ledger-text" style="margin-top:8px;">${profile.detail}</p>
+          <div class="persona-tag" style="background:${hexToSoft(personaColors[profile.profile_name])}; color:${personaColors[profile.profile_name]};">${profile.blueprint.core_signature}</div>
+          <p class="ledger-text" style="margin-top:8px;"><strong>role:</strong> ${profile.blueprint.default_role.replaceAll("_", " ")} · <strong>case:</strong> ${profile.blueprint.case_style.replaceAll("_", " ")}</p>
+          <p class="ledger-text" style="margin-top:6px;">${profile.blueprint.social_pattern}</p>
         </article>
       `).join("");
     }
@@ -644,6 +594,7 @@
               <span class="comment-meta">${comment.relative}</span>
               <span class="comment-meta">${comment.timestamp}</span>
               <span class="persona-tag" style="background:${hexToSoft(personaColors[comment.profile_name])}; color:${personaColors[comment.profile_name]};">${lookupSignature(comment.profile_name)}</span>
+              <span class="persona-tag" style="background:rgba(31,26,22,0.08); color:#564b41;">${comment.role.replaceAll("_", " ")}</span>
             </div>
             <p class="comment-copy">${comment.text}</p>
             <details>
@@ -656,7 +607,7 @@
     }
 
     function lookupSignature(profileName) {
-      return dossier.profiles.find(profile => profile.profile_name === profileName)?.core_signature || "";
+      return dossier.profiles.find(profile => profile.profile_name === profileName)?.blueprint.core_signature || "";
     }
 
     function hexToSoft(hex) {
@@ -687,10 +638,50 @@
       tab.addEventListener("click", () => activateScenario(tab.dataset.target));
     });
 
-    renderLedger();
-    renderThread("thread-a", "scenario-a");
-    renderThread("thread-b", "scenario-b");
-    activateScenario("scenario-a");
+    fetch("./persona-simulation-dossier.json")
+      .then(response => response.json())
+      .then(data => {
+        dossier = {
+          profiles: data.profiles,
+          scenarios: {
+            "scenario-a": {
+              title: `scenario a / ${data.scenarios.scenario_a.title}`,
+              note: data.scenarios.scenario_a.design_intent,
+              feel: data.scenarios.scenario_a.thread_read,
+              intensity: data.scenarios.scenario_a.persona_intensity,
+              comments: data.scenarios.scenario_a.comments.map(comment => ({
+                profile_name: comment.profile_name,
+                timestamp: comment.timestamp_label,
+                relative: comment.relative_label,
+                role: comment.role,
+                text: comment.text,
+                rationale: comment.rationale
+              }))
+            },
+            "scenario-b": {
+              title: `scenario b / ${data.scenarios.scenario_b.title}`,
+              note: data.scenarios.scenario_b.design_intent,
+              feel: data.scenarios.scenario_b.thread_read,
+              intensity: data.scenarios.scenario_b.persona_intensity,
+              comments: data.scenarios.scenario_b.comments.map(comment => ({
+                profile_name: comment.profile_name,
+                timestamp: comment.timestamp_label,
+                relative: comment.relative_label,
+                role: comment.role,
+                text: comment.text,
+                rationale: comment.rationale
+              }))
+            }
+          }
+        };
+        renderLedger();
+        renderThread("thread-a", "scenario-a");
+        renderThread("thread-b", "scenario-b");
+        activateScenario("scenario-a");
+      })
+      .catch(error => {
+        document.body.innerHTML = `<pre style="padding:24px;font-family:monospace;">failed to load dossier: ${String(error)}</pre>`;
+      });
   </script>
 </body>
 </html>

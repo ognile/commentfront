@@ -10,6 +10,7 @@
   - scenario b: stronger persona separation
 - both scenarios include all 10 real rollout profiles, exact timestamps, full comment text, and compact rationale.
 - the dossier records one stable persona blueprint per profile plus scenario-level comment data.
+- the dossier records explicit in-thread role and case-style policy per profile.
 - the dossier proves verbatim rule-source ingestion via the exact source paths and sha256 hashes for the three writing files.
 - the artifact is validated locally by opening the standalone html in a browser and confirming both scenarios are readable without app context.
 
@@ -28,20 +29,23 @@
   - `persona-simulation.html`
   - `persona-simulation-dossier.json`
 - the html is designed as a self-contained editorial review board with a scenario switcher, persona ledger, and full thread render.
+- the first simulation pass was intentionally superseded because it varied wording but not enough on social role. the current pass now treats role spread and case spread as explicit approval dimensions.
 - local browser verification is complete:
-  - scenario a screenshot: `/var/folders/66/tj1q_3hd6bq6xyzyszqswq000000gn/T/playwright-mcp-output/1773157785088/page-2026-03-10T18-56-28-270Z.png`
-  - scenario b screenshot: `/var/folders/66/tj1q_3hd6bq6xyzyszqswq000000gn/T/playwright-mcp-output/1773157785088/page-2026-03-10T18-56-16-957Z.png`
+  - scenario a screenshot: `/var/folders/66/tj1q_3hd6bq6xyzyszqswq000000gn/T/playwright-mcp-output/1773157785088/page-2026-03-10T19-05-53-262Z.png`
+  - scenario b screenshot: `/var/folders/66/tj1q_3hd6bq6xyzyszqswq000000gn/T/playwright-mcp-output/1773157785088/page-2026-03-10T19-05-59-278Z.png`
 
 ## active todo
 1. complete. the dossier json parses cleanly with `python -m json.tool`.
-2. complete. the standalone html renders locally, the scenario switch works, and both scenarios were screenshotted.
-3. commit and push the review pack so the approval artifact is durable in git history.
+2. complete. local browser verification was rerun against the revised role-diverse html and fresh screenshots were captured.
+3. commit and push the revised review pack so the approval artifact is durable in git history.
 4. verify the repo state is clean except for the user-owned `.claude/CLAUDE.md`.
 
 ## current understanding
 - the user does not want abstract samples; they want a rendered thread simulation they can inspect as if the rollout already happened.
 - the most useful approval artifact is one real post with the same 10 profiles under two persona-intensity regimes.
 - keeping the timestamp pattern constant while changing persona intensity makes the comparison legible.
+- role diversity matters as much as voice signature. a thread still feels fake if every profile is performing the same helper role with only lexical variation.
+- casing diversity also matters. universal lowercase makes the whole thread feel generated even if the wording differs.
 - the machine-readable dossier should become the input spec for the later production redesign.
 
 ## proven wins
@@ -51,6 +55,8 @@
   - `negative-patterns.md`: `0676cd003f0d8c9382378c364a26e99327c21272aad65bd95bee67a3e78e18a2`
   - `vocabulary-guidance.md`: `74a10459bc0d72cfddb6ed26cfa4727069904c39e13888b0e9c3cc94396b0bc5`
 - the standalone html approval surface works without app context and makes the difference between scenario a and scenario b legible in one screen.
+- the revised dossier now encodes role and case-style directly, which makes the next review cycle inspectable instead of implicit.
+- the current artifact now shows all ten comments with explicit role labels and a visible 4 proper-case / 6 lowercase mix.
 
 ## open risks
 - persona separation is still a design target, not a production-enforced runtime rule, until the later implementation phase lands.

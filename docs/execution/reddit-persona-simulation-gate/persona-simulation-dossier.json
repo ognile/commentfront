@@ -2,7 +2,7 @@
   "approval_gate": {
     "name": "reddit persona simulation approval gate",
     "status": "awaiting_user_review",
-    "approval_rule": "no production redesign plan is finalized until scenario a or scenario b is explicitly approved"
+    "approval_rule": "no production redesign plan is finalized until the revised role-diverse scenario pack is approved"
   },
   "anchor_thread": {
     "post_url": "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/",
@@ -34,192 +34,122 @@
   "profiles": [
     {
       "profile_name": "reddit_amy_schaefera",
-      "persona_id": "amy_practical_shortform",
+      "persona_id": "amy_blunt_triage",
       "blueprint": {
-        "core_signature": "brief, no-frills triage voice",
+        "core_signature": "brief, sharp, almost impatient triage voice",
+        "default_role": "blunt_critique",
+        "case_style": "lowercase",
         "sentence_shape": "1 to 2 compact sentences",
-        "specificity_level": "medium",
-        "vocabulary_texture": "plain, low-drama, practical nouns",
-        "punctuation_habits": "periods only, almost no modifiers",
-        "anecdote_tendency": "rare",
-        "directness": "high",
-        "comfort_vs_solution": "leans solution",
-        "anti_signature": [
-          "no long preambles",
-          "no inspirational phrasing",
-          "no over-explaining"
-        ]
+        "vocabulary_texture": "plain nouns, hard stops, almost no cushioning",
+        "social_pattern": "pushes the op to stop drifting and do the next obvious thing"
       }
     },
     {
       "profile_name": "reddit_catherine_emmar",
-      "persona_id": "catherine_calm_clinical",
+      "persona_id": "catherine_authority_frame",
       "blueprint": {
-        "core_signature": "soft clinical framing without sounding like a doctor",
+        "core_signature": "calm authority with clinical confidence",
+        "default_role": "authority",
+        "case_style": "proper_case",
         "sentence_shape": "2 measured sentences",
-        "specificity_level": "high",
-        "vocabulary_texture": "calm health language with procedural nouns",
-        "punctuation_habits": "clean sentences, almost no exclamation",
-        "anecdote_tendency": "none",
-        "directness": "medium-high",
-        "comfort_vs_solution": "balanced",
-        "anti_signature": [
-          "no panic wording",
-          "no slang-heavy delivery",
-          "no fluffy empathy opener"
-        ]
+        "vocabulary_texture": "procedural health language without sounding robotic",
+        "social_pattern": "sounds like someone who has seen this before and is narrowing possibilities"
       }
     },
     {
       "profile_name": "reddit_cloudia_merra",
-      "persona_id": "cloudia_chatty_empath",
+      "persona_id": "cloudia_resonator",
       "blueprint": {
-        "core_signature": "chatty empathy with one sensory detail",
+        "core_signature": "chatty resonance with one lived-in detail",
+        "default_role": "resonate",
+        "case_style": "lowercase",
         "sentence_shape": "2 to 3 flowing sentences",
-        "specificity_level": "medium-high",
         "vocabulary_texture": "warm, body-aware, conversational",
-        "punctuation_habits": "occasional comma-heavy rhythm",
-        "anecdote_tendency": "moderate",
-        "directness": "medium",
-        "comfort_vs_solution": "leans comfort then suggestion",
-        "anti_signature": [
-          "no fake cheerleading",
-          "no vague 'hang in there' ending",
-          "no abstract advice"
-        ]
+        "social_pattern": "joins the thread by saying she knows what the feeling is like"
       }
     },
     {
       "profile_name": "reddit_connor_esla",
-      "persona_id": "connor_system_solver",
+      "persona_id": "connor_fixer",
       "blueprint": {
-        "core_signature": "logistics-first problem solver",
+        "core_signature": "operational fixer who thinks in phone calls and routes",
+        "default_role": "fixer",
+        "case_style": "proper_case",
         "sentence_shape": "2 dense sentences",
-        "specificity_level": "high",
-        "vocabulary_texture": "practical, phone-call and store-run language",
-        "punctuation_habits": "semicolons avoided, direct full stops",
-        "anecdote_tendency": "low",
-        "directness": "high",
-        "comfort_vs_solution": "strongly solution",
-        "anti_signature": [
-          "no abstract sympathy without action",
-          "no poetic metaphors",
-          "no dramatic phrasing"
-        ]
+        "vocabulary_texture": "stores, calls, inventory, next-step verbs",
+        "social_pattern": "treats the problem like a stuck supply chain"
       }
     },
     {
       "profile_name": "reddit_jenee_waters",
-      "persona_id": "jenee_reflective_support",
+      "persona_id": "jenee_complaining_resonator",
       "blueprint": {
-        "core_signature": "supportive with one wider life-context sentence",
+        "core_signature": "complaining with the op, not only comforting them",
+        "default_role": "complain",
+        "case_style": "lowercase",
         "sentence_shape": "2 to 3 sentences",
-        "specificity_level": "medium",
-        "vocabulary_texture": "emotionally literate without sounding therapeutic",
-        "punctuation_habits": "steady commas, no symbols",
-        "anecdote_tendency": "low",
-        "directness": "medium",
-        "comfort_vs_solution": "leans comfort",
-        "anti_signature": [
-          "no clinical checklist tone",
-          "no over-sharing",
-          "no preachy closer"
-        ]
+        "vocabulary_texture": "friction, unfairness, daily-life burden",
+        "social_pattern": "bonds by naming how ridiculous the situation is"
       }
     },
     {
       "profile_name": "reddit_kaylee_andreas",
-      "persona_id": "kaylee_relief_focus",
+      "persona_id": "kaylee_driveby",
       "blueprint": {
-        "core_signature": "quick relief-first suggestions",
-        "sentence_shape": "1 to 2 short lines",
-        "specificity_level": "medium",
-        "vocabulary_texture": "simple, immediate, body-comfort language",
-        "punctuation_habits": "short sentences, no flourish",
-        "anecdote_tendency": "none",
-        "directness": "high",
-        "comfort_vs_solution": "solution with a soft edge",
-        "anti_signature": [
-          "no long context setup",
-          "no product rabbit hole",
-          "no self-story"
-        ]
+        "core_signature": "short drive-by comment with barely any context",
+        "default_role": "drive_by_blunt",
+        "case_style": "lowercase",
+        "sentence_shape": "single sentence or clipped fragments",
+        "vocabulary_texture": "very plain and abrupt",
+        "social_pattern": "drops one aggressive or urgent reaction and moves on"
       }
     },
     {
       "profile_name": "reddit_lauren_stewrt",
-      "persona_id": "lauren_older_sister",
+      "persona_id": "lauren_story_authority",
       "blueprint": {
-        "core_signature": "older-sister warmth with grounded domestic detail",
+        "core_signature": "older-sister anecdote with practical authority",
+        "default_role": "story_help",
+        "case_style": "proper_case",
         "sentence_shape": "2 to 3 sentences",
-        "specificity_level": "high",
-        "vocabulary_texture": "home-life details, soft but sturdy",
-        "punctuation_habits": "clean clauses, no hype",
-        "anecdote_tendency": "moderate",
-        "directness": "medium",
-        "comfort_vs_solution": "balanced",
-        "anti_signature": [
-          "no faux-clinical tone",
-          "no internet slang pileup",
-          "no empty reassurance"
-        ]
+        "vocabulary_texture": "domestic detail, fabric, bathroom, laundry, skin",
+        "social_pattern": "earns trust by sounding like she has already lived through a version of this"
       }
     },
     {
       "profile_name": "reddit_mary_miaby",
-      "persona_id": "mary_burden_framing",
+      "persona_id": "mary_burden_echo",
       "blueprint": {
-        "core_signature": "emotionally attuned to friction, burden, and exhaustion",
-        "sentence_shape": "2 to 3 sentences",
-        "specificity_level": "medium-high",
-        "vocabulary_texture": "pressure, weight, errands, effort",
-        "punctuation_habits": "longer sentence into a cleaner second sentence",
-        "anecdote_tendency": "low",
-        "directness": "medium",
-        "comfort_vs_solution": "balanced",
-        "anti_signature": [
-          "no cold checklist style",
-          "no melodrama",
-          "no copycat product language"
-        ]
+        "core_signature": "emotionally attuned to weight, errands, and exhaustion",
+        "default_role": "burden_resonance",
+        "case_style": "lowercase",
+        "sentence_shape": "2 longer sentences",
+        "vocabulary_texture": "pressure, effort, extra trip, worn down",
+        "social_pattern": "mirrors the hidden burden behind the symptoms"
       }
     },
     {
       "profile_name": "reddit_neera_allvere",
-      "persona_id": "neera_small_gentle_fix",
+      "persona_id": "neera_tiny_relief",
       "blueprint": {
-        "core_signature": "gentle micro-relief suggestions",
-        "sentence_shape": "1 to 2 quiet sentences",
-        "specificity_level": "medium",
-        "vocabulary_texture": "soft, steady, low-volume",
-        "punctuation_habits": "minimal punctuation drama",
-        "anecdote_tendency": "none",
-        "directness": "medium",
-        "comfort_vs_solution": "comfort with one tiny actionable step",
-        "anti_signature": [
-          "no intense urgency language",
-          "no long shopping lists",
-          "no abstract digressions"
-        ]
+        "core_signature": "quiet low-volume helper with one tiny fix",
+        "default_role": "gentle_help",
+        "case_style": "lowercase",
+        "sentence_shape": "1 to 2 soft sentences",
+        "vocabulary_texture": "small, near-term, low-claim comfort language",
+        "social_pattern": "offers one little thing that might make the next hour easier"
       }
     },
     {
       "profile_name": "reddit_victor_saunders",
-      "persona_id": "victor_rustic_utilitarian",
+      "persona_id": "victor_rough_authority",
       "blueprint": {
-        "core_signature": "utilitarian, place-based, improvisational problem solving",
-        "sentence_shape": "2 sentences",
-        "specificity_level": "high",
-        "vocabulary_texture": "store, shelf, town, route, plain products",
-        "punctuation_habits": "short declarative clauses",
-        "anecdote_tendency": "low",
-        "directness": "high",
-        "comfort_vs_solution": "strongly solution",
-        "anti_signature": [
-          "no polished wellness vocabulary",
-          "no high-empathy monologue",
-          "no ornate phrasing"
-        ]
+        "core_signature": "rougher authority with a bit of critique",
+        "default_role": "contrarian_authority",
+        "case_style": "proper_case",
+        "sentence_shape": "2 direct sentences",
+        "vocabulary_texture": "plain, unsentimental, place-based, a little harder-edged",
+        "social_pattern": "pushes back on the current plan and sounds like he trusts his own judgment"
       }
     }
   ],
@@ -236,191 +166,215 @@
       "2026-03-10T16:41:00+01:00",
       "2026-03-10T17:36:00+01:00"
     ],
-    "difference_axis": "persona_intensity",
+    "difference_axis": "persona_intensity_plus_social_role_spread",
     "shared_invariants": [
       "same anchor post",
       "same 10 profile names",
       "same general timestamp pattern",
       "same top-level comment surface",
       "same source-of-truth writing files"
-    ]
+    ],
+    "case_mix_target": {
+      "lowercase_profiles": 6,
+      "proper_case_profiles": 4
+    }
   },
   "scenarios": {
     "scenario_a": {
       "label": "scenario a",
-      "title": "moderate persona separation",
-      "design_intent": "distinct enough to avoid cloning while still feeling like one plausible subreddit thread",
+      "title": "role-diverse but still thread-cohesive",
+      "design_intent": "show real social variety without making the thread feel theatrically engineered",
       "persona_intensity": "moderate",
-      "thread_read": "organic, believable, lightly varied",
+      "thread_read": "socially varied, still cohesive",
       "comments": [
         {
           "profile_name": "reddit_amy_schaefera",
+          "role": "blunt_critique",
           "timestamp_iso": "2026-03-10T10:14:00+01:00",
           "timestamp_label": "mar 10, 2026 10:14 cet",
           "relative_label": "8h ago",
-          "text": "if the skin is raw, a plain barrier cream from the baby aisle can buy you a little breathing room while you wait. zinc oxide looks messy, but it can keep pee and friction from lighting everything up even more.",
-          "rationale": "amy stays terse and utilitarian, names one product type, and does not expand beyond immediate relief."
+          "text": "two weeks is too long if the skin is open now. i would stop waiting on amazon and get re-checked.",
+          "rationale": "amy is not nurturing here. she critiques the passive plan and sounds abrupt on purpose."
         },
         {
           "profile_name": "reddit_catherine_emmar",
+          "role": "authority",
           "timestamp_iso": "2026-03-10T10:48:00+01:00",
           "timestamp_label": "mar 10, 2026 10:48 cet",
           "relative_label": "7h ago",
-          "text": "open wounds plus ongoing itching after fluconazole would make me ask for a swab or culture, not another blind guess. if they can call something into the pharmacy in the next town, this might move faster than waiting on amazon.",
-          "rationale": "catherine keeps a calm clinical frame, nudges toward a test, and ties it back to the rural pharmacy constraint."
+          "text": "This does not sound like a simple wait-it-out yeast infection anymore if the tissue is raw after treatment. I would ask for a swab or culture before anyone keeps guessing.",
+          "rationale": "catherine positions herself as an authority with proper case and diagnostic narrowing."
         },
         {
           "profile_name": "reddit_cloudia_merra",
+          "role": "resonate",
           "timestamp_iso": "2026-03-10T11:19:00+01:00",
           "timestamp_label": "mar 10, 2026 11:19 cet",
           "relative_label": "7h ago",
-          "text": "i had a stretch where even walking around the grocery store felt impossible because everything was rubbing. if you have a peri bottle or even a clean water bottle, pouring lukewarm water while you pee can make this a lot less brutal.",
-          "rationale": "cloudia brings one sensory mini-story, then pivots into a concrete comfort tactic."
+          "text": "i had a week where even walking from the couch to the bathroom made me clench because everything felt so rubbed raw. warm water while you pee helped more than i expected.",
+          "rationale": "cloudia enters by resonating with the body feeling first, then offers one lived-in trick."
         },
         {
           "profile_name": "reddit_connor_esla",
+          "role": "fixer",
           "timestamp_iso": "2026-03-10T11:57:00+01:00",
           "timestamp_label": "mar 10, 2026 11:57 cet",
           "relative_label": "6h ago",
-          "text": "if walmart is out, call the small pharmacy first instead of checking the app over and over. a lot of them can order zinc oxide, lidocaine-free barrier ointment, or the exact antifungal by the next morning.",
-          "rationale": "connor is logistics-first, focused on supply routes and ordering behavior instead of emotional framing."
+          "text": "If Walmart is empty, I would call the independent pharmacy, the grocery pharmacy, and urgent care in that order. Somebody may have zinc paste, a different antifungal, or at least a same-day recommendation before that shipment ever moves.",
+          "rationale": "connor thinks in routing and resource discovery rather than emotional support."
         },
         {
           "profile_name": "reddit_jenee_waters",
+          "role": "complain",
           "timestamp_iso": "2026-03-10T12:24:00+01:00",
           "timestamp_label": "mar 10, 2026 12:24 cet",
           "relative_label": "6h ago",
-          "text": "being stuck in a rural area makes every vaginal health problem feel twice as big. if you are this uncomfortable, i would ring urgent care again and be blunt that the skin is open now, because this has moved past basic annoyance.",
-          "rationale": "jenee opens with the life-context burden and then frames a firm but still supportive escalation step."
+          "text": "rural healthcare for anything vaginal is such a joke sometimes. you get one quick med, one shrug, and then somehow the burden of figuring out the rest lands back on you.",
+          "rationale": "jenee bonds by complaining with the op instead of pivoting straight into help."
         },
         {
           "profile_name": "reddit_kaylee_andreas",
+          "role": "drive_by_blunt",
           "timestamp_iso": "2026-03-10T13:11:00+01:00",
           "timestamp_label": "mar 10, 2026 13:11 cet",
           "relative_label": "5h ago",
-          "text": "a cool sitz bath might calm things down tonight. even ten minutes can take the edge off when the burning gets constant.",
-          "rationale": "kaylee stays very short, relief-first, and avoids adding extra theory."
+          "text": "girl no. i would be back in urgent care.",
+          "rationale": "kaylee is the short aggressive drive-by voice the last version was missing."
         },
         {
           "profile_name": "reddit_lauren_stewrt",
+          "role": "story_help",
           "timestamp_iso": "2026-03-10T14:06:00+01:00",
           "timestamp_label": "mar 10, 2026 14:06 cet",
           "relative_label": "4h ago",
-          "text": "the part that jumps out to me is how raw the skin sounds now. i would skip pads, liners, and anything scented for a few days and wear the loosest cotton shorts you have at home.",
-          "rationale": "lauren reads like a grounded older sister, anchored in home-life detail and simple removal of irritants."
+          "text": "I had a detergent flare once where I slept on a towel because even the seam in my underwear was too much. If the skin is cracked, I would go plain water, loose cotton, and nothing scented for a bit.",
+          "rationale": "lauren earns trust through a grounded anecdote, then gives home-life advice."
         },
         {
           "profile_name": "reddit_mary_miaby",
+          "role": "burden_resonance",
           "timestamp_iso": "2026-03-10T15:22:00+01:00",
           "timestamp_label": "mar 10, 2026 15:22 cet",
           "relative_label": "3h ago",
-          "text": "the extra driving, the mail delay, and the pain all piling up would wear anyone down. if the pharmacy in the next town has a phone number online, i would ask whether they can transfer or special-order whatever the er gave you so you are not stuck waiting two weeks.",
-          "rationale": "mary centers the weight and friction of the situation, then gives one supply-side move."
+          "text": "the pain is awful on its own, but the extra trip, the waiting, and the mail delay make this feel so much heavier. i would let a pharmacy staff member help you work the next-step piece instead of carrying all of this alone.",
+          "rationale": "mary focuses on the compounded burden rather than only the symptom."
         },
         {
           "profile_name": "reddit_neera_allvere",
+          "role": "gentle_help",
           "timestamp_iso": "2026-03-10T16:41:00+01:00",
           "timestamp_label": "mar 10, 2026 16:41 cet",
           "relative_label": "2h ago",
-          "text": "petroleum jelly before you pee can help protect broken skin for a little while. it is not a treatment, but it can make the next bathroom trip less miserable.",
-          "rationale": "neera stays gentle and tiny in scope, offering one small relief move without overclaiming."
+          "text": "petroleum jelly before you pee might make the next bathroom trip less sharp. tiny thing, but sometimes this helps when the skin is broken.",
+          "rationale": "neera stays quiet and small-scale, which makes her distinct from the louder roles."
         },
         {
           "profile_name": "reddit_victor_saunders",
+          "role": "contrarian_authority",
           "timestamp_iso": "2026-03-10T17:36:00+01:00",
           "timestamp_label": "mar 10, 2026 17:36 cet",
           "relative_label": "1h ago",
-          "text": "if fluconazole did nothing and the skin is split open, i would not assume this is still the same infection. i would go back in and ask them to rule out bv, contact irritation, or something that needs a different cream.",
-          "rationale": "victor sounds plain and decisive, with a diagnosis-path correction instead of soft empathy."
+          "text": "I would quit trial-and-error on open skin at this point. If fluconazole already failed, somebody needs to rule out BV, dermatitis, or another irritation pattern instead of letting you build another Amazon cart.",
+          "rationale": "victor sounds rougher and more self-assured, with a light critique of the current approach."
         }
       ]
     },
     "scenario_b": {
       "label": "scenario b",
-      "title": "stronger persona separation",
-      "design_intent": "make the same 10 profiles feel clearly different at first glance while staying believable for the thread",
+      "title": "harder role spread with visible social friction",
+      "design_intent": "make the thread feel like ten actually different people showed up, not ten variants of one helper",
       "persona_intensity": "strong",
-      "thread_read": "broader spread in length, cadence, anecdote, and practical focus",
+      "thread_read": "highly varied, more tension and contrast",
       "comments": [
         {
           "profile_name": "reddit_amy_schaefera",
+          "role": "blunt_critique",
           "timestamp_iso": "2026-03-10T10:14:00+01:00",
           "timestamp_label": "mar 10, 2026 10:14 cet",
           "relative_label": "8h ago",
-          "text": "if it feels raw, baby-aisle zinc cream tonight. ugly, but it can save your skin from more burning.",
-          "rationale": "amy compresses even harder here, making her brevity one of the thread's strongest signatures."
+          "text": "no way would i sit on this for two weeks with broken skin. this needs a real follow-up, not a shipment.",
+          "rationale": "amy is more dismissive of the current plan and more visibly sharp than in scenario a."
         },
         {
           "profile_name": "reddit_catherine_emmar",
+          "role": "authority",
           "timestamp_iso": "2026-03-10T10:48:00+01:00",
           "timestamp_label": "mar 10, 2026 10:48 cet",
           "relative_label": "7h ago",
-          "text": "persistent itching plus fissured skin after fluconazole would push me toward a swab, wet mount, or culture before another blind treatment. i would call the next-town pharmacy and ask what they can fill same day while you line that up.",
-          "rationale": "catherine goes more precise and procedure-minded without sounding robotic."
+          "text": "Open fissures after fluconazole would make me question whether this is still uncomplicated yeast at all. A swab, wet mount, or culture is a much better next move than repeating blind treatment.",
+          "rationale": "catherine turns the authority signal up and sounds more decisively medical-adjacent."
         },
         {
           "profile_name": "reddit_cloudia_merra",
+          "role": "resonate",
           "timestamp_iso": "2026-03-10T11:19:00+01:00",
           "timestamp_label": "mar 10, 2026 11:19 cet",
           "relative_label": "7h ago",
-          "text": "i had one week where even the seam in my jeans felt mean, so i really feel for you. the one thing that helped me get through peeing was warm water from a peri bottle at the same time, because it stopped this sharp sting spiral.",
-          "rationale": "cloudia becomes more visibly personal and sensory, which sharpens her chatty-empath blueprint."
+          "text": "i had one flare where i was literally standing in the shower crying because even air felt rude. the only reason i am mentioning that is because the raw-skin part of your post feels very familiar, and warm water during peeing took that edge down a lot for me.",
+          "rationale": "cloudia gets more emotional and embodied, making her resonance role unmistakable."
         },
         {
           "profile_name": "reddit_connor_esla",
+          "role": "fixer",
           "timestamp_iso": "2026-03-10T11:57:00+01:00",
           "timestamp_label": "mar 10, 2026 11:57 cet",
           "relative_label": "6h ago",
-          "text": "rural mail delay is a nightmare for anything gyne related. i would work the phones before i waited on amazon: independent pharmacy, grocery pharmacy, then urgent care, because one of them may have miconazole, zinc paste, or a compounded barrier cream sooner.",
-          "rationale": "connor widens the operational search path and becomes more recognizably system-driven."
+          "text": "I would work the phones before dinner: independent pharmacy, grocery pharmacy, county clinic, then urgent care. Rural supply problems are real, but somebody in that chain may still have zinc paste, a different antifungal, or a cancellation slot.",
+          "rationale": "connor becomes even more operational and sounds like a logistics planner."
         },
         {
           "profile_name": "reddit_jenee_waters",
+          "role": "complain",
           "timestamp_iso": "2026-03-10T12:24:00+01:00",
           "timestamp_label": "mar 10, 2026 12:24 cet",
           "relative_label": "6h ago",
-          "text": "having to act normal when your whole pelvic area is screaming is such a lonely kind of misery. if they told you yeast once and sent you home, i would go back and say the wounds are the part that scares you now.",
-          "rationale": "jenee leans harder into emotional-social burden and uses fewer practical details than scenario a."
+          "text": "this is the kind of post that makes me so angry at how casually women get sent home in pain. if this were anything else involving open skin and two weeks of waiting, nobody would act like that timeline was acceptable.",
+          "rationale": "jenee is no longer only supportive; she becomes a social critic inside the thread."
         },
         {
           "profile_name": "reddit_kaylee_andreas",
+          "role": "drive_by_blunt",
           "timestamp_iso": "2026-03-10T13:11:00+01:00",
           "timestamp_label": "mar 10, 2026 13:11 cet",
           "relative_label": "5h ago",
-          "text": "cool bath. loose shorts. no rubbing tonight if you can help it.",
-          "rationale": "kaylee becomes almost note-like, which makes her profile unmistakably distinct in the stack."
+          "text": "Two weeks? absolutely not.",
+          "rationale": "kaylee is intentionally short, slightly aggressive, and low-context in the way real drive-by commenters often are."
         },
         {
           "profile_name": "reddit_lauren_stewrt",
+          "role": "story_help",
           "timestamp_iso": "2026-03-10T14:06:00+01:00",
           "timestamp_label": "mar 10, 2026 14:06 cet",
           "relative_label": "4h ago",
-          "text": "years ago i got so irritated after a detergent mix-up that i slept on a towel with no underwear because any seam was too much. i would cut every extra product for a few days and go plain water, plain soap for the rest of your body, and the loosest fabric you own.",
-          "rationale": "lauren pushes further into a domestic anecdote, making her older-sister voice much more visible."
+          "text": "I once had a skin flare after a laundry mistake and I remember sitting on the bathroom floor with a cup of lukewarm water because peeing hurt that much. I would strip this down to the gentlest routine possible for a day or two while you get someone to actually look again.",
+          "rationale": "lauren gets longer and more personal, making her feel like a distinct older-sister storyteller."
         },
         {
           "profile_name": "reddit_mary_miaby",
+          "role": "burden_resonance",
           "timestamp_iso": "2026-03-10T15:22:00+01:00",
           "timestamp_label": "mar 10, 2026 15:22 cet",
           "relative_label": "3h ago",
-          "text": "the way rural errands turn into a whole expedition makes this feel even heavier when you already hurt. if you can, let the pharmacy staff help you problem-solve the supply side instead of carrying this alone, because sometimes they know which store or clinic still has the medication on the shelf.",
-          "rationale": "mary turns up her burden-framing and keeps the sentence flow more emotionally loaded."
+          "text": "it is not only the pain, it is the whole draining project around the pain. the drive, the stock check, the order, the pickup in another town. i can see why this feels overwhelming right now.",
+          "rationale": "mary is almost entirely about carrying the emotional and logistical weight, not solutioning."
         },
         {
           "profile_name": "reddit_neera_allvere",
+          "role": "gentle_help",
           "timestamp_iso": "2026-03-10T16:41:00+01:00",
           "timestamp_label": "mar 10, 2026 16:41 cet",
           "relative_label": "2h ago",
-          "text": "before you pee, put on a little petroleum jelly and keep a cup of lukewarm water nearby. tiny thing, but this can soften the next ten minutes.",
-          "rationale": "neera becomes even quieter and more micro-scale, centered on one tiny moment of relief."
+          "text": "before the bathroom, a little petroleum jelly and a cup of warm water nearby. very small thing, but this can soften the next few minutes.",
+          "rationale": "neera remains the quiet micro-relief profile even in the more intense scenario."
         },
         {
           "profile_name": "reddit_victor_saunders",
+          "role": "contrarian_authority",
           "timestamp_iso": "2026-03-10T17:36:00+01:00",
           "timestamp_label": "mar 10, 2026 17:36 cet",
           "relative_label": "1h ago",
-          "text": "if walmart is empty, check the farm store, gas station pharmacy shelf, or the oldest independent drugstore in the next town before you wait two weeks. boring barrier products are sometimes easier to find than the branded yeast items.",
-          "rationale": "victor gets more place-based and improvisational, which sharpens his rustic utilitarian signature."
+          "text": "I would stop putting random products on broken tissue until somebody narrows down what this actually is. The rural part is awful, but the bigger issue is that the current diagnosis may be wrong.",
+          "rationale": "victor sounds more stern and corrective, which creates visible social contrast inside the thread."
         }
       ]
     }
