@@ -318,3 +318,74 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
     )
     assert [row["profile_name"] for row in filtered["profiles_by_day"]] == ["reddit_beta"]
     assert [row["work_item_id"] for row in filtered["action_rows"]] == ["work_post"]
+
+
+def test_reddit_program_operator_view_does_not_flag_duplicate_upvote_targets_as_unsafe(tmp_path, monkeypatch):
+    temp_store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
+    monkeypatch.setattr(main, "reddit_program_store", temp_store)
+
+    async def fake_list_forensic_attempts(*, filters=None, limit=50):
+        assert filters == {"run_id": "reddit_program_dupe_upvotes"}
+        return []
+
+    monkeypatch.setattr(main, "list_forensic_attempts", fake_list_forensic_attempts)
+    monkeypatch.setattr(main, "get_forensic_attempt_detail", lambda *_args, **_kwargs: asyncio.sleep(0, result={}))
+
+    temp_store.save_program(
+        {
+            "id": "reddit_program_dupe_upvotes",
+            "status": "active",
+            "next_run_at": "2026-03-09T08:30:00Z",
+            "spec": {
+                "profile_selection": {"profile_names": ["reddit_alpha", "reddit_beta"]},
+                "schedule": {"timezone": "Europe/Zurich"},
+                "execution_policy": {"max_attempts_per_item": 4},
+            },
+            "contract_totals": {"upvote_post": 2},
+            "remaining_contract": {"upvote_post": 2},
+            "daily_progress": {
+                "2026-03-09": {
+                    "reddit_alpha": {"planned": {"upvote_post": 1}, "completed": {}, "pending": {"upvote_post": 1}, "blocked": {}},
+                    "reddit_beta": {"planned": {"upvote_post": 1}, "completed": {}, "pending": {"upvote_post": 1}, "blocked": {}},
+                }
+            },
+            "failure_summary": {"by_action": {}, "by_profile": {}, "by_subreddit": {}, "by_class": {}},
+            "notification_log": [],
+            "compiled": {
+                "work_items": [
+                    {
+                        "id": "work_alpha",
+                        "profile_name": "reddit_alpha",
+                        "local_date": "2026-03-09",
+                        "action": "upvote_post",
+                        "status": "pending",
+                        "attempts": 0,
+                        "scheduled_at": "2026-03-09T08:00:00Z",
+                        "target_url": "https://www.reddit.com/r/Healthyhooha/comments/thread-1/",
+                    },
+                    {
+                        "id": "work_beta",
+                        "profile_name": "reddit_beta",
+                        "local_date": "2026-03-09",
+                        "action": "upvote_post",
+                        "status": "pending",
+                        "attempts": 0,
+                        "scheduled_at": "2026-03-09T08:05:00Z",
+                        "target_url": "https://www.reddit.com/r/Healthyhooha/comments/thread-1/",
+                    },
+                ]
+            },
+        }
+    )
+
+    response = asyncio.run(
+        main.get_reddit_program_operator_view(
+            program_id="reddit_program_dupe_upvotes",
+            local_date="2026-03-09",
+            profile_name=None,
+            current_user={"username": "tester"},
+        )
+    )
+
+    assert response["program"]["unsafe_rollout_flags"]["rows"] == 0
+    assert all(row["proof_flags"]["unsafe_rollout"] is False for row in response["action_rows"])

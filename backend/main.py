@@ -7163,7 +7163,11 @@ async def _build_reddit_program_operator_view(
             )
         ]
         target_collision_flags = {
-            "duplicate_target_ref": bool(target_ref and target_ref_counts.get(target_ref, 0) > 1),
+            "duplicate_target_ref": bool(
+                str(item.get("action") or "") in {"comment_post", "reply_comment", "create_post"}
+                and target_ref
+                and target_ref_counts.get(target_ref, 0) > 1
+            ),
             "duplicate_reply_thread": bool(str(item.get("action") or "") == "reply_comment" and thread_url and thread_reply_counts.get(thread_url, 0) > 1),
         }
         row = {

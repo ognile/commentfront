@@ -1299,19 +1299,22 @@ async def _find_subreddit_header_action(page) -> Optional[Dict[str, Any]]:
 async def _comment_action_row(
     page,
     *,
+    target_comment_url: Optional[str] = None,
     author: Optional[str],
     expected_title: Optional[str] = None,
     body_snippet: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     normalized_author = _normalize_text(author)
     normalized_body_snippet = _normalize_text(body_snippet)
+    comment_id = _extract_reddit_comment_id(target_comment_url)
     try:
         result = await page.evaluate(
-            """({ author, expectedTitle, bodySnippet }) => {
+            """({ commentId, author, expectedTitle, bodySnippet }) => {
                 const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
                 const viewportWidth = window.innerWidth || 393;
                 const viewportHeight = window.innerHeight || 873;
                 const visibleRect = (rect) => rect && rect.width >= 6 && rect.height >= 6 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight && rect.left <= viewportWidth;
+                const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
                 const roots = [];
                 const visitRoot = (root) => {
                     if (!root || roots.includes(root)) return;
@@ -1322,11 +1325,59 @@ async def _comment_action_row(
                     }
                 };
                 visitRoot(document);
+                const preferredRoots = [];
+
+                const commentNeedle = normalize(commentId);
+                if (commentNeedle) {
+                    const commentNodes = [];
+                    for (const root of roots) {
+                        const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('a, button, div, span, p, article, section')) : [];
+                        for (const node of nodes) {
+                            const href = normalize(node.getAttribute && node.getAttribute('href'));
+                            const text = normalize(node.innerText || node.textContent);
+                            const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                            if (!href && !text && !aria) continue;
+                            if (
+                                (href && href.includes(commentNeedle)) ||
+                                (text && text.includes(commentNeedle)) ||
+                                (aria && aria.includes(commentNeedle))
+                            ) {
+                                commentNodes.push(node);
+                            }
+                        }
+                    }
+                    for (const node of commentNodes) {
+                        let current = node;
+                        while (current && current !== document.body) {
+                            if (!current.querySelectorAll) {
+                                current = current.parentElement;
+                                continue;
+                            }
+                            const replyNodes = Array.from(current.querySelectorAll('button, a, div, span')).filter((candidate) => {
+                                const tag = normalize(candidate.tagName);
+                                const text = normalize(candidate.innerText || candidate.textContent);
+                                const aria = normalize(candidate.getAttribute && candidate.getAttribute('aria-label'));
+                                const rect = candidate.getBoundingClientRect();
+                                if (!visibleRect(rect)) return false;
+                                if (tag !== 'button' && !aria.includes('reply')) return false;
+                                return text === 'reply' || aria === 'reply';
+                            });
+                            if (replyNodes.length) {
+                                preferredRoots.push(current);
+                                break;
+                            }
+                            current = current.parentElement;
+                        }
+                        if (preferredRoots.length) break;
+                    }
+                }
+
+                const scopedRoots = preferredRoots.length ? preferredRoots : roots;
 
                 let titleRect = null;
                 const titleNeedle = normalize(expectedTitle);
                 if (titleNeedle) {
-                    for (const root of roots) {
+                    for (const root of scopedRoots) {
                         const headings = root.querySelectorAll ? Array.from(root.querySelectorAll('h1, h2, h3')) : [];
                         for (const heading of headings) {
                             const text = normalize(heading.innerText || heading.textContent);
@@ -1344,7 +1395,7 @@ async def _comment_action_row(
                 }
 
                 const replies = [];
-                for (const root of roots) {
+                for (const root of scopedRoots) {
                     const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, a, div, span')) : [];
                     for (const node of nodes) {
                         const tag = normalize(node.tagName);
@@ -1374,7 +1425,7 @@ async def _comment_action_row(
 
                 let authorRect = null;
                 const authors = [];
-                for (const root of roots) {
+                for (const root of scopedRoots) {
                     const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('a, button, span, div')) : [];
                     for (const node of nodes) {
                         const text = normalize(node.innerText || node.textContent);
@@ -1409,7 +1460,7 @@ async def _comment_action_row(
                 const snippetNeedle = normalize(bodySnippet);
                 if (snippetNeedle) {
                     const bodyCandidates = [];
-                    for (const root of roots) {
+                    for (const root of scopedRoots) {
                         const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('p, div, span')) : [];
                         for (const node of nodes) {
                             const text = normalize(node.innerText || node.textContent);
@@ -1438,20 +1489,37 @@ async def _comment_action_row(
                 const voteY = reply
                     ? reply.y
                     : Math.round(Math.max(24, Math.min(viewportHeight - 24, ((actionAnchor && actionAnchor.bottom) || 0) + 22)));
-                const voteX = reply
-                    ? Math.round(Math.max(28, reply.left - 42))
+                const preferredVoteX = reply
+                    ? Math.round(
+                        authorRect
+                            ? clamp(authorRect.left - 8, 28, 96)
+                            : clamp(reply.left - 68, 28, 96)
+                    )
                     : Math.round(Math.max(26, Math.min(64, (((actionAnchor && actionAnchor.left) || 0) - 10))));
+                const voteCandidates = [];
+                for (const candidateX of [
+                    preferredVoteX,
+                    reply ? Math.round(clamp(reply.left - 68, 28, 96)) : null,
+                    reply ? Math.round(clamp(reply.left - 56, 28, 108)) : null,
+                    reply ? Math.round(clamp(reply.left - 80, 28, 96)) : null,
+                ]) {
+                    if (typeof candidateX !== 'number') continue;
+                    if (voteCandidates.some((entry) => Math.abs(entry.x - candidateX) <= 4)) continue;
+                    voteCandidates.push({ x: candidateX, y: voteY });
+                }
                 return {
                     author: authorRect,
                     body: bodyRect,
                     reply,
                     vote: {
-                        x: voteX,
+                        x: preferredVoteX,
                         y: voteY,
                     },
+                    voteCandidates,
                 };
             }""",
             {
+                "commentId": comment_id or "",
                 "author": normalized_author,
                 "expectedTitle": expected_title or "",
                 "bodySnippet": normalized_body_snippet or "",
@@ -1471,7 +1539,13 @@ async def _scroll_target_comment_into_view(
     body_snippet: Optional[str] = None,
     max_scrolls: int = 18,
 ) -> Optional[Dict[str, Any]]:
-    row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+    row = await _comment_action_row(
+        page,
+        target_comment_url=target_comment_url,
+        author=author,
+        expected_title=expected_title,
+        body_snippet=body_snippet,
+    )
     if row:
         return row
 
@@ -1509,13 +1583,25 @@ async def _scroll_target_comment_into_view(
             located = False
         if located:
             await page.wait_for_timeout(900)
-        row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+        row = await _comment_action_row(
+            page,
+            target_comment_url=target_comment_url,
+            author=author,
+            expected_title=expected_title,
+            body_snippet=body_snippet,
+        )
         if row:
             return row
         await page.mouse.wheel(0, 620)
         await page.wait_for_timeout(900)
 
-    return await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+    return await _comment_action_row(
+        page,
+        target_comment_url=target_comment_url,
+        author=author,
+        expected_title=expected_title,
+        body_snippet=body_snippet,
+    )
 
 
 async def _capture_row_signature(page, *, row_y: float, max_x: float) -> List[str]:
@@ -1579,24 +1665,34 @@ async def _click_post_upvote_region(page, *, share_box: Dict[str, float]) -> boo
 
 
 async def _click_comment_upvote_region(page, *, row: Dict[str, Any]) -> bool:
+    vote_candidates = list(row.get("voteCandidates") or [])
     vote = dict(row.get("vote") or {})
-    if not vote:
+    if vote and not vote_candidates:
+        vote_candidates = [vote]
+    if not vote_candidates:
         return False
-    await page.mouse.click(vote["x"], vote["y"])
-    queue_current_event(
-        "click",
-        {
-            "method": "comment_row_geometry",
-            "action_name": "upvote_comment",
-            "x": vote.get("x"),
-            "y": vote.get("y"),
-            "reply": row.get("reply"),
-            "author": row.get("author"),
-        },
-        phase="activation",
-        source="reddit_bot",
-    )
-    await page.wait_for_timeout(900)
+    recorder = get_current_forensic_recorder()
+    for index, candidate in enumerate(vote_candidates):
+        await page.mouse.click(candidate["x"], candidate["y"])
+        queue_current_event(
+            "click",
+            {
+                "method": "comment_row_geometry",
+                "action_name": "upvote_comment",
+                "candidate_index": index,
+                "x": candidate.get("x"),
+                "y": candidate.get("y"),
+                "reply": row.get("reply"),
+                "author": row.get("author"),
+            },
+            phase="activation",
+            source="reddit_bot",
+        )
+        await page.wait_for_timeout(900)
+        if await _vote_point_is_active(page, x=float(candidate.get("x")), y=float(candidate.get("y"))):
+            return True
+        if _network_has_vote_mutation(recorder, target_kind="comment"):
+            return True
     return True
 
 
@@ -2772,17 +2868,17 @@ async def reply_to_comment(
                     await _capture_reddit_failure_state(page, "REDDIT REPLY TARGET MISSING")
                     raise RuntimeError(last_error)
 
-                clicked_reply = await _click_named_control(
-                    page,
-                    action_name="reply_comment",
-                    needles=["reply"],
-                    expected_title=expected_title,
-                    anchor_text=author,
-                    max_vertical_gap=220,
-                    require_below_anchor=True,
-                )
-                if not clicked_reply and row:
-                    clicked_reply = await _click_reply_row_button(page, row=row)
+                clicked_reply = await _click_reply_row_button(page, row=row) if row else False
+                if not clicked_reply:
+                    clicked_reply = await _click_named_control(
+                        page,
+                        action_name="reply_comment",
+                        needles=["reply"],
+                        expected_title=expected_title,
+                        anchor_text=author,
+                        max_vertical_gap=220,
+                        require_below_anchor=True,
+                    )
                 if not clicked_reply:
                     last_error = "Reddit Reply button not found"
                     if idx + 1 < len(target_surfaces):
@@ -2908,6 +3004,7 @@ async def run_reddit_action(
 ) -> Dict[str, Any]:
     normalized = str(action or "").strip().lower()
     metadata = dict(((forensic_context or {}).get("metadata") or {}))
+    action_timeout_seconds = max(30, int(metadata.get("action_timeout_seconds") or 120))
     recorder = await start_forensic_attempt(
         platform="reddit",
         engine=(forensic_context or {}).get("engine", f"reddit_{normalized}"),
@@ -2938,34 +3035,32 @@ async def run_reddit_action(
                 "subreddit": generation_evidence.get("subreddit"),
             },
         )
-    result: Dict[str, Any]
-    if normalized == "browse_feed":
-        result = await browse_feed(session, proxy_url=proxy_url)
-    elif normalized in {"upvote", "upvote_post"}:
-        if not url:
-            result = _result(success=False, action="upvote_post", profile_name=session.profile_name, error="url is required")
-        else:
-            result = await upvote_post(session, url=url, proxy_url=proxy_url)
-    elif normalized == "upvote_comment":
-        if not target_comment_url:
-            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="target_comment_url is required")
-        else:
-            result = await upvote_comment(session, target_comment_url=target_comment_url, proxy_url=proxy_url)
-    elif normalized == "join_subreddit":
-        if not url:
-            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="url is required")
-        else:
-            result = await join_subreddit(session, url=url, proxy_url=proxy_url)
-    elif normalized == "open_target":
-        if not url:
-            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="url is required")
-        else:
-            result = await open_post_target(session, url, proxy_url=proxy_url)
-    elif normalized == "create_post":
-        if not title:
-            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="title is required")
-        else:
-            result = await create_post(
+    result: Optional[Dict[str, Any]] = None
+    finalized = False
+
+    async def _dispatch_action() -> Dict[str, Any]:
+        if normalized == "browse_feed":
+            return await browse_feed(session, proxy_url=proxy_url)
+        if normalized in {"upvote", "upvote_post"}:
+            if not url:
+                return _result(success=False, action="upvote_post", profile_name=session.profile_name, error="url is required")
+            return await upvote_post(session, url=url, proxy_url=proxy_url)
+        if normalized == "upvote_comment":
+            if not target_comment_url:
+                return _result(success=False, action=normalized, profile_name=session.profile_name, error="target_comment_url is required")
+            return await upvote_comment(session, target_comment_url=target_comment_url, proxy_url=proxy_url)
+        if normalized == "join_subreddit":
+            if not url:
+                return _result(success=False, action=normalized, profile_name=session.profile_name, error="url is required")
+            return await join_subreddit(session, url=url, proxy_url=proxy_url)
+        if normalized == "open_target":
+            if not url:
+                return _result(success=False, action=normalized, profile_name=session.profile_name, error="url is required")
+            return await open_post_target(session, url, proxy_url=proxy_url)
+        if normalized == "create_post":
+            if not title:
+                return _result(success=False, action=normalized, profile_name=session.profile_name, error="title is required")
+            return await create_post(
                 session,
                 title=title,
                 body=body,
@@ -2973,34 +3068,75 @@ async def run_reddit_action(
                 image_path=image_path,
                 proxy_url=proxy_url,
             )
-    elif normalized == "comment_post":
-        if not url or not text:
-            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="url and text are required")
-        else:
-            result = await comment_on_post(session, url=url, text=text, proxy_url=proxy_url)
-    elif normalized == "reply_comment":
-        if not target_comment_url or not text:
-            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="target_comment_url and text are required")
-        else:
-            result = await reply_to_comment(session, target_comment_url=target_comment_url, text=text, proxy_url=proxy_url)
-    elif normalized == "upload_media":
-        if not image_path:
-            result = _result(success=False, action=normalized, profile_name=session.profile_name, error="image_path is required")
-        else:
-            result = await upload_media_only(session, image_path=image_path, proxy_url=proxy_url)
-    else:
-        result = _result(success=False, action=normalized, profile_name=session.profile_name, error=f"Unsupported Reddit action: {action}")
-    if url and not result.get("target_url"):
-        result["target_url"] = url
-    if target_comment_url and not result.get("target_comment_url"):
-        result["target_comment_url"] = target_comment_url
-    if subreddit and not result.get("subreddit"):
-        result["subreddit"] = subreddit
-    result["attempt_id"] = recorder.attempt_id
-    result["trace_id"] = recorder.trace_id
-    verdict = build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")
-    result["final_verdict"] = verdict.final_verdict
-    result["evidence_summary"] = verdict.summary
-    await recorder.finalize(verdict, metadata={"action": normalized})
-    reset_current_forensic_recorder(recorder_token)
+        if normalized == "comment_post":
+            if not url or not text:
+                return _result(success=False, action=normalized, profile_name=session.profile_name, error="url and text are required")
+            return await comment_on_post(session, url=url, text=text, proxy_url=proxy_url)
+        if normalized == "reply_comment":
+            if not target_comment_url or not text:
+                return _result(success=False, action=normalized, profile_name=session.profile_name, error="target_comment_url and text are required")
+            return await reply_to_comment(session, target_comment_url=target_comment_url, text=text, proxy_url=proxy_url)
+        if normalized == "upload_media":
+            if not image_path:
+                return _result(success=False, action=normalized, profile_name=session.profile_name, error="image_path is required")
+            return await upload_media_only(session, image_path=image_path, proxy_url=proxy_url)
+        return _result(success=False, action=normalized, profile_name=session.profile_name, error=f"Unsupported Reddit action: {action}")
+
+    try:
+        result = await asyncio.wait_for(_dispatch_action(), timeout=action_timeout_seconds)
+    except asyncio.TimeoutError:
+        result = _result(
+            success=False,
+            action=normalized,
+            profile_name=session.profile_name,
+            error=f"Reddit action timeout after {action_timeout_seconds}s",
+            failure_class="infrastructure",
+        )
+    except Exception as exc:
+        result = _result(
+            success=False,
+            action=normalized,
+            profile_name=session.profile_name,
+            error=str(exc),
+            failure_class="infrastructure" if is_infra_error_text(str(exc)) else None,
+        )
+    except asyncio.CancelledError:
+        result = _result(
+            success=False,
+            action=normalized,
+            profile_name=session.profile_name,
+            error="Reddit action cancelled",
+            failure_class="infrastructure",
+        )
+        if url and not result.get("target_url"):
+            result["target_url"] = url
+        if target_comment_url and not result.get("target_comment_url"):
+            result["target_comment_url"] = target_comment_url
+        if subreddit and not result.get("subreddit"):
+            result["subreddit"] = subreddit
+        result["attempt_id"] = recorder.attempt_id
+        result["trace_id"] = recorder.trace_id
+        verdict = build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")
+        result["final_verdict"] = verdict.final_verdict
+        result["evidence_summary"] = verdict.summary
+        await recorder.finalize(verdict, metadata={"action": normalized})
+        finalized = True
+        reset_current_forensic_recorder(recorder_token)
+        raise
+    finally:
+        if result is not None and normalized and not finalized:
+            if url and not result.get("target_url"):
+                result["target_url"] = url
+            if target_comment_url and not result.get("target_comment_url"):
+                result["target_comment_url"] = target_comment_url
+            if subreddit and not result.get("subreddit"):
+                result["subreddit"] = subreddit
+            result["attempt_id"] = recorder.attempt_id
+            result["trace_id"] = recorder.trace_id
+            verdict = build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")
+            result["final_verdict"] = verdict.final_verdict
+            result["evidence_summary"] = verdict.summary
+            await recorder.finalize(verdict, metadata={"action": normalized})
+            finalized = True
+            reset_current_forensic_recorder(recorder_token)
     return result

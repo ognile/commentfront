@@ -61,6 +61,17 @@ class _FakeBodyLocator:
         return self._text
 
 
+class _FakeRecorder:
+    def __init__(self):
+        self.attempt_id = "attempt-123"
+        self.trace_id = "trace-123"
+        self.finalized = []
+        self.network_capture = type("Capture", (), {"events": []})()
+
+    async def finalize(self, verdict, *, metadata=None):
+        self.finalized.append({"verdict": verdict, "metadata": metadata})
+
+
 class _FakeViewportLocator:
     def __init__(self, box, *, visible=True):
         self._box = box
@@ -592,8 +603,8 @@ def test_upvote_comment_prefers_target_comment_surface(monkeypatch):
     async def fake_dump(_page, _context):
         return None
 
-    async def fake_comment_row(_page, *, author, expected_title=None, body_snippet=None):
-        calls.append(("row", author, expected_title, body_snippet))
+    async def fake_comment_row(_page, *, target_comment_url=None, author, expected_title=None, body_snippet=None):
+        calls.append(("row", target_comment_url, author, expected_title, body_snippet))
         return {
             "author": {"x": 120, "y": 120},
             "reply": {"left": 70, "y": 700},
@@ -656,8 +667,8 @@ def test_reply_comment_prefers_target_comment_surface(monkeypatch):
     async def fake_dump(_page, _context):
         return None
 
-    async def fake_comment_row(_page, *, author, expected_title=None, body_snippet=None):
-        calls.append(("row", author, expected_title, body_snippet))
+    async def fake_comment_row(_page, *, target_comment_url=None, author, expected_title=None, body_snippet=None):
+        calls.append(("row", target_comment_url, author, expected_title, body_snippet))
         return {
             "author": {"x": 120, "y": 120},
             "reply": {"left": 70, "y": 700, "x": 110},
@@ -714,8 +725,9 @@ def test_scroll_target_comment_into_view_scrolls_until_row_appears(monkeypatch):
         },
     ]
 
-    async def fake_comment_row(_page, *, author, expected_title=None, body_snippet=None):
+    async def fake_comment_row(_page, *, target_comment_url=None, author, expected_title=None, body_snippet=None):
         assert author == "helper_user"
+        assert target_comment_url.endswith("/comment/c1/")
         assert expected_title == "example post"
         assert body_snippet == "helpful reply target"
         return states.pop(0)
@@ -736,6 +748,74 @@ def test_scroll_target_comment_into_view_scrolls_until_row_appears(monkeypatch):
     assert row is not None
     assert page.mouse.wheels == [(0, 620)]
     assert page.waits == [900]
+
+
+def test_click_comment_upvote_region_tries_fallback_candidates(monkeypatch):
+    page = _FakePage()
+    active_points = []
+
+    async def fake_vote_point_is_active(_page, *, x, y):
+        active_points.append((x, y))
+        return len(active_points) == 2
+
+    monkeypatch.setattr(reddit_bot, "_vote_point_is_active", fake_vote_point_is_active)
+    monkeypatch.setattr(reddit_bot, "_network_has_vote_mutation", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(reddit_bot, "get_current_forensic_recorder", lambda: _FakeRecorder())
+
+    ok = asyncio.run(
+        reddit_bot._click_comment_upvote_region(
+            page,
+            row={
+                "vote": {"x": 75, "y": 324},
+                "voteCandidates": [
+                    {"x": 75, "y": 324},
+                    {"x": 40, "y": 324},
+                ],
+                "reply": {"left": 117.0, "y": 324},
+                "author": {"left": 48.0},
+            },
+        )
+    )
+
+    assert ok is True
+    assert page.mouse.clicks == [(75, 324), (40, 324)]
+    assert active_points == [(75.0, 324.0), (40.0, 324.0)]
+
+
+def test_run_reddit_action_finalizes_timeout(monkeypatch):
+    recorder = _FakeRecorder()
+
+    async def fake_start_forensic_attempt(**_kwargs):
+        return recorder
+
+    async def fake_attach_artifact(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(reddit_bot, "start_forensic_attempt", fake_start_forensic_attempt)
+    monkeypatch.setattr(reddit_bot, "attach_current_json_artifact", fake_attach_artifact)
+    monkeypatch.setattr(reddit_bot, "set_current_forensic_recorder", lambda _recorder: "token")
+    monkeypatch.setattr(reddit_bot, "reset_current_forensic_recorder", lambda _token: None)
+
+    async def fake_wait_for(_awaitable, timeout):
+        _awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(reddit_bot.asyncio, "wait_for", fake_wait_for)
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.run_reddit_action(
+            session,
+            action="browse_feed",
+            forensic_context={"metadata": {"action_timeout_seconds": 30}},
+        )
+    )
+
+    assert result["success"] is False
+    assert "timeout" in result["error"].lower()
+    assert result["attempt_id"] == "attempt-123"
+    assert recorder.finalized
+    assert recorder.finalized[0]["verdict"].final_verdict == "infra_failure"
 
 
 def test_click_composer_text_region_uses_evaluate_candidate():
@@ -1300,7 +1380,7 @@ def test_reply_to_comment_retries_after_dismissing_open_app_sheet(monkeypatch):
     async def fake_raise_if_banned(_page, capture_context=None):
         return None
 
-    async def fake_comment_row(_page, author=None, expected_title=None, body_snippet=None):
+    async def fake_comment_row(_page, target_comment_url=None, author=None, expected_title=None, body_snippet=None):
         return {"reply": {"x": 152, "y": 702}}
 
     async def fake_click_named(_page, **kwargs):

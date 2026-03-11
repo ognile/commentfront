@@ -17,11 +17,14 @@
 - tests that hit the real generator are flaky and hide runtime regressions behind environment noise.
 - operator views that only show success counts hide clustered bad behavior.
 - deep reddit comment urls do not reliably land with the target comment already visible, so row-level reply/upvote controls can be missing until the bot actively scrolls the comment into view.
+- comment upvote geometry is not “reply button minus a little bit”; on mobile reddit that often lands on the score, not the upvote arrow.
+- interrupted reddit actions can leave zombie forensic attempts unless the action wrapper finalizes timeout/cancel paths explicitly.
 
 ## verification patterns
 - unit and integration coverage must prove persona/rule hashes, semantic similarity rejection, and cross-profile target blocking.
 - operator view must expose unsafe-rollout flags directly, not only bury them in raw evidence blobs.
 - frontend verification should confirm the new persona/text/unsafe columns render correctly on the reddit ops page.
+- when a row-level action is geometry-driven, test the fallback click sequence explicitly so future refactors do not silently drift back onto the score/downvote region.
 
 ## promotion rules
 - do not trust a rollout as methodology evidence unless it runs on the deployed scenario-b runtime and shows zero reply target collisions.
