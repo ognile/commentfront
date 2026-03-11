@@ -2,6 +2,8 @@ import asyncio
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
@@ -389,3 +391,74 @@ def test_reddit_program_operator_view_does_not_flag_duplicate_upvote_targets_as_
 
     assert response["program"]["unsafe_rollout_flags"]["rows"] == 0
     assert all(row["proof_flags"]["unsafe_rollout"] is False for row in response["action_rows"])
+
+
+def test_run_reddit_program_now_rejects_overlapping_execution(tmp_path, monkeypatch):
+    temp_store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
+    monkeypatch.setattr(main, "reddit_program_store", temp_store)
+
+    program = temp_store.create_program(
+        {
+            "profile_selection": {"profile_names": ["reddit_amy"]},
+            "schedule": {"start_at": "2026-03-09T08:00:00Z", "duration_days": 1, "timezone": "Europe/Zurich", "random_windows": [{"start_hour": 8, "end_hour": 9}]},
+            "topic_constraints": {"subreddits": ["WomensHealth"], "keywords": ["biopsy"]},
+            "content_assignments": {"items": []},
+            "engagement_quotas": {
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+            "generation_config": {
+                "style_sample_count": 3,
+                "writing_rule_paths": [],
+                "uniqueness_scope": "program",
+            },
+            "realism_policy": {
+                "forbid_own_content_interactions": True,
+                "require_conversation_context": True,
+                "require_subreddit_style_match": True,
+                "forbid_operator_language": True,
+                "forbid_meta_testing_language": True,
+            },
+            "notification_config": {
+                "email_enabled": False,
+                "hard_failure_alerts_enabled": False,
+            },
+            "verification_contract": {
+                "require_success_confirmed": True,
+                "require_attempt_id": True,
+                "required_evidence_summary": True,
+                "required_target_reference": True,
+            },
+            "execution_policy": {
+                "strict_quotas": True,
+                "allow_target_reuse_within_day": False,
+                "cooldown_minutes": 0,
+                "max_actions_per_tick": 5,
+                "max_discovery_posts_per_subreddit": 4,
+                "max_comment_candidates_per_post": 4,
+                "retry_delay_minutes": 5,
+                "max_attempts_per_item": 2,
+            },
+            "metadata": {},
+        }
+    )
+
+    class _BusyOrchestrator:
+        async def process_program(self, program_id: str, *, force_due: bool = True):
+            raise main.RedditProgramAlreadyRunningError(f"reddit program already running: {program_id}")
+
+    monkeypatch.setattr(main, "reddit_program_orchestrator", _BusyOrchestrator())
+
+    with pytest.raises(main.HTTPException) as excinfo:
+        asyncio.run(main.run_reddit_program_now(program_id=program["id"], current_user={"username": "tester"}))
+
+    assert excinfo.value.status_code == 409
+    assert "already running" in str(excinfo.value.detail)

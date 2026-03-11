@@ -79,7 +79,11 @@ from reddit_bot import run_reddit_action
 from reddit_growth_generation import WRITING_RULE_SOURCE_PATHS
 from reddit_program_notifications import build_program_email_body
 from reddit_mission_store import RedditMissionScheduler, RedditMissionStore
-from reddit_program_orchestrator import RedditProgramOrchestrator, RedditProgramScheduler
+from reddit_program_orchestrator import (
+    RedditProgramAlreadyRunningError,
+    RedditProgramOrchestrator,
+    RedditProgramScheduler,
+)
 from reddit_program_store import RedditProgramStore
 from reddit_login_learning import RedditLoginLearningStore
 from reddit_convergence import (
@@ -6921,7 +6925,10 @@ async def run_reddit_program_now(
     program = reddit_program_store.get_program(program_id)
     if not program:
         raise HTTPException(status_code=404, detail="Reddit program not found")
-    result = await reddit_program_orchestrator.process_program(program_id)
+    try:
+        result = await reddit_program_orchestrator.process_program(program_id)
+    except RedditProgramAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     updated = reddit_program_store.get_program(program_id)
     return {"success": True, "result": result, "program": updated}
 

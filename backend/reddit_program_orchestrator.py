@@ -26,6 +26,10 @@ from reddit_session import RedditSession
 logger = logging.getLogger("RedditProgramOrchestrator")
 
 
+class RedditProgramAlreadyRunningError(RuntimeError):
+    pass
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -179,6 +183,15 @@ class RedditProgramOrchestrator:
         self.content_generator = content_generator or RedditGrowthContentGenerator()
         self.notification_service = notification_service or RedditProgramNotificationService()
         self._lock = asyncio.Lock()
+        self._program_locks: Dict[str, asyncio.Lock] = {}
+
+    def _program_lock(self, program_id: str) -> asyncio.Lock:
+        existing = self._program_locks.get(program_id)
+        if existing is not None:
+            return existing
+        created = asyncio.Lock()
+        self._program_locks[program_id] = created
+        return created
 
     async def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
         if not self.broadcast_update:
@@ -195,45 +208,55 @@ class RedditProgramOrchestrator:
             for program in self.store.get_due_programs():
                 if processed >= max_programs:
                     break
+                if self._program_lock(str(program["id"])).locked():
+                    logger.info(f"reddit program already processing; skipping due tick for {program['id']}")
+                    continue
                 try:
                     await self.process_program(program["id"], force_due=False)
                     processed += 1
+                except RedditProgramAlreadyRunningError:
+                    logger.info(f"reddit program already processing; skipping duplicate due tick for {program['id']}")
                 except Exception as exc:
                     failed += 1
                     logger.error(f"reddit program failed {program['id']}: {exc}", exc_info=True)
         return {"processed": processed, "failed": failed}
 
     async def process_program(self, program_id: str, *, force_due: bool = True) -> Dict[str, Any]:
-        program = self.store.get_program(program_id)
-        if not program:
-            raise ValueError(f"reddit program not found: {program_id}")
+        program_lock = self._program_lock(program_id)
+        if program_lock.locked():
+            raise RedditProgramAlreadyRunningError(f"reddit program already running: {program_id}")
 
-        if program.get("status") != "active":
-            return {"program_id": program_id, "processed": 0, "status": program.get("status")}
+        async with program_lock:
+            program = self.store.get_program(program_id)
+            if not program:
+                raise ValueError(f"reddit program not found: {program_id}")
 
-        await self._emit("reddit_program_start", {"program_id": program_id, "status": program.get("status")})
+            if program.get("status") != "active":
+                return {"program_id": program_id, "processed": 0, "status": program.get("status")}
 
-        now = _utc_now()
-        processed = 0
-        for item in self._select_due_items(program, now=now, force_due=force_due):
-            updated = await self._run_work_item(program, item["id"])
-            program = updated
-            processed += 1
+            await self._emit("reddit_program_start", {"program_id": program_id, "status": program.get("status")})
 
-        program["last_run_at"] = _utc_iso(now)
-        program["last_result"] = {"processed": processed}
-        saved = self.store.save_program(program)
-        saved = await self._maybe_send_rollup_notifications(saved)
-        await self._emit(
-            "reddit_program_complete",
-            {
-                "program_id": program_id,
-                "processed": processed,
-                "status": saved.get("status"),
-                "remaining_contract": saved.get("remaining_contract", {}),
-            },
-        )
-        return {"program_id": program_id, "processed": processed, "status": saved.get("status")}
+            now = _utc_now()
+            processed = 0
+            for item in self._select_due_items(program, now=now, force_due=force_due):
+                updated = await self._run_work_item(program, item["id"])
+                program = updated
+                processed += 1
+
+            program["last_run_at"] = _utc_iso(now)
+            program["last_result"] = {"processed": processed}
+            saved = self.store.save_program(program)
+            saved = await self._maybe_send_rollup_notifications(saved)
+            await self._emit(
+                "reddit_program_complete",
+                {
+                    "program_id": program_id,
+                    "processed": processed,
+                    "status": saved.get("status"),
+                    "remaining_contract": saved.get("remaining_contract", {}),
+                },
+            )
+            return {"program_id": program_id, "processed": processed, "status": saved.get("status")}
 
     def _select_due_items(self, program: Dict[str, Any], *, now: datetime, force_due: bool) -> List[Dict[str, Any]]:
         work_items = list(((program.get("compiled") or {}).get("work_items") or []))

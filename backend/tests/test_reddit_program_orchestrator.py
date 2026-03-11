@@ -3,9 +3,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from reddit_program_orchestrator import RedditProgramOrchestrator, RedditProgramScheduler
+from reddit_program_orchestrator import (
+    RedditProgramAlreadyRunningError,
+    RedditProgramOrchestrator,
+    RedditProgramScheduler,
+)
 from reddit_program_store import RedditProgramStore
 from reddit_session import RedditSession
 
@@ -217,6 +223,43 @@ def test_scheduler_start_recovers_interrupted_programs(tmp_path):
     recovered = asyncio.run(run())
     assert recovered["status"] == "active"
     assert recovered["compiled"]["work_items"][0]["status"] == "pending"
+
+
+def test_process_program_rejects_overlapping_execution(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            engagement_quotas={
+                "upvotes_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_runner(session, *, action, url=None, **_kwargs):
+        started.set()
+        await release.wait()
+        return _success_result(action, current_url=url)
+
+    monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
+    monkeypatch.setattr(RedditSession, "get_username", lambda self: "reddit_amy")
+    orchestrator = RedditProgramOrchestrator(store=store, action_runner=slow_runner)
+
+    async def exercise():
+        task = asyncio.create_task(orchestrator.process_program(program["id"]))
+        await started.wait()
+        with pytest.raises(RedditProgramAlreadyRunningError):
+            await orchestrator.process_program(program["id"])
+        release.set()
+        return await task
+
+    result = asyncio.run(exercise())
+    assert result["processed"] == 1
 
 
 def test_orchestrator_blocks_community_restricted_items(tmp_path, monkeypatch):
