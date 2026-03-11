@@ -455,6 +455,130 @@ def test_comment_on_post_returns_community_restricted(monkeypatch):
     assert "community ban" in result["error"]
 
 
+def test_ensure_subreddit_user_flair_prefers_thread_url_before_root(monkeypatch):
+    page = _FakePage()
+    visited = []
+    artifacts = []
+
+    class _Session:
+        profile_name = "reddit_alpha"
+
+        def __init__(self):
+            self.state = {}
+
+        def get_subreddit_identity_state(self, subreddit):
+            return self.state.get(subreddit, {})
+
+        def update_subreddit_identity_state(self, subreddit, payload):
+            self.state[subreddit] = payload
+
+    async def fake_goto(_page, url):
+        visited.append(url)
+        _page.url = url
+
+    async def fake_open_dialog(_page):
+        return _page.url.endswith("/comments/thread123/example_post/")
+
+    async def fake_collect(_page):
+        return {"options": ["divorced", "widowed"], "current_flair": None}
+
+    async def fake_select(_page, option_text):
+        return option_text == "widowed"
+
+    async def fake_attach(*_args, **_kwargs):
+        artifacts.append("attached")
+        return None
+
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "_open_user_flair_dialog", fake_open_dialog)
+    monkeypatch.setattr(reddit_bot, "_collect_user_flair_options", fake_collect)
+    monkeypatch.setattr(reddit_bot, "_select_user_flair_option", fake_select)
+    monkeypatch.setattr(reddit_bot, "_ensure_user_flair_visibility_toggle", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_confirm_user_flair_dialog", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "attach_current_json_artifact", fake_attach)
+    monkeypatch.setattr(
+        reddit_bot.SUBREDDIT_IDENTITY_GENERATOR,
+        "choose_user_flair",
+        lambda **_kwargs: asyncio.sleep(
+            0,
+            result={
+                "choice": "widowed",
+                "reasoning": "best fit",
+                "persona_snapshot": {"persona_id": "persona-1"},
+            },
+        ),
+    )
+
+    session = _Session()
+    evidence = asyncio.run(
+        reddit_bot._ensure_subreddit_user_flair(
+            page,
+            session,
+            subreddit="AskWomenOver40",
+            action="comment_post",
+            auto_user_flair=True,
+            preferred_url="https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/",
+        )
+    )
+
+    assert visited == ["https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/"]
+    assert evidence["status"] == "applied"
+    assert evidence["chosen_flair"] == "widowed"
+    assert session.state["AskWomenOver40"]["user_flair"] == "widowed"
+    assert artifacts == ["attached"]
+
+
+def test_comment_on_post_passes_target_url_as_preferred_flair_entry(monkeypatch):
+    page = _FakePage()
+    recorded = {}
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_ensure_flair(_page, _session, *, subreddit, action, desired_flair=None, auto_user_flair=False, preferred_url=None):
+        recorded.update(
+            {
+                "subreddit": subreddit,
+                "action": action,
+                "desired_flair": desired_flair,
+                "auto_user_flair": auto_user_flair,
+                "preferred_url": preferred_url,
+            }
+        )
+        return {"status": "skipped"}
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_ensure_subreddit_user_flair", fake_ensure_flair)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_load_post_context", lambda *_args, **_kwargs: asyncio.sleep(0, result={"title": "Example"}))
+    monkeypatch.setattr(reddit_bot, "_ensure_thread_context", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_scroll_until_comment_surface_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_fill_comment_input", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(reddit_bot, "_verify_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.comment_on_post(
+            session,
+            url="https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/",
+            text="supportive text",
+            subreddit="AskWomenOver40",
+            auto_user_flair=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert recorded["subreddit"] == "AskWomenOver40"
+    assert recorded["action"] == "comment_post"
+    assert recorded["auto_user_flair"] is True
+    assert recorded["preferred_url"] == "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/"
+
+
 def test_create_post_uses_semantic_title_fallback_when_selector_title_is_missing(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"

@@ -21,6 +21,7 @@ from reddit_growth_generation import RedditGrowthContentGenerator
 from reddit_login_bot import _dismiss_cookie_banner, _goto_with_retry
 from reddit_selectors import COMMENT, HOME, POST, SUBREDDIT
 from reddit_session import RedditSession
+from reddit_subreddit_policies import normalize_subreddit_name
 from forensics import (
     attach_current_json_artifact,
     build_generic_verdict,
@@ -1565,6 +1566,7 @@ async def _ensure_subreddit_user_flair(
     action: str,
     desired_flair: Optional[str] = None,
     auto_user_flair: bool = False,
+    preferred_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     normalized_subreddit = str(subreddit or "").strip()
     if not normalized_subreddit or not auto_user_flair:
@@ -1590,15 +1592,38 @@ async def _ensure_subreddit_user_flair(
     root_url = _subreddit_root_url(normalized_subreddit)
     if not root_url:
         return {"subreddit": normalized_subreddit, "action": action, "auto_user_flair": True, "status": "missing_subreddit"}
+    attempted_urls: List[str] = []
+    navigation_errors: List[str] = []
+    entry_urls: List[str] = []
+    normalized_preferred = str(preferred_url or "").strip()
+    if normalized_preferred and normalize_subreddit_name(normalized_preferred).lower() == normalized_subreddit.lower():
+        entry_urls.append(normalized_preferred)
+    if root_url not in entry_urls:
+        entry_urls.append(root_url)
 
-    await _goto(page, root_url)
-    await page.wait_for_timeout(800)
-    if not await _open_user_flair_dialog(page):
+    dialog_opened = False
+    for entry_url in entry_urls:
+        attempted_urls.append(entry_url)
+        try:
+            await _goto(page, entry_url)
+            await page.wait_for_timeout(800)
+        except Exception as exc:
+            navigation_errors.append(f"{entry_url}: {exc}")
+            continue
+        if await _open_user_flair_dialog(page):
+            dialog_opened = True
+            break
+
+    if not dialog_opened:
+        if navigation_errors and len(navigation_errors) == len(attempted_urls):
+            raise RuntimeError("; ".join(navigation_errors))
         return {
             "subreddit": normalized_subreddit,
             "action": action,
             "auto_user_flair": True,
             "status": "dialog_unavailable",
+            "attempted_urls": attempted_urls,
+            "navigation_errors": navigation_errors,
         }
 
     options_payload = await _collect_user_flair_options(page)
@@ -3278,6 +3303,7 @@ async def comment_on_post(
                 action="comment_post",
                 desired_flair=user_flair_hint,
                 auto_user_flair=bool(auto_user_flair or user_flair_hint),
+                preferred_url=url,
             )
             await _goto(page, url)
             target_context = await _load_post_context(url)
@@ -3353,6 +3379,7 @@ async def reply_to_comment(
                 action="reply_comment",
                 desired_flair=user_flair_hint,
                 auto_user_flair=bool(auto_user_flair or user_flair_hint),
+                preferred_url=thread_url or target_comment_url,
             )
             last_error = "Reddit Reply button not found"
             surface_errors: List[str] = []

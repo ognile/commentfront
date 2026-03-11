@@ -23,11 +23,14 @@
 - exact-thread smoke `reddit_program_32af52931a` proved the next bottleneck honestly on the patched thread-context build: the target thread is valid and commentable, but the mobile page can load with the thread header in view and the actual comment/share surface below the fold.
 - exact-thread smoke `reddit_program_cd320ed4d1` on the latest build then passed on the same previously failing Healthyhooha thread, proving the thread-context recovery plus scroll-to-comment-surface fix in production.
 - explicit proof items now inherit subreddit policy metadata during target resolution, so an exact target assignment can still trigger policy-driven behavior such as automatic flair handling or a configured flair hint.
+- exact `AskWomenOver40` smoke `reddit_program_3e844ab292` reached the next real bottleneck honestly: automatic flair handling currently navigates to the subreddit root first, and for `reddit_amy_schaefera` that root returned repeated `net::ERR_EMPTY_RESPONSE` before the actual comment thread was even loaded.
+- the executor is now patched to try flair from the target thread url first and only fall back to the subreddit root if the dialog is unavailable there; the local reddit regression slice is green again after this patch: `136 passed`.
 
 ## active todo
 1. commit the explicit-target policy inheritance patch and redeploy it to railway.
-2. run an exact-target `AskWomenOver40` production smoke on the deployed build with policy-driven flair automation enabled and verify identity evidence plus proof artifacts.
-3. recreate the broader proof-matrix program on the new build and verify real proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
+2. deploy the thread-first flair entry fix to railway.
+3. rerun the exact-target `AskWomenOver40` production smoke on the deployed build with policy-driven flair automation enabled and verify identity evidence plus proof artifacts.
+4. recreate the broader proof-matrix program on the new build and verify real proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
 
 ## current understanding
 - the right architecture is split across three layers:
@@ -46,8 +49,9 @@
 - attempt `a805e435-e942-48b3-ac7e-e7648a0adde0` on `reddit_program_32af52931a` proved that some commentable reddit threads require scrolling to reveal the comment surface before any composer trigger exists in the viewport.
 - attempt `172d7e61-d2bb-4208-8816-2aae9f0dbb69` on `reddit_program_cd320ed4d1` reached `success_confirmed` on that same previously failing Healthyhooha thread, so the direct `comment_post` recovery path is proven in live production.
 - explicit target assignments now carry subreddit policy metadata through `_resolve_target(...)`, which is required to prove automatic flair handling against exact smoke targets instead of only discovered targets.
+- attempt `789c5d2a-f227-4f87-b054-7334a17fc5e6` on `reddit_program_3e844ab292` proved that `AskWomenOver40` is not currently blocked by missing compiler policy or missing proof plumbing; the real failure was the executor’s assumption that flair must always start from the subreddit root.
 
 ## open risks
 - production still needs proof that all 10 valid sessions can execute the new proof-matrix flow against real subreddit conditions.
-- `AskWomenOver40` may still have community-specific posting/commenting friction beyond flair, so production evidence needs to show the actual limiting factor rather than assuming flair solved everything.
+- `AskWomenOver40` may still have community-specific posting/commenting friction beyond flair, so production evidence needs to show the actual limiting factor after the new thread-first flair path lands.
 - the current runtime can adapt to flair, but other community-specific identity requirements may still need additional surface discovery rules.

@@ -22,6 +22,7 @@
 - prove subreddit adaptation in production with compiler-emitted proof items, not by eyeballing incidental coverage in a long-running rollout.
 - when a comment flow fails in production, inspect both the pre-action and failure dom snapshots to distinguish a real missing composer from thread-context drift.
 - verify exact smoke targets through the same policy path as discovered targets; otherwise explicit production proofs can silently skip the very subreddit policy you are trying to validate.
+- for subreddit identity work, prefer the actual target thread as the first flair-entry surface and use the subreddit root only as fallback; root navigation can fail independently of the target thread.
 
 ## promotion rules
 - promote only evidence-backed reusable lessons
