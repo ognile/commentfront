@@ -50,6 +50,45 @@ def _clone(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
 
+def _is_stale_runtime_status_regression(existing: Optional[Dict[str, Any]], incoming: Dict[str, Any]) -> bool:
+    if not existing:
+        return False
+    existing_status = str(existing.get("status") or "")
+    incoming_status = str(incoming.get("status") or "")
+    if existing_status not in {"paused", "cancelled"}:
+        return False
+    if incoming_status in {"paused", "cancelled"}:
+        return False
+    existing_updated_at = _parse_iso(existing.get("updated_at"))
+    incoming_updated_at = _parse_iso(incoming.get("updated_at"))
+    if existing_updated_at and incoming_updated_at:
+        return incoming_updated_at < existing_updated_at
+    return bool(existing_updated_at) and not incoming_updated_at
+
+
+def _merge_preserved_program_status(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged = _clone(incoming)
+    preserved_status = str(existing.get("status") or "")
+    merged["status"] = preserved_status
+    if preserved_status != "cancelled":
+        return merged
+    existing_items = {
+        str(item.get("id") or ""): item
+        for item in ((existing.get("compiled") or {}).get("work_items") or [])
+    }
+    for item in ((merged.get("compiled") or {}).get("work_items") or []):
+        existing_item = existing_items.get(str(item.get("id") or ""))
+        if not existing_item:
+            continue
+        existing_item_status = str(existing_item.get("status") or "")
+        incoming_item_status = str(item.get("status") or "")
+        if existing_item_status == "cancelled" and incoming_item_status not in {"completed", "blocked", "exhausted"}:
+            item["status"] = "cancelled"
+            if not item.get("error") and existing_item.get("error"):
+                item["error"] = existing_item.get("error")
+    return merged
+
+
 def _normalize_profile_name(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
 
@@ -769,7 +808,11 @@ class RedditProgramStore:
 
     def save_program(self, program: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
-            refreshed = refresh_reddit_program_state(_clone(program))
+            existing = self.state.get("programs", {}).get(program.get("id"))
+            candidate = _clone(program)
+            if _is_stale_runtime_status_regression(existing, candidate):
+                candidate = _merge_preserved_program_status(existing, candidate)
+            refreshed = refresh_reddit_program_state(candidate)
             self.state.setdefault("programs", {})[refreshed["id"]] = refreshed
             if refreshed["id"] not in self.state.setdefault("program_order", []):
                 self.state["program_order"].append(refreshed["id"])

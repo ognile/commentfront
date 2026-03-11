@@ -199,3 +199,30 @@ def test_exhausted_items_still_count_against_remaining_contract(tmp_path):
     assert refreshed["status"] == "exhausted"
     assert refreshed["remaining_contract"]["upvote_post"] == 1
     assert refreshed["daily_progress"]["2026-03-09"]["reddit_alpha"]["blocked"]["upvote_post"] == 1
+
+
+def test_save_program_does_not_revive_cancelled_program_from_stale_runtime_snapshot(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
+    program = store.create_program(_spec())
+    stale_runtime_copy = store.get_program(program["id"])
+
+    cancelled = store.update_program(program["id"], {"status": "cancelled"})
+    assert cancelled["status"] == "cancelled"
+
+    stale_runtime_copy["compiled"]["work_items"][0]["status"] = "completed"
+    stale_runtime_copy["compiled"]["work_items"][0]["result"] = {
+        "success": True,
+        "attempt_id": "attempt-comment",
+        "final_verdict": "success_confirmed",
+        "evidence_summary": "comment confirmed",
+        "target_url": stale_runtime_copy["compiled"]["work_items"][0]["target_url"],
+    }
+    stale_runtime_copy["status"] = "active"
+    saved = store.save_program(stale_runtime_copy)
+
+    assert saved["status"] == "cancelled"
+    remaining_statuses = {
+        str(item.get("status") or "")
+        for item in saved["compiled"]["work_items"][1:]
+    }
+    assert remaining_statuses == {"cancelled"}

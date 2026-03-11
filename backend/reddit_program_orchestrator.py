@@ -238,8 +238,19 @@ class RedditProgramOrchestrator:
 
             now = _utc_now()
             processed = 0
-            for item in self._select_due_items(program, now=now, force_due=force_due):
-                updated = await self._run_work_item(program, item["id"])
+            selected_ids = [str(item.get("id") or "") for item in self._select_due_items(program, now=now, force_due=force_due)]
+            for work_item_id in selected_ids:
+                latest = self.store.get_program(program_id)
+                if not latest:
+                    break
+                if latest.get("status") != "active":
+                    program = latest
+                    break
+                current_item = next((entry for entry in ((latest.get("compiled") or {}).get("work_items") or []) if entry.get("id") == work_item_id), None)
+                if not current_item or str(current_item.get("status") or "pending") != "pending":
+                    program = latest
+                    continue
+                updated = await self._run_work_item(latest, work_item_id)
                 program = updated
                 processed += 1
 

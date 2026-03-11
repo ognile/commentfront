@@ -21,6 +21,7 @@
 - interrupted reddit actions can leave zombie forensic attempts unless the action wrapper finalizes timeout/cancel paths explicitly.
 - manual `run-now` is part of production too. if the same rollout can be processed twice at once, the evidence is invalid even when individual attempts succeed.
 - on mobile reddit, an inline reply composer can exist even when the only obvious visible controls are `cancel` and `comment`; treat generic textbox roles as first-class editor surfaces instead of assuming textarea/contenteditable only.
+- operator actions like `cancel` are part of runtime correctness too. if an older in-flight snapshot can save over a newer `cancelled` state, the rollout state model is untrustworthy even when individual attempts succeed.
 
 ## verification patterns
 - unit and integration coverage must prove persona/rule hashes, semantic similarity rejection, and cross-profile target blocking.
@@ -29,9 +30,11 @@
 - when a row-level action is geometry-driven, test the fallback click sequence explicitly so future refactors do not silently drift back onto the score/downvote region.
 - when a production scheduler exists, add explicit overlap tests for manual triggers too. scheduler serialization alone is not enough protection.
 - when reply/comment typing fails after the composer opens, inspect whether the editor is a `role="textbox"` surface and whether `.fill()` is unsupported before assuming the composer never opened.
+- when runtime state can change outside the worker loop, regression-test stale snapshot saves and mid-run cancellation explicitly instead of assuming the last `save_program(...)` call is harmless.
 
 ## promotion rules
 - do not trust a rollout as methodology evidence unless it runs on the deployed scenario-b runtime and shows zero reply target collisions.
 - do not promote generated text changes without both rule-hash evidence and persona metadata in the proof payload.
 - keep open risks explicit in the tracker when a path is still manual-text rather than generated.
 - if operator events show impossible bursts of `work_item_start` timestamps, assume program-level concurrency is broken until proved otherwise and replace the rollout after the lock fix.
+- if a cancelled rollout ever reappears as `active`, treat all current live evidence as suspect until cancellation durability is fixed and a fresh rollout replaces the contaminated one.

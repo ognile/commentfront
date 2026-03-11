@@ -262,6 +262,41 @@ def test_process_program_rejects_overlapping_execution(tmp_path, monkeypatch):
     assert result["processed"] == 1
 
 
+def test_process_program_stops_after_external_cancel(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(_spec())
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_runner(session, *, action, url=None, target_comment_url=None, **_kwargs):
+        started.set()
+        await release.wait()
+        return _success_result(action, current_url=url or target_comment_url)
+
+    monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
+    monkeypatch.setattr(RedditSession, "get_username", lambda self: "reddit_amy")
+    orchestrator = RedditProgramOrchestrator(store=store, action_runner=slow_runner)
+
+    async def exercise():
+        task = asyncio.create_task(orchestrator.process_program(program["id"]))
+        await started.wait()
+        cancelled = store.update_program(program["id"], {"status": "cancelled"})
+        assert cancelled["status"] == "cancelled"
+        release.set()
+        result = await task
+        updated = store.get_program(program["id"])
+        return result, updated
+
+    result, updated = asyncio.run(exercise())
+
+    assert result["processed"] == 1
+    assert updated["status"] == "cancelled"
+    completed = [item for item in updated["compiled"]["work_items"] if item["status"] == "completed"]
+    cancelled = [item for item in updated["compiled"]["work_items"] if item["status"] == "cancelled"]
+    assert len(completed) == 1
+    assert len(cancelled) == len(updated["compiled"]["work_items"]) - 1
+
+
 def test_orchestrator_blocks_community_restricted_items(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
