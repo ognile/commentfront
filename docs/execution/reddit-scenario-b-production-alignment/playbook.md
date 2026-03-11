@@ -23,6 +23,7 @@
 - on mobile reddit, an inline reply composer can exist even when the only obvious visible controls are `cancel` and `comment`; treat generic textbox roles as first-class editor surfaces instead of assuming textarea/contenteditable only.
 - operator actions like `cancel` are part of runtime correctness too. if an older in-flight snapshot can save over a newer `cancelled` state, the rollout state model is untrustworthy even when individual attempts succeed.
 - if a work item sits in `running` without any forensic attempt id, the hang is upstream of the browser executor. treat target discovery/generation as an explicit timeout-bounded stage, not an unbounded prelude.
+- once timeouts are honest, optimize the expensive stage itself. repeated subreddit/thread fetches inside one program run are wasted work, and shallow thread scans can create fake “no eligible target” scarcity.
 
 ## verification patterns
 - unit and integration coverage must prove persona/rule hashes, semantic similarity rejection, and cross-profile target blocking.
@@ -33,6 +34,8 @@
 - when reply/comment typing fails after the composer opens, inspect whether the editor is a `role="textbox"` surface and whether `.fill()` is unsupported before assuming the composer never opened.
 - when runtime state can change outside the worker loop, regression-test stale snapshot saves and mid-run cancellation explicitly instead of assuming the last `save_program(...)` call is harmless.
 - when production shows `running` with no forensics, add a timeout around `_resolve_target(...)` first. otherwise the system can hide deficits by hanging forever before any proof artifact exists.
+- for multi-profile reply programs, cache subreddit post pools and thread comment trees per run. otherwise every profile pays the same network/discovery cost again and again.
+- do not truncate reply candidate scanning to an arbitrary shallow prefix before realism/uniqueness filters run; that can manufacture scarcity and push the system into unnecessary retries/timeouts.
 
 ## promotion rules
 - do not trust a rollout as methodology evidence unless it runs on the deployed scenario-b runtime and shows zero reply target collisions.

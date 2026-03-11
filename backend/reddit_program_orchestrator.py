@@ -184,6 +184,9 @@ class RedditProgramOrchestrator:
         self.notification_service = notification_service or RedditProgramNotificationService()
         self._lock = asyncio.Lock()
         self._program_locks: Dict[str, asyncio.Lock] = {}
+        self._subreddit_post_cache: Dict[tuple[str, tuple[str, ...], int], List[Dict[str, Any]]] = {}
+        self._thread_payload_cache: Dict[str, Any] = {}
+        self._thread_comment_cache: Dict[str, List[Dict[str, Any]]] = {}
 
     def _program_lock(self, program_id: str) -> asyncio.Lock:
         existing = self._program_locks.get(program_id)
@@ -192,6 +195,11 @@ class RedditProgramOrchestrator:
         created = asyncio.Lock()
         self._program_locks[program_id] = created
         return created
+
+    def _clear_run_caches(self) -> None:
+        self._subreddit_post_cache.clear()
+        self._thread_payload_cache.clear()
+        self._thread_comment_cache.clear()
 
     async def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
         if not self.broadcast_update:
@@ -227,6 +235,7 @@ class RedditProgramOrchestrator:
             raise RedditProgramAlreadyRunningError(f"reddit program already running: {program_id}")
 
         async with program_lock:
+            self._clear_run_caches()
             program = self.store.get_program(program_id)
             if not program:
                 raise ValueError(f"reddit program not found: {program_id}")
@@ -1156,7 +1165,7 @@ class RedditProgramOrchestrator:
         thread_url = str(candidate.get("thread_url") or "").strip()
         if thread_url:
             try:
-                thread_payload = await self._fetch_json(_thread_json_url(thread_url))
+                thread_payload = await self._thread_payload(thread_url)
             except Exception as exc:
                 logger.warning(f"reddit thread context load failed for {thread_url}: {exc}")
                 return samples
@@ -1281,6 +1290,10 @@ class RedditProgramOrchestrator:
         keywords: List[str],
         max_posts: int,
     ) -> List[Dict[str, Any]]:
+        cache_key = (str(subreddit).strip().lower(), tuple(sorted(str(value).strip().lower() for value in keywords if str(value).strip())), int(max_posts))
+        cached = self._subreddit_post_cache.get(cache_key)
+        if cached is not None:
+            return [dict(entry) for entry in cached[:max_posts]]
         urls: List[str] = []
         if keywords:
             query = quote(" ".join(keywords))
@@ -1329,7 +1342,38 @@ class RedditProgramOrchestrator:
                     }
                 )
         ranked.sort(key=lambda value: (value.get("comment_count", 0), value.get("score", 0)), reverse=True)
-        return ranked[:max_posts]
+        self._subreddit_post_cache[cache_key] = [dict(entry) for entry in ranked]
+        return [dict(entry) for entry in ranked[:max_posts]]
+
+    async def _thread_payload(self, thread_url: str) -> Any:
+        normalized = str(thread_url or "").strip().rstrip("/")
+        cached = self._thread_payload_cache.get(normalized)
+        if cached is not None:
+            return cached
+        payload = await self._fetch_json(_thread_json_url(thread_url))
+        self._thread_payload_cache[normalized] = payload
+        return payload
+
+    async def _thread_comment_candidates(self, *, post: Dict[str, Any], subreddit: str, keywords: List[str]) -> List[Dict[str, Any]]:
+        thread_url = str(post.get("target_url") or "").strip()
+        normalized = thread_url.rstrip("/")
+        cached = self._thread_comment_cache.get(normalized)
+        if cached is not None:
+            return [dict(entry) for entry in cached]
+        thread_payload = await self._thread_payload(thread_url)
+        comments_root = []
+        if isinstance(thread_payload, list) and len(thread_payload) > 1:
+            comments_root = (((thread_payload[1] or {}).get("data") or {}).get("children") or [])
+        candidates = self._walk_comment_nodes(
+            comments_root,
+            subreddit=subreddit,
+            post_title=post["title"],
+            post_body_excerpt=str(post.get("body_excerpt") or ""),
+            post_author=str(post.get("author") or ""),
+            keywords=keywords,
+        )
+        self._thread_comment_cache[normalized] = [dict(entry) for entry in candidates]
+        return [dict(entry) for entry in candidates]
 
     async def _discover_post_target(self, program: Dict[str, Any], item: Dict[str, Any], *, actor_username: Optional[str] = None) -> Optional[Dict[str, Any]]:
         constraints = _program_filters(program)
@@ -1469,23 +1513,12 @@ class RedditProgramOrchestrator:
 
             for post in posts:
                 try:
-                    thread_payload = await self._fetch_json(_thread_json_url(post["target_url"]))
+                    candidates = await self._thread_comment_candidates(post=post, subreddit=subreddit, keywords=keywords)
                 except Exception as exc:
                     logger.warning(f"reddit thread load failed for {post['target_url']}: {exc}")
                     continue
-                comments_root = []
-                if isinstance(thread_payload, list) and len(thread_payload) > 1:
-                    comments_root = (((thread_payload[1] or {}).get("data") or {}).get("children") or [])
-                candidates = self._walk_comment_nodes(
-                    comments_root,
-                    subreddit=subreddit,
-                    post_title=post["title"],
-                    post_body_excerpt=str(post.get("body_excerpt") or ""),
-                    post_author=str(post.get("author") or ""),
-                    keywords=keywords,
-                )
                 filtered: List[Dict[str, Any]] = []
-                for candidate in candidates[:max_comments * 3]:
+                for candidate in candidates:
                     target_ref = str(candidate.get("target_comment_url") or "")
                     if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_ref, exclude_work_item_id=str(item.get("id") or "")):
                         continue

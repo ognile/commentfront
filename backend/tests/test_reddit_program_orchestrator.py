@@ -491,6 +491,139 @@ def test_discovery_excludes_profile_blocked_subreddits(tmp_path, monkeypatch):
     assert candidate["subreddit"] == "healthyhooha"
 
 
+def test_discover_posts_for_subreddit_uses_run_cache(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    orchestrator = RedditProgramOrchestrator(store=store)
+    calls = []
+
+    async def fake_fetch_json(url):
+        calls.append(url)
+        return {
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "id": "good",
+                            "permalink": "/r/womenshealth/comments/good/example/",
+                            "title": "biopsy question",
+                            "selftext": "pain and recovery",
+                            "score": 12,
+                            "num_comments": 4,
+                        }
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(orchestrator, "_fetch_json", fake_fetch_json)
+
+    first = asyncio.run(orchestrator._discover_posts_for_subreddit(subreddit="womenshealth", keywords=["biopsy"], max_posts=4))
+    second = asyncio.run(orchestrator._discover_posts_for_subreddit(subreddit="womenshealth", keywords=["biopsy"], max_posts=4))
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert len(calls) == 2
+
+
+def test_discover_comment_target_scans_past_shallow_prefix(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            engagement_quotas={
+                "upvotes_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 1,
+                "reply_max_per_day": 1,
+                "random_reply_templates": ["that sounds painful, i hope recovery goes smoothly"],
+                "random_upvote_action": "upvote_post",
+            },
+            execution_policy={
+                "strict_quotas": True,
+                "allow_target_reuse_within_day": False,
+                "cooldown_minutes": 0,
+                "max_actions_per_tick": 5,
+                "max_discovery_posts_per_subreddit": 1,
+                "max_comment_candidates_per_post": 2,
+                "retry_delay_minutes": 5,
+                "max_attempts_per_item": 2,
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "reply_comment")
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    async def fake_discover_posts_for_subreddit(*, subreddit, keywords, max_posts):
+        return [
+            {
+                "target_id": "thread",
+                "target_url": "https://www.reddit.com/r/womenshealth/comments/thread/example/",
+                "subreddit": "womenshealth",
+                "title": "biopsy question",
+                "body_excerpt": "pain and recovery",
+                "author": "post_author",
+                "score": 10,
+                "comment_count": 40,
+            }
+        ]
+
+    async def fake_thread_comment_candidates(*, post, subreddit, keywords):
+        candidates = []
+        for index in range(1, 10):
+            candidates.append(
+                {
+                    "target_id": f"used-{index}",
+                    "target_comment_url": f"https://www.reddit.com/r/womenshealth/comments/thread/example/c{index}/",
+                    "thread_url": post["target_url"],
+                    "subreddit": "womenshealth",
+                    "author": f"user{index}",
+                    "body_excerpt": f"comment {index}",
+                    "post_title": post["title"],
+                    "post_body_excerpt": post["body_excerpt"],
+                    "post_author": post["author"],
+                    "score": 10 - index,
+                    "source": "thread_comment",
+                }
+            )
+        candidates.append(
+            {
+                "target_id": "fresh",
+                "target_comment_url": "https://www.reddit.com/r/womenshealth/comments/thread/example/fresh/",
+                "thread_url": post["target_url"],
+                "subreddit": "womenshealth",
+                "author": "usable_user",
+                "body_excerpt": "fresh eligible comment",
+                "post_title": post["title"],
+                "post_body_excerpt": post["body_excerpt"],
+                "post_author": post["author"],
+                "score": 99,
+                "source": "thread_comment",
+            }
+        )
+        return candidates
+
+    monkeypatch.setattr(orchestrator, "_discover_posts_for_subreddit", fake_discover_posts_for_subreddit)
+    monkeypatch.setattr(orchestrator, "_thread_comment_candidates", fake_thread_comment_candidates)
+    monkeypatch.setattr(orchestrator, "_candidate_violates_realism", lambda *args, **kwargs: None)
+    program["target_history"] = [
+        {
+            "profile_name": "reddit_other",
+            "local_date": str(item["local_date"]),
+            "target_ref": f"https://www.reddit.com/r/womenshealth/comments/thread/example/c{index}/",
+            "thread_url": "https://www.reddit.com/r/womenshealth/comments/thread/example/",
+        }
+        for index in range(1, 10)
+    ]
+
+    candidate = asyncio.run(orchestrator._discover_comment_target(program, item, actor_username="reddit_amy"))
+
+    assert candidate is not None
+    assert candidate["target_comment_url"].endswith("/fresh/")
+
+
 def test_select_due_items_prioritizes_mandatory_joins(tmp_path):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
