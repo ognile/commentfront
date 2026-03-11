@@ -19,6 +19,7 @@
 - prove subreddit-policy behavior with compiled work-item inspection, not only with live attempts.
 - add one regression that shows a flair-required subreddit is included for the configured profile and excluded for an unconfigured one.
 - add one regression that shows keyword overrides reach the generator inputs, not just the stored config.
+- for production verification of compiler behavior, create a future-dated proof program, inspect the compiled rows, then cancel it before the scheduler can act.
 
 ## promotion rules
 - promote only rules that survive both store-level compilation tests and orchestrator-level runtime tests.

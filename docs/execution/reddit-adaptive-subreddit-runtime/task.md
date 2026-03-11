@@ -24,9 +24,10 @@
   - `/Users/nikitalienov/Documents/commentfront/backend/tests/test_reddit_program_store.py`
   - `/Users/nikitalienov/Documents/commentfront/backend/tests/test_reddit_program_orchestrator.py`
   - `/Users/nikitalienov/Documents/commentfront/backend/tests/test_reddit_program_api.py`
+- pushed commit `3f14913` and verified production with a future-dated proof program `reddit_program_3b70ec160b`, then cancelled the proof vehicles after inspection.
 
 ## active todo
-1. push the change, wait for deploy, and verify in production by creating a proof program whose compiled create-post rows show balanced coverage plus flair-aware exclusion.
+1. next implementation pass: add automatic subreddit user-flair setting in the browser executor so flair-required communities can become fully self-sufficient instead of config-gated only.
 
 ## current understanding
 - the old compiler bias came from `target_subreddit = subreddit_pool[quota_index % len(subreddit_pool)]`, which resets inside each profile/day loop and starves later subreddits when `posts_min_per_day` is low.
@@ -49,6 +50,17 @@
   - frontend tests: `6 passed`
   - frontend build passed
   - frontend lint passed with only the pre-existing warnings in `/Users/nikitalienov/Documents/commentfront/frontend/src/App.tsx`
+- production proof is green:
+  - smoke create program `reddit_program_55d943f307` stored the new `subreddit_policies` field in live prod
+  - proof program `reddit_program_3b70ec160b` compiled create-post rows as:
+    - `reddit_catherine_emmar -> women`
+    - `reddit_amy_schaefera -> WomensHealth`
+    - `reddit_catherine_emmar -> women`
+    - `reddit_amy_schaefera -> AskWomenOver40`
+    - `reddit_amy_schaefera -> WomensHealth`
+    - `reddit_catherine_emmar -> women`
+  - this proves `AskWomenOver40` was assigned only to the flair-configured profile while `women` received the higher-weight share
+  - both proof vehicles were cancelled cleanly after verification
 
 ## open risks
 - this pass introduces configuration support and balancing logic, not automatic user-flair setting in the browser executor. `askwomenover40` still needs configured per-profile flair values to be operationally usable for posting lanes.
