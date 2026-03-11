@@ -385,10 +385,15 @@ def _pick_candidate(
     return best
 
 
-async def _collect_control_candidates(page, needles: List[str]) -> List[Dict[str, Any]]:
+async def _collect_control_candidates(
+    page,
+    needles: List[str],
+    *,
+    max_text_length: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     try:
         result = await page.evaluate(
-            """(needles) => {
+            """(needles, maxTextLength) => {
                 const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
                 const rootList = [];
                 const visitRoot = (root) => {
@@ -413,6 +418,7 @@ async def _collect_control_candidates(page, needles: List[str]) -> List[Dict[str
                         const placeholder = normalize(node.getAttribute && node.getAttribute('placeholder'));
                         const title = normalize(node.getAttribute && node.getAttribute('title'));
                         const combined = [text, aria, placeholder, title].filter(Boolean).join(' | ');
+                        if (maxTextLength && combined.length > maxTextLength) continue;
                         if (!needles.some((needle) => combined.includes(needle))) continue;
                         results.push({
                             x: Math.round(rect.left + rect.width / 2),
@@ -434,6 +440,7 @@ async def _collect_control_candidates(page, needles: List[str]) -> List[Dict[str
                 return results;
             }""",
             [_normalize_text(needle) for needle in list(needles or []) if _normalize_text(needle)],
+            int(max_text_length) if max_text_length else None,
         )
     except Exception:
         return []
@@ -681,8 +688,9 @@ async def _click_named_control(
     require_below_anchor: bool = False,
     row_y: Optional[float] = None,
     left_of_x: Optional[float] = None,
+    max_text_length: Optional[int] = None,
 ) -> bool:
-    candidates = await _collect_control_candidates(page, needles)
+    candidates = await _collect_control_candidates(page, needles, max_text_length=max_text_length)
     anchor_rect = await _locate_text_anchor(page, anchor_text, expected_title=expected_title) if anchor_text else None
     target = _pick_candidate(
         candidates,
@@ -724,8 +732,9 @@ async def _verify_named_control_state(
     require_below_anchor: bool = False,
     row_y: Optional[float] = None,
     left_of_x: Optional[float] = None,
+    max_text_length: Optional[int] = None,
 ) -> bool:
-    candidates = await _collect_control_candidates(page, needles)
+    candidates = await _collect_control_candidates(page, needles, max_text_length=max_text_length)
     anchor_rect = await _locate_text_anchor(page, anchor_text, expected_title=expected_title) if anchor_text else None
     target = _pick_candidate(
         candidates,
@@ -1419,6 +1428,7 @@ async def _open_user_flair_dialog(page) -> bool:
         page,
         action_name="subreddit_open_user_flair",
         needles=["change user flair", "add user flair", "user flair", "edit user flair"],
+        max_text_length=96,
     )
     if not opened:
         opened = await _click_visible_text_region(
@@ -1430,11 +1440,18 @@ async def _open_user_flair_dialog(page) -> bool:
     if not opened:
         return False
     await page.wait_for_timeout(900)
-    if await _verify_named_control_state(page, needles=["view all flair"]):
+    if not await _verify_named_control_state(
+        page,
+        needles=["view all flair", "show my user flair in this community", "apply", "save", "done"],
+        max_text_length=96,
+    ):
+        return False
+    if await _verify_named_control_state(page, needles=["view all flair"], max_text_length=96):
         if not await _click_named_control(
             page,
             action_name="subreddit_view_all_flair",
             needles=["view all flair"],
+            max_text_length=96,
         ):
             await _click_visible_text_region(
                 page,
@@ -1504,6 +1521,7 @@ async def _select_user_flair_option(page, option_text: str) -> bool:
             page,
             action_name="subreddit_select_user_flair",
             needles=[option_text],
+            max_text_length=96,
         ):
             await page.wait_for_timeout(700)
             return True
@@ -1548,7 +1566,12 @@ async def _ensure_user_flair_visibility_toggle(page) -> bool:
 
 
 async def _confirm_user_flair_dialog(page) -> bool:
-    if await _click_named_control(page, action_name="subreddit_apply_user_flair", needles=["apply", "save", "done"]):
+    if await _click_named_control(
+        page,
+        action_name="subreddit_apply_user_flair",
+        needles=["apply", "save", "done"],
+        max_text_length=48,
+    ):
         return True
     return await _click_visible_text_region(
         page,

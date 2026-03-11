@@ -25,10 +25,12 @@
 - explicit proof items now inherit subreddit policy metadata during target resolution, so an exact target assignment can still trigger policy-driven behavior such as automatic flair handling or a configured flair hint.
 - exact `AskWomenOver40` smoke `reddit_program_3e844ab292` reached the next real bottleneck honestly: automatic flair handling currently navigates to the subreddit root first, and for `reddit_amy_schaefera` that root returned repeated `net::ERR_EMPTY_RESPONSE` before the actual comment thread was even loaded.
 - the executor is now patched to try flair from the target thread url first and only fall back to the subreddit root if the dialog is unavailable there; the local reddit regression slice is green again after this patch: `136 passed`.
+- rerun smoke `reddit_program_80a6d043c8` on the thread-first flair build proved the next real bottleneck honestly: flair automation reached the target thread and opened the community menu, but the generic named-control matcher falsely matched page content that mentioned `user flair` and `apply`, so it never interacted with the real flair dialog.
+- the flair dialog path is now tightened to reject oversized text matches and to require visible dialog-state signals after clicking the opener; the local reddit regression slice is green again after this patch: `137 passed`.
 
 ## active todo
 1. commit the explicit-target policy inheritance patch and redeploy it to railway.
-2. deploy the thread-first flair entry fix to railway.
+2. deploy the tightened flair-dialog matcher to railway.
 3. rerun the exact-target `AskWomenOver40` production smoke on the deployed build with policy-driven flair automation enabled and verify identity evidence plus proof artifacts.
 4. recreate the broader proof-matrix program on the new build and verify real proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
 
@@ -50,6 +52,7 @@
 - attempt `172d7e61-d2bb-4208-8816-2aae9f0dbb69` on `reddit_program_cd320ed4d1` reached `success_confirmed` on that same previously failing Healthyhooha thread, so the direct `comment_post` recovery path is proven in live production.
 - explicit target assignments now carry subreddit policy metadata through `_resolve_target(...)`, which is required to prove automatic flair handling against exact smoke targets instead of only discovered targets.
 - attempt `789c5d2a-f227-4f87-b054-7334a17fc5e6` on `reddit_program_3e844ab292` proved that `AskWomenOver40` is not currently blocked by missing compiler policy or missing proof plumbing; the real failure was the executor’s assumption that flair must always start from the subreddit root.
+- attempt `c13f8d00-8fa2-44d0-acac-6ef69a81987c` on `reddit_program_80a6d043c8` proved that the thread-first flair entry path works well enough to get past the old root-network failure, but the next mismatch is selector quality inside the flair dialog workflow rather than infra or compiler policy.
 
 ## open risks
 - production still needs proof that all 10 valid sessions can execute the new proof-matrix flow against real subreddit conditions.

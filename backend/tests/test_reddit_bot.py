@@ -579,6 +579,27 @@ def test_comment_on_post_passes_target_url_as_preferred_flair_entry(monkeypatch)
     assert recorded["preferred_url"] == "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/"
 
 
+def test_open_user_flair_dialog_rejects_false_positive_without_dialog_state(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(reddit_bot, "_open_subreddit_community_menu", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+
+    async def fake_click_named(_page, *, action_name, needles, max_text_length=None, **_kwargs):
+        calls.append((action_name, tuple(needles), max_text_length))
+        return action_name == "subreddit_open_user_flair"
+
+    monkeypatch.setattr(reddit_bot, "_click_named_control", fake_click_named)
+    monkeypatch.setattr(reddit_bot, "_click_visible_text_region", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_verify_named_control_state", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+
+    ok = asyncio.run(reddit_bot._open_user_flair_dialog(_FakePage()))
+
+    assert ok is False
+    assert calls == [
+        ("subreddit_open_user_flair", ("change user flair", "add user flair", "user flair", "edit user flair"), 96),
+    ]
+
+
 def test_create_post_uses_semantic_title_fallback_when_selector_title_is_missing(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
