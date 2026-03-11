@@ -1462,6 +1462,62 @@ async def _comment_action_row(
     return result or None
 
 
+async def _scroll_target_comment_into_view(
+    page,
+    *,
+    target_comment_url: str,
+    author: Optional[str],
+    expected_title: Optional[str] = None,
+    body_snippet: Optional[str] = None,
+    max_scrolls: int = 18,
+) -> Optional[Dict[str, Any]]:
+    row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+    if row:
+        return row
+
+    comment_id = _extract_reddit_comment_id(target_comment_url)
+    normalized_author = _normalize_text(author)
+    normalized_snippet = _normalize_text(body_snippet)
+    for _ in range(max(1, max_scrolls)):
+        try:
+            located = await page.evaluate(
+                """({ commentId, author, snippet }) => {
+                    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                    const viewportHeight = window.innerHeight || 873;
+                    const visible = (rect) => rect && rect.width >= 6 && rect.height >= 6 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight;
+                    const nodes = Array.from(document.querySelectorAll('a[href], div, span, p, button'));
+                    const match = nodes.find((node) => {
+                        const href = normalize(node.getAttribute && node.getAttribute('href'));
+                        const text = normalize(node.innerText || node.textContent);
+                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        if (commentId && (href.includes(commentId) || text.includes(commentId) || aria.includes(commentId))) return true;
+                        if (snippet && text.includes(snippet)) return true;
+                        if (author && (text.includes(author) || aria.includes(author))) return true;
+                        return false;
+                    });
+                    if (!match) return false;
+                    match.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    return visible(match.getBoundingClientRect());
+                }""",
+                {
+                    "commentId": comment_id or "",
+                    "author": normalized_author or "",
+                    "snippet": normalized_snippet or "",
+                },
+            )
+        except Exception:
+            located = False
+        if located:
+            await page.wait_for_timeout(900)
+        row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+        if row:
+            return row
+        await page.mouse.wheel(0, 620)
+        await page.wait_for_timeout(900)
+
+    return await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+
+
 async def _capture_row_signature(page, *, row_y: float, max_x: float) -> List[str]:
     try:
         result = await page.evaluate(
@@ -2232,7 +2288,13 @@ async def upvote_comment(
                         last_error = "Reddit target thread did not load"
                         continue
                 await dump_interactive_elements(page, "REDDIT UPVOTE COMMENT")
-                row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+                row = await _scroll_target_comment_into_view(
+                    page,
+                    target_comment_url=target_comment_url,
+                    author=author,
+                    expected_title=expected_title,
+                    body_snippet=body_snippet,
+                )
                 if not row:
                     last_error = "Reddit target comment context not found"
                     if idx + 1 < len(target_surfaces):
@@ -2696,7 +2758,13 @@ async def reply_to_comment(
                         continue
                 await dump_interactive_elements(page, "REDDIT REPLY TO COMMENT")
                 await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
-                row = await _comment_action_row(page, author=author, expected_title=expected_title, body_snippet=body_snippet)
+                row = await _scroll_target_comment_into_view(
+                    page,
+                    target_comment_url=target_comment_url,
+                    author=author,
+                    expected_title=expected_title,
+                    body_snippet=body_snippet,
+                )
                 if not row:
                     last_error = "Reddit target comment context not found"
                     if idx + 1 < len(target_surfaces):

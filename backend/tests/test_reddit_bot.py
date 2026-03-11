@@ -44,9 +44,13 @@ class _FakeKeyboard:
 class _FakeMouse:
     def __init__(self):
         self.clicks = []
+        self.wheels = []
 
     async def click(self, x, y):
         self.clicks.append((x, y))
+
+    async def wheel(self, dx, dy):
+        self.wheels.append((dx, dy))
 
 
 class _FakeBodyLocator:
@@ -697,6 +701,41 @@ def test_reply_comment_prefers_target_comment_surface(monkeypatch):
     assert result["success"] is True
     assert result["target_url"] == "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/"
     assert calls[0] == ("goto", "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/")
+
+
+def test_scroll_target_comment_into_view_scrolls_until_row_appears(monkeypatch):
+    page = _FakePage()
+    states = [
+        None,
+        None,
+        {
+            "author": {"x": 120, "y": 120},
+            "reply": {"left": 70, "y": 700, "x": 110},
+        },
+    ]
+
+    async def fake_comment_row(_page, *, author, expected_title=None, body_snippet=None):
+        assert author == "helper_user"
+        assert expected_title == "example post"
+        assert body_snippet == "helpful reply target"
+        return states.pop(0)
+
+    monkeypatch.setattr(reddit_bot, "_comment_action_row", fake_comment_row)
+
+    row = asyncio.run(
+        reddit_bot._scroll_target_comment_into_view(
+            page,
+            target_comment_url="https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/",
+            author="helper_user",
+            expected_title="example post",
+            body_snippet="helpful reply target",
+            max_scrolls=2,
+        )
+    )
+
+    assert row is not None
+    assert page.mouse.wheels == [(0, 620)]
+    assert page.waits == [900]
 
 
 def test_click_composer_text_region_uses_evaluate_candidate():

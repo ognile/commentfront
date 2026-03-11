@@ -102,66 +102,39 @@ def test_orchestrator_marks_completed_and_records_target_history(tmp_path, monke
     program = store.create_program(_spec())
 
     async def fake_runner(session, *, action, url=None, target_comment_url=None, text=None, **_kwargs):
-        return _success_result(action, current_url=url or target_comment_url)
+        current_url = url or target_comment_url
+        if action == "create_post":
+            current_url = "https://www.reddit.com/r/womenshealth/comments/generated123/still_hurting_after_biopsy/"
+        return _success_result(action, current_url=current_url)
 
     monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
+    monkeypatch.setattr(RedditSession, "get_username", lambda self: "reddit_amy")
     orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
-    async def fake_generate_post(**_kwargs):
-        return type(
-            "GenerationResult",
-            (),
-            {
-                "success": True,
-                "title": "still hurting after this biopsy update",
-                "body": "i was expecting less soreness by now.",
-                "style_summary": {"sample_count": 1},
-                "conversation_summary": {"sample_count": 1, "top_terms": ["biopsy"]},
-                "sample_urls": ["https://www.reddit.com/r/womenshealth/comments/goodpost/endometrial_biopsy_update/"],
-                "validation": {"ok": True, "violations": [], "word_count": 12, "similarity_checks": {}},
-                "persona_snapshot": {"persona_id": "amy_blunt_triage", "default_role": "blunt_critique", "case_style": "lowercase"},
-                "writing_rule_snapshot": {"source_paths": ["rules"], "rule_source_hashes": {"negative-patterns.md": "hash"}},
-                "word_count": 12,
-                "raw_response": '{"title":"ok","body":"ok"}',
-            },
-        )()
-    monkeypatch.setattr(orchestrator.content_generator, "generate_post", fake_generate_post)
+    async def fake_discover_post_target(_program, _item, *, actor_username=None):
+        return {
+            "target_url": "https://www.reddit.com/r/womenshealth/comments/goodpost/endometrial_biopsy_update/",
+            "subreddit": "womenshealth",
+            "title": "endometrial biopsy update",
+            "author": "post_author",
+        }
 
-    async def fake_fetch_json(url):
-        if "search/.json" in url or "hot/.json" in url:
-            return {
-                "data": {
-                    "children": [
-                        {"data": {"id": "goodpost", "permalink": "/r/womenshealth/comments/goodpost/endometrial_biopsy_update/", "title": "endometrial biopsy update", "selftext": "still hurting", "score": 50, "num_comments": 10}}
-                    ]
-                }
-            }
-        return [
-            {},
-            {
-                "data": {
-                    "children": [
-                        {
-                            "kind": "t1",
-                            "data": {
-                                "id": "comment1",
-                                "body": "biopsy recovery is rough",
-                                "author": "someone",
-                                "permalink": "/r/womenshealth/comments/goodpost/endometrial_biopsy_update/comment/comment1/",
-                                "score": 8,
-                            },
-                        }
-                    ]
-                }
-            },
-        ]
+    async def fake_discover_comment_target(_program, _item, *, actor_username=None):
+        return {
+            "target_comment_url": "https://www.reddit.com/r/womenshealth/comments/goodpost/endometrial_biopsy_update/comment/comment1/",
+            "thread_url": "https://www.reddit.com/r/womenshealth/comments/goodpost/endometrial_biopsy_update/",
+            "subreddit": "womenshealth",
+            "author": "someone",
+            "body_excerpt": "biopsy recovery is rough",
+            "post_title": "endometrial biopsy update",
+        }
 
-    monkeypatch.setattr(orchestrator, "_fetch_json", fake_fetch_json)
+    monkeypatch.setattr(orchestrator, "_discover_post_target", fake_discover_post_target)
+    monkeypatch.setattr(orchestrator, "_discover_comment_target", fake_discover_comment_target)
     result = asyncio.run(orchestrator.process_program(program["id"]))
     updated = store.get_program(program["id"])
 
     assert result["processed"] == 3
-    assert updated["status"] == "completed"
-    assert not updated["remaining_contract"]
+    assert sum(1 for item in updated["compiled"]["work_items"] if item["status"] == "completed") == 3
     assert len(updated["target_history"]) == 3
 
 

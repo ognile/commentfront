@@ -28,15 +28,26 @@
   - `pytest backend/tests/test_reddit_bot.py backend/tests/test_reddit_program_store.py backend/tests/test_reddit_program_notifications.py backend/tests/test_reddit_program_orchestrator.py backend/tests/test_reddit_program_api.py backend/tests/test_reddit_growth_generation.py backend/tests/test_forensics.py -q`
   - `cd frontend && npm test`
   - `cd frontend && npm run build`
+- production replacement already happened:
+  - cancelled invalid active programs `reddit_program_99e59a50a8`, `reddit_program_380923c46b`, `reddit_program_011dba1ce7`, and `reddit_program_6f091d39c2`
+  - created the fresh replacement rollout `reddit_program_1298b32d92`
+  - verified operator-view in production exposes `unsafe_rollout_flags`, persona columns, similarity/collision fields, and the fresh run is consuming work
+- first live generated attempt on the replacement rollout exists in production:
+  - attempt `ef7eae78-c885-4cd2-a73b-44c01e5bf880`
+  - action `reply_comment`
+  - profile `reddit_jenee_waters`
+  - persona metadata and rule hashes were persisted correctly
+  - failure reason was executor-side: `Reddit Reply button not found`
+- added a follow-up executor fix in `/Users/nikitalienov/Documents/commentfront/backend/reddit_bot.py` so reply/comment actions scroll the target comment into view before looking for row-level controls.
 - `cd frontend && npm run lint` has only the pre-existing hook-dependency warnings in `/Users/nikitalienov/Documents/commentfront/frontend/src/App.tsx`.
 
 ## active todo
 1. run `cd frontend && npm run lint` result capture and keep the known warnings recorded as pre-existing non-blockers.
-2. commit the scenario-b runtime changes and tracker updates.
-3. push to github and verify both backend and frontend deployments complete on the new commit.
-4. use production api to pause/cancel the invalid active reddit rollout(s).
-5. create a fresh `10-profile, 3-day` production reddit program on the redesigned runtime.
-6. verify in production that operator view shows persona metadata, rule hashes, unsafe flags, and no duplicate reply targets / same-thread dogpiles.
+2. commit the reply-target scroll fix and tracker updates.
+3. push to github and verify railway deployment completion on the new commit.
+4. verify the existing fresh rollout `reddit_program_1298b32d92` on the redeployed runtime.
+5. prove at least one generated action on `reddit_program_1298b32d92` reaches `success_confirmed` with persona metadata, rule hashes, persisted url, screenshot artifact, and attempt id.
+6. re-check operator view for zero unsafe rollout flags and zero duplicate reply-target/thread collisions after the redeploy.
 
 ## current understanding
 - the original live failure mode was structural, not cosmetic: persona-less generation plus profile-local reuse controls allowed multiple profiles to pile into the same thread/comment with clone-shaped text.
@@ -51,6 +62,6 @@
 - all local regression gates relevant to this scope are green.
 
 ## open risks
-- production rollout replacement is still pending; old active programs remain invalid methodology evidence until explicitly paused/replaced after deploy.
 - `comment_post` is still a manual-text path, not a generated scenario-b path.
 - live subreddit behavior can still reject or constrain targets; operator visibility will expose that, but it does not eliminate subreddit-side moderation variability.
+- the fresh replacement rollout is live, but it still needs one post-redeploy `success_confirmed` generated action to close the production proof loop cleanly.

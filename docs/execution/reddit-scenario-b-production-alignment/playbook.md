@@ -16,6 +16,7 @@
 - profile-local reuse guards are too weak for multi-profile rollouts.
 - tests that hit the real generator are flaky and hide runtime regressions behind environment noise.
 - operator views that only show success counts hide clustered bad behavior.
+- deep reddit comment urls do not reliably land with the target comment already visible, so row-level reply/upvote controls can be missing until the bot actively scrolls the comment into view.
 
 ## verification patterns
 - unit and integration coverage must prove persona/rule hashes, semantic similarity rejection, and cross-profile target blocking.
