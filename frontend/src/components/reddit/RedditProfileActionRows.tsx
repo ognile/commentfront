@@ -24,6 +24,10 @@ function proofBadgeTone(ok: boolean): 'default' | 'secondary' | 'outline' {
   return ok ? 'default' : 'outline'
 }
 
+function riskTone(ok: boolean): 'destructive' | 'outline' {
+  return ok ? 'destructive' : 'outline'
+}
+
 function shortId(value: string | null | undefined): string {
   if (!value) return 'no attempt'
   return value.slice(0, 8)
@@ -63,13 +67,14 @@ export function RedditProfileActionRows({ rows }: RedditProfileActionRowsProps) 
     <div className="rounded-2xl border border-[#ddd5c5] bg-[#fffdf8]">
       <Table className="table-fixed text-[13px]">
         <TableHeader>
-          <TableRow className="border-[#e8e1d2] hover:bg-transparent">
-            <TableHead className="h-10 w-[150px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">action</TableHead>
-            <TableHead className="h-10 px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">target</TableHead>
-            <TableHead className="h-10 w-[220px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">proof</TableHead>
-            <TableHead className="h-10 w-[180px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">latest</TableHead>
-            <TableHead className="h-10 w-[150px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">history</TableHead>
-          </TableRow>
+            <TableRow className="border-[#e8e1d2] hover:bg-transparent">
+              <TableHead className="h-10 w-[150px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">action</TableHead>
+              <TableHead className="h-10 px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">target</TableHead>
+              <TableHead className="h-10 w-[270px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">persona + text</TableHead>
+              <TableHead className="h-10 w-[220px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">proof</TableHead>
+              <TableHead className="h-10 w-[180px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">latest</TableHead>
+              <TableHead className="h-10 w-[150px] px-3 text-xs uppercase tracking-[0.12em] text-[#8a7f6a]">history</TableHead>
+            </TableRow>
         </TableHeader>
         <TableBody>
           {rows.map((row) => {
@@ -119,12 +124,38 @@ export function RedditProfileActionRows({ rows }: RedditProfileActionRowsProps) 
                   {row.error ? <div className="text-xs text-[#b42318]">{row.error}</div> : null}
                 </TableCell>
                 <TableCell className="space-y-2 px-3 py-3">
+                  <div className="flex flex-wrap gap-1.5">
+                    {row.persona_role ? <Badge variant="secondary">{row.persona_role.replace(/_/g, ' ')}</Badge> : null}
+                    {row.case_style_applied ? <Badge variant="outline">{row.case_style_applied.replace(/_/g, ' ')}</Badge> : null}
+                    {typeof row.word_count === 'number' ? <Badge variant="outline">{row.word_count} words</Badge> : null}
+                  </div>
+                  {row.persona_id ? <div className="text-[11px] text-[#7a7365]">{row.persona_id}</div> : null}
+                  {row.generated_text ? (
+                    <div className="rounded-xl border border-[#e7e0d0] bg-white px-2.5 py-2 text-[12px] leading-5 text-[#2c2a24]">
+                      {row.generated_text}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-[#9a9385]">no generated text</div>
+                  )}
+                </TableCell>
+                <TableCell className="space-y-2 px-3 py-3">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Badge variant={proofBadgeTone(row.proof_flags.has_url)}>url</Badge>
                     <Badge variant={proofBadgeTone(row.proof_flags.has_screenshot)}>shot</Badge>
                     <Badge variant={proofBadgeTone(row.proof_flags.has_attempt)}>attempt</Badge>
                     <Badge variant={proofBadgeTone(row.proof_flags.success_confirmed)}>confirmed</Badge>
+                    <Badge variant={riskTone(row.proof_flags.unsafe_rollout)}>unsafe</Badge>
                   </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Badge variant={riskTone(row.target_collision_flags.duplicate_target_ref)}>target collision</Badge>
+                    <Badge variant={riskTone(row.target_collision_flags.duplicate_reply_thread)}>thread dogpile</Badge>
+                    <Badge variant={riskTone(row.semantic_similarity_flags.length > 0)}>
+                      similarity {row.semantic_similarity_flags.length}
+                    </Badge>
+                  </div>
+                  {row.semantic_similarity_flags.length > 0 ? (
+                    <div className="text-[11px] text-[#b42318]">{row.semantic_similarity_flags.join(', ')}</div>
+                  ) : null}
                   <div className="flex flex-wrap items-center gap-2">
                     {screenshotUrl ? (
                       <a

@@ -1,0 +1,32 @@
+- free balling
+- just ride through it
+- techniques to cope with [negative outcomes]
+- stuff
+- hubby
+- put on weight
+- randomly
+- tolerating
+- massive
+- riding the wave
+- feels like i'm falling apart
+- but what i'm learning is...
+- i keep going for as long as i can
+- lots of things
+- everything seemed great at first
+- quit cold turkey
+- These fkn pharma drugs always promise to fix shit but the side effects are crazy they just simply don’t outweigh the benefits.
+- achey
+- extremely pissed off
+- ...but come on!!
+- ...because it seems...
+- 'get the cold shoulder'
+- He withdraws affection
+- sorry is it normal?
+- drenched in sweat
+- under attack from...
+- it makes it tolerable
+- It's like it ages you
+- melting off like butter
+- I thought I had lost myself there for a bit but I am back and loving life again
+- Life is good!
+- Listen to your body

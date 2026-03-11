@@ -7109,10 +7109,24 @@ async def _build_reddit_program_operator_view(
 
     profile_order = list((((program.get("spec") or {}).get("profile_selection") or {}).get("profile_names") or []))
     profile_position = {name: index for index, name in enumerate(profile_order)}
+    target_ref_counts: Dict[str, int] = {}
+    thread_reply_counts: Dict[str, int] = {}
+    for item in filtered_items:
+        target_ref = _reddit_item_target_ref(item)
+        if target_ref:
+            target_ref_counts[target_ref] = target_ref_counts.get(target_ref, 0) + 1
+        thread_ref = (
+            str((((item.get("generation_evidence") or {}).get("thread_url") or ""))).strip()
+            or str((((item.get("discovered_target") or {}).get("thread_url") or ""))).strip()
+            or str(item.get("target_url") or "").strip()
+        )
+        if str(item.get("action") or "") == "reply_comment" and thread_ref:
+            thread_reply_counts[thread_ref] = thread_reply_counts.get(thread_ref, 0) + 1
     action_rows: List[Dict[str, Any]] = []
     rows_by_profile: Dict[str, List[Dict[str, Any]]] = {}
     for item in filtered_items:
         result = dict(item.get("result") or {})
+        generation_evidence = dict(item.get("generation_evidence") or {})
         attempt_id = str(result.get("attempt_id") or "").strip() or None
         detail = latest_detail_by_attempt_id.get(attempt_id or "", {})
         attempt = dict((detail or {}).get("attempt") or {})
@@ -7120,6 +7134,11 @@ async def _build_reddit_program_operator_view(
         target_url = _reddit_item_target_url(item)
         target_comment_url = _reddit_item_target_comment_url(item)
         target_ref = target_comment_url or target_url
+        thread_url = (
+            str(generation_evidence.get("thread_url") or "").strip()
+            or str((((item.get("discovered_target") or {}).get("thread_url") or ""))).strip()
+            or target_url
+        )
         screenshot_artifact_url = _operator_screenshot_artifact_url(detail)
         final_verdict = (
             str(result.get("final_verdict") or "").strip()
@@ -7127,6 +7146,26 @@ async def _build_reddit_program_operator_view(
             or str(attempt.get("final_verdict") or "").strip()
             or None
         )
+        similarity_checks = dict(
+            ((generation_evidence.get("novelty_validation") or {}).get("similarity_checks"))
+            or ((generation_evidence.get("validation") or {}).get("similarity_checks"))
+            or {}
+        )
+        similarity_flags = [
+            scope
+            for scope, metrics in similarity_checks.items()
+            if isinstance(metrics, dict) and (
+                bool(metrics.get("exact_duplicate"))
+                or bool(metrics.get("opening_overlap"))
+                or float(metrics.get("sequence_ratio") or 0) >= 0.76
+                or float(metrics.get("token_overlap") or 0) >= 0.62
+                or float(metrics.get("ngram_overlap") or 0) >= 0.45
+            )
+        ]
+        target_collision_flags = {
+            "duplicate_target_ref": bool(target_ref and target_ref_counts.get(target_ref, 0) > 1),
+            "duplicate_reply_thread": bool(str(item.get("action") or "") == "reply_comment" and thread_url and thread_reply_counts.get(thread_url, 0) > 1),
+        }
         row = {
             "work_item_id": item.get("id"),
             "local_date": item.get("local_date"),
@@ -7145,15 +7184,25 @@ async def _build_reddit_program_operator_view(
             "target_url": target_url,
             "target_comment_url": target_comment_url,
             "target_ref": target_ref,
+            "thread_url": thread_url,
             "screenshot_artifact_url": screenshot_artifact_url,
             "scheduled_at": item.get("scheduled_at"),
             "completed_at": item.get("completed_at"),
             "error": item.get("error") or result.get("error") or attempt.get("error"),
+            "persona_id": generation_evidence.get("persona_id"),
+            "persona_role": generation_evidence.get("persona_role"),
+            "case_style_applied": generation_evidence.get("case_style_applied"),
+            "generated_text": generation_evidence.get("combined_text") or generation_evidence.get("text"),
+            "word_count": generation_evidence.get("word_count") or ((generation_evidence.get("validation") or {}).get("word_count")),
+            "rule_source_hashes": dict(generation_evidence.get("rule_source_hashes") or {}),
+            "semantic_similarity_flags": similarity_flags,
+            "target_collision_flags": target_collision_flags,
             "proof_flags": {
                 "has_url": bool(target_ref),
                 "has_screenshot": bool(screenshot_artifact_url),
                 "has_attempt": bool(attempt_id),
                 "success_confirmed": final_verdict == "success_confirmed",
+                "unsafe_rollout": bool(similarity_flags or any(target_collision_flags.values())),
             },
             "attempt_history": attempt_history_by_work_item.get(str(item.get("id") or ""), []),
         }
@@ -7188,6 +7237,7 @@ async def _build_reddit_program_operator_view(
             "with_screenshot": sum(1 for row in rows if row["proof_flags"]["has_screenshot"]),
             "with_attempt": sum(1 for row in rows if row["proof_flags"]["has_attempt"]),
             "success_confirmed": sum(1 for row in rows if row["proof_flags"]["success_confirmed"]),
+            "unsafe_rollout": sum(1 for row in rows if row["proof_flags"]["unsafe_rollout"]),
         }
         profiles_by_day.append(
             {
@@ -7216,6 +7266,12 @@ async def _build_reddit_program_operator_view(
             "available_actions": sorted(str(action) for action in dict(program.get("contract_totals") or {}).keys()),
             "notification_log": program.get("notification_log"),
             "failure_summary": program.get("failure_summary") or {},
+            "unsafe_rollout_flags": {
+                "rows": sum(1 for row in action_rows if row["proof_flags"]["unsafe_rollout"]),
+                "duplicate_target_refs": sum(1 for row in action_rows if row["target_collision_flags"]["duplicate_target_ref"]),
+                "duplicate_reply_threads": sum(1 for row in action_rows if row["target_collision_flags"]["duplicate_reply_thread"]),
+                "semantic_similarity": sum(1 for row in action_rows if row["semantic_similarity_flags"]),
+            },
         },
         "profiles_by_day": profiles_by_day,
         "action_rows": action_rows,

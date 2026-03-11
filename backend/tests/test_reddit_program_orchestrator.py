@@ -106,6 +106,25 @@ def test_orchestrator_marks_completed_and_records_target_history(tmp_path, monke
 
     monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
     orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
+    async def fake_generate_post(**_kwargs):
+        return type(
+            "GenerationResult",
+            (),
+            {
+                "success": True,
+                "title": "still hurting after this biopsy update",
+                "body": "i was expecting less soreness by now.",
+                "style_summary": {"sample_count": 1},
+                "conversation_summary": {"sample_count": 1, "top_terms": ["biopsy"]},
+                "sample_urls": ["https://www.reddit.com/r/womenshealth/comments/goodpost/endometrial_biopsy_update/"],
+                "validation": {"ok": True, "violations": [], "word_count": 12, "similarity_checks": {}},
+                "persona_snapshot": {"persona_id": "amy_blunt_triage", "default_role": "blunt_critique", "case_style": "lowercase"},
+                "writing_rule_snapshot": {"source_paths": ["rules"], "rule_source_hashes": {"negative-patterns.md": "hash"}},
+                "word_count": 12,
+                "raw_response": '{"title":"ok","body":"ok"}',
+            },
+        )()
+    monkeypatch.setattr(orchestrator.content_generator, "generate_post", fake_generate_post)
 
     async def fake_fetch_json(url):
         if "search/.json" in url or "hot/.json" in url:
@@ -166,7 +185,7 @@ def test_verification_contract_blocks_false_success(tmp_path, monkeypatch):
     assert updated["remaining_contract"]["comment_post"] == 1
 
 
-def test_target_history_prevents_same_target_reuse_same_profile_day(tmp_path):
+def test_target_history_prevents_same_target_reuse_across_profiles(tmp_path):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(_spec())
     orchestrator = RedditProgramOrchestrator(store=store)
@@ -180,9 +199,29 @@ def test_target_history_prevents_same_target_reuse_same_profile_day(tmp_path):
 
     assert orchestrator._target_already_used(
         program,
-        profile_name="reddit_amy",
+        profile_name="reddit_beta",
         local_date="2026-03-09",
         target_ref="https://www.reddit.com/r/womenshealth/comments/goodpost/endometrial_biopsy_update/",
+    )
+
+
+def test_target_reuse_checks_pending_reserved_items(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(_spec())
+    orchestrator = RedditProgramOrchestrator(store=store)
+    pending_item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "reply_comment")
+    pending_item["target_comment_url"] = "https://www.reddit.com/r/womenshealth/comments/post/comment/c1/"
+    pending_item["discovered_target"] = {
+        "thread_url": "https://www.reddit.com/r/womenshealth/comments/post/",
+        "author": "other_user",
+        "subreddit": "womenshealth",
+    }
+
+    assert orchestrator._target_already_used(
+        program,
+        profile_name="reddit_other",
+        local_date=str(pending_item["local_date"]),
+        target_ref="https://www.reddit.com/r/womenshealth/comments/post/comment/c1/",
     )
 
 
@@ -421,7 +460,10 @@ def test_resolve_target_generates_reply_text_when_missing(tmp_path, monkeypatch)
                 "style_summary": {"sample_count": 1},
                 "conversation_summary": {"sample_count": 2, "top_terms": ["biopsy"]},
                 "sample_urls": ["https://www.reddit.com/r/womenshealth/comments/abc123/sample/"],
-                "validation": {"ok": True, "violations": []},
+                "validation": {"ok": True, "violations": [], "word_count": 15, "similarity_checks": {}},
+                "persona_snapshot": {"persona_id": "amy_blunt_triage", "default_role": "blunt_critique", "case_style": "lowercase"},
+                "writing_rule_snapshot": {"source_paths": ["rules"], "rule_source_hashes": {"negative-patterns.md": "hash"}},
+                "word_count": 15,
                 "raw_response": '{"text":"ok"}',
             },
         )()
@@ -435,6 +477,7 @@ def test_resolve_target_generates_reply_text_when_missing(tmp_path, monkeypatch)
     assert payload["text"].startswith("it may help")
     assert payload["generation_evidence"]["kind"] == "reply_comment"
     assert payload["generation_evidence"]["conversation_summary"]["sample_count"] == 2
+    assert payload["generation_evidence"]["persona_id"] == "amy_blunt_triage"
 
 
 def test_record_failure_keeps_mandatory_join_target_url(tmp_path):
@@ -554,6 +597,94 @@ def test_discover_comment_target_skips_own_content_in_production(tmp_path, monke
     assert candidate["author"] == "other_user"
 
 
+def test_discover_comment_target_prefers_non_dogpiled_thread(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            topic_constraints={"subreddits": ["womenshealth"], "keywords": ["biopsy"]},
+            engagement_quotas={
+                "upvotes_per_day": 0,
+                "reply_min_per_day": 1,
+                "reply_max_per_day": 1,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "reply_comment")
+    program["target_history"] = [
+        {
+            "profile_name": "reddit_alpha",
+            "local_date": item["local_date"],
+            "action": "reply_comment",
+            "thread_url": "https://www.reddit.com/r/womenshealth/comments/p1/thread/",
+            "target_ref": "https://www.reddit.com/r/womenshealth/comments/p1/thread/comment/c-old/",
+            "subreddit": "womenshealth",
+        }
+    ]
+
+    async def fake_discover_posts_for_subreddit(*, subreddit, keywords, max_posts):
+        return [
+            {
+                "target_id": "p1",
+                "target_url": "https://www.reddit.com/r/womenshealth/comments/p1/thread/",
+                "subreddit": subreddit,
+                "title": "biopsy question",
+                "body_excerpt": "still cramping after biopsy",
+                "author": "post_one",
+                "score": 50,
+                "comment_count": 60,
+                "source": "subreddit_hot",
+            },
+            {
+                "target_id": "p2",
+                "target_url": "https://www.reddit.com/r/womenshealth/comments/p2/thread/",
+                "subreddit": subreddit,
+                "title": "healing question",
+                "body_excerpt": "question about healing",
+                "author": "post_two",
+                "score": 10,
+                "comment_count": 8,
+                "source": "subreddit_hot",
+            },
+        ]
+
+    async def fake_fetch_json(url):
+        if "p1" in url:
+            permalink = "/r/womenshealth/comments/p1/thread/comment/c1/"
+        else:
+            permalink = "/r/womenshealth/comments/p2/thread/comment/c2/"
+        return [
+            {},
+            {
+                "data": {
+                    "children": [
+                        {
+                            "kind": "t1",
+                            "data": {
+                                "id": permalink.rsplit("/", 2)[1],
+                                "body": "my cramps eased after two days",
+                                "author": "other_user",
+                                "permalink": permalink,
+                                "score": 5,
+                            },
+                        }
+                    ]
+                }
+            },
+        ]
+
+    monkeypatch.setattr(orchestrator, "_discover_posts_for_subreddit", fake_discover_posts_for_subreddit)
+    monkeypatch.setattr(orchestrator, "_fetch_json", fake_fetch_json)
+
+    candidate = asyncio.run(orchestrator._discover_comment_target(program, item, actor_username="reddit_amy_actual"))
+
+    assert candidate is not None
+    assert candidate["thread_url"] == "https://www.reddit.com/r/womenshealth/comments/p2/thread/"
+
+
 def test_finalize_resolution_failure_does_not_consume_attempt_on_generation_failure(tmp_path):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
@@ -591,6 +722,28 @@ def test_finalize_resolution_failure_does_not_consume_attempt_on_generation_fail
     assert item["status"] == "pending"
 
 
+def test_remember_generated_text_persists_scoped_records(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(_spec())
+    orchestrator = RedditProgramOrchestrator(store=store)
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "reply_comment")
+    item["target_comment_url"] = "https://www.reddit.com/r/womenshealth/comments/post/comment/c1/"
+    item["discovered_target"] = {"thread_url": "https://www.reddit.com/r/womenshealth/comments/post/"}
+
+    orchestrator._remember_generated_text(
+        program,
+        item,
+        {
+            "text": "go back.",
+            "combined_text": "go back.",
+            "thread_url": "https://www.reddit.com/r/womenshealth/comments/post/",
+        },
+    )
+
+    assert program["generated_text_history"] == ["go back."]
+    assert program["generated_text_records"][0]["thread_url"] == "https://www.reddit.com/r/womenshealth/comments/post/"
+
+
 def test_create_post_success_uses_current_url_as_target_reference(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
@@ -621,6 +774,25 @@ def test_create_post_success_uses_current_url_as_target_reference(tmp_path, monk
     monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
     monkeypatch.setattr(RedditSession, "get_username", lambda self: "reddit_amy")
     orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
+    async def fake_generate_post(**_kwargs):
+        return type(
+            "GenerationResult",
+            (),
+            {
+                "success": True,
+                "title": "should i get checked again after this biopsy?",
+                "body": "still having more soreness than i expected.",
+                "style_summary": {"sample_count": 1},
+                "conversation_summary": {"sample_count": 2, "top_terms": ["biopsy"]},
+                "sample_urls": ["https://www.reddit.com/r/womenshealth/comments/abc123/sample/"],
+                "validation": {"ok": True, "violations": [], "word_count": 14, "similarity_checks": {}},
+                "persona_snapshot": {"persona_id": "amy_blunt_triage", "default_role": "blunt_critique", "case_style": "lowercase"},
+                "writing_rule_snapshot": {"source_paths": ["rules"], "rule_source_hashes": {"negative-patterns.md": "hash"}},
+                "word_count": 14,
+                "raw_response": '{"title":"ok","body":"ok"}',
+            },
+        )()
+    monkeypatch.setattr(orchestrator.content_generator, "generate_post", fake_generate_post)
     item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "create_post")
 
     updated = asyncio.run(orchestrator._run_work_item(program, item["id"]))

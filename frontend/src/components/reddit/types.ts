@@ -85,15 +85,28 @@ export interface RedditOperatorActionRow {
   target_url?: string | null
   target_comment_url?: string | null
   target_ref?: string | null
+  thread_url?: string | null
   screenshot_artifact_url?: string | null
   scheduled_at?: string | null
   completed_at?: string | null
   error?: string | null
+  persona_id?: string | null
+  persona_role?: string | null
+  case_style_applied?: string | null
+  generated_text?: string | null
+  word_count?: number | null
+  rule_source_hashes?: Record<string, string>
+  semantic_similarity_flags: string[]
+  target_collision_flags: {
+    duplicate_target_ref: boolean
+    duplicate_reply_thread: boolean
+  }
   proof_flags: {
     has_url: boolean
     has_screenshot: boolean
     has_attempt: boolean
     success_confirmed: boolean
+    unsafe_rollout: boolean
   }
   attempt_history: RedditOperatorAttemptHistoryEntry[]
 }
@@ -114,6 +127,7 @@ export interface RedditOperatorProfileRow {
     with_screenshot: number
     with_attempt: number
     success_confirmed: number
+    unsafe_rollout: number
   }
 }
 
@@ -132,6 +146,12 @@ export interface RedditOperatorProgramSummary {
     by_profile?: Record<string, number>
     by_subreddit?: Record<string, number>
     by_class?: Record<string, number>
+  }
+  unsafe_rollout_flags?: {
+    rows: number
+    duplicate_target_refs: number
+    duplicate_reply_threads: number
+    semantic_similarity: number
   }
 }
 

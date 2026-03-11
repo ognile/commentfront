@@ -85,6 +85,7 @@ export function RedditOpsWorkspace({
   const totalRemaining = program ? totalCount(program.remaining_contract || {}) : 0
   const totalRequiredProof = filteredProfiles.reduce((sum, row) => sum + row.proof_coverage.required_actions, 0)
   const totalConfirmedProof = filteredProfiles.reduce((sum, row) => sum + row.proof_coverage.success_confirmed, 0)
+  const totalUnsafe = filteredProfiles.reduce((sum, row) => sum + row.proof_coverage.unsafe_rollout, 0)
   const selectedDayIndex = Math.max(0, (program?.available_days || []).findIndex((day) => day === selectedLocalDate))
   const nextRunLabel = formatNextRun(program?.next_run_at)
 
@@ -110,6 +111,9 @@ export function RedditOpsWorkspace({
                 <Badge variant={totalFailures > 0 ? 'destructive' : 'outline'}>failures {totalFailures}</Badge>
                 <Badge variant={totalRequiredProof > 0 && totalConfirmedProof === totalRequiredProof ? 'default' : 'secondary'}>
                   confirmed proof {totalConfirmedProof}/{totalRequiredProof}
+                </Badge>
+                <Badge variant={totalUnsafe > 0 ? 'destructive' : 'outline'}>
+                  unsafe {totalUnsafe}
                 </Badge>
                 {nextRunLabel ? <Badge variant="outline">next {nextRunLabel}</Badge> : null}
               </div>
@@ -180,11 +184,15 @@ export function RedditOpsWorkspace({
                   <CheckCircle2 className="h-4 w-4" />
                   {totalConfirmedProof}/{totalRequiredProof || 0} proof confirmed
                 </div>
+                <div className="flex items-center gap-2 rounded-xl border border-[#d8d3c5] bg-white px-3 py-2 text-sm text-[#5c564a]">
+                  <AlertCircle className={`h-4 w-4 ${totalUnsafe > 0 ? 'text-[#b42318]' : 'text-[#8a7f6a]'}`} />
+                  {totalUnsafe} unsafe rows
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="grid gap-2 lg:grid-cols-4">
+          <div className="grid gap-2 lg:grid-cols-5">
             <div className="rounded-2xl border border-[#e6decd] bg-white px-3 py-3">
               <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">state</div>
               <div className="mt-1 flex items-center gap-2 text-base font-semibold text-[#1f1f1a]">
@@ -205,6 +213,13 @@ export function RedditOpsWorkspace({
               <div className="mt-1 flex items-center gap-2 text-base font-semibold text-[#1f1f1a]">
                 <AlertCircle className={`h-4 w-4 ${totalFailures > 0 ? 'text-[#b42318]' : 'text-[#8a7f6a]'}`} />
                 {totalFailures}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-[#e6decd] bg-white px-3 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7f6a]">unsafe</div>
+              <div className="mt-1 flex items-center gap-2 text-base font-semibold text-[#1f1f1a]">
+                <AlertCircle className={`h-4 w-4 ${totalUnsafe > 0 ? 'text-[#b42318]' : 'text-[#8a7f6a]'}`} />
+                {totalUnsafe}
               </div>
             </div>
           </div>

@@ -214,6 +214,15 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
                         "final_verdict": "success_confirmed",
                         "target_url": "https://www.reddit.com/r/Healthyhooha/comments/thread-1/",
                     },
+                    "generation_evidence": {
+                        "combined_text": "Go back for a swab.",
+                        "persona_id": "catherine_authority_frame",
+                        "persona_role": "authority",
+                        "case_style_applied": "proper_case",
+                        "word_count": 5,
+                        "rule_source_hashes": {"negative-patterns.md": "hash-neg"},
+                        "novelty_validation": {"similarity_checks": {}},
+                    },
                 },
                 {
                     "id": "work_post",
@@ -232,6 +241,25 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
                         "attempt_id": "attempt_post_latest",
                         "final_verdict": "failed_confirmed",
                         "target_url": "https://www.reddit.com/r/WomensHealth/comments/thread-2/",
+                    },
+                    "generation_evidence": {
+                        "combined_text": "two weeks with open skin is a bad plan.",
+                        "persona_id": "amy_blunt_triage",
+                        "persona_role": "blunt_critique",
+                        "case_style_applied": "lowercase",
+                        "word_count": 9,
+                        "rule_source_hashes": {"negative-patterns.md": "hash-neg"},
+                        "novelty_validation": {
+                            "similarity_checks": {
+                                "same_thread": {
+                                    "sequence_ratio": 0.81,
+                                    "token_overlap": 0.7,
+                                    "ngram_overlap": 0.5,
+                                    "opening_overlap": True,
+                                    "exact_duplicate": False
+                                }
+                            }
+                        },
                     },
                 },
             ]
@@ -259,11 +287,14 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
         "with_screenshot": 1,
         "with_attempt": 1,
         "success_confirmed": 1,
+        "unsafe_rollout": 0,
     }
 
     comment_row = next(row for row in response["action_rows"] if row["work_item_id"] == "work_comment")
     assert comment_row["screenshot_artifact_url"] == "/forensics/artifacts/comment-shot"
     assert comment_row["proof_flags"]["success_confirmed"] is True
+    assert comment_row["persona_role"] == "authority"
+    assert comment_row["word_count"] == 5
     assert [entry["attempt_id"] for entry in comment_row["attempt_history"]] == [
         "attempt_comment_latest",
         "attempt_comment_old",
@@ -271,8 +302,11 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
 
     post_row = next(row for row in response["action_rows"] if row["work_item_id"] == "work_post")
     assert post_row["proof_flags"]["has_screenshot"] is False
+    assert post_row["proof_flags"]["unsafe_rollout"] is True
     assert post_row["error"] == "community restriction"
     assert post_row["final_verdict"] == "failed_confirmed"
+    assert post_row["semantic_similarity_flags"] == ["same_thread"]
+    assert response["program"]["unsafe_rollout_flags"]["rows"] == 1
 
     filtered = asyncio.run(
         main.get_reddit_program_operator_view(

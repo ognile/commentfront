@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import difflib
 import json
 import logging
 import os
@@ -14,6 +15,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from config import GEMINI_API_KEY, GEMINI_MODEL
+from reddit_persona_registry import get_reddit_persona_snapshot
+from reddit_writing_rules import WRITING_RULE_SOURCE_PATHS, get_writing_rule_snapshot
 
 try:
     from google import genai
@@ -24,85 +27,6 @@ except Exception:  # pragma: no cover - optional import in tests
 
 
 logger = logging.getLogger("RedditGrowthGeneration")
-
-WRITING_RULE_SOURCE_PATHS = [
-    "/Users/nikitalienov/Documents/writing/.claude/rules/great-writing-patterns.md",
-    "/Users/nikitalienov/Documents/writing/.claude/rules/negative-patterns.md",
-    "/Users/nikitalienov/Documents/writing/.claude/rules/vocabulary-guidance.md",
-]
-
-GOOD_WRITING_PRINCIPLES = [
-    "write in lowercase and keep the tone human, direct, and grounded",
-    "use concrete details instead of vague abstractions",
-    "keep emotional velocity, but stay believable and human-scale",
-    "let each sentence pull naturally into the next",
-    "prefer 'this' over 'that' when it fits",
-    "keep replies helpful, specific, and relevant to the thread or subreddit",
-    "avoid over-selling, preachiness, or generic motivational language",
-]
-
-OPERATOR_META_PATTERNS = [
-    "checking profile",
-    "checking eligibility",
-    "profile eligibility",
-    "eligibility check",
-    "test post",
-    "testing post",
-    "testing reply",
-    "automation check",
-    "bot check",
-    "flight check",
-    "debug post",
-    "debugging this",
-]
-
-GENERIC_FILLER_PATTERNS = [
-    "just wanted to share",
-    "thought i would ask",
-    "does anyone have advice",
-    "any thoughts",
-]
-
-BANNED_PATTERNS = [
-    "the result?",
-    "here's the thing:",
-    "the best part?",
-    "isn't just",
-    "no x, no y, just z",
-    "it's not just",
-    "it's not about",
-    "not because",
-    "that's not",
-    "where x meets y",
-    "but here's the thing:",
-    "and honestly?",
-    "here's what they don't tell you",
-    "they don't want you to know",
-    "real talk:",
-    "here's the deal:",
-    "here’s the kicker:",
-]
-
-BANNED_VOCABULARY = [
-    "free balling",
-    "just ride through it",
-    "stuff",
-    "hubby",
-    "put on weight",
-    "randomly",
-    "tolerating",
-    "massive",
-    "riding the wave",
-    "feels like i'm falling apart",
-    "but what i'm learning is",
-    "lots of things",
-    "everything seemed great at first",
-    "quit cold turkey",
-    "achey",
-    "extremely pissed off",
-    "get the cold shoulder",
-    "listen to your body",
-]
 
 STOPWORDS = {
     "a",
@@ -148,21 +72,8 @@ def _normalize_text(value: Optional[str]) -> str:
     return _collapse_whitespace(value).lower()
 
 
-def get_writing_rule_snapshot() -> Dict[str, Any]:
-    return {
-        "source_paths": list(WRITING_RULE_SOURCE_PATHS),
-        "positive_principles": list(GOOD_WRITING_PRINCIPLES),
-        "banned_patterns": list(BANNED_PATTERNS),
-        "banned_vocabulary": list(BANNED_VOCABULARY),
-        "operator_meta_patterns": list(OPERATOR_META_PATTERNS),
-        "generic_filler_patterns": list(GENERIC_FILLER_PATTERNS),
-        "style_requirements": {
-            "lowercase_only": True,
-            "no_em_dash": True,
-            "human_scale": True,
-            "subreddit_relevant": True,
-        },
-    }
+def _word_count(value: Optional[str]) -> int:
+    return len(re.findall(r"\b[\w']+\b", str(value or "")))
 
 
 def _meaningful_tokens(value: Optional[str]) -> List[str]:
@@ -171,6 +82,10 @@ def _meaningful_tokens(value: Optional[str]) -> List[str]:
         for token in re.findall(r"[a-z0-9']+", _normalize_text(value))
         if len(token) >= 3 and token not in STOPWORDS
     ]
+
+
+def _lead_tokens(value: Optional[str], *, limit: int = 3) -> List[str]:
+    return re.findall(r"[a-z0-9']+", _normalize_text(value))[:limit]
 
 
 def _term_frequencies(texts: List[str]) -> Dict[str, int]:
@@ -192,6 +107,28 @@ def _token_overlap(left: str, right: str) -> float:
         return 0.0
     intersection = len(left_tokens & right_tokens)
     return intersection / max(1, min(len(left_tokens), len(right_tokens)))
+
+
+def _ngram_overlap(left: str, right: str, *, size: int = 3) -> float:
+    left_tokens = re.findall(r"[a-z0-9']+", _normalize_text(left))
+    right_tokens = re.findall(r"[a-z0-9']+", _normalize_text(right))
+    if len(left_tokens) < size or len(right_tokens) < size:
+        return 0.0
+    left_ngrams = {" ".join(left_tokens[index:index + size]) for index in range(len(left_tokens) - size + 1)}
+    right_ngrams = {" ".join(right_tokens[index:index + size]) for index in range(len(right_tokens) - size + 1)}
+    if not left_ngrams or not right_ngrams:
+        return 0.0
+    return len(left_ngrams & right_ngrams) / max(1, min(len(left_ngrams), len(right_ngrams)))
+
+
+def _sequence_ratio(left: str, right: str) -> float:
+    return difflib.SequenceMatcher(None, _normalize_text(left), _normalize_text(right)).ratio()
+
+
+def _shared_opening(left: str, right: str, *, size: int = 2) -> bool:
+    left_lead = _lead_tokens(left, limit=size)
+    right_lead = _lead_tokens(right, limit=size)
+    return len(left_lead) == size and left_lead == right_lead
 
 
 def summarize_conversation_context(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -225,63 +162,152 @@ def summarize_conversation_context(samples: List[Dict[str, Any]]) -> Dict[str, A
     }
 
 
+def _case_style_violation(text: str, case_style: str) -> Optional[str]:
+    if case_style == "lowercase":
+        if str(text or "") != str(text or "").lower():
+            return "text does not match lowercase persona case style"
+        return None
+    if case_style == "proper_case":
+        alpha = [char for char in str(text or "") if char.isalpha()]
+        if alpha and not any(char.isupper() for char in alpha):
+            return "text does not match proper_case persona case style"
+    return None
+
+
+def _best_similarity(text: str, scope_texts: List[str]) -> Dict[str, Any]:
+    best = {
+        "matched_text": None,
+        "sequence_ratio": 0.0,
+        "token_overlap": 0.0,
+        "ngram_overlap": 0.0,
+        "opening_overlap": False,
+        "exact_duplicate": False,
+    }
+    normalized = _normalize_text(text)
+    for previous in list(scope_texts or []):
+        previous_text = str(previous or "").strip()
+        if not previous_text:
+            continue
+        candidate = {
+            "matched_text": previous_text,
+            "sequence_ratio": _sequence_ratio(text, previous_text),
+            "token_overlap": _token_overlap(text, previous_text),
+            "ngram_overlap": _ngram_overlap(text, previous_text),
+            "opening_overlap": _shared_opening(text, previous_text),
+            "exact_duplicate": normalized == _normalize_text(previous_text),
+        }
+        if (
+            candidate["exact_duplicate"]
+            or candidate["sequence_ratio"] > best["sequence_ratio"]
+            or candidate["token_overlap"] > best["token_overlap"]
+            or candidate["ngram_overlap"] > best["ngram_overlap"]
+        ):
+            best = candidate
+    return best
+
+
+def _scope_similarity_violation(scope: str, metrics: Dict[str, Any]) -> Optional[str]:
+    if metrics["exact_duplicate"]:
+        return {
+            "same_program": "duplicates prior generated text in this program",
+            "same_thread": "duplicates prior generated text in this thread",
+            "same_profile": "duplicates prior generated text for this profile",
+            "nearby_context": "duplicates nearby subreddit content",
+        }.get(scope, "duplicates prior generated text")
+    if scope == "same_thread":
+        if metrics["opening_overlap"] and metrics["token_overlap"] >= 0.45:
+            return "reuses the same opening move inside this thread"
+        if metrics["sequence_ratio"] >= 0.76 or metrics["token_overlap"] >= 0.62 or metrics["ngram_overlap"] >= 0.45:
+            return "is too similar to nearby generated text in this thread"
+        return None
+    if scope == "same_profile":
+        if metrics["opening_overlap"]:
+            return "reuses the same opening move for this profile"
+        if metrics["sequence_ratio"] >= 0.8 or metrics["token_overlap"] >= 0.66 or metrics["ngram_overlap"] >= 0.5:
+            return "is too similar to prior generated text for this profile"
+        return None
+    if scope == "same_program":
+        if metrics["opening_overlap"] and metrics["token_overlap"] >= 0.5:
+            return "reuses the same opening move in this program"
+        if metrics["sequence_ratio"] >= 0.84 or metrics["token_overlap"] >= 0.72 or metrics["ngram_overlap"] >= 0.56:
+            return "is too similar to prior generated text in this program"
+        return None
+    if scope == "nearby_context":
+        if metrics["opening_overlap"] and metrics["token_overlap"] >= 0.45:
+            return "reuses the same opening move as nearby subreddit content"
+        if metrics["sequence_ratio"] >= 0.8 or metrics["token_overlap"] >= 0.68 or metrics["ngram_overlap"] >= 0.52:
+            return "is too similar to nearby subreddit content"
+    return None
+
+
 def validate_generated_text(
     text: str,
     *,
     recent_texts: Optional[List[str]] = None,
     nearby_texts: Optional[List[str]] = None,
+    same_thread_texts: Optional[List[str]] = None,
+    same_profile_texts: Optional[List[str]] = None,
     require_context_overlap: bool = False,
+    persona_snapshot: Optional[Dict[str, Any]] = None,
+    writing_rule_snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized = _normalize_text(text)
     violations: List[str] = []
+    rule_snapshot = writing_rule_snapshot or get_writing_rule_snapshot()
+    persona_snapshot = dict(persona_snapshot or {})
     nearby_texts = [str(item or "").strip() for item in list(nearby_texts or []) if str(item or "").strip()]
+    same_thread_texts = [str(item or "").strip() for item in list(same_thread_texts or []) if str(item or "").strip()]
+    same_profile_texts = [str(item or "").strip() for item in list(same_profile_texts or []) if str(item or "").strip()]
+    recent_texts = [str(item or "").strip() for item in list(recent_texts or []) if str(item or "").strip()]
 
     if not normalized:
         violations.append("text is empty")
     if "—" in str(text or ""):
         violations.append("contains em dash")
 
-    for phrase in BANNED_PATTERNS:
+    for phrase in list(rule_snapshot.get("banned_patterns") or []):
         phrase_norm = _normalize_text(phrase)
         if phrase_norm and phrase_norm in normalized:
             violations.append(f"contains banned pattern: {phrase}")
 
-    for phrase in BANNED_VOCABULARY:
+    for phrase in list(rule_snapshot.get("banned_vocabulary") or []):
         phrase_norm = _normalize_text(phrase)
         if phrase_norm and phrase_norm in normalized:
             violations.append(f"contains banned vocabulary: {phrase}")
 
-    for phrase in OPERATOR_META_PATTERNS:
+    for phrase in list(rule_snapshot.get("operator_meta_patterns") or []):
         phrase_norm = _normalize_text(phrase)
         if phrase_norm and phrase_norm in normalized:
             violations.append(f"contains operator/meta language: {phrase}")
 
-    for phrase in GENERIC_FILLER_PATTERNS:
+    for phrase in list(rule_snapshot.get("generic_filler_patterns") or []):
         phrase_norm = _normalize_text(phrase)
         if phrase_norm and phrase_norm in normalized:
             violations.append(f"contains generic filler: {phrase}")
 
-    for previous in list(recent_texts or []):
-        if normalized and normalized == _normalize_text(previous):
-            violations.append("duplicates prior generated text in this program")
-            break
+    case_violation = _case_style_violation(text, str(persona_snapshot.get("case_style") or "").strip())
+    if case_violation:
+        violations.append(case_violation)
 
-    nearby_duplicate = False
-    for previous in nearby_texts:
-        if not previous:
-            continue
-        if normalized and normalized == _normalize_text(previous):
-            nearby_duplicate = True
-            violations.append("duplicates nearby subreddit content")
-            break
-        if _token_overlap(text, previous) >= 0.8:
-            nearby_duplicate = True
-            violations.append("is too similar to nearby subreddit content")
-            break
+    word_count = _word_count(text)
+    length_band = dict(persona_snapshot.get("length_band") or {})
+    min_words = int(length_band.get("min_words", 0) or 0)
+    max_words = int(length_band.get("max_words", 0) or 0)
+    if min_words and word_count < min_words:
+        violations.append(f"text is too short for persona length band ({word_count} < {min_words})")
+    if max_words and word_count > max_words:
+        violations.append(f"text is too long for persona length band ({word_count} > {max_words})")
 
-    lowered_source = str(text or "")
-    if lowered_source != lowered_source.lower():
-        violations.append("text is not fully lowercase")
+    similarity_scopes = {
+        "same_program": _best_similarity(text, recent_texts),
+        "same_thread": _best_similarity(text, same_thread_texts),
+        "same_profile": _best_similarity(text, same_profile_texts),
+        "nearby_context": _best_similarity(text, nearby_texts),
+    }
+    for scope, metrics in similarity_scopes.items():
+        violation = _scope_similarity_violation(scope, metrics)
+        if violation:
+            violations.append(violation)
 
     context_overlap_terms: List[str] = []
     if require_context_overlap and nearby_texts:
@@ -295,8 +321,10 @@ def validate_generated_text(
         "ok": not violations,
         "violations": violations,
         "normalized_text": normalized,
-        "nearby_duplicate": nearby_duplicate,
+        "word_count": word_count,
+        "nearby_duplicate": bool(similarity_scopes["nearby_context"]["exact_duplicate"]),
         "context_overlap_terms": context_overlap_terms,
+        "similarity_checks": similarity_scopes,
     }
 
 
@@ -356,6 +384,9 @@ class GenerationResult:
     style_summary: Optional[Dict[str, Any]] = None
     conversation_summary: Optional[Dict[str, Any]] = None
     sample_urls: Optional[List[str]] = None
+    persona_snapshot: Optional[Dict[str, Any]] = None
+    writing_rule_snapshot: Optional[Dict[str, Any]] = None
+    word_count: int = 0
     error: Optional[str] = None
 
 
@@ -374,7 +405,7 @@ class RedditGrowthContentGenerator:
             model=self.model,
             contents=[prompt],
             config=types.GenerateContentConfig(
-                temperature=0.9,
+                temperature=0.95,
                 top_p=0.95,
                 response_mime_type="application/json",
             ),
@@ -383,6 +414,58 @@ class RedditGrowthContentGenerator:
         if not result_text:
             raise RuntimeError("generation response was empty")
         return result_text
+
+    def _shared_prompt_block(
+        self,
+        *,
+        persona_snapshot: Dict[str, Any],
+        writing_rule_snapshot: Dict[str, Any],
+        recent_texts: List[str],
+        same_thread_texts: List[str],
+        same_profile_texts: List[str],
+    ) -> str:
+        rule_contents = dict(writing_rule_snapshot.get("rule_contents") or {})
+        length_band = dict(persona_snapshot.get("length_band") or {})
+        case_style = persona_snapshot.get("case_style")
+        return f"""
+locked production methodology:
+- approved scenario: scenario_b / harder role spread with visible social friction
+- do not sound like a generic helper clone
+- this persona must stay distinct in social role, opening move, casing, and length
+- match this persona contract exactly
+
+persona contract:
+{json.dumps(persona_snapshot, ensure_ascii=True, indent=2)}
+
+hard output requirements:
+- output valid json only
+- no em dash
+- follow the persona case style exactly: {case_style}
+- stay inside the persona length band: {json.dumps(length_band, ensure_ascii=True)}
+- keep the opening move distinct from recent program text
+- do not reuse nearby thread phrasing or social framing
+- do not sound like an operator, tester, bot, or automation system
+
+exact rule file contents:
+
+[great-writing-patterns.md]
+{rule_contents.get("great-writing-patterns.md", "").strip()}
+
+[negative-patterns.md]
+{rule_contents.get("negative-patterns.md", "").strip()}
+
+[vocabulary-guidance.md]
+{rule_contents.get("vocabulary-guidance.md", "").strip()}
+
+recent program text to avoid:
+{json.dumps(recent_texts[-12:], ensure_ascii=True, indent=2)}
+
+recent same-thread text to avoid:
+{json.dumps(same_thread_texts[-8:], ensure_ascii=True, indent=2)}
+
+recent same-profile text to avoid:
+{json.dumps(same_profile_texts[-8:], ensure_ascii=True, indent=2)}
+""".strip()
 
     def _reply_prompt(
         self,
@@ -394,30 +477,21 @@ class RedditGrowthContentGenerator:
         style_samples: List[Dict[str, Any]],
         conversation_context: List[Dict[str, Any]],
         recent_texts: List[str],
+        same_thread_texts: List[str],
+        same_profile_texts: List[str],
+        persona_snapshot: Dict[str, Any],
+        writing_rule_snapshot: Dict[str, Any],
     ) -> str:
         return f"""
 you are writing a single reddit reply for r/{subreddit}.
 
-hard rules:
-- output valid json only
-- all text must be lowercase
-- no em dash
-- do not use any banned pattern or banned vocabulary
-- do not sound like an operator, tester, bot, or automation system
-- make it sound like a normal, thoughtful person
-- do not repeat exact wording from prior generations
-- keep the reply relevant to the target comment and subreddit
-- make it clearly about this local conversation, not a generic support line
-- 1 to 3 sentences max
-
-positive writing principles:
-{json.dumps(GOOD_WRITING_PRINCIPLES, ensure_ascii=True, indent=2)}
-
-banned patterns:
-{json.dumps(BANNED_PATTERNS, ensure_ascii=True, indent=2)}
-
-banned vocabulary:
-{json.dumps(BANNED_VOCABULARY, ensure_ascii=True, indent=2)}
+{self._shared_prompt_block(
+    persona_snapshot=persona_snapshot,
+    writing_rule_snapshot=writing_rule_snapshot,
+    recent_texts=recent_texts,
+    same_thread_texts=same_thread_texts,
+    same_profile_texts=same_profile_texts,
+)}
 
 topic keywords:
 {json.dumps(keywords, ensure_ascii=True)}
@@ -425,19 +499,16 @@ topic keywords:
 target comment:
 {json.dumps({"author": target_author, "excerpt": target_excerpt}, ensure_ascii=True, indent=2)}
 
-style samples from high-traction posts/comments:
+style samples from the subreddit:
 {json.dumps(summarize_style_samples(style_samples), ensure_ascii=True, indent=2)}
 
-local conversation context from this subreddit/thread:
+local thread context:
 {json.dumps(summarize_conversation_context(conversation_context), ensure_ascii=True, indent=2)}
-
-prior generated texts to avoid duplicating:
-{json.dumps(recent_texts[-12:], ensure_ascii=True, indent=2)}
 
 return json with this exact shape:
 {{
   "text": "the reply text",
-  "reasoning": "one short sentence on why it fits"
+  "reasoning": "one short sentence on why it fits the persona and thread"
 }}
 """.strip()
 
@@ -449,56 +520,48 @@ return json with this exact shape:
         style_samples: List[Dict[str, Any]],
         conversation_context: List[Dict[str, Any]],
         recent_texts: List[str],
+        same_profile_texts: List[str],
+        persona_snapshot: Dict[str, Any],
+        writing_rule_snapshot: Dict[str, Any],
     ) -> str:
         return f"""
 you are writing a new reddit post for r/{subreddit}.
 
-hard rules:
-- output valid json only
-- all text must be lowercase
-- no em dash
-- do not use any banned pattern or banned vocabulary
-- do not sound like an operator, tester, bot, or automation system
-- make it sound like a normal user posting in a women's-health-related subreddit
-- do not repeat exact wording from prior generations
-- keep it helpful, believable, and human-scale
-- title should be specific and natural
-- the post must fit what people are currently talking about in this subreddit
-- it should add a useful new angle or a genuinely relevant question that is not a near-duplicate of the nearby posts
-- body can be empty or 1 to 4 short sentences
-
-positive writing principles:
-{json.dumps(GOOD_WRITING_PRINCIPLES, ensure_ascii=True, indent=2)}
-
-banned patterns:
-{json.dumps(BANNED_PATTERNS, ensure_ascii=True, indent=2)}
-
-banned vocabulary:
-{json.dumps(BANNED_VOCABULARY, ensure_ascii=True, indent=2)}
+{self._shared_prompt_block(
+    persona_snapshot=persona_snapshot,
+    writing_rule_snapshot=writing_rule_snapshot,
+    recent_texts=recent_texts,
+    same_thread_texts=[],
+    same_profile_texts=same_profile_texts,
+)}
 
 topic keywords:
 {json.dumps(keywords, ensure_ascii=True)}
 
-style samples from high-traction posts/comments:
+style samples from the subreddit:
 {json.dumps(summarize_style_samples(style_samples), ensure_ascii=True, indent=2)}
 
 nearby subreddit conversation context:
 {json.dumps(summarize_conversation_context(conversation_context), ensure_ascii=True, indent=2)}
 
-prior generated texts to avoid duplicating:
-{json.dumps(recent_texts[-12:], ensure_ascii=True, indent=2)}
+post requirements:
+- title should be specific and natural
+- body can be empty or a few short sentences
+- the post must feel like this persona, not generic subreddit copy
+- it should add a useful angle or a genuine question without shadowing nearby posts
 
 return json with this exact shape:
 {{
   "title": "post title",
   "body": "optional post body",
-  "reasoning": "one short sentence on why it fits"
+  "reasoning": "one short sentence on why it fits the persona and subreddit"
 }}
 """.strip()
 
     async def generate_reply(
         self,
         *,
+        profile_name: str,
         subreddit: str,
         target_excerpt: str,
         target_author: Optional[str],
@@ -506,15 +569,25 @@ return json with this exact shape:
         style_samples: List[Dict[str, Any]],
         conversation_context: List[Dict[str, Any]],
         recent_texts: List[str],
+        same_thread_texts: Optional[List[str]] = None,
+        same_profile_texts: Optional[List[str]] = None,
         max_attempts: int = 3,
     ) -> GenerationResult:
+        persona_snapshot = get_reddit_persona_snapshot(profile_name)
+        writing_rule_snapshot = get_writing_rule_snapshot(include_contents=True)
         style_summary = summarize_style_samples(style_samples)
         conversation_summary = summarize_conversation_context(conversation_context)
-        sample_urls = [str(sample.get("target_url") or sample.get("target_comment_url") or "").strip() for sample in style_samples if str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()]
+        sample_urls = [
+            str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()
+            for sample in style_samples
+            if str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()
+        ]
         nearby_texts = [
             "\n".join(part for part in [sample.get("title"), sample.get("excerpt"), sample.get("body_excerpt"), sample.get("body")] if part).strip()
             for sample in list(conversation_context or [])
         ]
+        same_thread_texts = list(same_thread_texts or [])
+        same_profile_texts = list(same_profile_texts or [])
         last_error = "generation failed"
         for _attempt in range(max_attempts):
             raw = await self._generate_json(
@@ -526,6 +599,10 @@ return json with this exact shape:
                     style_samples=style_samples,
                     conversation_context=conversation_context,
                     recent_texts=recent_texts,
+                    same_thread_texts=same_thread_texts,
+                    same_profile_texts=same_profile_texts,
+                    persona_snapshot=persona_snapshot,
+                    writing_rule_snapshot=writing_rule_snapshot,
                 )
             )
             try:
@@ -538,7 +615,11 @@ return json with this exact shape:
                 text,
                 recent_texts=recent_texts,
                 nearby_texts=nearby_texts,
+                same_thread_texts=same_thread_texts,
+                same_profile_texts=same_profile_texts,
                 require_context_overlap=True,
+                persona_snapshot=persona_snapshot,
+                writing_rule_snapshot=writing_rule_snapshot,
             )
             if validation["ok"]:
                 return GenerationResult(
@@ -550,6 +631,9 @@ return json with this exact shape:
                     style_summary=style_summary,
                     conversation_summary=conversation_summary,
                     sample_urls=sample_urls,
+                    persona_snapshot=persona_snapshot,
+                    writing_rule_snapshot=get_writing_rule_snapshot(),
+                    word_count=validation.get("word_count") or _word_count(text),
                 )
             last_error = "; ".join(validation["violations"])
             recent_texts = list(recent_texts) + [text]
@@ -561,26 +645,37 @@ return json with this exact shape:
             style_summary=style_summary,
             conversation_summary=conversation_summary,
             sample_urls=sample_urls,
+            persona_snapshot=persona_snapshot,
+            writing_rule_snapshot=get_writing_rule_snapshot(),
             error=last_error,
         )
 
     async def generate_post(
         self,
         *,
+        profile_name: str,
         subreddit: str,
         keywords: List[str],
         style_samples: List[Dict[str, Any]],
         conversation_context: List[Dict[str, Any]],
         recent_texts: List[str],
+        same_profile_texts: Optional[List[str]] = None,
         max_attempts: int = 3,
     ) -> GenerationResult:
+        persona_snapshot = get_reddit_persona_snapshot(profile_name)
+        writing_rule_snapshot = get_writing_rule_snapshot(include_contents=True)
         style_summary = summarize_style_samples(style_samples)
         conversation_summary = summarize_conversation_context(conversation_context)
-        sample_urls = [str(sample.get("target_url") or sample.get("target_comment_url") or "").strip() for sample in style_samples if str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()]
+        sample_urls = [
+            str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()
+            for sample in style_samples
+            if str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()
+        ]
         nearby_texts = [
             "\n".join(part for part in [sample.get("title"), sample.get("excerpt"), sample.get("body_excerpt"), sample.get("body")] if part).strip()
             for sample in list(conversation_context or [])
         ]
+        same_profile_texts = list(same_profile_texts or [])
         last_error = "generation failed"
         for _attempt in range(max_attempts):
             raw = await self._generate_json(
@@ -590,6 +685,9 @@ return json with this exact shape:
                     style_samples=style_samples,
                     conversation_context=conversation_context,
                     recent_texts=recent_texts,
+                    same_profile_texts=same_profile_texts,
+                    persona_snapshot=persona_snapshot,
+                    writing_rule_snapshot=writing_rule_snapshot,
                 )
             )
             try:
@@ -604,7 +702,11 @@ return json with this exact shape:
                 combined,
                 recent_texts=recent_texts,
                 nearby_texts=nearby_texts,
+                same_thread_texts=[],
+                same_profile_texts=same_profile_texts,
                 require_context_overlap=True,
+                persona_snapshot=persona_snapshot,
+                writing_rule_snapshot=writing_rule_snapshot,
             )
             if title and validation["ok"]:
                 return GenerationResult(
@@ -617,6 +719,9 @@ return json with this exact shape:
                     style_summary=style_summary,
                     conversation_summary=conversation_summary,
                     sample_urls=sample_urls,
+                    persona_snapshot=persona_snapshot,
+                    writing_rule_snapshot=get_writing_rule_snapshot(),
+                    word_count=validation.get("word_count") or _word_count(combined),
                 )
             last_error = "; ".join(validation["violations"] or ["title is required"])
             recent_texts = list(recent_texts) + [combined]
@@ -628,5 +733,7 @@ return json with this exact shape:
             style_summary=style_summary,
             conversation_summary=conversation_summary,
             sample_urls=sample_urls,
+            persona_snapshot=persona_snapshot,
+            writing_rule_snapshot=get_writing_rule_snapshot(),
             error=last_error,
         )

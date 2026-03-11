@@ -5,6 +5,7 @@ Reddit program orchestration runtime with constrained target discovery.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -108,6 +109,22 @@ def _target_ref(item: Dict[str, Any]) -> Optional[str]:
         or str(((item.get("discovered_target") or {}).get("target_url") or "")).strip()
         or None
     )
+
+
+def _normalized_target_ref(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or "").strip().rstrip("/")
+    return normalized or None
+
+
+def _thread_ref_from_item(item: Dict[str, Any]) -> Optional[str]:
+    value = (
+        str(item.get("thread_url") or "").strip()
+        or str(((item.get("discovered_target") or {}).get("thread_url") or "")).strip()
+        or _thread_root_from_comment_url(item.get("target_comment_url"))
+        or str(item.get("target_url") or "").strip()
+    )
+    normalized = value.rstrip("/")
+    return normalized or None
 
 
 def _failure_classification(result: Dict[str, Any]) -> str:
@@ -318,9 +335,14 @@ class RedditProgramOrchestrator:
         action = str(item.get("action") or "")
         proxy_url = self.proxy_resolver() if callable(self.proxy_resolver) else None
         generation_evidence = dict(target_payload.get("generation_evidence") or {})
+        item["discovered_target"] = target_payload.get("discovered_target")
+        if target_payload.get("target_url"):
+            item["target_url"] = target_payload.get("target_url")
+        if target_payload.get("target_comment_url"):
+            item["target_comment_url"] = target_payload.get("target_comment_url")
         if generation_evidence:
             item["generation_evidence"] = generation_evidence
-            self._remember_generated_text(program, generation_evidence)
+            self._remember_generated_text(program, item, generation_evidence)
         result = await self.action_runner(
             session,
             action=action,
@@ -346,11 +368,6 @@ class RedditProgramOrchestrator:
             },
         )
 
-        item["discovered_target"] = target_payload.get("discovered_target")
-        if target_payload.get("target_url"):
-            item["target_url"] = target_payload.get("target_url")
-        if target_payload.get("target_comment_url"):
-            item["target_comment_url"] = target_payload.get("target_comment_url")
         if (
             action == "create_post"
             and bool(result.get("success"))
@@ -436,13 +453,116 @@ class RedditProgramOrchestrator:
         }
         return self.store.save_program(program)
 
-    def _remember_generated_text(self, program: Dict[str, Any], generation_evidence: Dict[str, Any]) -> None:
+    def _remember_generated_text(self, program: Dict[str, Any], item: Dict[str, Any], generation_evidence: Dict[str, Any]) -> None:
         candidates = list(program.get("generated_text_history") or [])
         for field in ("text", "title", "body", "combined_text"):
             value = str(generation_evidence.get(field) or "").strip()
             if value and value not in candidates:
                 candidates.append(value)
         program["generated_text_history"] = candidates[-500:]
+
+        combined_text = str(generation_evidence.get("combined_text") or generation_evidence.get("text") or "").strip()
+        if combined_text:
+            records = list(program.get("generated_text_records") or [])
+            records.append(
+                {
+                    "timestamp": _utc_iso(),
+                    "profile_name": item.get("profile_name"),
+                    "local_date": item.get("local_date"),
+                    "action": item.get("action"),
+                    "thread_url": generation_evidence.get("thread_url") or _thread_ref_from_item(item),
+                    "target_url": item.get("target_url"),
+                    "target_comment_url": item.get("target_comment_url"),
+                    "combined_text": combined_text,
+                }
+            )
+            program["generated_text_records"] = records[-500:]
+
+    def _generated_text_scope(
+        self,
+        program: Dict[str, Any],
+        *,
+        profile_name: Optional[str] = None,
+        local_date: Optional[str] = None,
+        thread_url: Optional[str] = None,
+    ) -> List[str]:
+        normalized_thread = _normalized_target_ref(thread_url)
+        results: List[str] = []
+        for record in list(program.get("generated_text_records") or []):
+            if profile_name and str(record.get("profile_name") or "") != profile_name:
+                continue
+            if local_date and str(record.get("local_date") or "") != local_date:
+                continue
+            if normalized_thread and _normalized_target_ref(record.get("thread_url")) != normalized_thread:
+                continue
+            combined_text = str(record.get("combined_text") or "").strip()
+            if combined_text:
+                results.append(combined_text)
+        return results
+
+    def _reserved_target_refs(self, program: Dict[str, Any], *, exclude_work_item_id: Optional[str] = None) -> set[str]:
+        reserved: set[str] = set()
+        for entry in list(program.get("target_history") or []):
+            normalized = _normalized_target_ref(entry.get("target_ref"))
+            if normalized:
+                reserved.add(normalized)
+        for work_item in ((program.get("compiled") or {}).get("work_items") or []):
+            if exclude_work_item_id and str(work_item.get("id") or "") == exclude_work_item_id:
+                continue
+            if str(work_item.get("status") or "") == "cancelled":
+                continue
+            normalized = _normalized_target_ref(_target_ref(work_item))
+            if normalized:
+                reserved.add(normalized)
+        return reserved
+
+    def _thread_usage_stats(
+        self,
+        program: Dict[str, Any],
+        *,
+        local_date: str,
+        thread_url: Optional[str],
+        exclude_work_item_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_thread = _normalized_target_ref(thread_url)
+        if not normalized_thread:
+            return {"count": 0, "profiles": set(), "authors": collections.Counter(), "subreddits": collections.Counter()}
+        count = 0
+        profiles: set[str] = set()
+        authors: collections.Counter[str] = collections.Counter()
+        subreddits: collections.Counter[str] = collections.Counter()
+        for entry in list(program.get("target_history") or []):
+            if str(entry.get("local_date") or "") != local_date:
+                continue
+            if _normalized_target_ref(entry.get("thread_url") or entry.get("target_url")) != normalized_thread:
+                continue
+            count += 1
+            profiles.add(str(entry.get("profile_name") or ""))
+            author = str(entry.get("target_author") or "").strip().lower()
+            if author:
+                authors[author] += 1
+            subreddit = str(entry.get("subreddit") or "").strip().lower()
+            if subreddit:
+                subreddits[subreddit] += 1
+        for work_item in ((program.get("compiled") or {}).get("work_items") or []):
+            if exclude_work_item_id and str(work_item.get("id") or "") == exclude_work_item_id:
+                continue
+            if str(work_item.get("local_date") or "") != local_date:
+                continue
+            if str(work_item.get("status") or "") == "cancelled":
+                continue
+            if _normalized_target_ref(_thread_ref_from_item(work_item)) != normalized_thread:
+                continue
+            count += 1
+            profiles.add(str(work_item.get("profile_name") or ""))
+            candidate = dict(work_item.get("discovered_target") or {})
+            author = str(candidate.get("author") or "").strip().lower()
+            if author:
+                authors[author] += 1
+            subreddit = str(work_item.get("subreddit") or candidate.get("subreddit") or "").strip().lower()
+            if subreddit:
+                subreddits[subreddit] += 1
+        return {"count": count, "profiles": profiles, "authors": authors, "subreddits": subreddits}
 
     def _own_content_allowed(self, program: Dict[str, Any]) -> bool:
         if _program_mode(program) in {"qa", "test"}:
@@ -458,7 +578,7 @@ class RedditProgramOrchestrator:
         thread_url: Optional[str],
         actions: Optional[set[str]] = None,
     ) -> bool:
-        normalized_thread = str(thread_url or "").strip().rstrip("/")
+        normalized_thread = _normalized_target_ref(thread_url)
         if not normalized_thread:
             return False
         allowed_actions = actions or {"create_post", "comment_post", "reply_comment"}
@@ -469,8 +589,17 @@ class RedditProgramOrchestrator:
                 continue
             if str(entry.get("action") or "") not in allowed_actions:
                 continue
-            entry_thread = str(entry.get("thread_url") or entry.get("target_url") or "").strip().rstrip("/")
+            entry_thread = _normalized_target_ref(entry.get("thread_url") or entry.get("target_url"))
             if entry_thread == normalized_thread:
+                return True
+        for work_item in ((program.get("compiled") or {}).get("work_items") or []):
+            if str(work_item.get("profile_name") or "") != profile_name:
+                continue
+            if str(work_item.get("local_date") or "") != local_date:
+                continue
+            if str(work_item.get("action") or "") not in allowed_actions:
+                continue
+            if _normalized_target_ref(_thread_ref_from_item(work_item)) == normalized_thread:
                 return True
         return False
 
@@ -492,6 +621,14 @@ class RedditProgramOrchestrator:
         action = str(item.get("action") or "")
         if action == "reply_comment":
             thread_url = str(candidate.get("thread_url") or _thread_root_from_comment_url(candidate.get("target_comment_url")) or "").strip()
+            usage = self._thread_usage_stats(
+                program,
+                local_date=str(item.get("local_date") or ""),
+                thread_url=thread_url,
+                exclude_work_item_id=str(item.get("id") or ""),
+            )
+            if usage["count"] > 0:
+                return "same-thread multi-profile reply clustering is not allowed"
             if self._thread_already_used_by_profile(
                 program,
                 profile_name=str(item.get("profile_name") or ""),
@@ -651,6 +788,7 @@ class RedditProgramOrchestrator:
             "target_url": item.get("target_url"),
             "target_comment_url": item.get("target_comment_url"),
             "subreddit": item.get("subreddit") or ((item.get("discovered_target") or {}).get("subreddit")) or result.get("subreddit"),
+            "target_author": ((item.get("discovered_target") or {}).get("author")),
             "attempt_id": result.get("attempt_id"),
         }
         history = list(program.get("target_history") or [])
@@ -808,12 +946,15 @@ class RedditProgramOrchestrator:
         style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
         conversation_context = await self._conversation_context_for_subreddit(program, subreddit=subreddit, keywords=keywords)
         recent_texts = list(program.get("generated_text_history") or [])
+        same_profile_texts = self._generated_text_scope(program, profile_name=profile_name)
         generated = await self.content_generator.generate_post(
+            profile_name=profile_name,
             subreddit=subreddit,
             keywords=keywords,
             style_samples=style_samples,
             conversation_context=conversation_context,
             recent_texts=recent_texts,
+            same_profile_texts=same_profile_texts,
         )
         if not generated.success:
             return {
@@ -837,8 +978,16 @@ class RedditProgramOrchestrator:
             "novelty_validation": {
                 "nearby_duplicate": bool((generated.validation or {}).get("nearby_duplicate")),
                 "context_overlap_terms": list((generated.validation or {}).get("context_overlap_terms") or []),
+                "similarity_checks": dict((generated.validation or {}).get("similarity_checks") or {}),
             },
             "writing_rules": get_writing_rule_snapshot(),
+            "rule_source_hashes": dict(((generated.writing_rule_snapshot or {}).get("rule_source_hashes") or {})),
+            "rule_source_paths": list(((generated.writing_rule_snapshot or {}).get("source_paths") or [])),
+            "persona_id": (generated.persona_snapshot or {}).get("persona_id"),
+            "persona_role": (generated.persona_snapshot or {}).get("default_role"),
+            "case_style_applied": (generated.persona_snapshot or {}).get("case_style"),
+            "persona": generated.persona_snapshot,
+            "word_count": generated.word_count,
             "raw_response": generated.raw_response,
         }
         return {
@@ -854,11 +1003,19 @@ class RedditProgramOrchestrator:
 
     async def _build_generated_reply_payload(self, program: Dict[str, Any], item: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
         subreddit = str(candidate.get("subreddit") or item.get("subreddit") or "").strip()
+        profile_name = str(item.get("profile_name") or "")
         keywords = [str(value).strip() for value in list(_program_filters(program).get("keywords") or []) if str(value).strip()]
         style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
         conversation_context = await self._conversation_context_for_comment_target(candidate)
         recent_texts = list(program.get("generated_text_history") or [])
+        same_thread_texts = self._generated_text_scope(
+            program,
+            local_date=str(item.get("local_date") or ""),
+            thread_url=str(candidate.get("thread_url") or ""),
+        )
+        same_profile_texts = self._generated_text_scope(program, profile_name=profile_name)
         generated = await self.content_generator.generate_reply(
+            profile_name=profile_name,
             subreddit=subreddit,
             target_excerpt=str(candidate.get("body_excerpt") or ""),
             target_author=str(candidate.get("author") or ""),
@@ -866,6 +1023,8 @@ class RedditProgramOrchestrator:
             style_samples=style_samples,
             conversation_context=conversation_context,
             recent_texts=recent_texts,
+            same_thread_texts=same_thread_texts,
+            same_profile_texts=same_profile_texts,
         )
         if not generated.success:
             return {
@@ -888,9 +1047,18 @@ class RedditProgramOrchestrator:
             "novelty_validation": {
                 "nearby_duplicate": bool((generated.validation or {}).get("nearby_duplicate")),
                 "context_overlap_terms": list((generated.validation or {}).get("context_overlap_terms") or []),
+                "similarity_checks": dict((generated.validation or {}).get("similarity_checks") or {}),
             },
+            "thread_url": candidate.get("thread_url"),
             "target_comment_url": candidate.get("target_comment_url"),
             "writing_rules": get_writing_rule_snapshot(),
+            "rule_source_hashes": dict(((generated.writing_rule_snapshot or {}).get("rule_source_hashes") or {})),
+            "rule_source_paths": list(((generated.writing_rule_snapshot or {}).get("source_paths") or [])),
+            "persona_id": (generated.persona_snapshot or {}).get("persona_id"),
+            "persona_role": (generated.persona_snapshot or {}).get("default_role"),
+            "case_style_applied": (generated.persona_snapshot or {}).get("case_style"),
+            "persona": generated.persona_snapshot,
+            "word_count": generated.word_count,
             "raw_response": generated.raw_response,
         }
         return {
@@ -972,18 +1140,14 @@ class RedditProgramOrchestrator:
                     break
         return samples[:4]
 
-    def _target_already_used(self, program: Dict[str, Any], *, profile_name: str, local_date: str, target_ref: str) -> bool:
+    def _target_already_used(self, program: Dict[str, Any], *, profile_name: str, local_date: str, target_ref: str, exclude_work_item_id: Optional[str] = None) -> bool:
         allow_reuse = bool(_execution_policy(program).get("allow_target_reuse_within_day", False))
         if allow_reuse:
             return False
-        for entry in list(program.get("target_history") or []):
-            if str(entry.get("profile_name") or "") != profile_name:
-                continue
-            if str(entry.get("local_date") or "") != local_date:
-                continue
-            if str(entry.get("target_ref") or "") == target_ref:
-                return True
-        return False
+        normalized = _normalized_target_ref(target_ref)
+        if not normalized:
+            return False
+        return normalized in self._reserved_target_refs(program, exclude_work_item_id=exclude_work_item_id)
 
     def _blocked_subreddits_for_profile(self, program: Dict[str, Any], *, profile_name: str) -> set[str]:
         matrix = dict(program.get("community_block_matrix") or {})
@@ -1023,6 +1187,39 @@ class RedditProgramOrchestrator:
         if not keywords:
             return True
         return any(str(keyword).strip().lower() in lowered for keyword in keywords if str(keyword).strip())
+
+    def _candidate_rank_score(self, program: Dict[str, Any], *, item: Dict[str, Any], candidate: Dict[str, Any]) -> int:
+        local_date = str(item.get("local_date") or "")
+        base_score = int(candidate.get("score") or 0) + int(candidate.get("comment_count") or 0)
+        thread_url = str(candidate.get("thread_url") or candidate.get("target_url") or "").strip()
+        usage = self._thread_usage_stats(
+            program,
+            local_date=local_date,
+            thread_url=thread_url,
+            exclude_work_item_id=str(item.get("id") or ""),
+        )
+        subreddit = str(candidate.get("subreddit") or "").strip().lower()
+        target_author = str(candidate.get("author") or "").strip().lower()
+        subreddit_usage = 0
+        author_usage = 0
+        for entry in list(program.get("target_history") or []):
+            if str(entry.get("local_date") or "") != local_date:
+                continue
+            if subreddit and str(entry.get("subreddit") or "").strip().lower() == subreddit:
+                subreddit_usage += 1
+            if target_author and str(entry.get("target_author") or "").strip().lower() == target_author:
+                author_usage += 1
+        for work_item in ((program.get("compiled") or {}).get("work_items") or []):
+            if str(work_item.get("id") or "") == str(item.get("id") or ""):
+                continue
+            if str(work_item.get("local_date") or "") != local_date:
+                continue
+            candidate_data = dict(work_item.get("discovered_target") or {})
+            if subreddit and str(work_item.get("subreddit") or candidate_data.get("subreddit") or "").strip().lower() == subreddit:
+                subreddit_usage += 1
+            if target_author and str(candidate_data.get("author") or "").strip().lower() == target_author:
+                author_usage += 1
+        return base_score - (usage["count"] * 1000) - (subreddit_usage * 25) - (author_usage * 60)
 
     async def _fetch_json(self, url: str) -> Any:
         async with httpx.AsyncClient(headers=REDDIT_HTTP_HEADERS, follow_redirects=True, timeout=20.0) as client:
@@ -1096,7 +1293,7 @@ class RedditProgramOrchestrator:
 
         explicit_targets = [str(value).strip() for value in list(constraints.get("explicit_post_targets") or []) if str(value).strip()]
         for target_url in explicit_targets:
-            if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url):
+            if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url, exclude_work_item_id=str(item.get("id") or "")):
                 continue
             return {
                 "target_id": target_url,
@@ -1111,14 +1308,19 @@ class RedditProgramOrchestrator:
                 keywords=keywords,
                 max_posts=max_posts,
             )
+            viable: List[Dict[str, Any]] = []
             for candidate in ranked:
                 target_url = str(candidate.get("target_url") or "")
-                if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url):
+                if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url, exclude_work_item_id=str(item.get("id") or "")):
                     continue
                 realism_error = self._candidate_violates_realism(program, item=item, candidate=candidate, actor_username=actor_username)
                 if realism_error:
                     continue
-                return candidate
+                candidate["ranking_score"] = self._candidate_rank_score(program, item=item, candidate=candidate)
+                viable.append(candidate)
+            if viable:
+                viable.sort(key=lambda value: (int(value.get("ranking_score") or 0), int(value.get("comment_count") or 0), int(value.get("score") or 0)), reverse=True)
+                return viable[0]
         return None
 
     def _walk_comment_nodes(
@@ -1142,22 +1344,6 @@ class RedditProgramOrchestrator:
             author = str(data.get("author") or "").strip()
             permalink = str(data.get("permalink") or "").strip()
             if not body or body in {"[deleted]", "[removed]"} or not author or author == "[deleted]" or not permalink:
-                replies = data.get("replies")
-                if isinstance(replies, dict):
-                    collected.extend(
-                        self._walk_comment_nodes(
-                            replies.get("data", {}).get("children") or [],
-                            subreddit=subreddit,
-                            post_title=post_title,
-                            post_body_excerpt=post_body_excerpt,
-                            post_author=post_author,
-                            keywords=keywords,
-                            parent_author=author or parent_author,
-                            parent_excerpt=body or parent_excerpt,
-                        )
-                    )
-                continue
-            if not self._keyword_match([post_title, body], keywords):
                 replies = data.get("replies")
                 if isinstance(replies, dict):
                     collected.extend(
@@ -1214,7 +1400,7 @@ class RedditProgramOrchestrator:
         keywords = [str(value).strip() for value in list(constraints.get("keywords") or []) if str(value).strip()]
         explicit_targets = [str(value).strip() for value in list(constraints.get("explicit_comment_targets") or []) if str(value).strip()]
         for target_comment_url in explicit_targets:
-            if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_comment_url):
+            if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_comment_url, exclude_work_item_id=str(item.get("id") or "")):
                 continue
             return {
                 "target_id": target_comment_url,
@@ -1254,16 +1440,23 @@ class RedditProgramOrchestrator:
                 filtered: List[Dict[str, Any]] = []
                 for candidate in candidates[:max_comments * 3]:
                     target_ref = str(candidate.get("target_comment_url") or "")
-                    if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_ref):
+                    if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_ref, exclude_work_item_id=str(item.get("id") or "")):
                         continue
                     candidate["thread_url"] = post["target_url"]
                     realism_error = self._candidate_violates_realism(program, item=item, candidate=candidate, actor_username=actor_username)
                     if realism_error:
                         continue
+                    candidate["ranking_score"] = self._candidate_rank_score(program, item=item, candidate=candidate)
                     filtered.append(candidate)
                     if len(filtered) >= max_comments:
                         break
-                filtered.sort(key=lambda value: value.get("score", 0), reverse=True)
+                filtered.sort(
+                    key=lambda value: (
+                        int(value.get("ranking_score") or 0),
+                        int(value.get("score") or 0),
+                    ),
+                    reverse=True,
+                )
                 if filtered:
                     return filtered[0]
         return None

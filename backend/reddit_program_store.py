@@ -577,6 +577,7 @@ def compile_reddit_program_state(
         },
         "target_history": [],
         "generated_text_history": [],
+        "generated_text_records": [],
         "recent_attempt_ids": [],
         "events": [],
         "notification_log": [],

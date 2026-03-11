@@ -113,6 +113,9 @@ export function RedditProfilesDayTable({
                       <Badge variant={proofTone(profile.proof_coverage.success_confirmed, profile.proof_coverage.required_actions)}>
                         confirmed {profile.proof_coverage.success_confirmed}/{profile.proof_coverage.required_actions}
                       </Badge>
+                      <Badge variant={profile.proof_coverage.unsafe_rollout > 0 ? 'destructive' : 'outline'}>
+                        unsafe {profile.proof_coverage.unsafe_rollout}
+                      </Badge>
                     </div>
                   </TableCell>
                   <TableCell className="px-3 py-3 text-right">
