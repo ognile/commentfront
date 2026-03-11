@@ -18,14 +18,15 @@
 - the backend now has a real subreddit policy surface: `auto_user_flair`, keyword overrides, enabled actions, profile flair hints, and `proof_matrix`.
 - `comment_post` generation is now available for discovered-post work items, which is required for per-profile-per-subreddit proof comments.
 - subreddit identity state persists on the reddit session, and the bot can open the flair dialog, inspect options, choose a flair, and record identity evidence.
-- the broader local reddit regression slice is green after the thread-context recovery patch: `132 passed`.
+- the broader local reddit regression slice is green after the thread-context recovery and comment-surface scroll patches: `133 passed`.
 - live proof vehicle `reddit_program_843e09725c` proved the first production bottleneck honestly: `comment_post` can drift from a thread into a subreddit listing during composer opening and then fail as `Reddit comment composer not found`.
+- exact-thread smoke `reddit_program_32af52931a` proved the next bottleneck honestly on the patched thread-context build: the target thread is valid and commentable, but the mobile page can load with the thread header in view and the actual comment/share surface below the fold.
 - that old-build proof vehicle has been cancelled so the next proof run can happen only on the patched build.
 
 ## active todo
-1. commit the thread-context recovery patch and redeploy it to railway.
-2. recreate the proof-matrix program on the patched build.
-3. verify real production proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
+1. commit the comment-surface scroll fix and redeploy it to railway.
+2. rerun the exact-thread smoke on the new build and verify that the previous `comment composer not found` failure is gone.
+3. recreate the broader proof-matrix program on the new build and verify real proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
 
 ## current understanding
 - the right architecture is split across three layers:
@@ -41,6 +42,7 @@
 - the compiler can now emit `proof_matrix` work items for `comment_post`, `reply_comment`, and `create_post`.
 - the bot regression caused by unconditional flair probing was fixed by keeping the executor opt-in and policy-driven.
 - the next production bottleneck is no longer vague: attempt `9dcaaf8b-be25-4aab-8450-34f9eeafba65` on `reddit_program_843e09725c` showed a thread-context drift bug, and the local fix for that bug is now covered by a dedicated regression test.
+- attempt `a805e435-e942-48b3-ac7e-e7648a0adde0` on `reddit_program_32af52931a` proved that some commentable reddit threads require scrolling to reveal the comment surface before any composer trigger exists in the viewport.
 
 ## open risks
 - production still needs proof that all 10 valid sessions can execute the new proof-matrix flow against real subreddit conditions.

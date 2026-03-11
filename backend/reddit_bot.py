@@ -2017,6 +2017,27 @@ async def _scroll_until_post_actions_visible(page, *, max_scrolls: int = 6) -> b
     return bool(await _first_viewport_locator(page, COMMENT["share_button"]))
 
 
+async def _comment_surface_visible(page) -> bool:
+    if await _active_editable_present(page):
+        return True
+    if await _visible_selector_exists(page, COMMENT["composer_trigger"]):
+        return True
+    if await _first_viewport_locator(page, COMMENT["share_button"]):
+        return True
+    if await _first_viewport_locator(page, COMMENT["search_comments_input"]):
+        return True
+    return False
+
+
+async def _scroll_until_comment_surface_visible(page, *, max_scrolls: int = 6) -> bool:
+    for _ in range(max(1, max_scrolls)):
+        if await _comment_surface_visible(page):
+            return True
+        await page.mouse.wheel(0, 520)
+        await page.wait_for_timeout(900)
+    return await _comment_surface_visible(page)
+
+
 async def _click_post_upvote_region(page, *, share_box: Dict[str, float]) -> bool:
     click_x = max(24, int(float(share_box["x"]) - 224))
     click_y = int(float(share_box["y"]) + (float(share_box["height"]) / 2))
@@ -3264,6 +3285,7 @@ async def comment_on_post(
             if not await _ensure_thread_context(page, url=url, expected_title=expected_title):
                 await _capture_reddit_failure_state(page, "REDDIT THREAD CONTEXT MISSING")
                 raise RuntimeError("Reddit target thread did not load")
+            await _scroll_until_comment_surface_visible(page, max_scrolls=6)
             await dump_interactive_elements(page, "REDDIT COMMENT ON POST")
             await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")
 

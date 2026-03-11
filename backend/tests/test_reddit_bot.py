@@ -250,6 +250,33 @@ def test_fill_comment_input_uses_reply_selectors_for_reply_flow(monkeypatch):
     assert page.waits == []
 
 
+def test_scroll_until_comment_surface_visible_scrolls_until_share_row_appears(monkeypatch):
+    page = _FakePage()
+    state = {"count": 0}
+
+    async def fake_active_editable(_page):
+        return False
+
+    async def fake_visible_selector_exists(_page, _selectors):
+        return False
+
+    async def fake_first_viewport_locator(_page, selectors):
+        if tuple(selectors) == tuple(reddit_bot.COMMENT["share_button"]):
+            state["count"] += 1
+            return object() if state["count"] >= 3 else None
+        return None
+
+    monkeypatch.setattr(reddit_bot, "_active_editable_present", fake_active_editable)
+    monkeypatch.setattr(reddit_bot, "_visible_selector_exists", fake_visible_selector_exists)
+    monkeypatch.setattr(reddit_bot, "_first_viewport_locator", fake_first_viewport_locator)
+
+    ok = asyncio.run(reddit_bot._scroll_until_comment_surface_visible(page, max_scrolls=4))
+
+    assert ok is True
+    assert page.mouse.wheels == [(0, 520), (0, 520)]
+    assert page.waits == [900, 900]
+
+
 def test_fill_first_falls_back_to_click_and_keyboard_when_fill_is_unsupported(monkeypatch):
     locator = _FakeFillLocator(fill_error=True)
     page = _FakeFillPage(locator)

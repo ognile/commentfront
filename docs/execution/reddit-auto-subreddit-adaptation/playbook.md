@@ -8,6 +8,7 @@
 - add only proven reusable tactics here
 - persist per-subreddit identity state on the session so automatically discovered flair choices can be reused.
 - use a proof-matrix compiler contract when you need guaranteed `(profile, subreddit)` coverage instead of hoping weighted random allocation will prove it.
+- on reddit mobile threads, scroll until the comment surface or action row is visible before trying composer selectors.
 
 ## failure patterns
 - add recurring traps here
