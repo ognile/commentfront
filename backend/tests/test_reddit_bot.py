@@ -322,6 +322,44 @@ def test_open_comment_composer_falls_back_to_js_probe(monkeypatch):
     assert page.waits == [600]
 
 
+def test_ensure_thread_context_recovers_by_reloading_exact_url(monkeypatch):
+    page = _FakePage()
+    calls = []
+    state = {"loaded": False}
+
+    async def fake_thread_context(_page, expected_title):
+        calls.append(("thread_context", expected_title, state["loaded"]))
+        return state["loaded"]
+
+    async def fake_goto(_page, url):
+        calls.append(("goto", url))
+        state["loaded"] = True
+
+    async def fake_dismiss(_page):
+        calls.append(("dismiss",))
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_thread_context_present", fake_thread_context)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss)
+
+    ok = asyncio.run(
+        reddit_bot._ensure_thread_context(
+            page,
+            url="https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/",
+            expected_title="Should I visit the urogynecologist?",
+        )
+    )
+
+    assert ok is True
+    assert calls == [
+        ("thread_context", "Should I visit the urogynecologist?", False),
+        ("goto", "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/"),
+        ("dismiss",),
+        ("thread_context", "Should I visit the urogynecologist?", True),
+    ]
+
+
 def test_fill_comment_input_falls_back_to_keyboard_after_composer_opens(monkeypatch):
     page = _FakePage()
     calls = []
@@ -1145,17 +1183,17 @@ def test_ensure_thread_context_retries_navigation_when_title_missing(monkeypatch
         calls.append(("thread", expected_title))
         return len([entry for entry in calls if entry[0] == "thread"]) >= 2
 
-    async def fake_click_visible(_page, **kwargs):
-        calls.append(("click_visible", kwargs["needle"]))
-        return False
-
     async def fake_goto(_page, url):
         calls.append(("goto", url))
         return None
 
+    async def fake_dismiss(_page):
+        calls.append(("dismiss",))
+        return True
+
     monkeypatch.setattr(reddit_bot, "_thread_context_present", fake_thread_context)
-    monkeypatch.setattr(reddit_bot, "_click_visible_text_region", fake_click_visible)
     monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss)
 
     ok = asyncio.run(
         reddit_bot._ensure_thread_context(
@@ -1168,8 +1206,8 @@ def test_ensure_thread_context_retries_navigation_when_title_missing(monkeypatch
     assert ok is True
     assert calls == [
         ("thread", "GLP-1 & PCOS"),
-        ("click_visible", "GLP-1 & PCOS"),
         ("goto", "https://www.reddit.com/r/PCOS/comments/1roqvnw/glp1_pcos/"),
+        ("dismiss",),
         ("thread", "GLP-1 & PCOS"),
     ]
 

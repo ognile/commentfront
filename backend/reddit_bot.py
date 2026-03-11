@@ -1260,22 +1260,11 @@ async def _ensure_thread_context(page, *, url: str, expected_title: Optional[str
     if await _thread_context_present(page, expected_title):
         return True
     for _attempt in range(2):
-        if expected_title:
-            clicked = await _click_visible_text_region(
-                page,
-                needle=expected_title,
-                action_name="thread_context_recover",
-                min_top=40,
-            )
-            if clicked:
-                await page.wait_for_timeout(900)
-                await _dismiss_reddit_open_app_sheet(page)
-                if await _thread_context_present(page, expected_title):
-                    return True
         try:
             await _goto(page, url)
         except Exception:
             continue
+        await _dismiss_reddit_open_app_sheet(page)
         if await _thread_context_present(page, expected_title):
             return True
     return False
