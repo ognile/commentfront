@@ -32,12 +32,15 @@
 - rerun smoke `reddit_program_04a757c30a` on the deterministic thread-recovery build proved the next real bottleneck honestly: the target thread itself loads with `200`, but the open-app-sheet dismissal helper keeps causing unintended navigation into unrelated pages like `https://www.reddit.com/user/daffodilmachete/` and `https://www.reddit.com/r/askvan/`.
 - rerun smoke `reddit_program_86f6afad91` on the first open-app-sheet hardening build proved the next real bottleneck honestly: even a shared-container heuristic is still too loose because `_goto(...)` and `_ensure_thread_context(...)` keep auto-triggering dismiss clicks during pure navigation recovery, and those clicks still drift into unrelated pages like `https://www.reddit.com/user/daffodilmachete/` and `https://www.reddit.com/r/askvan/`.
 - the navigation seam is now hardened in two places: `_goto(...)` no longer auto-dismisses the open-app sheet, and `_ensure_thread_context(...)` now recovers by exact reload only. the dismiss helper itself is also upgraded to require a real bottom sheet with `view in reddit app` semantics before it clicks anything. the full local reddit regression slice is green again after this patch: `140 passed`.
+- exact-target smoke `reddit_program_48dc22d1c4` on the navigation-only build proved that the cross-page drift bug is actually fixed in production: attempt `aecf3245-4fa7-4131-9614-3b84e6ac3eef` stayed on `https://www.reddit.com/r/AskWomenOver40/comments/1rpyi3g/should_i_visit_the_urogynecologist/` and failed honestly with reddit’s own banner, `you're currently banned from this community and can't comment on posts`.
+- public profile evidence now shows the real remaining AskWomenOver40 mismatch is profile capability, not runtime execution: all 10 rollout profiles are still in `warmup_state.stage="new"` and public reddit `comment_karma` ranges from `0` to `23`, far below stricter trust thresholds like `50`.
+- the orchestrator and subreddit policy surface are now extended with pre-execution capability gates: `minimum_comment_karma`, `minimum_comment_karma_for`, and `blocked_warmup_stages`. impossible assignments can be blocked honestly before the browser runner burns attempts.
 
 ## active todo
-1. deploy the navigation-only thread recovery fix to railway from committed github state.
-2. rerun the exact-target `AskWomenOver40` production smoke on the deployed build with policy-driven flair automation enabled and verify that no `open_app_sheet_dismiss` event causes cross-page drift.
-3. if the smoke clears the thread-load gate, continue until `comment_post` reaches real proof artifacts or the next true community constraint is isolated.
-4. once `AskWomenOver40` is honestly proven, recreate the broader proof-matrix program and verify real proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
+1. deploy the new profile-capability gate to railway from committed github state.
+2. run a fresh exact-target `AskWomenOver40` production smoke with `minimum_comment_karma` and/or `blocked_warmup_stages` policy enabled, and verify the work item blocks honestly before any browser attempt is created.
+3. surface the same profile-capability reason in operator evidence so impossible subreddit assignments are visible without opening raw forensics.
+4. once capability shortfalls are proven and surfaced honestly, recreate the broader proof-matrix program with realistic subreddit policies so valid communities still get coverage and impossible ones reroute without waste.
 
 ## current understanding
 - the right architecture is split across three layers:
@@ -47,6 +50,7 @@
 - if the bot probes flair whenever it merely knows the subreddit, it breaks otherwise-correct direct action flows and hides the real policy boundary.
 - navigation helpers and thread-recovery helpers must not perform side-effectful dismiss clicks; they should establish location only, then let later interaction phases dismiss blocking overlays with explicit proof.
 - balancing create-post allocation only by global subreddit counts is not enough; per-profile load has to be included or the same profiles stay stuck on the same small subset.
+- subreddit adaptation also needs profile-capability policy, not just subreddit-surface policy: some communities are structurally valid but still impossible for low-trust or freshly warmed profiles, and the runtime must block or reroute those items before execution instead of discovering that only after expensive browser work.
 
 ## proven wins
 - `RedditSession` now persists per-subreddit identity state, so discovered flair choices are durable across actions.
@@ -62,8 +66,10 @@
 - attempt `b81263a0-04f6-4d51-bc05-8f5b73327622` on `reddit_program_847a500d01` proved that the tightened flair matcher got us past the old fake dialog clicks, and that the next mismatch is a fuzzy thread-recovery heuristic rather than flair or infra.
 - attempt `f056ce90-e5c6-4cd7-a0e2-cc006314091a` on `reddit_program_04a757c30a` proved that even with deterministic thread reload, the generic open-app-sheet dismissal helper is still loose enough to trigger unrelated navigation on this subreddit surface.
 - attempt `ffcb0cf2-f372-46c8-9183-2a6a4d3745db` on `reddit_program_86f6afad91` proved the remaining mismatch more precisely: the problem is not just the dismiss helper’s container heuristic, it is the fact that thread navigation helpers were still auto-triggering dismiss clicks during recovery. the fix is to make navigation location-only and require `view in reddit app` sheet semantics before any dismiss click.
+- attempt `aecf3245-4fa7-4131-9614-3b84e6ac3eef` on `reddit_program_48dc22d1c4` proved the navigation work is good enough to reveal the real community response on `AskWomenOver40`; the executor no longer drifts into unrelated pages before it learns the thread is not commentable for this profile.
+- the new policy surface can now express subreddit-specific trust gates directly in the program spec, so production can distinguish `runtime bug` from `profile capability shortfall` before executing expensive reddit actions.
 
 ## open risks
-- production still needs proof that all 10 valid sessions can execute the new proof-matrix flow against real subreddit conditions.
-- `AskWomenOver40` may still have community-specific posting/commenting friction beyond flair, so production evidence needs to show the actual limiting factor after the navigation-only thread recovery patch lands.
-- the current runtime can adapt to flair, but other community-specific identity requirements may still need additional surface discovery rules.
+- production still needs proof that the new capability gate blocks `AskWomenOver40` honestly before browser execution on the deployed build.
+- production still needs proof that all 10 valid sessions can execute the broader proof-matrix flow against real subreddit conditions once impossible assignments are filtered out.
+- the current runtime can adapt to flair and capability policy, but other community-specific identity requirements may still need additional surface discovery rules.

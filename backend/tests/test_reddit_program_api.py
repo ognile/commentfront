@@ -52,6 +52,9 @@ def test_validate_reddit_program_payload_accepts_subreddit_policies(tmp_path, mo
                     "requires_user_flair_for": ["create_post"],
                     "profile_user_flairs": {"reddit_amy": "divorced"},
                     "keyword_overrides": ["dating", "midlife"],
+                    "minimum_comment_karma": 50,
+                    "minimum_comment_karma_for": ["comment_post", "reply_comment"],
+                    "blocked_warmup_stages": ["new"],
                 }
             ],
             "proof_matrix": [

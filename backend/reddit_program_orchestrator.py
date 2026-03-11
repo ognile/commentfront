@@ -23,8 +23,11 @@ from reddit_subreddit_policies import (
     subreddit_profile_is_eligible,
     subreddit_requires_user_flair,
     subreddit_auto_user_flair_enabled,
+    subreddit_blocked_warmup_stages,
+    subreddit_minimum_comment_karma,
     profile_user_flair,
 )
+from reddit_profile_capabilities import fetch_public_reddit_profile_stats
 from reddit_program_notifications import (
     RedditProgramNotificationService,
     build_program_email_body,
@@ -146,6 +149,8 @@ def _thread_ref_from_item(item: Dict[str, Any]) -> Optional[str]:
 
 def _failure_classification(result: Dict[str, Any]) -> str:
     failure_class = str(result.get("failure_class") or "").strip().lower()
+    if failure_class == "profile_capability":
+        return "profile_capability"
     if failure_class == "community_restricted":
         return "community_restricted"
     if str(result.get("error") or "").lower().find("session not found") >= 0:
@@ -377,6 +382,28 @@ class RedditProgramOrchestrator:
             )
 
         actor_username = session.get_username()
+        capability_error = await self._profile_capability_error(
+            program,
+            item=item,
+            session=session,
+            actor_username=actor_username,
+        )
+        if capability_error:
+            self._record_failure(
+                program,
+                item,
+                {
+                    "success": False,
+                    "error": capability_error,
+                    "failure_class": "profile_capability",
+                    "final_verdict": "failed_confirmed",
+                    "subreddit": item.get("subreddit"),
+                },
+                None,
+                consume_attempt=False,
+            )
+            return self.store.save_program(program)
+
         resolution_timeout_seconds = max(1, int(_execution_policy(program).get("target_resolution_timeout_seconds", 90)))
         try:
             target_payload = await asyncio.wait_for(
@@ -771,9 +798,9 @@ class RedditProgramOrchestrator:
         item["result"] = self._compact_result(result)
         item["error"] = error
 
-        if classification == "community_restricted" and self._reroute_after_community_block(program, item=item, result=result):
+        if classification in {"community_restricted", "profile_capability"} and self._reroute_after_community_block(program, item=item, result=result):
             return
-        if classification in {"session_invalid", "quota_exhausted", "community_restricted"}:
+        if classification in {"session_invalid", "quota_exhausted", "community_restricted", "profile_capability"}:
             item["status"] = "blocked"
             return
 
@@ -1417,7 +1444,43 @@ class RedditProgramOrchestrator:
             "auto_user_flair": subreddit_auto_user_flair_enabled(policy),
             "requires_user_flair": subreddit_requires_user_flair(policy, action),
             "configured_user_flair": profile_user_flair(policy, profile_name),
+            "minimum_comment_karma": subreddit_minimum_comment_karma(policy, action),
+            "blocked_warmup_stages": subreddit_blocked_warmup_stages(policy),
         }
+
+    async def _profile_capability_error(
+        self,
+        program: Dict[str, Any],
+        *,
+        item: Dict[str, Any],
+        session: RedditSession,
+        actor_username: Optional[str],
+    ) -> Optional[str]:
+        action = str(item.get("action") or "").strip().lower()
+        policy = _subreddit_policy(program, str(item.get("subreddit") or ""))
+        if not policy:
+            return None
+
+        warmup_stage = str((session.get_warmup_state() or {}).get("stage") or "").strip().lower()
+        blocked_stages = subreddit_blocked_warmup_stages(policy)
+        if warmup_stage and warmup_stage in blocked_stages:
+            return (
+                f"reddit profile capability shortfall: warmup stage {warmup_stage} is blocked for "
+                f"r/{policy.get('subreddit')}"
+            )
+
+        minimum_comment_karma = subreddit_minimum_comment_karma(policy, action)
+        if minimum_comment_karma <= 0 or not actor_username:
+            return None
+
+        public_stats = await asyncio.to_thread(fetch_public_reddit_profile_stats, actor_username)
+        comment_karma = int(public_stats.get("comment_karma") or 0)
+        if comment_karma >= minimum_comment_karma:
+            return None
+        return (
+            f"reddit profile capability shortfall: r/{policy.get('subreddit')} requires minimum comment karma "
+            f"{minimum_comment_karma}, {actor_username} has {comment_karma}"
+        )
 
     def _keyword_match(self, text_values: List[str], keywords: List[str]) -> bool:
         lowered = " ".join(str(value or "").lower() for value in text_values)

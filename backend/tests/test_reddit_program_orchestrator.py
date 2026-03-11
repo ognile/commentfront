@@ -268,6 +268,71 @@ def test_available_subreddits_respect_policy_action_and_profile_flair(tmp_path):
     ]
 
 
+def test_process_program_blocks_profile_capability_before_execution(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={
+                "items": [
+                    {
+                        "id": "comment-1",
+                        "action": "comment_post",
+                        "profile_name": "reddit_amy",
+                        "day_offset": 0,
+                        "target_url": "https://www.reddit.com/r/AskWomenOver40/comments/abc123/should_i_visit_the_urogynecologist/",
+                        "text": "this is an exact supportive comment",
+                        "subreddit": "AskWomenOver40",
+                    }
+                ]
+            },
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+            topic_constraints={
+                "subreddits": ["AskWomenOver40"],
+                "keywords": ["midlife"],
+                "subreddit_policies": [
+                    {
+                        "subreddit": "AskWomenOver40",
+                        "minimum_comment_karma": 50,
+                        "minimum_comment_karma_for": ["comment_post"],
+                    }
+                ],
+            },
+        )
+    )
+    calls = {"runner": 0}
+
+    async def fake_runner(*_args, **_kwargs):
+        calls["runner"] += 1
+        return _success_result("comment_post")
+
+    monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
+    monkeypatch.setattr(RedditSession, "get_username", lambda self: "Amy_Schaefera")
+    monkeypatch.setattr(RedditSession, "get_warmup_state", lambda self: {})
+    monkeypatch.setattr("reddit_program_orchestrator.fetch_public_reddit_profile_stats", lambda username: {"username": username, "comment_karma": 2})
+
+    orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
+    asyncio.run(orchestrator.process_program(program["id"]))
+    updated = store.get_program(program["id"])
+    item = updated["compiled"]["work_items"][0]
+
+    assert calls["runner"] == 0
+    assert item["status"] == "blocked"
+    assert item["attempts"] == 0
+    assert "minimum comment karma 50" in item["error"]
+    assert "Amy_Schaefera has 2" in item["error"]
+
+
 def test_build_generated_post_payload_uses_subreddit_keyword_overrides(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(

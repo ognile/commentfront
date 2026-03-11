@@ -1894,6 +1894,9 @@ class RedditProgramSubredditPolicy(BaseModel):
     requires_user_flair_for: List[Literal["create_post", "comment_post", "reply_comment"]] = Field(default_factory=list)
     profile_user_flairs: Dict[str, str] = Field(default_factory=dict)
     keyword_overrides: List[str] = Field(default_factory=list)
+    minimum_comment_karma: int = 0
+    minimum_comment_karma_for: List[Literal["create_post", "comment_post", "reply_comment"]] = Field(default_factory=list)
+    blocked_warmup_stages: List[str] = Field(default_factory=list)
 
 
 class RedditProgramProofMatrix(BaseModel):
@@ -6222,6 +6225,12 @@ def _validate_reddit_program_payload(payload: Dict[str, Any]) -> None:
         allocation_weight = int(policy.get("allocation_weight", 1) or 1)
         if allocation_weight < 1:
             raise HTTPException(status_code=400, detail=f"topic_constraints.subreddit_policies[{idx}].allocation_weight must be >= 1")
+        minimum_comment_karma = int(policy.get("minimum_comment_karma", 0) or 0)
+        if minimum_comment_karma < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"topic_constraints.subreddit_policies[{idx}].minimum_comment_karma must be >= 0",
+            )
         profile_user_flairs = dict(policy.get("profile_user_flairs") or {})
         for profile_name in profile_user_flairs:
             if str(profile_name).strip() not in profile_names:

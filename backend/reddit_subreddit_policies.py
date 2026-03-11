@@ -50,6 +50,13 @@ def normalize_subreddit_policy(raw: Dict[str, Any]) -> Dict[str, Any]:
         if normalized_profile and normalized_flair:
             profile_user_flairs[normalized_profile] = normalized_flair
     keyword_overrides = [str(value).strip() for value in list(raw.get("keyword_overrides") or []) if str(value).strip()]
+    minimum_comment_karma = max(0, int(raw.get("minimum_comment_karma", 0) or 0))
+    minimum_comment_karma_for = _normalize_action_list(raw.get("minimum_comment_karma_for"))
+    blocked_warmup_stages = [
+        str(value).strip().lower()
+        for value in list(raw.get("blocked_warmup_stages") or [])
+        if str(value).strip()
+    ]
     return {
         "subreddit": subreddit,
         "allocation_weight": max(1, int(raw.get("allocation_weight", 1) or 1)),
@@ -58,6 +65,9 @@ def normalize_subreddit_policy(raw: Dict[str, Any]) -> Dict[str, Any]:
         "requires_user_flair_for": requires_user_flair_for,
         "profile_user_flairs": profile_user_flairs,
         "keyword_overrides": keyword_overrides,
+        "minimum_comment_karma": minimum_comment_karma,
+        "minimum_comment_karma_for": minimum_comment_karma_for,
+        "blocked_warmup_stages": blocked_warmup_stages,
     }
 
 
@@ -123,3 +133,21 @@ def subreddit_profile_is_eligible(policy: Dict[str, Any], *, profile_name: Optio
     if not subreddit_allows_action(policy, action):
         return False
     return True
+
+
+def subreddit_minimum_comment_karma(policy: Dict[str, Any], action: Optional[str]) -> int:
+    normalized_action = str(action or "").strip().lower()
+    if not normalized_action:
+        return 0
+    required_for = _normalize_action_list(policy.get("minimum_comment_karma_for"))
+    if required_for and normalized_action not in required_for:
+        return 0
+    return max(0, int(policy.get("minimum_comment_karma", 0) or 0))
+
+
+def subreddit_blocked_warmup_stages(policy: Dict[str, Any]) -> List[str]:
+    return [
+        str(value).strip().lower()
+        for value in list(policy.get("blocked_warmup_stages") or [])
+        if str(value).strip()
+    ]

@@ -26,6 +26,7 @@
 - flair-dialog steps need tighter control matching than general reddit actions; reject oversized text blocks and require dialog-state confirmation so page content cannot masquerade as a flair control.
 - when thread context is lost, recover by navigating back to the exact target url only; do not let thread recovery or `_goto(...)` trigger side-effectful overlay dismiss clicks.
 - open-app-sheet dismissal needs real bottom-sheet semantics, not just shared geometry; if the surface does not explicitly look like `view in reddit app`, do not click anything.
+- if a subreddit likely requires participation trust the profile does not have yet, encode that as policy (`minimum_comment_karma`, blocked warmup stages) and stop the work item before browser execution; surface the shortfall honestly instead of spending attempts on impossible actions.
 
 ## promotion rules
 - promote only evidence-backed reusable lessons
