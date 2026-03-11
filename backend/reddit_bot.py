@@ -2577,6 +2577,7 @@ async def _fill_comment_input(
     expected_title: Optional[str] = None,
     target_author: Optional[str] = None,
     allow_global_trigger: bool = True,
+    thread_url: Optional[str] = None,
 ) -> bool:
     selectors = COMMENT["reply_input"] if reply else COMMENT["composer_input"]
     if await _fill_first(page, selectors, text):
@@ -2593,7 +2594,11 @@ async def _fill_comment_input(
             return await _keyboard_type_and_verify(page, text, reply=reply)
     if not allow_global_trigger:
         return False
-    if not await _open_comment_composer(page, expected_title):
+    opened = await _open_comment_composer(page, expected_title)
+    if not opened and thread_url and not await _thread_context_present(page, expected_title):
+        if await _ensure_thread_context(page, url=thread_url, expected_title=expected_title):
+            opened = await _open_comment_composer(page, expected_title)
+    if not opened:
         return False
     await page.wait_for_timeout(400)
     if await _fill_first(page, selectors, text):
@@ -3262,7 +3267,9 @@ async def comment_on_post(
             await dump_interactive_elements(page, "REDDIT COMMENT ON POST")
             await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")
 
-            if not await _fill_comment_input(page, text, expected_title=expected_title):
+            if not await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url):
+                if not await _thread_context_present(page, expected_title):
+                    await _ensure_thread_context(page, url=url, expected_title=expected_title)
                 await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")
                 await _capture_reddit_failure_state(page, "REDDIT COMMENT COMPOSER MISSING")
                 raise RuntimeError("Reddit comment composer not found")

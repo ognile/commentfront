@@ -18,13 +18,14 @@
 - the backend now has a real subreddit policy surface: `auto_user_flair`, keyword overrides, enabled actions, profile flair hints, and `proof_matrix`.
 - `comment_post` generation is now available for discovered-post work items, which is required for per-profile-per-subreddit proof comments.
 - subreddit identity state persists on the reddit session, and the bot can open the flair dialog, inspect options, choose a flair, and record identity evidence.
-- the focused local reddit suite is green: `102 passed`.
-- broader reddit regression coverage, deploy, and production proof are still pending.
+- the broader local reddit regression slice is green after the thread-context recovery patch: `132 passed`.
+- live proof vehicle `reddit_program_843e09725c` proved the first production bottleneck honestly: `comment_post` can drift from a thread into a subreddit listing during composer opening and then fail as `Reddit comment composer not found`.
+- that old-build proof vehicle has been cancelled so the next proof run can happen only on the patched build.
 
 ## active todo
-1. run the broader reddit regression slice and fix anything it exposes.
-2. push committed github state and wait for railway/vercel to finish deploying.
-3. create a production proof program that exercises automatic subreddit adaptation with real operator/evidence proof.
+1. commit the thread-context recovery patch and redeploy it to railway.
+2. recreate the proof-matrix program on the patched build.
+3. verify real production proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
 
 ## current understanding
 - the right architecture is split across three layers:
@@ -39,6 +40,7 @@
 - the generator can now produce top-level comments and choose a subreddit flair option from visible community options.
 - the compiler can now emit `proof_matrix` work items for `comment_post`, `reply_comment`, and `create_post`.
 - the bot regression caused by unconditional flair probing was fixed by keeping the executor opt-in and policy-driven.
+- the next production bottleneck is no longer vague: attempt `9dcaaf8b-be25-4aab-8450-34f9eeafba65` on `reddit_program_843e09725c` showed a thread-context drift bug, and the local fix for that bug is now covered by a dedicated regression test.
 
 ## open risks
 - production still needs proof that all 10 valid sessions can execute the new proof-matrix flow against real subreddit conditions.

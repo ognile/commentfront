@@ -174,6 +174,60 @@ def test_fill_comment_input_opens_join_conversation_trigger(monkeypatch):
     assert page.waits == [400]
 
 
+def test_fill_comment_input_recovers_thread_context_before_retrying_composer(monkeypatch):
+    page = _FakePage()
+    calls = []
+    thread_context = {"on_thread": False}
+
+    async def fake_fill(target_page, selectors, value):
+        assert target_page is page
+        calls.append(("fill", tuple(selectors), value))
+        return len([entry for entry in calls if entry[0] == "fill"]) > 1
+
+    async def fake_open(target_page, expected_title=None):
+        assert target_page is page
+        calls.append(("open", expected_title))
+        return thread_context["on_thread"]
+
+    async def fake_thread_context(_page, expected_title):
+        calls.append(("thread_context", expected_title, thread_context["on_thread"]))
+        return thread_context["on_thread"]
+
+    async def fake_ensure_thread(_page, *, url, expected_title):
+        calls.append(("ensure_thread", url, expected_title))
+        thread_context["on_thread"] = True
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill)
+    monkeypatch.setattr(reddit_bot, "_open_comment_composer", fake_open)
+    monkeypatch.setattr(reddit_bot, "_thread_context_present", fake_thread_context)
+    monkeypatch.setattr(reddit_bot, "_ensure_thread_context", fake_ensure_thread)
+
+    ok = asyncio.run(
+        reddit_bot._fill_comment_input(
+            page,
+            "hello world",
+            expected_title="Crazy urgent care experience",
+            thread_url="https://www.reddit.com/r/Healthyhooha/comments/1rmydsd/crazy_urgent_care_experience/",
+        )
+    )
+
+    assert ok is True
+    assert calls == [
+        ("fill", tuple(reddit_bot.COMMENT["composer_input"]), "hello world"),
+        ("open", "Crazy urgent care experience"),
+        ("thread_context", "Crazy urgent care experience", False),
+        (
+            "ensure_thread",
+            "https://www.reddit.com/r/Healthyhooha/comments/1rmydsd/crazy_urgent_care_experience/",
+            "Crazy urgent care experience",
+        ),
+        ("open", "Crazy urgent care experience"),
+        ("fill", tuple(reddit_bot.COMMENT["composer_input"]), "hello world"),
+    ]
+    assert page.waits == [400]
+
+
 def test_fill_comment_input_uses_reply_selectors_for_reply_flow(monkeypatch):
     page = _FakePage()
     selector_sets = []
