@@ -438,6 +438,59 @@ def test_build_generated_post_payload_allows_auto_user_flair_when_no_manual_flai
     assert payload["user_flair_hint"] is None
 
 
+def test_resolve_target_explicit_comment_item_inherits_subreddit_policy_metadata(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            profile_selection={"profile_names": ["reddit_alpha"]},
+            topic_constraints={
+                "subreddits": ["AskWomenOver40"],
+                "keywords": ["pelvic pain"],
+                "subreddit_policies": [
+                    {
+                        "subreddit": "AskWomenOver40",
+                        "requires_user_flair_for": ["comment_post"],
+                        "profile_user_flairs": {"reddit_alpha": "divorced"},
+                    }
+                ],
+            },
+            content_assignments={
+                "items": [
+                    {
+                        "action": "comment_post",
+                        "profile_name": "reddit_alpha",
+                        "day_offset": 0,
+                        "target_url": "https://www.reddit.com/r/AskWomenOver40/comments/abc123/example_post/",
+                        "text": "exact comment",
+                        "subreddit": "AskWomenOver40",
+                    }
+                ]
+            },
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "comment_post")
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    payload = asyncio.run(orchestrator._resolve_target(program, item))
+
+    assert payload["target_url"] == "https://www.reddit.com/r/AskWomenOver40/comments/abc123/example_post/"
+    assert payload["subreddit"] == "AskWomenOver40"
+    assert payload["auto_user_flair"] is True
+    assert payload["user_flair_hint"] == "divorced"
+
+
 def test_scheduler_start_recovers_interrupted_programs(tmp_path):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(_spec())

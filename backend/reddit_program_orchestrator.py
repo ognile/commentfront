@@ -938,13 +938,22 @@ class RedditProgramOrchestrator:
 
     async def _resolve_target(self, program: Dict[str, Any], item: Dict[str, Any], *, actor_username: Optional[str] = None) -> Dict[str, Any]:
         if item.get("target_mode") == "explicit":
+            subreddit = item.get("subreddit") or normalize_subreddit_name(item.get("target_url"))
+            policy_metadata = self._subreddit_policy_metadata(
+                program,
+                subreddit=subreddit,
+                profile_name=str(item.get("profile_name") or ""),
+                action=str(item.get("action") or ""),
+            )
             return {
                 "target_url": item.get("target_url"),
                 "target_comment_url": item.get("target_comment_url"),
                 "text": item.get("text"),
                 "title": item.get("title"),
                 "body": item.get("body"),
-                "subreddit": item.get("subreddit"),
+                "subreddit": subreddit,
+                "user_flair_hint": policy_metadata.get("configured_user_flair"),
+                "auto_user_flair": policy_metadata.get("auto_user_flair"),
                 "discovered_target": None,
                 "generation_evidence": item.get("generation_evidence"),
             }
