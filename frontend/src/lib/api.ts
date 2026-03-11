@@ -27,6 +27,12 @@ export function setLogoutCallback(callback: () => void) {
   logoutCallback = callback;
 }
 
+function mergeHeaders(fetchOptions: RequestInit): Record<string, string> {
+  return {
+    ...((fetchOptions.headers as Record<string, string>) || {}),
+  };
+}
+
 function normalizeApiError(value: unknown, fallback: string): string {
   if (typeof value === 'string' && value.trim()) return value;
   if (Array.isArray(value)) {
@@ -80,31 +86,20 @@ async function refreshAccessToken(): Promise<boolean> {
   return false;
 }
 
-/**
- * Make an authenticated API request
- * Automatically adds Authorization header and handles token refresh
- */
-export async function apiFetch<T>(
+async function apiFetchResponse(
   endpoint: string,
   options: ApiOptions = {}
-): Promise<T> {
+): Promise<Response> {
   const { skipAuth, _isRetry, ...fetchOptions } = options;
 
-  // Build headers
-  const headers: Record<string, string> = {
-    ...((fetchOptions.headers as Record<string, string>) || {}),
-  };
+  const headers = mergeHeaders(fetchOptions);
 
-  // Add Content-Type for JSON bodies
   if (fetchOptions.body && typeof fetchOptions.body === 'string') {
     headers['Content-Type'] = headers['Content-Type'] || 'application/json';
   }
 
-  // Add auth header if not skipped
   if (!skipAuth) {
     let accessToken = getAccessToken();
-
-    // Check if token needs refresh (5 minute margin)
     if (accessToken && isTokenExpired(accessToken, 5 * 60 * 1000)) {
       const refreshed = await refreshAccessToken();
       if (refreshed) {
@@ -122,13 +117,11 @@ export async function apiFetch<T>(
     headers,
   });
 
-  // Handle 401 - try to refresh token and retry once
   if (response.status === 401 && !skipAuth && !_isRetry) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
-      return apiFetch<T>(endpoint, { ...options, _isRetry: true });
+      return apiFetchResponse(endpoint, { ...options, _isRetry: true });
     } else {
-      // Refresh failed, logout
       clearTokens();
       if (logoutCallback) {
         logoutCallback();
@@ -137,18 +130,63 @@ export async function apiFetch<T>(
     }
   }
 
-  // Handle other errors
+  return response;
+}
+
+/**
+ * Make an authenticated API request
+ * Automatically adds Authorization header and handles token refresh
+ */
+export async function apiFetch<T>(
+  endpoint: string,
+  options: ApiOptions = {}
+): Promise<T> {
+  const response = await apiFetchResponse(endpoint, options);
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(normalizeApiError(errorData?.detail ?? errorData, `Request failed: ${response.status}`));
   }
 
-  // Return empty object for 204 No Content
   if (response.status === 204) {
     return {} as T;
   }
 
   return response.json();
+}
+
+function toApiEndpoint(urlOrPath: string): string {
+  const value = urlOrPath.trim();
+  if (!value) {
+    throw new Error('missing api url');
+  }
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    if (!value.startsWith(API_BASE)) {
+      throw new Error('expected an internal api url');
+    }
+    return value.slice(API_BASE.length) || '/';
+  }
+  return value.startsWith('/') ? value : `/${value}`;
+}
+
+export async function openAuthenticatedApiDocument(
+  urlOrPath: string
+): Promise<void> {
+  const endpoint = toApiEndpoint(urlOrPath);
+  const response = await apiFetchResponse(endpoint);
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(normalizeApiError(errorData?.detail ?? errorData, `Request failed: ${response.status}`));
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const opened = window.open(objectUrl, '_blank', 'noopener,noreferrer');
+  if (!opened) {
+    URL.revokeObjectURL(objectUrl);
+    throw new Error('popup blocked while opening proof document');
+  }
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
 /**

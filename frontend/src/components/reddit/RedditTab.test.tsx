@@ -7,17 +7,23 @@ const { apiFetchMock } = vi.hoisted(() => ({
   apiFetchMock: vi.fn(),
 }))
 
+const { openAuthenticatedApiDocumentMock } = vi.hoisted(() => ({
+  openAuthenticatedApiDocumentMock: vi.fn(),
+}))
+
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api')
   return {
     ...actual,
     apiFetch: apiFetchMock,
+    openAuthenticatedApiDocument: openAuthenticatedApiDocumentMock,
   }
 })
 
 describe('RedditTab', () => {
   beforeEach(() => {
     apiFetchMock.mockReset()
+    openAuthenticatedApiDocumentMock.mockReset()
   })
 
   it('defaults to the active reddit rollout and renders the operator board with utility rail', async () => {
@@ -251,5 +257,113 @@ describe('RedditTab', () => {
     await waitFor(() => {
       expect(screen.getByText('reddit_day_two')).toBeInTheDocument()
     })
+  })
+
+  it('opens proof links through authenticated document fetches', async () => {
+    apiFetchMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/reddit/credentials') return []
+      if (endpoint === '/reddit/sessions') return []
+      if (endpoint === '/reddit/missions') return { missions: [] }
+      if (endpoint === '/reddit/programs') {
+        return {
+          programs: [
+            { id: 'reddit_program_active', status: 'active', created_at: '2026-03-10T10:00:00Z' },
+          ],
+        }
+      }
+      if (
+        endpoint === '/reddit/programs/reddit_program_active/operator-view'
+        || endpoint === '/reddit/programs/reddit_program_active/operator-view?local_date=2026-03-10'
+      ) {
+        return {
+          program: {
+            id: 'reddit_program_active',
+            status: 'active',
+            next_run_at: null,
+            contract_totals: { reply_comment: 1 },
+            remaining_contract: {},
+            available_days: ['2026-03-10'],
+            selected_local_date: '2026-03-10',
+            available_actions: ['reply_comment'],
+            notification_log: [],
+            failure_summary: { by_action: {}, by_profile: {}, by_subreddit: {}, by_class: {} },
+            unsafe_rollout_flags: { rows: 0, duplicate_target_refs: 0, duplicate_reply_threads: 0, semantic_similarity: 0 },
+          },
+          profiles_by_day: [
+            {
+              profile_name: 'reddit_alpha',
+              planned: { reply_comment: 1 },
+              completed: { reply_comment: 1 },
+              pending: {},
+              blocked: {},
+              planned_total: 1,
+              completed_total: 1,
+              pending_total: 0,
+              blocked_total: 0,
+              proof_coverage: { required_actions: 1, with_url: 1, with_screenshot: 1, with_attempt: 1, success_confirmed: 1, unsafe_rollout: 0 },
+            },
+          ],
+          action_rows: [
+            {
+              work_item_id: 'work_reply',
+              local_date: '2026-03-10',
+              profile_name: 'reddit_alpha',
+              action: 'reply_comment',
+              subreddit: 'Healthyhooha',
+              status: 'completed',
+              final_verdict: 'success_confirmed',
+              attempts: 1,
+              attempt_id: 'attempt_reply',
+              target_url: 'https://reddit.com/thread',
+              target_comment_url: 'https://reddit.com/comment',
+              target_ref: 'https://reddit.com/comment',
+              thread_url: 'https://reddit.com/thread',
+              screenshot_artifact_url: '/forensics/artifacts/reply-shot',
+              scheduled_at: '2026-03-10T10:00:00Z',
+              completed_at: '2026-03-10T10:02:00Z',
+              error: null,
+              persona_id: 'amy_blunt_triage',
+              persona_role: 'blunt_critique',
+              case_style_applied: 'lowercase',
+              generated_text: 'go back.',
+              word_count: 2,
+              rule_source_hashes: {},
+              semantic_similarity_flags: [],
+              target_collision_flags: { duplicate_target_ref: false, duplicate_reply_thread: false },
+              proof_flags: {
+                has_url: true,
+                has_screenshot: true,
+                has_attempt: true,
+                success_confirmed: true,
+                unsafe_rollout: false,
+              },
+              attempt_history: [
+                {
+                  attempt_id: 'attempt_reply',
+                  status: 'completed',
+                  final_verdict: 'success_confirmed',
+                  failure_class: null,
+                  started_at: '2026-03-10T10:00:00Z',
+                  ended_at: '2026-03-10T10:02:00Z',
+                },
+              ],
+            },
+          ],
+        }
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+
+    render(<RedditTab />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /open/i }))
+
+    const shotButtons = await screen.findAllByRole('button', { name: /shot/i })
+    fireEvent.click(shotButtons.at(-1)!)
+    expect(openAuthenticatedApiDocumentMock).toHaveBeenCalledWith('/forensics/artifacts/reply-shot')
+
+    const attemptButtons = screen.getAllByRole('button', { name: /attempt/i })
+    fireEvent.click(attemptButtons.at(-1)!)
+    expect(openAuthenticatedApiDocumentMock).toHaveBeenCalledWith('/forensics/attempts/attempt_reply')
   })
 })

@@ -2,7 +2,7 @@ import { ArrowUpRight, Camera, FileSearch } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { resolveApiUrl } from '@/lib/api'
+import { openAuthenticatedApiDocument } from '@/lib/api'
 
 import type { RedditOperatorActionRow } from '@/components/reddit/types'
 
@@ -63,6 +63,15 @@ interface RedditProfileActionRowsProps {
 }
 
 export function RedditProfileActionRows({ rows }: RedditProfileActionRowsProps) {
+  async function handleProofOpen(url: string | null | undefined, label: string) {
+    if (!url) return
+    try {
+      await openAuthenticatedApiDocument(url)
+    } catch (error) {
+      console.error(`failed to open ${label}`, error)
+    }
+  }
+
   return (
     <div className="rounded-2xl border border-[#ddd5c5] bg-[#fffdf8]">
       <Table className="table-fixed text-[13px]">
@@ -78,8 +87,8 @@ export function RedditProfileActionRows({ rows }: RedditProfileActionRowsProps) 
         </TableHeader>
         <TableBody>
           {rows.map((row) => {
-            const screenshotUrl = resolveApiUrl(row.screenshot_artifact_url)
-            const attemptUrl = row.attempt_id ? resolveApiUrl(`/forensics/attempts/${row.attempt_id}`) : null
+            const screenshotUrl = row.screenshot_artifact_url
+            const attemptUrl = row.attempt_id ? `/forensics/attempts/${row.attempt_id}` : null
             const primaryTarget = mainTarget(row)
             const commentTarget = row.target_comment_url && row.target_comment_url !== primaryTarget ? row.target_comment_url : null
             return (
@@ -158,26 +167,24 @@ export function RedditProfileActionRows({ rows }: RedditProfileActionRowsProps) 
                   ) : null}
                   <div className="flex flex-wrap items-center gap-2">
                     {screenshotUrl ? (
-                      <a
-                        href={screenshotUrl}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => { void handleProofOpen(screenshotUrl, `proof-shot-${row.work_item_id}`) }}
                         className="inline-flex items-center gap-1 rounded-full border border-[#d8d3c5] bg-white px-2 py-1 text-xs font-medium text-[#155e75] transition hover:border-[#9bc5d3]"
                       >
                         <Camera className="h-3 w-3" />
                         shot
-                      </a>
+                      </button>
                     ) : null}
                     {attemptUrl ? (
-                      <a
-                        href={attemptUrl}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => { void handleProofOpen(attemptUrl, `proof-attempt-${row.attempt_id}`) }}
                         className="inline-flex items-center gap-1 rounded-full border border-[#d8d3c5] bg-white px-2 py-1 text-xs font-medium text-[#155e75] transition hover:border-[#9bc5d3]"
                       >
                         <FileSearch className="h-3 w-3" />
                         attempt
-                      </a>
+                      </button>
                     ) : null}
                   </div>
                 </TableCell>
