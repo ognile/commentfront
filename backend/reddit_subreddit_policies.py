@@ -54,6 +54,7 @@ def normalize_subreddit_policy(raw: Dict[str, Any]) -> Dict[str, Any]:
         "subreddit": subreddit,
         "allocation_weight": max(1, int(raw.get("allocation_weight", 1) or 1)),
         "enabled_actions": enabled_actions or sorted(DEFAULT_REDDIT_PROGRAM_ACTIONS),
+        "auto_user_flair": bool(raw.get("auto_user_flair", True)),
         "requires_user_flair_for": requires_user_flair_for,
         "profile_user_flairs": profile_user_flairs,
         "keyword_overrides": keyword_overrides,
@@ -108,6 +109,10 @@ def subreddit_requires_user_flair(policy: Dict[str, Any], action: Optional[str])
     return bool(normalized_action and normalized_action in required_for)
 
 
+def subreddit_auto_user_flair_enabled(policy: Dict[str, Any]) -> bool:
+    return bool(policy.get("auto_user_flair", True))
+
+
 def profile_user_flair(policy: Dict[str, Any], profile_name: Optional[str]) -> Optional[str]:
     mapping = dict(policy.get("profile_user_flairs") or {})
     flair = str(mapping.get(str(profile_name or "").strip()) or "").strip()
@@ -117,6 +122,4 @@ def profile_user_flair(policy: Dict[str, Any], profile_name: Optional[str]) -> O
 def subreddit_profile_is_eligible(policy: Dict[str, Any], *, profile_name: Optional[str], action: Optional[str]) -> bool:
     if not subreddit_allows_action(policy, action):
         return False
-    if not subreddit_requires_user_flair(policy, action):
-        return True
-    return bool(profile_user_flair(policy, profile_name))
+    return True

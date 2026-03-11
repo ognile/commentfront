@@ -1816,6 +1816,8 @@ class RedditActionRequest(BaseModel):
     title: Optional[str] = None
     body: Optional[str] = None
     subreddit: Optional[str] = None
+    user_flair_hint: Optional[str] = None
+    auto_user_flair: bool = False
     image_id: Optional[str] = None
 
 
@@ -1877,6 +1879,7 @@ class RedditProgramProfileSelection(BaseModel):
 class RedditProgramSubredditPolicy(BaseModel):
     subreddit: str
     allocation_weight: int = 1
+    auto_user_flair: bool = True
     enabled_actions: List[
         Literal[
             "upvote_post",
@@ -1893,6 +1896,13 @@ class RedditProgramSubredditPolicy(BaseModel):
     keyword_overrides: List[str] = Field(default_factory=list)
 
 
+class RedditProgramProofMatrix(BaseModel):
+    mode: Literal["per_profile_per_subreddit"] = "per_profile_per_subreddit"
+    action: Literal["comment_post", "reply_comment", "create_post"] = "comment_post"
+    day_offset: int = 0
+    separate_targets: bool = True
+
+
 class RedditProgramTopicConstraints(BaseModel):
     subreddits: List[str] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
@@ -1901,6 +1911,7 @@ class RedditProgramTopicConstraints(BaseModel):
     allow_own_content_targets: bool = False
     mandatory_join_urls: List[str] = Field(default_factory=list)
     subreddit_policies: List[RedditProgramSubredditPolicy] = Field(default_factory=list)
+    proof_matrix: List[RedditProgramProofMatrix] = Field(default_factory=list)
 
 
 class RedditProgramAssignment(BaseModel):
@@ -6188,6 +6199,7 @@ def _validate_reddit_program_payload(payload: Dict[str, Any]) -> None:
 
     subreddits = [str(item).strip() for item in list(topic_constraints.get("subreddits") or []) if str(item).strip()]
     subreddit_policies = [dict(item or {}) for item in list(topic_constraints.get("subreddit_policies") or [])]
+    proof_matrix = [dict(item or {}) for item in list(topic_constraints.get("proof_matrix") or [])]
     explicit_post_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_post_targets") or []) if str(item).strip()]
     explicit_comment_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_comment_targets") or []) if str(item).strip()]
     mandatory_join_urls = [str(item).strip() for item in list(topic_constraints.get("mandatory_join_urls") or []) if str(item).strip()]
@@ -6217,6 +6229,21 @@ def _validate_reddit_program_payload(payload: Dict[str, Any]) -> None:
                     status_code=400,
                     detail=f"topic_constraints.subreddit_policies[{idx}].profile_user_flairs contains unknown profile {profile_name}",
                 )
+
+    for idx, requirement in enumerate(proof_matrix):
+        if str(requirement.get("mode") or "per_profile_per_subreddit") != "per_profile_per_subreddit":
+            raise HTTPException(status_code=400, detail=f"topic_constraints.proof_matrix[{idx}].mode is unsupported")
+        day_offset = int(requirement.get("day_offset", 0) or 0)
+        if day_offset < 0 or day_offset >= duration_days:
+            raise HTTPException(
+                status_code=400,
+                detail=f"topic_constraints.proof_matrix[{idx}].day_offset must be between 0 and duration_days - 1",
+            )
+        if not subreddits:
+            raise HTTPException(
+                status_code=400,
+                detail=f"topic_constraints.proof_matrix[{idx}] requires topic_constraints.subreddits",
+            )
 
     if posts_max_per_day > 0 or upvotes_max_per_day > 0 or reply_max_per_day > 0 or mandatory_join_urls:
         if not subreddits and not explicit_post_targets and not explicit_comment_targets and not mandatory_join_urls:
@@ -6315,6 +6342,8 @@ async def _execute_reddit_action_payload(payload: Dict[str, Any], *, proxy_overr
         body=payload.get("body") or payload.get("brief"),
         subreddit=payload.get("subreddit"),
         image_path=image_path,
+        user_flair_hint=payload.get("user_flair_hint"),
+        auto_user_flair=bool(payload.get("auto_user_flair", False)),
     )
 
 
@@ -7115,6 +7144,7 @@ async def _build_reddit_program_operator_view(
 ) -> Dict[str, Any]:
     selected_local_date = _reddit_program_selected_local_date(program, local_date)
     work_items = list(((program.get("compiled") or {}).get("work_items") or []))
+    work_item_by_id = {str(item.get("id") or ""): item for item in work_items if str(item.get("id") or "").strip()}
     profile_filter = str(profile_name or "").strip() or None
     filtered_items = [
         item for item in work_items
@@ -7207,6 +7237,7 @@ async def _build_reddit_program_operator_view(
             or ((generation_evidence.get("validation") or {}).get("similarity_checks"))
             or {}
         )
+        identity_evidence = dict(result.get("identity_evidence") or {})
         similarity_flags = [
             scope
             for scope, metrics in similarity_checks.items()
@@ -7257,6 +7288,8 @@ async def _build_reddit_program_operator_view(
             "rule_source_hashes": dict(generation_evidence.get("rule_source_hashes") or {}),
             "semantic_similarity_flags": similarity_flags,
             "target_collision_flags": target_collision_flags,
+            "identity_evidence": identity_evidence,
+            "user_flair": identity_evidence.get("chosen_flair"),
             "proof_flags": {
                 "has_url": bool(target_ref),
                 "has_screenshot": bool(screenshot_artifact_url),
@@ -7314,6 +7347,24 @@ async def _build_reddit_program_operator_view(
             }
         )
 
+    proof_matrix_rows = [
+        {
+            "profile_name": row["profile_name"],
+            "subreddit": row["subreddit"],
+            "action": row["action"],
+            "status": row["status"],
+            "work_item_id": row["work_item_id"],
+            "attempt_id": row["attempt_id"],
+            "target_ref": row["target_ref"],
+            "screenshot_artifact_url": row["screenshot_artifact_url"],
+            "final_verdict": row["final_verdict"],
+            "user_flair": row.get("user_flair"),
+            "proof_flags": row["proof_flags"],
+        }
+        for row in action_rows
+        if str((work_item_by_id.get(str(row["work_item_id"]) or {}) or {}).get("source") or "") == "proof_matrix"
+    ]
+
     return {
         "program": {
             "id": program.get("id"),
@@ -7334,6 +7385,7 @@ async def _build_reddit_program_operator_view(
             },
         },
         "profiles_by_day": profiles_by_day,
+        "proof_matrix": proof_matrix_rows,
         "action_rows": action_rows,
     }
 

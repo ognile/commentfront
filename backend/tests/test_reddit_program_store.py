@@ -207,10 +207,65 @@ def test_compiler_balances_create_posts_with_subreddit_policies_and_flair_eligib
     beta_subreddits = [item["subreddit"] for item in create_posts if item["profile_name"] == "reddit_beta"]
 
     assert "AskWomenOver40" in alpha_subreddits
-    assert "AskWomenOver40" not in beta_subreddits
-    assert sum(1 for item in create_posts if item["subreddit"] == "women") > sum(
+    assert "AskWomenOver40" in beta_subreddits
+    assert sum(1 for item in create_posts if item["subreddit"] == "women") >= sum(
         1 for item in create_posts if item["subreddit"] == "WomensHealth"
     )
+
+
+def test_compiler_builds_proof_matrix_comment_items_for_every_profile_and_subreddit(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
+    program = store.create_program(
+        _spec(
+            profile_names=["reddit_alpha", "reddit_beta"],
+            schedule={
+                "start_at": "2026-03-09T08:00:00Z",
+                "duration_days": 2,
+                "timezone": "Europe/Zurich",
+                "random_windows": [{"start_hour": 9, "end_hour": 12}],
+            },
+            topic_constraints={
+                "subreddits": ["WomensHealth", "AskWomenOver40"],
+                "keywords": ["period"],
+                "proof_matrix": [
+                    {
+                        "mode": "per_profile_per_subreddit",
+                        "action": "comment_post",
+                        "day_offset": 1,
+                    }
+                ],
+            },
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+
+    matrix_items = [item for item in program["compiled"]["work_items"] if item["source"] == "proof_matrix"]
+
+    assert len(matrix_items) == 4
+    assert {item["action"] for item in matrix_items} == {"comment_post"}
+    assert {item["target_mode"] for item in matrix_items} == {"discover_post"}
+    assert {item["local_date"] for item in matrix_items} == {"2026-03-10"}
+    assert {
+        (item["profile_name"], item["subreddit"])
+        for item in matrix_items
+    } == {
+        ("reddit_alpha", "WomensHealth"),
+        ("reddit_alpha", "AskWomenOver40"),
+        ("reddit_beta", "WomensHealth"),
+        ("reddit_beta", "AskWomenOver40"),
+    }
 
 
 def test_exhausted_items_still_count_against_remaining_contract(tmp_path):

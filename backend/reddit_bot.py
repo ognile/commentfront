@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -16,6 +17,7 @@ from playwright.async_api import async_playwright
 from browser_factory import apply_page_identity_overrides, create_browser_context
 from comment_bot import dump_interactive_elements, save_debug_screenshot
 from config import REDDIT_MOBILE_USER_AGENT
+from reddit_growth_generation import RedditGrowthContentGenerator
 from reddit_login_bot import _dismiss_cookie_banner, _goto_with_retry
 from reddit_selectors import COMMENT, HOME, POST, SUBREDDIT
 from reddit_session import RedditSession
@@ -31,6 +33,7 @@ from forensics import (
 
 logger = logging.getLogger("RedditBot")
 REDDIT_HTTP_HEADERS = {"User-Agent": "commentfront-reddit-bot/1.0"}
+SUBREDDIT_IDENTITY_GENERATOR = RedditGrowthContentGenerator()
 
 
 class RedditCommunityBanError(RuntimeError):
@@ -1354,6 +1357,316 @@ async def _find_subreddit_header_action(page) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return result or None
+
+
+def _infer_subreddit_from_url(url: Optional[str]) -> Optional[str]:
+    value = str(url or "").strip()
+    match = re.search(r"/r/([^/]+)/", value, re.IGNORECASE)
+    return str(match.group(1) or "").strip() if match else None
+
+
+def _subreddit_root_url(subreddit: Optional[str]) -> Optional[str]:
+    normalized = str(subreddit or "").strip().lstrip("r/").strip("/")
+    if not normalized:
+        return None
+    return f"https://www.reddit.com/r/{quote(normalized)}/"
+
+
+async def _body_mentions_user_flair_requirement(page) -> bool:
+    try:
+        body = str(await page.locator("body").inner_text()).lower()
+    except Exception:
+        return False
+    signals = [
+        "user flair",
+        "change user flair",
+        "choose user flair",
+        "set your user flair",
+        "must have user flair",
+    ]
+    return any(signal in body for signal in signals)
+
+
+async def _open_subreddit_community_menu(page) -> bool:
+    action = await _find_subreddit_header_action(page)
+    if action:
+        await page.mouse.click(float(action["x"]), float(action["y"]))
+        queue_current_event(
+            "click",
+            {
+                "method": "subreddit_header_action",
+                "action_name": "subreddit_community_menu",
+                "x": action.get("x"),
+                "y": action.get("y"),
+            },
+            phase="activation",
+            source="reddit_bot",
+        )
+        await page.wait_for_timeout(900)
+        return True
+    return await _click_named_control(
+        page,
+        action_name="subreddit_community_menu_fallback",
+        needles=["community actions", "more actions", "more"],
+    )
+
+
+async def _open_user_flair_dialog(page) -> bool:
+    if not await _open_subreddit_community_menu(page):
+        return False
+    opened = await _click_named_control(
+        page,
+        action_name="subreddit_open_user_flair",
+        needles=["change user flair", "add user flair", "user flair", "edit user flair"],
+    )
+    if not opened:
+        opened = await _click_visible_text_region(
+            page,
+            needle="user flair",
+            action_name="subreddit_open_user_flair_text",
+            min_top=80,
+        )
+    if not opened:
+        return False
+    await page.wait_for_timeout(900)
+    if await _verify_named_control_state(page, needles=["view all flair"]):
+        if not await _click_named_control(
+            page,
+            action_name="subreddit_view_all_flair",
+            needles=["view all flair"],
+        ):
+            await _click_visible_text_region(
+                page,
+                needle="view all flair",
+                action_name="subreddit_view_all_flair_text",
+                min_top=80,
+            )
+        await page.wait_for_timeout(900)
+    return True
+
+
+async def _collect_user_flair_options(page) -> Dict[str, Any]:
+    try:
+        return await page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                const lowered = (value) => normalize(value).toLowerCase();
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const visible = (rect) =>
+                    rect && rect.width >= 18 && rect.height >= 18 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight && rect.left <= viewportWidth;
+                const banned = [
+                    'add user flair',
+                    'change user flair',
+                    'edit user flair',
+                    'view all flair',
+                    'apply',
+                    'save',
+                    'done',
+                    'cancel',
+                    'close',
+                    'back',
+                    'show my user flair in this community',
+                ];
+                const nodes = Array.from(document.querySelectorAll('button, [role="button"], [role="radio"], [role="option"], label, li, div'));
+                const options = [];
+                const seen = new Set();
+                let current = null;
+                for (const node of nodes) {
+                    const rect = node.getBoundingClientRect();
+                    if (!visible(rect)) continue;
+                    const text = normalize(node.innerText || node.textContent);
+                    const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                    const combined = text || aria;
+                    const loweredCombined = lowered(combined);
+                    if (!combined || banned.includes(loweredCombined)) continue;
+                    if (loweredCombined.length < 2 || loweredCombined.length > 80) continue;
+                    if (seen.has(loweredCombined)) continue;
+                    const selected =
+                        node.getAttribute('aria-checked') === 'true' ||
+                        node.getAttribute('aria-selected') === 'true' ||
+                        node.getAttribute('data-testid') === 'user-flair-selected';
+                    if (selected) current = combined;
+                    seen.add(loweredCombined);
+                    options.push(combined);
+                }
+                return { options, current_flair: current };
+            }"""
+        )
+    except Exception:
+        return {"options": [], "current_flair": None}
+
+
+async def _select_user_flair_option(page, option_text: str) -> bool:
+    for attempt in range(2):
+        if await _click_named_control(
+            page,
+            action_name="subreddit_select_user_flair",
+            needles=[option_text],
+        ):
+            await page.wait_for_timeout(700)
+            return True
+        if await _click_visible_text_region(
+            page,
+            needle=option_text.lower(),
+            action_name="subreddit_select_user_flair_text",
+            min_top=80,
+        ):
+            await page.wait_for_timeout(700)
+            return True
+        if attempt == 0:
+            await page.evaluate("window.scrollBy(0, window.innerHeight * 0.55)")
+            await page.wait_for_timeout(600)
+    return False
+
+
+async def _ensure_user_flair_visibility_toggle(page) -> bool:
+    try:
+        toggled = await page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const label = Array.from(document.querySelectorAll('button, [role="button"], [role="switch"], label, div')).find((node) => {
+                    const text = normalize(node.innerText || node.textContent);
+                    const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                    return text.includes('show my user flair in this community') || aria.includes('show my user flair in this community');
+                });
+                if (!label) return { found: false, changed: false };
+                const target = label.closest('label, button, [role="button"], [role="switch"]') || label;
+                const input = target.querySelector && target.querySelector('input[type="checkbox"]');
+                const ariaChecked = target.getAttribute && target.getAttribute('aria-checked');
+                const alreadyOn = (input && input.checked) || ariaChecked === 'true';
+                if (alreadyOn) return { found: true, changed: false };
+                target.click();
+                return { found: true, changed: true };
+            }"""
+        )
+    except Exception:
+        return False
+    await page.wait_for_timeout(500)
+    return bool((toggled or {}).get("found"))
+
+
+async def _confirm_user_flair_dialog(page) -> bool:
+    if await _click_named_control(page, action_name="subreddit_apply_user_flair", needles=["apply", "save", "done"]):
+        return True
+    return await _click_visible_text_region(
+        page,
+        needle="apply",
+        action_name="subreddit_apply_user_flair_text",
+        min_top=80,
+    )
+
+
+async def _ensure_subreddit_user_flair(
+    page,
+    session: RedditSession,
+    *,
+    subreddit: Optional[str],
+    action: str,
+    desired_flair: Optional[str] = None,
+    auto_user_flair: bool = False,
+) -> Dict[str, Any]:
+    normalized_subreddit = str(subreddit or "").strip()
+    if not normalized_subreddit or not auto_user_flair:
+        return {
+            "subreddit": normalized_subreddit or None,
+            "action": action,
+            "auto_user_flair": bool(auto_user_flair),
+            "status": "skipped",
+        }
+
+    cached = session.get_subreddit_identity_state(normalized_subreddit) if hasattr(session, "get_subreddit_identity_state") else {}
+    cached_flair = str((cached or {}).get("user_flair") or "").strip() or None
+    if cached_flair and not desired_flair:
+        return {
+            "subreddit": normalized_subreddit,
+            "action": action,
+            "auto_user_flair": True,
+            "status": "cached",
+            "chosen_flair": cached_flair,
+            "available_options": list((cached or {}).get("available_options") or []),
+        }
+
+    root_url = _subreddit_root_url(normalized_subreddit)
+    if not root_url:
+        return {"subreddit": normalized_subreddit, "action": action, "auto_user_flair": True, "status": "missing_subreddit"}
+
+    await _goto(page, root_url)
+    await page.wait_for_timeout(800)
+    if not await _open_user_flair_dialog(page):
+        return {
+            "subreddit": normalized_subreddit,
+            "action": action,
+            "auto_user_flair": True,
+            "status": "dialog_unavailable",
+        }
+
+    options_payload = await _collect_user_flair_options(page)
+    available_options = list(options_payload.get("options") or [])
+    current_flair = str(options_payload.get("current_flair") or "").strip() or cached_flair
+    choice_bundle = None
+    chosen_flair = str(desired_flair or "").strip() or current_flair
+    if not chosen_flair and available_options:
+        choice_bundle = await SUBREDDIT_IDENTITY_GENERATOR.choose_user_flair(
+            profile_name=session.profile_name,
+            subreddit=normalized_subreddit,
+            available_options=available_options,
+            current_flair=current_flair,
+        )
+        chosen_flair = str((choice_bundle or {}).get("choice") or "").strip()
+
+    if not chosen_flair:
+        return {
+            "subreddit": normalized_subreddit,
+            "action": action,
+            "auto_user_flair": True,
+            "status": "no_option",
+            "available_options": available_options,
+            "current_flair": current_flair,
+        }
+
+    selected = await _select_user_flair_option(page, chosen_flair)
+    if not selected:
+        return {
+            "subreddit": normalized_subreddit,
+            "action": action,
+            "auto_user_flair": True,
+            "status": "selection_failed",
+            "available_options": available_options,
+            "current_flair": current_flair,
+            "chosen_flair": chosen_flair,
+        }
+
+    await _ensure_user_flair_visibility_toggle(page)
+    applied = await _confirm_user_flair_dialog(page)
+    await page.wait_for_timeout(1200)
+    identity_evidence = {
+        "subreddit": normalized_subreddit,
+        "action": action,
+        "auto_user_flair": True,
+        "status": "applied" if applied else "apply_unconfirmed",
+        "available_options": available_options,
+        "current_flair": current_flair,
+        "chosen_flair": chosen_flair,
+        "reasoning": (choice_bundle or {}).get("reasoning"),
+        "persona_id": ((choice_bundle or {}).get("persona_snapshot") or {}).get("persona_id"),
+    }
+    await attach_current_json_artifact(
+        "subreddit_identity",
+        "subreddit-identity.json",
+        identity_evidence,
+        metadata={"subreddit": normalized_subreddit, "action": action},
+    )
+    if hasattr(session, "update_subreddit_identity_state"):
+        session.update_subreddit_identity_state(
+            normalized_subreddit,
+            {
+                "user_flair": chosen_flair,
+                "available_options": available_options,
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        )
+    return identity_evidence
 
 
 async def _comment_action_row(
@@ -2777,14 +3090,28 @@ async def create_post(
     subreddit: Optional[str] = None,
     image_path: Optional[str] = None,
     proxy_url: Optional[str] = None,
+    user_flair_hint: Optional[str] = None,
+    auto_user_flair: bool = False,
 ) -> Dict[str, Any]:
     target_url = "https://www.reddit.com/submit"
+    normalized = None
     if subreddit:
         normalized = subreddit.strip().lstrip("r/").strip("/")
         target_url = f"https://www.reddit.com/r/{quote(normalized)}/submit?type=TEXT"
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
+            await _goto(page, target_url)
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.wait_for_timeout(400)
+            identity_evidence = await _ensure_subreddit_user_flair(
+                page,
+                session,
+                subreddit=normalized,
+                action="create_post",
+                desired_flair=user_flair_hint,
+                auto_user_flair=bool(auto_user_flair or user_flair_hint),
+            )
             await _goto(page, target_url)
             await page.evaluate("window.scrollTo(0, 0)")
             await page.wait_for_timeout(400)
@@ -2856,6 +3183,7 @@ async def create_post(
                 screenshot=screenshot,
                 current_url=current_url,
                 target_url=created_post_url,
+                identity_evidence=identity_evidence,
                 error=None if success else "Reddit post submission verification failed",
             )
         except RedditCommunityBanError as exc:
@@ -2911,9 +3239,20 @@ async def comment_on_post(
     url: str,
     text: str,
     proxy_url: Optional[str] = None,
+    subreddit: Optional[str] = None,
+    user_flair_hint: Optional[str] = None,
+    auto_user_flair: bool = False,
 ) -> Dict[str, Any]:
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
+            identity_evidence = await _ensure_subreddit_user_flair(
+                page,
+                session,
+                subreddit=subreddit or _infer_subreddit_from_url(url),
+                action="comment_post",
+                desired_flair=user_flair_hint,
+                auto_user_flair=bool(auto_user_flair or user_flair_hint),
+            )
             await _goto(page, url)
             target_context = await _load_post_context(url)
             expected_title = (target_context or {}).get("title") or await _current_thread_title(page)
@@ -2941,6 +3280,7 @@ async def comment_on_post(
                 profile_name=session.profile_name,
                 screenshot=screenshot,
                 current_url=page.url,
+                identity_evidence=identity_evidence,
                 error=None if success else "Reddit comment verification failed",
             )
         except RedditCommunityBanError as exc:
@@ -2964,6 +3304,9 @@ async def reply_to_comment(
     target_comment_url: str,
     text: str,
     proxy_url: Optional[str] = None,
+    subreddit: Optional[str] = None,
+    user_flair_hint: Optional[str] = None,
+    auto_user_flair: bool = False,
 ) -> Dict[str, Any]:
     target_context = await _load_target_comment_context(target_comment_url)
     thread_url = str((target_context or {}).get("thread_url") or "").strip()
@@ -2974,6 +3317,14 @@ async def reply_to_comment(
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
+            identity_evidence = await _ensure_subreddit_user_flair(
+                page,
+                session,
+                subreddit=subreddit or _infer_subreddit_from_url(target_comment_url) or _infer_subreddit_from_url(thread_url),
+                action="reply_comment",
+                desired_flair=user_flair_hint,
+                auto_user_flair=bool(auto_user_flair or user_flair_hint),
+            )
             last_error = "Reddit Reply button not found"
             surface_errors: List[str] = []
             for idx, surface_url in enumerate(target_surfaces):
@@ -3077,6 +3428,7 @@ async def reply_to_comment(
                         current_url=page.url,
                         target_url=thread_url or surface_url,
                         target_comment_url=target_comment_url,
+                        identity_evidence=identity_evidence,
                     )
                 last_error = "Reddit reply verification failed"
                 surface_errors.append(f"{surface_url}: {last_error}")
@@ -3091,6 +3443,7 @@ async def reply_to_comment(
                     error=last_error,
                     target_url=thread_url or surface_url,
                     target_comment_url=target_comment_url,
+                    identity_evidence=identity_evidence,
                 )
             if surface_errors:
                 raise RuntimeError(" | ".join(dict.fromkeys(surface_errors)))
@@ -3139,6 +3492,8 @@ async def run_reddit_action(
     body: Optional[str] = None,
     subreddit: Optional[str] = None,
     image_path: Optional[str] = None,
+    user_flair_hint: Optional[str] = None,
+    auto_user_flair: bool = False,
     forensic_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized = str(action or "").strip().lower()
@@ -3206,15 +3561,33 @@ async def run_reddit_action(
                 subreddit=subreddit,
                 image_path=image_path,
                 proxy_url=proxy_url,
+                user_flair_hint=user_flair_hint,
+                auto_user_flair=auto_user_flair,
             )
         if normalized == "comment_post":
             if not url or not text:
                 return _result(success=False, action=normalized, profile_name=session.profile_name, error="url and text are required")
-            return await comment_on_post(session, url=url, text=text, proxy_url=proxy_url)
+            return await comment_on_post(
+                session,
+                url=url,
+                text=text,
+                proxy_url=proxy_url,
+                subreddit=subreddit,
+                user_flair_hint=user_flair_hint,
+                auto_user_flair=auto_user_flair,
+            )
         if normalized == "reply_comment":
             if not target_comment_url or not text:
                 return _result(success=False, action=normalized, profile_name=session.profile_name, error="target_comment_url and text are required")
-            return await reply_to_comment(session, target_comment_url=target_comment_url, text=text, proxy_url=proxy_url)
+            return await reply_to_comment(
+                session,
+                target_comment_url=target_comment_url,
+                text=text,
+                proxy_url=proxy_url,
+                subreddit=subreddit,
+                user_flair_hint=user_flair_hint,
+                auto_user_flair=auto_user_flair,
+            )
         if normalized == "upload_media":
             if not image_path:
                 return _result(success=False, action=normalized, profile_name=session.profile_name, error="image_path is required")

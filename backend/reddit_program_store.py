@@ -241,6 +241,7 @@ def compile_reddit_program_state(
             allowed_subreddits.append(subreddit)
     subreddit_policies = normalize_subreddit_policies(topic_constraints.get("subreddit_policies") or [])
     policy_map = subreddit_policy_map(subreddit_policies)
+    proof_matrix = [dict(item or {}) for item in list(topic_constraints.get("proof_matrix") or [])]
     generation_config = dict(spec.get("generation_config") or {})
     notification_config = dict(spec.get("notification_config") or {})
     realism_policy = dict(spec.get("realism_policy") or {})
@@ -250,6 +251,10 @@ def compile_reddit_program_state(
     day_plans: List[Dict[str, Any]] = []
     assignments = list(content_assignments.get("items") or [])
     generated_post_allocation_counts = {subreddit.lower(): 0 for subreddit in allowed_subreddits}
+    generated_post_profile_allocation_counts = {
+        profile_name: {subreddit.lower(): 0 for subreddit in allowed_subreddits}
+        for profile_name in profile_names
+    }
 
     assignments_by_day_profile: Dict[tuple[int, str], List[Dict[str, Any]]] = {}
     for item in assignments:
@@ -483,6 +488,8 @@ def compile_reddit_program_state(
                     target_subreddit = min(
                         eligible_subreddits,
                         key=lambda subreddit: (
+                            generated_post_profile_allocation_counts.get(profile_name, {}).get(subreddit.lower(), 0)
+                            / max(1, int((policy_map.get(subreddit.lower()) or {}).get("allocation_weight", 1) or 1)),
                             generated_post_allocation_counts.get(subreddit.lower(), 0)
                             / max(1, int((policy_map.get(subreddit.lower()) or {}).get("allocation_weight", 1) or 1)),
                             subreddit_pool.index(subreddit),
@@ -491,6 +498,8 @@ def compile_reddit_program_state(
                     generated_post_allocation_counts[target_subreddit.lower()] = (
                         generated_post_allocation_counts.get(target_subreddit.lower(), 0) + 1
                     )
+                    generated_post_profile_allocation_counts.setdefault(profile_name, {}).setdefault(target_subreddit.lower(), 0)
+                    generated_post_profile_allocation_counts[profile_name][target_subreddit.lower()] += 1
                 work_items.append(
                     {
                         "id": f"work_{uuid.uuid4().hex[:12]}",
@@ -524,6 +533,67 @@ def compile_reddit_program_state(
                         "discovered_target": None,
                     }
                 )
+
+        for requirement_index, requirement in enumerate(proof_matrix):
+            if str(requirement.get("mode") or "per_profile_per_subreddit") != "per_profile_per_subreddit":
+                continue
+            if int(requirement.get("day_offset", 0) or 0) != day_offset:
+                continue
+            matrix_action = str(requirement.get("action") or "comment_post").strip()
+            target_mode = {
+                "comment_post": "discover_post",
+                "reply_comment": "discover_comment",
+                "create_post": "generate_post",
+            }.get(matrix_action)
+            if not target_mode:
+                continue
+            for subreddit in allowed_subreddits:
+                for profile_name in profile_names:
+                    if not subreddit_profile_is_eligible(
+                        dict(policy_map.get(subreddit.lower()) or {}),
+                        profile_name=profile_name,
+                        action=matrix_action,
+                    ):
+                        continue
+                    profile_seed = f"{seed}:{profile_name}:{local_date}"
+                    work_items.append(
+                        {
+                            "id": f"work_{uuid.uuid4().hex[:12]}",
+                            "source": "proof_matrix",
+                            "assignment_id": f"proof_matrix:{requirement_index}:{day_offset}:{profile_name}:{subreddit}:{matrix_action}",
+                            "profile_name": profile_name,
+                            "local_date": local_date,
+                            "scheduled_at": _scheduled_at_for_day(
+                                start_local=start_local,
+                                day_offset=day_offset,
+                                windows=windows,
+                                rng=random.Random(f"{profile_seed}:proof-matrix:{requirement_index}:{subreddit}:{matrix_action}"),
+                                local_tz=local_tz,
+                            ),
+                            "status": "pending",
+                            "attempts": 0,
+                            "last_attempt_at": None,
+                            "completed_at": None,
+                            "action": matrix_action,
+                            "text": None,
+                            "title": None,
+                            "body": None,
+                            "subreddit": subreddit,
+                            "target_url": None,
+                            "target_comment_url": None,
+                            "target_mode": target_mode,
+                            "day_offset": day_offset,
+                            "verification_requirements": [],
+                            "result": None,
+                            "error": None,
+                            "discovered_target": None,
+                            "proof_matrix": {
+                                "mode": "per_profile_per_subreddit",
+                                "requirement_index": requirement_index,
+                                "separate_targets": bool(requirement.get("separate_targets", True)),
+                            },
+                        }
+                    )
 
         day_plans.append(
             {
@@ -560,6 +630,7 @@ def compile_reddit_program_state(
                 "allow_own_content_targets": bool(topic_constraints.get("allow_own_content_targets", False)),
                 "mandatory_join_urls": mandatory_join_urls,
                 "subreddit_policies": subreddit_policies,
+                "proof_matrix": proof_matrix,
             },
             "execution_policy": {
                 "strict_quotas": bool(execution_policy.get("strict_quotas", True)),

@@ -22,6 +22,7 @@ from reddit_subreddit_policies import (
     subreddit_policy_for,
     subreddit_profile_is_eligible,
     subreddit_requires_user_flair,
+    subreddit_auto_user_flair_enabled,
     profile_user_flair,
 )
 from reddit_program_notifications import (
@@ -421,6 +422,8 @@ class RedditProgramOrchestrator:
             title=target_payload.get("title"),
             body=target_payload.get("body"),
             subreddit=target_payload.get("subreddit"),
+            user_flair_hint=target_payload.get("user_flair_hint"),
+            auto_user_flair=bool(target_payload.get("auto_user_flair", False)),
             forensic_context={
                 "run_id": program["id"],
                 "campaign_id": program["id"],
@@ -721,6 +724,7 @@ class RedditProgramOrchestrator:
             "subreddit": result.get("subreddit"),
             "verification": result.get("verification"),
             "action": result.get("action"),
+            "identity_evidence": result.get("identity_evidence"),
         }
 
     def _result_satisfies_contract(
@@ -956,15 +960,35 @@ class RedditProgramOrchestrator:
                     "failure_class": "target_unavailable",
                     "retryable": True,
                 }
+            text = item.get("text")
+            generation_evidence = item.get("generation_evidence")
+            if str(item.get("action") or "") == "comment_post" and not str(text or "").strip():
+                generated = await self._build_generated_comment_payload(program, item, candidate)
+                if generated.get("error"):
+                    return generated
+                text = generated.get("text")
+                generation_evidence = generated.get("generation_evidence")
             return {
                 "target_url": candidate.get("target_url"),
                 "target_comment_url": None,
-                "text": item.get("text"),
+                "text": text,
                 "title": item.get("title"),
                 "body": item.get("body"),
                 "subreddit": candidate.get("subreddit") or item.get("subreddit"),
+                "user_flair_hint": self._subreddit_policy_metadata(
+                    program,
+                    subreddit=candidate.get("subreddit") or item.get("subreddit"),
+                    profile_name=str(item.get("profile_name") or ""),
+                    action=str(item.get("action") or ""),
+                ).get("configured_user_flair"),
+                "auto_user_flair": self._subreddit_policy_metadata(
+                    program,
+                    subreddit=candidate.get("subreddit") or item.get("subreddit"),
+                    profile_name=str(item.get("profile_name") or ""),
+                    action=str(item.get("action") or ""),
+                ).get("auto_user_flair"),
                 "discovered_target": candidate,
-                "generation_evidence": item.get("generation_evidence"),
+                "generation_evidence": generation_evidence,
             }
 
         if item.get("target_mode") == "discover_comment":
@@ -990,6 +1014,18 @@ class RedditProgramOrchestrator:
                 "title": item.get("title"),
                 "body": item.get("body"),
                 "subreddit": item.get("subreddit"),
+                "user_flair_hint": self._subreddit_policy_metadata(
+                    program,
+                    subreddit=item.get("subreddit") or candidate.get("subreddit"),
+                    profile_name=str(item.get("profile_name") or ""),
+                    action=str(item.get("action") or ""),
+                ).get("configured_user_flair"),
+                "auto_user_flair": self._subreddit_policy_metadata(
+                    program,
+                    subreddit=item.get("subreddit") or candidate.get("subreddit"),
+                    profile_name=str(item.get("profile_name") or ""),
+                    action=str(item.get("action") or ""),
+                ).get("auto_user_flair"),
                 "discovered_target": candidate,
                 "generation_evidence": generation_evidence,
             }
@@ -1005,13 +1041,6 @@ class RedditProgramOrchestrator:
         subreddit = str(item.get("subreddit") or "").strip()
         subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name, action="create_post")
         if subreddit and subreddit.lower() not in {value.lower() for value in subreddits}:
-            policy = _subreddit_policy(program, subreddit)
-            if policy and subreddit_requires_user_flair(policy, "create_post") and not profile_user_flair(policy, profile_name):
-                return {
-                    "error": f"subreddit policy requires configured user flair for {profile_name} in r/{subreddit}",
-                    "failure_class": "configuration_error",
-                    "retryable": False,
-                }
             subreddit = ""
         if not subreddit:
             subreddit = subreddits[0] if subreddits else ""
@@ -1083,7 +1112,89 @@ class RedditProgramOrchestrator:
             "title": generated.title,
             "body": generated.body,
             "subreddit": subreddit,
+            "user_flair_hint": policy_metadata.get("configured_user_flair"),
+            "auto_user_flair": policy_metadata.get("auto_user_flair"),
             "discovered_target": None,
+            "generation_evidence": evidence,
+        }
+
+    async def _build_generated_comment_payload(self, program: Dict[str, Any], item: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
+        profile_name = str(item.get("profile_name") or "")
+        subreddit = str(candidate.get("subreddit") or item.get("subreddit") or "").strip()
+        thread_url = str(candidate.get("target_url") or candidate.get("thread_url") or "").strip()
+        policy_metadata = self._subreddit_policy_metadata(
+            program,
+            subreddit=subreddit,
+            profile_name=profile_name,
+            action="comment_post",
+        )
+        keywords = self._keywords_for_subreddit(program, subreddit=subreddit)
+        style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+        conversation_context = await self._conversation_context_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+        recent_texts = list(program.get("generated_text_history") or [])
+        same_thread_texts = self._generated_text_scope(program, thread_url=thread_url)
+        same_profile_texts = self._generated_text_scope(program, profile_name=profile_name)
+        generated = await self.content_generator.generate_comment(
+            profile_name=profile_name,
+            subreddit=subreddit,
+            thread_title=str(candidate.get("title") or candidate.get("post_title") or ""),
+            thread_excerpt=str(candidate.get("body_excerpt") or candidate.get("post_body_excerpt") or ""),
+            thread_author=candidate.get("author") or candidate.get("post_author"),
+            keywords=keywords,
+            style_samples=style_samples,
+            conversation_context=conversation_context,
+            recent_texts=recent_texts,
+            same_thread_texts=same_thread_texts,
+            same_profile_texts=same_profile_texts,
+        )
+        if not generated.success:
+            return {
+                "error": str(generated.error or "generated reddit comment failed"),
+                "failure_class": "generation_failed",
+                "retryable": True,
+                "consume_attempt": False,
+            }
+        evidence = {
+            "kind": "comment_post",
+            "subreddit": subreddit,
+            "text": generated.text,
+            "combined_text": str(generated.text or "").strip(),
+            "thread_url": thread_url,
+            "thread_title": str(candidate.get("title") or candidate.get("post_title") or ""),
+            "thread_excerpt": str(candidate.get("body_excerpt") or candidate.get("post_body_excerpt") or ""),
+            "target_author": candidate.get("author") or candidate.get("post_author"),
+            "style_summary": generated.style_summary,
+            "conversation_summary": generated.conversation_summary,
+            "conversation_samples": conversation_context,
+            "sample_urls": generated.sample_urls,
+            "validation": generated.validation,
+            "policy_validation": generated.validation,
+            "novelty_validation": {
+                "nearby_duplicate": bool((generated.validation or {}).get("nearby_duplicate")),
+                "context_overlap_terms": list((generated.validation or {}).get("context_overlap_terms") or []),
+                "similarity_checks": dict((generated.validation or {}).get("similarity_checks") or {}),
+            },
+            "writing_rules": get_writing_rule_snapshot(),
+            "rule_source_hashes": dict(((generated.writing_rule_snapshot or {}).get("rule_source_hashes") or {})),
+            "rule_source_paths": list(((generated.writing_rule_snapshot or {}).get("source_paths") or [])),
+            "persona_id": (generated.persona_snapshot or {}).get("persona_id"),
+            "persona_role": (generated.persona_snapshot or {}).get("default_role"),
+            "case_style_applied": (generated.persona_snapshot or {}).get("case_style"),
+            "persona": generated.persona_snapshot,
+            "word_count": generated.word_count,
+            "subreddit_policy": policy_metadata,
+            "raw_response": generated.raw_response,
+        }
+        return {
+            "target_url": thread_url,
+            "target_comment_url": None,
+            "text": generated.text,
+            "title": None,
+            "body": None,
+            "subreddit": subreddit,
+            "user_flair_hint": policy_metadata.get("configured_user_flair"),
+            "auto_user_flair": policy_metadata.get("auto_user_flair"),
+            "discovered_target": candidate,
             "generation_evidence": evidence,
         }
 
@@ -1294,6 +1405,7 @@ class RedditProgramOrchestrator:
             "subreddit": policy.get("subreddit"),
             "allocation_weight": int(policy.get("allocation_weight", 1) or 1),
             "keyword_overrides": list(policy.get("keyword_overrides") or []),
+            "auto_user_flair": subreddit_auto_user_flair_enabled(policy),
             "requires_user_flair": subreddit_requires_user_flair(policy, action),
             "configured_user_flair": profile_user_flair(policy, profile_name),
         }

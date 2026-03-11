@@ -48,9 +48,17 @@ def test_validate_reddit_program_payload_accepts_subreddit_policies(tmp_path, mo
                 {
                     "subreddit": "AskWomenOver40",
                     "allocation_weight": 2,
+                    "auto_user_flair": True,
                     "requires_user_flair_for": ["create_post"],
                     "profile_user_flairs": {"reddit_amy": "divorced"},
                     "keyword_overrides": ["dating", "midlife"],
+                }
+            ],
+            "proof_matrix": [
+                {
+                    "mode": "per_profile_per_subreddit",
+                    "action": "comment_post",
+                    "day_offset": 0,
                 }
             ],
         },
@@ -269,6 +277,10 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
                         "attempt_id": "attempt_comment_latest",
                         "final_verdict": "success_confirmed",
                         "target_url": "https://www.reddit.com/r/Healthyhooha/comments/thread-1/",
+                        "identity_evidence": {
+                            "chosen_flair": "Divorced",
+                            "status": "applied",
+                        },
                     },
                     "generation_evidence": {
                         "combined_text": "Go back for a swab.",
@@ -279,6 +291,7 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
                         "rule_source_hashes": {"negative-patterns.md": "hash-neg"},
                         "novelty_validation": {"similarity_checks": {}},
                     },
+                    "source": "proof_matrix",
                 },
                 {
                     "id": "work_post",
@@ -351,6 +364,7 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
     assert comment_row["proof_flags"]["success_confirmed"] is True
     assert comment_row["persona_role"] == "authority"
     assert comment_row["word_count"] == 5
+    assert comment_row["user_flair"] == "Divorced"
     assert [entry["attempt_id"] for entry in comment_row["attempt_history"]] == [
         "attempt_comment_latest",
         "attempt_comment_old",
@@ -363,6 +377,7 @@ def test_reddit_program_operator_view_flattens_rows_and_proof_flags(tmp_path, mo
     assert post_row["final_verdict"] == "failed_confirmed"
     assert post_row["semantic_similarity_flags"] == ["same_thread"]
     assert response["program"]["unsafe_rollout_flags"]["rows"] == 1
+    assert response["proof_matrix"][0]["user_flair"] == "Divorced"
 
     filtered = asyncio.run(
         main.get_reddit_program_operator_view(

@@ -146,3 +146,20 @@ def test_default_reddit_sessions_dir_prefers_env(monkeypatch):
     monkeypatch.setenv("REDDIT_SESSIONS_DIR", "/tmp/reddit-sessions")
 
     assert _default_reddit_sessions_dir() == Path("/tmp/reddit-sessions")
+
+
+def test_subreddit_identity_state_round_trip(tmp_path):
+    session = RedditSession("reddit_neera")
+    session.session_file = tmp_path / "reddit_neera.json"
+    session.data = {"profile_name": "reddit_neera", "cookies": []}
+
+    assert session.update_subreddit_identity_state(
+        "AskWomenOver40",
+        {"user_flair": "Divorced", "available_options": ["Divorced", "Married"]},
+    )
+
+    reloaded = RedditSession("reddit_neera")
+    reloaded.session_file = session.session_file
+    reloaded.load()
+
+    assert reloaded.get_subreddit_identity_state("askwomenover40")["user_flair"] == "Divorced"

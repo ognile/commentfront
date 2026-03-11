@@ -1,9 +1,10 @@
+import asyncio
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from reddit_growth_generation import validate_generated_text
+from reddit_growth_generation import RedditGrowthContentGenerator, validate_generated_text
 from reddit_persona_registry import get_reddit_persona_snapshot
 from reddit_writing_rules import get_writing_rule_snapshot
 
@@ -129,3 +130,34 @@ def test_writing_rule_snapshot_does_not_ban_recommended_replacement_words():
 
     assert "this" not in [item.lower() for item in snapshot["banned_patterns"]]
     assert "that [describing something]" in [item.lower() for item in snapshot["banned_patterns"]]
+
+
+def test_choose_user_flair_falls_back_to_stable_visible_option():
+    generator = RedditGrowthContentGenerator(api_key="")
+
+    result = asyncio.run(
+        generator.choose_user_flair(
+            profile_name="reddit_catherine_emmar",
+            subreddit="AskWomenOver40",
+            available_options=["Single", "Divorced", "Married"],
+            current_flair=None,
+        )
+    )
+
+    assert result["choice"] in {"Single", "Divorced", "Married"}
+    assert result["persona_snapshot"]["persona_id"] == "catherine_authority_frame"
+
+
+def test_choose_user_flair_keeps_current_flair_when_it_still_matches():
+    generator = RedditGrowthContentGenerator(api_key="")
+
+    result = asyncio.run(
+        generator.choose_user_flair(
+            profile_name="reddit_amy_schaefera",
+            subreddit="AskWomenOver40",
+            available_options=["Single", "Divorced", "Married"],
+            current_flair="Divorced",
+        )
+    )
+
+    assert result["choice"] == "Divorced"

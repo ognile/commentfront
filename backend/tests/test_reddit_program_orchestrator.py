@@ -259,6 +259,7 @@ def test_available_subreddits_respect_policy_action_and_profile_flair(tmp_path):
         "women",
     ]
     assert orchestrator._available_subreddits_for_profile(program, profile_name="reddit_beta", action="create_post") == [
+        "AskWomenOver40",
         "women",
     ]
     assert orchestrator._available_subreddits_for_profile(program, profile_name="reddit_beta", action="upvote_post") == [
@@ -330,7 +331,65 @@ def test_build_generated_post_payload_uses_subreddit_keyword_overrides(tmp_path,
     assert payload["generation_evidence"]["subreddit_policy"]["configured_user_flair"] == "divorced"
 
 
-def test_build_generated_post_payload_returns_configuration_error_when_flair_required_but_missing(tmp_path):
+def test_discover_post_target_generates_comment_text_for_comment_post(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+            topic_constraints={
+                "subreddits": ["WomensHealth"],
+                "keywords": ["biopsy"],
+                "proof_matrix": [{"mode": "per_profile_per_subreddit", "action": "comment_post", "day_offset": 0}],
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["source"] == "proof_matrix")
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    async def fake_discover_post_target(_program, _item, *, actor_username=None):
+        return {
+            "target_url": "https://www.reddit.com/r/WomensHealth/comments/thread123/endometrial_biopsy/",
+            "subreddit": "WomensHealth",
+            "title": "endometrial biopsy",
+            "body_excerpt": "i was not prepared for the cramping",
+            "author": "op_user",
+        }
+
+    monkeypatch.setattr(orchestrator, "_discover_post_target", fake_discover_post_target)
+    monkeypatch.setattr(orchestrator, "_style_samples_for_subreddit", lambda *_args, **_kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(orchestrator, "_conversation_context_for_subreddit", lambda *_args, **_kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(
+        orchestrator.content_generator,
+        "generate_comment",
+        lambda **_kwargs: asyncio.sleep(
+            0,
+            result=_GeneratedPayload(
+                text="i would ask what their pain-control plan is if they need to go back in there.",
+                persona_snapshot={"persona_id": "connor_fixer", "default_role": "fixer", "case_style": "proper_case"},
+            ),
+        ),
+    )
+
+    payload = asyncio.run(orchestrator._resolve_target(program, item, actor_username="reddit_amy"))
+
+    assert payload["text"] == "i would ask what their pain-control plan is if they need to go back in there."
+    assert payload["generation_evidence"]["kind"] == "comment_post"
+    assert payload["target_url"] == "https://www.reddit.com/r/WomensHealth/comments/thread123/endometrial_biopsy/"
+
+
+def test_build_generated_post_payload_allows_auto_user_flair_when_no_manual_flair_is_configured(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
         _spec(
@@ -364,11 +423,19 @@ def test_build_generated_post_payload_returns_configuration_error_when_flair_req
     item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "create_post")
     item["subreddit"] = "AskWomenOver40"
     orchestrator = RedditProgramOrchestrator(store=store)
+    monkeypatch.setattr(orchestrator, "_style_samples_for_subreddit", lambda *_args, **_kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(orchestrator, "_conversation_context_for_subreddit", lambda *_args, **_kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(
+        orchestrator.content_generator,
+        "generate_post",
+        lambda **_kwargs: asyncio.sleep(0, result=_GeneratedPayload(title="midlife update", body="body text")),
+    )
 
     payload = asyncio.run(orchestrator._build_generated_post_payload(program, item))
 
-    assert payload["failure_class"] == "configuration_error"
-    assert "requires configured user flair" in payload["error"]
+    assert payload["subreddit"] == "AskWomenOver40"
+    assert payload["auto_user_flair"] is True
+    assert payload["user_flair_hint"] is None
 
 
 def test_scheduler_start_recovers_interrupted_programs(tmp_path):

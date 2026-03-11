@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -372,6 +373,15 @@ def summarize_style_samples(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _normalize_flair_option(value: Optional[str]) -> str:
+    return _collapse_whitespace(value).lower()
+
+
+def _option_hash_score(profile_name: str, subreddit: str, option: str) -> int:
+    seed = f"{profile_name}:{subreddit}:{_normalize_flair_option(option)}"
+    return int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16)
+
+
 @dataclass
 class GenerationResult:
     success: bool
@@ -558,6 +568,132 @@ return json with this exact shape:
 }}
 """.strip()
 
+    def _comment_prompt(
+        self,
+        *,
+        subreddit: str,
+        thread_title: str,
+        thread_excerpt: str,
+        thread_author: Optional[str],
+        keywords: List[str],
+        style_samples: List[Dict[str, Any]],
+        conversation_context: List[Dict[str, Any]],
+        recent_texts: List[str],
+        same_thread_texts: List[str],
+        same_profile_texts: List[str],
+        persona_snapshot: Dict[str, Any],
+        writing_rule_snapshot: Dict[str, Any],
+    ) -> str:
+        return f"""
+you are writing a single top-level reddit comment for a post in r/{subreddit}.
+
+{self._shared_prompt_block(
+    persona_snapshot=persona_snapshot,
+    writing_rule_snapshot=writing_rule_snapshot,
+    recent_texts=recent_texts,
+    same_thread_texts=same_thread_texts,
+    same_profile_texts=same_profile_texts,
+)}
+
+topic keywords:
+{json.dumps(keywords, ensure_ascii=True)}
+
+target thread:
+{json.dumps({"title": thread_title, "excerpt": thread_excerpt, "author": thread_author}, ensure_ascii=True, indent=2)}
+
+style samples from the subreddit:
+{json.dumps(summarize_style_samples(style_samples), ensure_ascii=True, indent=2)}
+
+local thread context:
+{json.dumps(summarize_conversation_context(conversation_context), ensure_ascii=True, indent=2)}
+
+comment requirements:
+- this is a top-level comment on the post, not a reply to another commenter
+- it should sound organic for this persona and community
+- it must address the thread directly, not float as generic empathy
+- avoid repeating the thread title language too literally
+
+return json with this exact shape:
+{{
+  "text": "the top-level comment text",
+  "reasoning": "one short sentence on why it fits the persona and thread"
+}}
+""".strip()
+
+    def _flair_choice_prompt(
+        self,
+        *,
+        profile_name: str,
+        subreddit: str,
+        available_options: List[str],
+        current_flair: Optional[str],
+    ) -> str:
+        persona_snapshot = get_reddit_persona_snapshot(profile_name)
+        return f"""
+choose the single most organic reddit user flair for this profile in r/{subreddit}.
+
+persona contract:
+{json.dumps(persona_snapshot, ensure_ascii=True, indent=2)}
+
+hard rules:
+- return valid json only
+- choose exactly one option from the provided list
+- do not invent or rewrite flair text
+- prefer a flair that feels plausible for the profile and subreddit
+- prefer a flair that is specific enough to look intentional but not absurd
+- if there is a current flair and it is already a good fit, you may keep it
+
+current flair:
+{json.dumps(current_flair, ensure_ascii=True)}
+
+available flair options:
+{json.dumps(available_options, ensure_ascii=True, indent=2)}
+
+return json with this exact shape:
+{{
+  "choice": "exact flair option text",
+  "reasoning": "one short sentence on why this option fits"
+}}
+""".strip()
+
+    def _fallback_flair_choice(
+        self,
+        *,
+        profile_name: str,
+        subreddit: str,
+        available_options: List[str],
+        current_flair: Optional[str],
+    ) -> Dict[str, Any]:
+        current_norm = _normalize_flair_option(current_flair)
+        for option in available_options:
+            if _normalize_flair_option(option) == current_norm and current_norm:
+                return {"choice": option, "reasoning": "kept the existing matching flair"}
+
+        banned_terms = {
+            "none",
+            "no flair",
+            "add flair",
+            "change user flair",
+            "edit flair",
+            "view all flair",
+            "apply",
+            "save",
+        }
+        filtered = [
+            option for option in available_options
+            if not any(term in _normalize_flair_option(option) for term in banned_terms)
+        ] or list(available_options)
+        ranked = sorted(
+            filtered,
+            key=lambda option: (
+                len(_normalize_flair_option(option).split()) == 1,
+                _option_hash_score(profile_name, subreddit, option),
+            ),
+            reverse=True,
+        )
+        choice = ranked[0] if ranked else (available_options[0] if available_options else "")
+        return {"choice": choice, "reasoning": "fallback stable flair selection based on profile and subreddit hash"}
+
     async def generate_reply(
         self,
         *,
@@ -640,6 +776,100 @@ return json with this exact shape:
         return GenerationResult(
             success=False,
             kind="reply_comment",
+            raw_response=None,
+            validation={"ok": False, "violations": [last_error]},
+            style_summary=style_summary,
+            conversation_summary=conversation_summary,
+            sample_urls=sample_urls,
+            persona_snapshot=persona_snapshot,
+            writing_rule_snapshot=get_writing_rule_snapshot(),
+            error=last_error,
+        )
+
+    async def generate_comment(
+        self,
+        *,
+        profile_name: str,
+        subreddit: str,
+        thread_title: str,
+        thread_excerpt: str,
+        thread_author: Optional[str],
+        keywords: List[str],
+        style_samples: List[Dict[str, Any]],
+        conversation_context: List[Dict[str, Any]],
+        recent_texts: List[str],
+        same_thread_texts: Optional[List[str]] = None,
+        same_profile_texts: Optional[List[str]] = None,
+        max_attempts: int = 3,
+    ) -> GenerationResult:
+        persona_snapshot = get_reddit_persona_snapshot(profile_name)
+        writing_rule_snapshot = get_writing_rule_snapshot(include_contents=True)
+        style_summary = summarize_style_samples(style_samples)
+        conversation_summary = summarize_conversation_context(conversation_context)
+        sample_urls = [
+            str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()
+            for sample in style_samples
+            if str(sample.get("target_url") or sample.get("target_comment_url") or "").strip()
+        ]
+        nearby_texts = [
+            "\n".join(part for part in [sample.get("title"), sample.get("excerpt"), sample.get("body_excerpt"), sample.get("body")] if part).strip()
+            for sample in list(conversation_context or [])
+        ]
+        same_thread_texts = list(same_thread_texts or [])
+        same_profile_texts = list(same_profile_texts or [])
+        last_error = "generation failed"
+        for _attempt in range(max_attempts):
+            raw = await self._generate_json(
+                self._comment_prompt(
+                    subreddit=subreddit,
+                    thread_title=thread_title,
+                    thread_excerpt=thread_excerpt,
+                    thread_author=thread_author,
+                    keywords=keywords,
+                    style_samples=style_samples,
+                    conversation_context=conversation_context,
+                    recent_texts=recent_texts,
+                    same_thread_texts=same_thread_texts,
+                    same_profile_texts=same_profile_texts,
+                    persona_snapshot=persona_snapshot,
+                    writing_rule_snapshot=writing_rule_snapshot,
+                )
+            )
+            try:
+                payload = _extract_json_object(raw)
+            except Exception as exc:
+                last_error = f"generation returned invalid json: {exc}"
+                continue
+            text = _collapse_whitespace(payload.get("text"))
+            validation = validate_generated_text(
+                text,
+                recent_texts=recent_texts,
+                nearby_texts=nearby_texts,
+                same_thread_texts=same_thread_texts,
+                same_profile_texts=same_profile_texts,
+                require_context_overlap=True,
+                persona_snapshot=persona_snapshot,
+                writing_rule_snapshot=writing_rule_snapshot,
+            )
+            if validation["ok"]:
+                return GenerationResult(
+                    success=True,
+                    kind="comment_post",
+                    text=text,
+                    raw_response=raw,
+                    validation=validation,
+                    style_summary=style_summary,
+                    conversation_summary=conversation_summary,
+                    sample_urls=sample_urls,
+                    persona_snapshot=persona_snapshot,
+                    writing_rule_snapshot=get_writing_rule_snapshot(),
+                    word_count=validation.get("word_count") or _word_count(text),
+                )
+            last_error = "; ".join(validation["violations"])
+            recent_texts = list(recent_texts) + [text]
+        return GenerationResult(
+            success=False,
+            kind="comment_post",
             raw_response=None,
             validation={"ok": False, "violations": [last_error]},
             style_summary=style_summary,
@@ -737,3 +967,51 @@ return json with this exact shape:
             writing_rule_snapshot=get_writing_rule_snapshot(),
             error=last_error,
         )
+
+    async def choose_user_flair(
+        self,
+        *,
+        profile_name: str,
+        subreddit: str,
+        available_options: List[str],
+        current_flair: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        cleaned_options = [_collapse_whitespace(option) for option in list(available_options or []) if _collapse_whitespace(option)]
+        if not cleaned_options:
+            return {"choice": None, "reasoning": "no flair options were available", "persona_snapshot": get_reddit_persona_snapshot(profile_name)}
+
+        fallback = self._fallback_flair_choice(
+            profile_name=profile_name,
+            subreddit=subreddit,
+            available_options=cleaned_options,
+            current_flair=current_flair,
+        )
+        raw_response = None
+        if self.enabled and self.client:
+            try:
+                raw_response = await self._generate_json(
+                    self._flair_choice_prompt(
+                        profile_name=profile_name,
+                        subreddit=subreddit,
+                        available_options=cleaned_options,
+                        current_flair=current_flair,
+                    )
+                )
+                payload = _extract_json_object(raw_response)
+                choice = _collapse_whitespace(payload.get("choice"))
+                if choice and choice in cleaned_options:
+                    return {
+                        "choice": choice,
+                        "reasoning": _collapse_whitespace(payload.get("reasoning")) or "model-selected flair option",
+                        "raw_response": raw_response,
+                        "persona_snapshot": get_reddit_persona_snapshot(profile_name),
+                    }
+            except Exception as exc:
+                logger.warning(f"reddit flair choice generation failed for {profile_name} in r/{subreddit}: {exc}")
+
+        return {
+            "choice": fallback.get("choice"),
+            "reasoning": fallback.get("reasoning"),
+            "raw_response": raw_response,
+            "persona_snapshot": get_reddit_persona_snapshot(profile_name),
+        }

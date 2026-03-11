@@ -180,6 +180,26 @@ class RedditSession:
             return {}
         return dict(self.data.get("warmup_state") or {})
 
+    def get_subreddit_identity_state(self, subreddit: Optional[str] = None) -> Dict[str, Any]:
+        if not self.data:
+            return {}
+        identities = dict(((self.data.get("community_identity") or {}).get("subreddits")) or {})
+        if subreddit is None:
+            return identities
+        return dict(identities.get(str(subreddit or "").strip().lower()) or {})
+
+    def update_subreddit_identity_state(self, subreddit: str, state: Dict[str, Any]) -> bool:
+        normalized = str(subreddit or "").strip().lower()
+        if not normalized or not self.data:
+            return False
+        community_identity = dict(self.data.get("community_identity") or {})
+        subreddits = dict(community_identity.get("subreddits") or {})
+        subreddits[normalized] = dict(state or {})
+        community_identity["subreddits"] = subreddits
+        self.data["community_identity"] = community_identity
+        self.data["updated_at"] = datetime.utcnow().isoformat()
+        return self.save()
+
     @staticmethod
     def _filter_cookies(
         cookies: List[Dict[str, Any]],
