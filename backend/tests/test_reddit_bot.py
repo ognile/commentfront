@@ -61,6 +61,42 @@ class _FakeBodyLocator:
         return self._text
 
 
+class _FakeFillLocator:
+    def __init__(self, *, fill_error=False):
+        self.fill_error = fill_error
+        self.fill_calls = []
+        self.clicks = 0
+
+    async def count(self):
+        return 1
+
+    async def is_visible(self):
+        return True
+
+    async def fill(self, value):
+        self.fill_calls.append(value)
+        if self.fill_error:
+            raise RuntimeError("fill unsupported")
+
+    async def click(self):
+        self.clicks += 1
+
+    @property
+    def first(self):
+        return self
+
+
+class _FakeFillPage(_FakePage):
+    def __init__(self, locator):
+        super().__init__()
+        self._editable_locator = locator
+
+    def locator(self, selector):
+        if selector == "body":
+            return _FakeBodyLocator(self.body_text)
+        return self._editable_locator
+
+
 class _FakeRecorder:
     def __init__(self):
         self.attempt_id = "attempt-123"
@@ -158,6 +194,31 @@ def test_fill_comment_input_uses_reply_selectors_for_reply_flow(monkeypatch):
     assert ok is True
     assert selector_sets == [tuple(reddit_bot.COMMENT["reply_input"])]
     assert page.waits == []
+
+
+def test_fill_first_falls_back_to_click_and_keyboard_when_fill_is_unsupported(monkeypatch):
+    locator = _FakeFillLocator(fill_error=True)
+    page = _FakeFillPage(locator)
+    keyboard_calls = []
+
+    async def fake_keyboard(_page, text, reply=False):
+        keyboard_calls.append((text, reply))
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_keyboard_type_and_verify", fake_keyboard)
+
+    ok = asyncio.run(reddit_bot._fill_first(page, ['[role="textbox"]'], "reply text"))
+
+    assert ok is True
+    assert locator.fill_calls == ["reply text"]
+    assert locator.clicks == 1
+    assert keyboard_calls == [("reply text", False)]
+    assert page.waits == [300]
+
+
+def test_reply_input_selectors_include_role_textbox_surface():
+    assert '[role="textbox"]' in reddit_bot.COMMENT["reply_input"]
+    assert '[role="textbox"]' in reddit_bot.COMMENT["composer_input"]
 
 
 def test_open_comment_composer_falls_back_to_js_probe(monkeypatch):

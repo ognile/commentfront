@@ -20,6 +20,7 @@
 - comment upvote geometry is not “reply button minus a little bit”; on mobile reddit that often lands on the score, not the upvote arrow.
 - interrupted reddit actions can leave zombie forensic attempts unless the action wrapper finalizes timeout/cancel paths explicitly.
 - manual `run-now` is part of production too. if the same rollout can be processed twice at once, the evidence is invalid even when individual attempts succeed.
+- on mobile reddit, an inline reply composer can exist even when the only obvious visible controls are `cancel` and `comment`; treat generic textbox roles as first-class editor surfaces instead of assuming textarea/contenteditable only.
 
 ## verification patterns
 - unit and integration coverage must prove persona/rule hashes, semantic similarity rejection, and cross-profile target blocking.
@@ -27,6 +28,7 @@
 - frontend verification should confirm the new persona/text/unsafe columns render correctly on the reddit ops page.
 - when a row-level action is geometry-driven, test the fallback click sequence explicitly so future refactors do not silently drift back onto the score/downvote region.
 - when a production scheduler exists, add explicit overlap tests for manual triggers too. scheduler serialization alone is not enough protection.
+- when reply/comment typing fails after the composer opens, inspect whether the editor is a `role="textbox"` surface and whether `.fill()` is unsupported before assuming the composer never opened.
 
 ## promotion rules
 - do not trust a rollout as methodology evidence unless it runs on the deployed scenario-b runtime and shows zero reply target collisions.

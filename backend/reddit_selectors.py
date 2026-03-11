@@ -118,6 +118,9 @@ COMMENT = {
     "composer_input": [
         'div[contenteditable="true"]',
         'div[contenteditable="plaintext-only"]',
+        '[role="textbox"]',
+        '[role="textbox"][aria-label*="comment" i]',
+        '[role="textbox"][aria-label*="join the conversation" i]',
         'textarea',
         'textarea[placeholder*="comment" i]',
         'textarea[aria-label*="comment" i]',
@@ -149,6 +152,9 @@ COMMENT = {
     "reply_input": [
         'div[contenteditable="true"]',
         'div[contenteditable="plaintext-only"]',
+        '[role="textbox"]',
+        '[role="textbox"][aria-label*="reply" i]',
+        '[role="textbox"][aria-label*="comment" i]',
         'textarea',
         'textarea[placeholder*="reply" i]',
         'textarea[aria-label*="reply" i]',

@@ -349,7 +349,7 @@ async def _collect_control_candidates(page, needles: List[str]) -> List[Dict[str
                 visitRoot(document);
                 const visible = (rect) => rect && rect.width >= 6 && rect.height >= 6 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= (window.innerHeight || 873) && rect.left <= (window.innerWidth || 393);
                 const results = [];
-                const selector = 'button,[role=\"button\"],a,input,textarea,[aria-label],[placeholder]';
+                const selector = 'button,[role=\"button\"],[role=\"textbox\"],a,input,textarea,[contenteditable=\"true\"],[contenteditable=\"plaintext-only\"],[aria-label],[placeholder]';
                 for (const root of rootList) {
                     const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll(selector)) : [];
                     for (const node of nodes) {
@@ -733,8 +733,13 @@ async def _active_editable_present(page) -> bool:
                     const active = document.activeElement;
                     if (!active) return false;
                     const tag = String(active.tagName || '').toLowerCase();
+                    const role = String((active.getAttribute && active.getAttribute('role')) || '').toLowerCase();
+                    const contenteditable = String((active.getAttribute && active.getAttribute('contenteditable')) || '').toLowerCase();
                     return Boolean(
                         active.isContentEditable ||
+                        role === 'textbox' ||
+                        contenteditable === 'true' ||
+                        contenteditable === 'plaintext-only' ||
                         tag === 'textarea' ||
                         (tag === 'input' && String(active.type || '').toLowerCase() !== 'hidden')
                     );
@@ -954,8 +959,14 @@ async def _fill_first(page, selectors, value: str) -> bool:
         try:
             locator = page.locator(selector).first
             if await locator.count() > 0 and await locator.is_visible():
-                await locator.fill(value)
-                return True
+                try:
+                    await locator.fill(value)
+                    return True
+                except Exception:
+                    await locator.click()
+                    await page.wait_for_timeout(300)
+                    if await _keyboard_type_and_verify(page, value):
+                        return True
         except Exception:
             continue
     return False
