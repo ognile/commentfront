@@ -355,7 +355,20 @@ class RedditProgramOrchestrator:
             )
 
         actor_username = session.get_username()
-        target_payload = await self._resolve_target(program, item, actor_username=actor_username)
+        resolution_timeout_seconds = max(1, int(_execution_policy(program).get("target_resolution_timeout_seconds", 90)))
+        try:
+            target_payload = await asyncio.wait_for(
+                self._resolve_target(program, item, actor_username=actor_username),
+                timeout=resolution_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return self._finalize_resolution_failure(
+                program,
+                item,
+                error=f"reddit target resolution timed out after {resolution_timeout_seconds}s",
+                failure_class="target_resolution_timeout",
+                retryable=True,
+            )
         if target_payload.get("error"):
             return self._finalize_resolution_failure(
                 program,

@@ -1967,6 +1967,7 @@ class RedditProgramExecutionPolicy(BaseModel):
     max_comment_candidates_per_post: int = 8
     retry_delay_minutes: int = 20
     max_attempts_per_item: int = 5
+    target_resolution_timeout_seconds: int = 90
 
 
 class RedditProgramCreateRequest(BaseModel):

@@ -22,6 +22,7 @@
 - manual `run-now` is part of production too. if the same rollout can be processed twice at once, the evidence is invalid even when individual attempts succeed.
 - on mobile reddit, an inline reply composer can exist even when the only obvious visible controls are `cancel` and `comment`; treat generic textbox roles as first-class editor surfaces instead of assuming textarea/contenteditable only.
 - operator actions like `cancel` are part of runtime correctness too. if an older in-flight snapshot can save over a newer `cancelled` state, the rollout state model is untrustworthy even when individual attempts succeed.
+- if a work item sits in `running` without any forensic attempt id, the hang is upstream of the browser executor. treat target discovery/generation as an explicit timeout-bounded stage, not an unbounded prelude.
 
 ## verification patterns
 - unit and integration coverage must prove persona/rule hashes, semantic similarity rejection, and cross-profile target blocking.
@@ -31,6 +32,7 @@
 - when a production scheduler exists, add explicit overlap tests for manual triggers too. scheduler serialization alone is not enough protection.
 - when reply/comment typing fails after the composer opens, inspect whether the editor is a `role="textbox"` surface and whether `.fill()` is unsupported before assuming the composer never opened.
 - when runtime state can change outside the worker loop, regression-test stale snapshot saves and mid-run cancellation explicitly instead of assuming the last `save_program(...)` call is harmless.
+- when production shows `running` with no forensics, add a timeout around `_resolve_target(...)` first. otherwise the system can hide deficits by hanging forever before any proof artifact exists.
 
 ## promotion rules
 - do not trust a rollout as methodology evidence unless it runs on the deployed scenario-b runtime and shows zero reply target collisions.

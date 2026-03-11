@@ -44,6 +44,8 @@
 - found and fixed a program-level concurrency bug in `/Users/nikitalienov/Documents/commentfront/backend/reddit_program_orchestrator.py`: overlapping `run-now` calls could process the same rollout concurrently because execution was only scheduler-serialized, not program-serialized. the runtime now uses a hard per-program async lock and `/reddit/programs/{id}/run-now` returns `409` when the same program is already executing.
 - found a second live executor gap on the clean replacement rollout `reddit_program_65afd0d7c8`: scenario-b `reply_comment` generation reached production with correct persona/rule metadata, but the browser layer still missed the reply editor because the inline box exposed `cancel`/`comment` controls without matching our fillable-input surface. patched `/Users/nikitalienov/Documents/commentfront/backend/reddit_selectors.py` and `/Users/nikitalienov/Documents/commentfront/backend/reddit_bot.py` so reply/comment input detection now includes `role="textbox"` surfaces, active-editable detection treats textbox roles as real editors, and `_fill_first(...)` falls back to click+keyboard when `.fill()` is unsupported on a matched node.
 - found a third live runtime bug on the next clean replacement rollout `reddit_program_3bac6f98e3`: cancelling a rollout could be undone by an older in-flight program snapshot saving back over the newer `cancelled` state, which is why `reddit_program_65afd0d7c8` reappeared as `active` after being cancelled. patched `/Users/nikitalienov/Documents/commentfront/backend/reddit_program_store.py` so stale runtime saves preserve newer `paused`/`cancelled` state, and patched `/Users/nikitalienov/Documents/commentfront/backend/reddit_program_orchestrator.py` so it re-checks live program status before every selected work item and stops immediately once the program is no longer `active`.
+- production re-verification on commit `4460660` confirmed the cancel fix: `reddit_program_65afd0d7c8` was forced into execution, cancelled mid-run, and stayed `cancelled` while `reddit_program_3bac6f98e3` remained the only active rollout.
+- found a fourth live runtime bug on the fresh replacement rollout `reddit_program_8db1f5012f`: the first generated `reply_comment` entered `running` with no forensic attempt and no follow-up events, which proves target resolution/generation can still hang before browser execution starts. patched `/Users/nikitalienov/Documents/commentfront/backend/reddit_program_orchestrator.py`, `/Users/nikitalienov/Documents/commentfront/backend/reddit_program_store.py`, and `/Users/nikitalienov/Documents/commentfront/backend/main.py` so execution policy now carries `target_resolution_timeout_seconds` and `_run_work_item(...)` fails fast with a retryable `target_resolution_timeout` instead of leaving invisible `running` work.
 - `cd frontend && npm run lint` has only the pre-existing hook-dependency warnings in `/Users/nikitalienov/Documents/commentfront/frontend/src/App.tsx`.
 - local verification is green after the lock fix too:
   - `pytest backend/tests/test_reddit_program_orchestrator.py backend/tests/test_reddit_program_api.py -q`
@@ -63,13 +65,19 @@
   - `python -m py_compile backend/reddit_program_store.py backend/reddit_program_orchestrator.py`
   - `cd frontend && npm run build`
   - `cd frontend && npm run lint`
+- local verification is green after the target-resolution-timeout fix too:
+  - `pytest backend/tests/test_reddit_program_orchestrator.py backend/tests/test_reddit_program_api.py -q`
+  - `pytest backend/tests/test_reddit_bot.py backend/tests/test_reddit_program_store.py backend/tests/test_reddit_program_notifications.py backend/tests/test_reddit_program_orchestrator.py backend/tests/test_reddit_program_api.py backend/tests/test_reddit_growth_generation.py backend/tests/test_forensics.py -q`
+  - `python -m py_compile backend/reddit_program_orchestrator.py backend/main.py backend/reddit_program_store.py`
+  - `cd frontend && npm run build`
+  - `cd frontend && npm run lint`
 
 ## active todo
-1. commit the stale-cancel runtime fix and tracker updates.
+1. commit the target-resolution-timeout runtime fix and tracker updates.
 2. push to github and verify railway deployment completion on the new commit.
-3. cancel the stale old rollout `reddit_program_65afd0d7c8` again and prove it stays cancelled while the current rollout keeps progressing.
-4. because this is another runtime change, replace the current rollout too after the cancel-durability proof and create a fresh `10-profile, 3-day` replacement rollout on the newly deployed runtime.
-5. prove generated actions on the fresh rollout reach `success_confirmed` with persona metadata, rule hashes, persisted url, screenshot artifact, and attempt id.
+3. cancel the currently stalled rollout `reddit_program_8db1f5012f`, because it contains the pre-fix invisible `running` reply item `work_1f416696f334`.
+4. create a fresh `10-profile, 3-day` replacement rollout on the newly deployed runtime.
+5. prove generated actions on the fresh rollout either land `success_confirmed` with persona metadata, rule hashes, persisted url, screenshot artifact, and attempt id, or fail fast with explicit retryable timeout/error evidence instead of hanging.
 6. re-check operator view for zero unsafe rollout flags, one active rollout only, and no duplicate generated target/thread collisions after the replacement.
 
 ## current understanding
@@ -79,6 +87,7 @@
 - the fresh rollout `reddit_program_8a78ca51d1` already proved one live generated `create_post` success (`95823e67-0ad5-4da7-9fa7-564b3f18e629`) with persona metadata, rule hashes, screenshot, and persisted reddit url, but that rollout is no longer acceptance-grade because overlapping `run-now` calls were able to start multiple work items concurrently before the lock fix.
 - the current clean rollout `reddit_program_65afd0d7c8` proved a second important part of the stack before failing: live `reply_comment` generation is now context-aware and scenario-b aligned in production, with persona `amy_blunt_triage`, role `blunt_critique`, lowercase case style, `word_count=7`, exact rule hashes, thread/comment context, screenshot, and attempt id `fe6f5ad4-266a-4ad0-ba35-18ca35d07ba1`. the remaining miss was purely the reply editor surface, not the generator.
 - the newest clean rollout `reddit_program_3bac6f98e3` has already gone further: it produced multi-profile `success_confirmed` actions, including generated `create_post` rows with persona metadata, rule hashes, and persisted reddit urls while operator unsafe flags remained clear. its remaining invalidation risk is runtime state integrity around cancellation, not scenario-b content quality.
+- the newest replacement rollout `reddit_program_8db1f5012f` confirmed one more exact gap: the first generated `reply_comment` can still stall before browser execution begins, leaving no forensic attempt at all. that means the next fix must target orchestration time bounding, not browser selectors or persona logic.
 
 ## proven wins
 - exact rule-file paths and hashes are now emitted by the runtime, so generation evidence can prove which rule corpus was active.
@@ -94,8 +103,9 @@
 - the current replacement rollout also proved the operator unsafe flags stay at zero while scenario-b generation evidence lands in production; the invalidation reason is execution overlap, not persona/rule drift.
 - the latest clean rollout also proved the operator unsafe flags still stay at zero while scenario-b reply generation lands in production; the invalidation reason is the pre-fix reply input surface, not target collisions or persona drift.
 - the newest clean rollout also proved scenario-b generated `create_post` evidence can land `success_confirmed` in production with persisted reddit urls, persona ids, roles, and exact rule hashes; the remaining invalidation reason is cancel-state durability, not generation drift.
+- the deployed cancel fix is now production-proven too: a dirty rollout stayed cancelled while another rollout remained active, so stale state no longer resurrects cancelled programs.
 
 ## open risks
 - `comment_post` is still a manual-text path, not a generated scenario-b path.
 - live subreddit behavior can still reject or constrain targets; operator visibility will expose that, but it does not eliminate subreddit-side moderation variability.
-- production proof is still open until the stale-cancel runtime fix is deployed, validated against real cancellation behavior, and then exercised on a fresh rollout.
+- production proof is still open until the target-resolution-timeout fix is deployed, the stalled rollout is replaced, and the next fresh rollout shows either real `success_confirmed` generated actions or explicit retryable failure evidence instead of invisible hangs.

@@ -551,6 +551,7 @@ def compile_reddit_program_state(
                 "max_comment_candidates_per_post": max(1, int(execution_policy.get("max_comment_candidates_per_post", 8))),
                 "retry_delay_minutes": max(1, int(execution_policy.get("retry_delay_minutes", 20))),
                 "max_attempts_per_item": max(1, int(execution_policy.get("max_attempts_per_item", 5))),
+                "target_resolution_timeout_seconds": max(1, int(execution_policy.get("target_resolution_timeout_seconds", 90))),
             },
             "engagement_quotas": {
                 "upvotes_per_day": upvotes_per_day,

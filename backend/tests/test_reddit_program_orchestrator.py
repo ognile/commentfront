@@ -297,6 +297,59 @@ def test_process_program_stops_after_external_cancel(tmp_path, monkeypatch):
     assert len(cancelled) == len(updated["compiled"]["work_items"]) - 1
 
 
+def test_process_program_times_out_target_resolution(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            engagement_quotas={
+                "upvotes_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 1,
+                "reply_max_per_day": 1,
+                "random_reply_templates": ["that sounds painful, i hope recovery goes smoothly"],
+                "random_upvote_action": "upvote_post",
+            },
+            execution_policy={
+                "strict_quotas": True,
+                "allow_target_reuse_within_day": False,
+                "cooldown_minutes": 0,
+                "max_actions_per_tick": 5,
+                "max_discovery_posts_per_subreddit": 4,
+                "max_comment_candidates_per_post": 4,
+                "retry_delay_minutes": 5,
+                "max_attempts_per_item": 2,
+                "target_resolution_timeout_seconds": 1,
+            }
+        )
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
+    monkeypatch.setattr(RedditSession, "get_username", lambda self: "reddit_amy")
+
+    async def hanging_resolve(_program, _item, *, actor_username=None):
+        await asyncio.sleep(2)
+        return {"target_url": "https://www.reddit.com/r/womenshealth/comments/abc123/endometrial_biopsy/"}
+
+    monkeypatch.setattr(orchestrator, "_resolve_target", hanging_resolve)
+    reply_item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "reply_comment")
+    asyncio.run(orchestrator._run_work_item(program, reply_item["id"]))
+    updated = store.get_program(program["id"])
+    item = next(
+        entry
+        for entry in updated["compiled"]["work_items"]
+        if (entry.get("result") or {}).get("failure_class") == "target_resolution_timeout"
+    )
+
+    assert item["status"] == "pending"
+    assert item["result"]["failure_class"] == "target_resolution_timeout"
+    assert "timed out" in item["error"]
+
+
 def test_orchestrator_blocks_community_restricted_items(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
