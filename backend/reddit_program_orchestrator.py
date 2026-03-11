@@ -16,6 +16,14 @@ import httpx
 from forensics import is_infra_error_text
 from reddit_bot import REDDIT_HTTP_HEADERS, run_reddit_action
 from reddit_growth_generation import RedditGrowthContentGenerator, get_writing_rule_snapshot
+from reddit_subreddit_policies import (
+    normalize_subreddit_name,
+    subreddit_keywords,
+    subreddit_policy_for,
+    subreddit_profile_is_eligible,
+    subreddit_requires_user_flair,
+    profile_user_flair,
+)
 from reddit_program_notifications import (
     RedditProgramNotificationService,
     build_program_email_body,
@@ -83,6 +91,10 @@ def _verification_contract(program: Dict[str, Any]) -> Dict[str, Any]:
 
 def _generation_config(program: Dict[str, Any]) -> Dict[str, Any]:
     return dict(((program.get("spec") or {}).get("generation_config") or {}))
+
+
+def _subreddit_policy(program: Dict[str, Any], subreddit: Optional[str]) -> Dict[str, Any]:
+    return subreddit_policy_for(_program_filters(program).get("subreddit_policies") or [], subreddit)
 
 
 def _notification_config(program: Dict[str, Any]) -> Dict[str, Any]:
@@ -801,7 +813,11 @@ class RedditProgramOrchestrator:
             or _subreddit_from_url(result.get("current_url"))
         )
         self._remember_community_block(program, profile_name=profile_name, subreddit=subreddit)
-        available = self._available_subreddits_for_profile(program, profile_name=profile_name)
+        available = self._available_subreddits_for_profile(
+            program,
+            profile_name=profile_name,
+            action=str(item.get("action") or ""),
+        )
         if not available:
             return False
 
@@ -987,8 +1003,15 @@ class RedditProgramOrchestrator:
     async def _build_generated_post_payload(self, program: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
         profile_name = str(item.get("profile_name") or "")
         subreddit = str(item.get("subreddit") or "").strip()
-        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name)
+        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name, action="create_post")
         if subreddit and subreddit.lower() not in {value.lower() for value in subreddits}:
+            policy = _subreddit_policy(program, subreddit)
+            if policy and subreddit_requires_user_flair(policy, "create_post") and not profile_user_flair(policy, profile_name):
+                return {
+                    "error": f"subreddit policy requires configured user flair for {profile_name} in r/{subreddit}",
+                    "failure_class": "configuration_error",
+                    "retryable": False,
+                }
             subreddit = ""
         if not subreddit:
             subreddit = subreddits[0] if subreddits else ""
@@ -998,7 +1021,13 @@ class RedditProgramOrchestrator:
                 "failure_class": "configuration_error",
                 "retryable": False,
             }
-        keywords = [str(value).strip() for value in list(_program_filters(program).get("keywords") or []) if str(value).strip()]
+        policy_metadata = self._subreddit_policy_metadata(
+            program,
+            subreddit=subreddit,
+            profile_name=profile_name,
+            action="create_post",
+        )
+        keywords = self._keywords_for_subreddit(program, subreddit=subreddit)
         style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
         conversation_context = await self._conversation_context_for_subreddit(program, subreddit=subreddit, keywords=keywords)
         recent_texts = list(program.get("generated_text_history") or [])
@@ -1044,6 +1073,7 @@ class RedditProgramOrchestrator:
             "case_style_applied": (generated.persona_snapshot or {}).get("case_style"),
             "persona": generated.persona_snapshot,
             "word_count": generated.word_count,
+            "subreddit_policy": policy_metadata,
             "raw_response": generated.raw_response,
         }
         return {
@@ -1060,7 +1090,7 @@ class RedditProgramOrchestrator:
     async def _build_generated_reply_payload(self, program: Dict[str, Any], item: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
         subreddit = str(candidate.get("subreddit") or item.get("subreddit") or "").strip()
         profile_name = str(item.get("profile_name") or "")
-        keywords = [str(value).strip() for value in list(_program_filters(program).get("keywords") or []) if str(value).strip()]
+        keywords = self._keywords_for_subreddit(program, subreddit=subreddit)
         style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
         conversation_context = await self._conversation_context_for_comment_target(candidate)
         recent_texts = list(program.get("generated_text_history") or [])
@@ -1115,6 +1145,12 @@ class RedditProgramOrchestrator:
             "case_style_applied": (generated.persona_snapshot or {}).get("case_style"),
             "persona": generated.persona_snapshot,
             "word_count": generated.word_count,
+            "subreddit_policy": self._subreddit_policy_metadata(
+                program,
+                subreddit=subreddit,
+                profile_name=profile_name,
+                action="reply_comment",
+            ),
             "raw_response": generated.raw_response,
         }
         return {
@@ -1224,19 +1260,43 @@ class RedditProgramOrchestrator:
         matrix[profile_name] = blocked
         program["community_block_matrix"] = matrix
 
-    def _available_subreddits_for_profile(self, program: Dict[str, Any], *, profile_name: str) -> List[str]:
-        configured = [str(value).strip().lstrip("r/").strip("/") for value in list(_program_filters(program).get("subreddits") or []) if str(value).strip()]
+    def _available_subreddits_for_profile(self, program: Dict[str, Any], *, profile_name: str, action: Optional[str] = None) -> List[str]:
+        configured = [normalize_subreddit_name(value) for value in list(_program_filters(program).get("subreddits") or []) if normalize_subreddit_name(value)]
         if not configured:
             configured = [
-                str(value).strip().lstrip("r/").strip("/")
+                normalize_subreddit_name(value)
                 for value in [
                     _subreddit_from_url(url)
                     for url in list(_program_filters(program).get("mandatory_join_urls") or [])
                 ]
-                if str(value).strip()
+                if normalize_subreddit_name(value)
             ]
         blocked = self._blocked_subreddits_for_profile(program, profile_name=profile_name)
-        return [subreddit for subreddit in configured if subreddit.lower() not in blocked]
+        available: List[str] = []
+        for subreddit in configured:
+            if subreddit.lower() in blocked:
+                continue
+            policy = _subreddit_policy(program, subreddit)
+            if policy and not subreddit_profile_is_eligible(policy, profile_name=profile_name, action=action):
+                continue
+            available.append(subreddit)
+        return available
+
+    def _keywords_for_subreddit(self, program: Dict[str, Any], *, subreddit: Optional[str]) -> List[str]:
+        base_keywords = [str(value).strip() for value in list(_program_filters(program).get("keywords") or []) if str(value).strip()]
+        return subreddit_keywords(base_keywords, _subreddit_policy(program, subreddit))
+
+    def _subreddit_policy_metadata(self, program: Dict[str, Any], *, subreddit: Optional[str], profile_name: Optional[str], action: Optional[str]) -> Dict[str, Any]:
+        policy = _subreddit_policy(program, subreddit)
+        if not policy:
+            return {}
+        return {
+            "subreddit": policy.get("subreddit"),
+            "allocation_weight": int(policy.get("allocation_weight", 1) or 1),
+            "keyword_overrides": list(policy.get("keyword_overrides") or []),
+            "requires_user_flair": subreddit_requires_user_flair(policy, action),
+            "configured_user_flair": profile_user_flair(policy, profile_name),
+        }
 
     def _keyword_match(self, text_values: List[str], keywords: List[str]) -> bool:
         lowered = " ".join(str(value or "").lower() for value in text_values)
@@ -1379,8 +1439,7 @@ class RedditProgramOrchestrator:
         constraints = _program_filters(program)
         profile_name = str(item.get("profile_name") or "")
         local_date = str(item.get("local_date") or "")
-        keywords = [str(value).strip() for value in list(constraints.get("keywords") or []) if str(value).strip()]
-        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name)
+        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name, action=str(item.get("action") or ""))
 
         explicit_targets = [str(value).strip() for value in list(constraints.get("explicit_post_targets") or []) if str(value).strip()]
         for target_url in explicit_targets:
@@ -1394,6 +1453,7 @@ class RedditProgramOrchestrator:
 
         max_posts = max(1, int(_execution_policy(program).get("max_discovery_posts_per_subreddit", 6)))
         for subreddit in subreddits:
+            keywords = self._keywords_for_subreddit(program, subreddit=subreddit)
             ranked = await self._discover_posts_for_subreddit(
                 subreddit=subreddit,
                 keywords=keywords,
@@ -1488,7 +1548,6 @@ class RedditProgramOrchestrator:
         constraints = _program_filters(program)
         profile_name = str(item.get("profile_name") or "")
         local_date = str(item.get("local_date") or "")
-        keywords = [str(value).strip() for value in list(constraints.get("keywords") or []) if str(value).strip()]
         explicit_targets = [str(value).strip() for value in list(constraints.get("explicit_comment_targets") or []) if str(value).strip()]
         for target_comment_url in explicit_targets:
             if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_comment_url, exclude_work_item_id=str(item.get("id") or "")):
@@ -1500,11 +1559,12 @@ class RedditProgramOrchestrator:
                 "source": "explicit_pool",
             }
 
-        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name)
+        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name, action=str(item.get("action") or ""))
         max_posts = max(1, int(_execution_policy(program).get("max_discovery_posts_per_subreddit", 6)))
         max_comments = max(1, int(_execution_policy(program).get("max_comment_candidates_per_post", 8)))
 
         for subreddit in subreddits:
+            keywords = self._keywords_for_subreddit(program, subreddit=subreddit)
             posts = await self._discover_posts_for_subreddit(
                 subreddit=subreddit,
                 keywords=keywords,

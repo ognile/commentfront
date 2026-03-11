@@ -14,6 +14,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from reddit_subreddit_policies import (
+    normalize_subreddit_name,
+    normalize_subreddit_policies,
+    subreddit_policy_map,
+    subreddit_profile_is_eligible,
+)
 from safe_io import atomic_write_json, safe_read_json
 
 DEFAULT_TIMEZONE = "America/New_York"
@@ -93,18 +99,6 @@ def _normalize_profile_name(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
 
 
-def _normalize_subreddit_name(value: Optional[str]) -> str:
-    cleaned = str(value or "").strip()
-    cleaned = cleaned.replace("https://www.reddit.com/r/", "")
-    cleaned = cleaned.replace("https://reddit.com/r/", "")
-    cleaned = cleaned.strip("/").strip()
-    if cleaned.lower().startswith("r/"):
-        cleaned = cleaned[2:]
-    if "/" in cleaned:
-        cleaned = cleaned.split("/", 1)[0]
-    return cleaned
-
-
 def _item_subreddit(item: Dict[str, Any]) -> str:
     value = (
         item.get("subreddit")
@@ -115,7 +109,7 @@ def _item_subreddit(item: Dict[str, Any]) -> str:
         or ((item.get("result") or {}).get("target_url"))
         or ((item.get("result") or {}).get("target_comment_url"))
     )
-    return _normalize_subreddit_name(value)
+    return normalize_subreddit_name(value)
 
 
 def _item_failure_class(item: Dict[str, Any]) -> str:
@@ -237,14 +231,16 @@ def compile_reddit_program_state(
         if str(item).strip()
     ]
     allowed_subreddits = [
-        _normalize_subreddit_name(item)
+        normalize_subreddit_name(item)
         for item in list(topic_constraints.get("subreddits") or [])
-        if _normalize_subreddit_name(item)
+        if normalize_subreddit_name(item)
     ]
     for join_url in mandatory_join_urls:
-        subreddit = _normalize_subreddit_name(join_url)
+        subreddit = normalize_subreddit_name(join_url)
         if subreddit and subreddit not in allowed_subreddits:
             allowed_subreddits.append(subreddit)
+    subreddit_policies = normalize_subreddit_policies(topic_constraints.get("subreddit_policies") or [])
+    policy_map = subreddit_policy_map(subreddit_policies)
     generation_config = dict(spec.get("generation_config") or {})
     notification_config = dict(spec.get("notification_config") or {})
     realism_policy = dict(spec.get("realism_policy") or {})
@@ -253,6 +249,7 @@ def compile_reddit_program_state(
     work_items: List[Dict[str, Any]] = []
     day_plans: List[Dict[str, Any]] = []
     assignments = list(content_assignments.get("items") or [])
+    generated_post_allocation_counts = {subreddit.lower(): 0 for subreddit in allowed_subreddits}
 
     assignments_by_day_profile: Dict[tuple[int, str], List[Dict[str, Any]]] = {}
     for item in assignments:
@@ -313,7 +310,7 @@ def compile_reddit_program_state(
                             "text": None,
                             "title": None,
                             "body": None,
-                            "subreddit": _normalize_subreddit_name(join_url),
+                            "subreddit": normalize_subreddit_name(join_url),
                             "target_url": join_url,
                             "target_comment_url": None,
                             "target_mode": "explicit",
@@ -470,9 +467,30 @@ def compile_reddit_program_state(
 
             subreddit_pool = list(allowed_subreddits)
             if not subreddit_pool and mandatory_join_urls:
-                subreddit_pool = [_normalize_subreddit_name(join_url) for join_url in mandatory_join_urls if _normalize_subreddit_name(join_url)]
+                subreddit_pool = [normalize_subreddit_name(join_url) for join_url in mandatory_join_urls if normalize_subreddit_name(join_url)]
             for quota_index in range(generated_posts_for_day):
-                target_subreddit = subreddit_pool[quota_index % len(subreddit_pool)] if subreddit_pool else None
+                eligible_subreddits = [
+                    subreddit
+                    for subreddit in subreddit_pool
+                    if subreddit_profile_is_eligible(
+                        dict(policy_map.get(subreddit.lower()) or {}),
+                        profile_name=profile_name,
+                        action="create_post",
+                    )
+                ]
+                target_subreddit = None
+                if eligible_subreddits:
+                    target_subreddit = min(
+                        eligible_subreddits,
+                        key=lambda subreddit: (
+                            generated_post_allocation_counts.get(subreddit.lower(), 0)
+                            / max(1, int((policy_map.get(subreddit.lower()) or {}).get("allocation_weight", 1) or 1)),
+                            subreddit_pool.index(subreddit),
+                        ),
+                    )
+                    generated_post_allocation_counts[target_subreddit.lower()] = (
+                        generated_post_allocation_counts.get(target_subreddit.lower(), 0) + 1
+                    )
                 work_items.append(
                     {
                         "id": f"work_{uuid.uuid4().hex[:12]}",
@@ -541,6 +559,7 @@ def compile_reddit_program_state(
                 "explicit_comment_targets": list(topic_constraints.get("explicit_comment_targets") or []),
                 "allow_own_content_targets": bool(topic_constraints.get("allow_own_content_targets", False)),
                 "mandatory_join_urls": mandatory_join_urls,
+                "subreddit_policies": subreddit_policies,
             },
             "execution_policy": {
                 "strict_quotas": bool(execution_policy.get("strict_quotas", True)),

@@ -16,6 +16,23 @@ from reddit_program_store import RedditProgramStore
 from reddit_session import RedditSession
 
 
+class _GeneratedPayload:
+    def __init__(self, **kwargs):
+        self.success = kwargs.get("success", True)
+        self.error = kwargs.get("error")
+        self.title = kwargs.get("title")
+        self.body = kwargs.get("body")
+        self.text = kwargs.get("text")
+        self.style_summary = kwargs.get("style_summary", "")
+        self.conversation_summary = kwargs.get("conversation_summary", "")
+        self.sample_urls = kwargs.get("sample_urls", [])
+        self.validation = kwargs.get("validation", {})
+        self.writing_rule_snapshot = kwargs.get("writing_rule_snapshot", {"rule_source_hashes": {}, "source_paths": []})
+        self.persona_snapshot = kwargs.get("persona_snapshot", {"persona_id": "persona", "default_role": "role", "case_style": "proper_case"})
+        self.word_count = kwargs.get("word_count", 5)
+        self.raw_response = kwargs.get("raw_response", {})
+
+
 def _spec(**overrides):
     spec = {
         "profile_selection": {"profile_names": ["reddit_amy"]},
@@ -202,6 +219,156 @@ def test_target_reuse_checks_pending_reserved_items(tmp_path):
         local_date=str(pending_item["local_date"]),
         target_ref="https://www.reddit.com/r/womenshealth/comments/post/comment/c1/",
     )
+
+
+def test_available_subreddits_respect_policy_action_and_profile_flair(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            profile_selection={"profile_names": ["reddit_amy", "reddit_beta"]},
+            topic_constraints={
+                "subreddits": ["AskWomenOver40", "women"],
+                "keywords": ["period"],
+                "subreddit_policies": [
+                    {
+                        "subreddit": "AskWomenOver40",
+                        "requires_user_flair_for": ["create_post"],
+                        "profile_user_flairs": {"reddit_amy": "divorced"},
+                    }
+                ],
+            },
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    assert orchestrator._available_subreddits_for_profile(program, profile_name="reddit_amy", action="create_post") == [
+        "AskWomenOver40",
+        "women",
+    ]
+    assert orchestrator._available_subreddits_for_profile(program, profile_name="reddit_beta", action="create_post") == [
+        "women",
+    ]
+    assert orchestrator._available_subreddits_for_profile(program, profile_name="reddit_beta", action="upvote_post") == [
+        "AskWomenOver40",
+        "women",
+    ]
+
+
+def test_build_generated_post_payload_uses_subreddit_keyword_overrides(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            topic_constraints={
+                "subreddits": ["AskWomenOver40"],
+                "keywords": ["period"],
+                "subreddit_policies": [
+                    {
+                        "subreddit": "AskWomenOver40",
+                        "keyword_overrides": ["dating", "midlife"],
+                        "profile_user_flairs": {"reddit_amy": "divorced"},
+                        "requires_user_flair_for": ["create_post"],
+                    }
+                ],
+            },
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 1,
+                "posts_max_per_day": 1,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "create_post")
+    orchestrator = RedditProgramOrchestrator(store=store)
+    captured: dict = {}
+
+    async def fake_style_samples(_program, *, subreddit, keywords):
+        captured["style_keywords"] = list(keywords)
+        return []
+
+    async def fake_conversation(_program, *, subreddit, keywords):
+        captured["conversation_keywords"] = list(keywords)
+        return []
+
+    async def fake_generate_post(**kwargs):
+        captured["generator_keywords"] = list(kwargs["keywords"])
+        return _GeneratedPayload(
+            title="midlife check-in",
+            body="body text",
+        )
+
+    monkeypatch.setattr(orchestrator, "_style_samples_for_subreddit", fake_style_samples)
+    monkeypatch.setattr(orchestrator, "_conversation_context_for_subreddit", fake_conversation)
+    monkeypatch.setattr(orchestrator.content_generator, "generate_post", fake_generate_post)
+
+    payload = asyncio.run(orchestrator._build_generated_post_payload(program, item))
+
+    assert payload["subreddit"] == "AskWomenOver40"
+    assert captured["style_keywords"] == ["dating", "midlife"]
+    assert captured["conversation_keywords"] == ["dating", "midlife"]
+    assert captured["generator_keywords"] == ["dating", "midlife"]
+    assert payload["generation_evidence"]["subreddit_policy"]["configured_user_flair"] == "divorced"
+
+
+def test_build_generated_post_payload_returns_configuration_error_when_flair_required_but_missing(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            profile_selection={"profile_names": ["reddit_beta"]},
+            topic_constraints={
+                "subreddits": ["AskWomenOver40"],
+                "keywords": ["period"],
+                "subreddit_policies": [
+                    {
+                        "subreddit": "AskWomenOver40",
+                        "requires_user_flair_for": ["create_post"],
+                        "profile_user_flairs": {},
+                    }
+                ],
+            },
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 1,
+                "posts_max_per_day": 1,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "create_post")
+    item["subreddit"] = "AskWomenOver40"
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    payload = asyncio.run(orchestrator._build_generated_post_payload(program, item))
+
+    assert payload["failure_class"] == "configuration_error"
+    assert "requires configured user flair" in payload["error"]
 
 
 def test_scheduler_start_recovers_interrupted_programs(tmp_path):

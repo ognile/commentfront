@@ -158,6 +158,61 @@ def test_compiler_builds_posts_balanced_upvotes_and_mandatory_joins(tmp_path):
     assert set(program["join_progress_matrix"].keys()) == {"reddit_alpha", "reddit_beta"}
 
 
+def test_compiler_balances_create_posts_with_subreddit_policies_and_flair_eligibility(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
+    program = store.create_program(
+        _spec(
+            profile_names=["reddit_alpha", "reddit_beta"],
+            schedule={
+                "start_at": "2026-03-09T08:00:00Z",
+                "duration_days": 3,
+                "timezone": "Europe/Zurich",
+                "random_windows": [{"start_hour": 9, "end_hour": 12}],
+            },
+            topic_constraints={
+                "subreddits": ["WomensHealth", "women", "AskWomenOver40"],
+                "keywords": ["period"],
+                "subreddit_policies": [
+                    {
+                        "subreddit": "women",
+                        "allocation_weight": 2,
+                    },
+                    {
+                        "subreddit": "AskWomenOver40",
+                        "requires_user_flair_for": ["create_post"],
+                        "profile_user_flairs": {
+                            "reddit_alpha": "divorced",
+                        },
+                    },
+                ],
+            },
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 1,
+                "posts_max_per_day": 1,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+        )
+    )
+
+    create_posts = [item for item in program["compiled"]["work_items"] if item["action"] == "create_post"]
+    alpha_subreddits = [item["subreddit"] for item in create_posts if item["profile_name"] == "reddit_alpha"]
+    beta_subreddits = [item["subreddit"] for item in create_posts if item["profile_name"] == "reddit_beta"]
+
+    assert "AskWomenOver40" in alpha_subreddits
+    assert "AskWomenOver40" not in beta_subreddits
+    assert sum(1 for item in create_posts if item["subreddit"] == "women") > sum(
+        1 for item in create_posts if item["subreddit"] == "WomensHealth"
+    )
+
+
 def test_exhausted_items_still_count_against_remaining_contract(tmp_path):
     store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
     program = store.create_program(

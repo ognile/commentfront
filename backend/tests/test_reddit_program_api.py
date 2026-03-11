@@ -29,6 +29,60 @@ def test_create_reddit_mission_persists_target_comment_url(tmp_path, monkeypatch
     assert stored["target_comment_url"].endswith("/comment/xyz789/")
 
 
+def test_validate_reddit_program_payload_accepts_subreddit_policies(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "list_saved_reddit_sessions",
+        lambda: [
+            {"profile_name": "reddit_amy", "has_valid_session": True},
+            {"profile_name": "reddit_beta", "has_valid_session": True},
+        ],
+    )
+    payload = {
+        "profile_selection": {"profile_names": ["reddit_amy", "reddit_beta"]},
+        "schedule": {"start_at": "2026-03-09T08:00:00Z", "duration_days": 1, "timezone": "Europe/Zurich", "random_windows": [{"start_hour": 8, "end_hour": 9}]},
+        "topic_constraints": {
+            "subreddits": ["AskWomenOver40", "women"],
+            "keywords": ["period"],
+            "subreddit_policies": [
+                {
+                    "subreddit": "AskWomenOver40",
+                    "allocation_weight": 2,
+                    "requires_user_flair_for": ["create_post"],
+                    "profile_user_flairs": {"reddit_amy": "divorced"},
+                    "keyword_overrides": ["dating", "midlife"],
+                }
+            ],
+        },
+        "content_assignments": {"items": []},
+        "engagement_quotas": {
+            "posts_min_per_day": 1,
+            "posts_max_per_day": 1,
+            "upvotes_min_per_day": 0,
+            "upvotes_max_per_day": 0,
+            "comment_upvote_min_per_day": 0,
+            "comment_upvote_max_per_day": 0,
+            "reply_min_per_day": 0,
+            "reply_max_per_day": 0,
+            "random_reply_templates": [],
+            "random_upvote_action": "upvote_post",
+        },
+        "generation_config": {
+            "style_sample_count": 3,
+            "writing_rule_paths": [],
+            "uniqueness_scope": "program",
+        },
+        "notification_config": {
+            "email_enabled": True,
+            "email_account_mode": "default_gog_account",
+            "daily_summary_hour": 20,
+            "hard_failure_alerts_enabled": False,
+        },
+    }
+
+    main._validate_reddit_program_payload(payload)
+
+
 def test_reddit_program_status_exposes_join_and_notification_fields(tmp_path, monkeypatch):
     temp_store = RedditProgramStore(file_path=str(tmp_path / "reddit_programs.json"))
     monkeypatch.setattr(main, "reddit_program_store", temp_store)

@@ -79,6 +79,7 @@ from reddit_bot import run_reddit_action
 from reddit_growth_generation import WRITING_RULE_SOURCE_PATHS
 from reddit_program_notifications import build_program_email_body
 from reddit_mission_store import RedditMissionScheduler, RedditMissionStore
+from reddit_subreddit_policies import normalize_subreddit_name
 from reddit_program_orchestrator import (
     RedditProgramAlreadyRunningError,
     RedditProgramOrchestrator,
@@ -1873,6 +1874,25 @@ class RedditProgramProfileSelection(BaseModel):
     profile_names: List[str]
 
 
+class RedditProgramSubredditPolicy(BaseModel):
+    subreddit: str
+    allocation_weight: int = 1
+    enabled_actions: List[
+        Literal[
+            "upvote_post",
+            "upvote_comment",
+            "join_subreddit",
+            "open_target",
+            "create_post",
+            "comment_post",
+            "reply_comment",
+        ]
+    ] = Field(default_factory=list)
+    requires_user_flair_for: List[Literal["create_post", "comment_post", "reply_comment"]] = Field(default_factory=list)
+    profile_user_flairs: Dict[str, str] = Field(default_factory=dict)
+    keyword_overrides: List[str] = Field(default_factory=list)
+
+
 class RedditProgramTopicConstraints(BaseModel):
     subreddits: List[str] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
@@ -1880,6 +1900,7 @@ class RedditProgramTopicConstraints(BaseModel):
     explicit_comment_targets: List[str] = Field(default_factory=list)
     allow_own_content_targets: bool = False
     mandatory_join_urls: List[str] = Field(default_factory=list)
+    subreddit_policies: List[RedditProgramSubredditPolicy] = Field(default_factory=list)
 
 
 class RedditProgramAssignment(BaseModel):
@@ -6166,9 +6187,36 @@ def _validate_reddit_program_payload(payload: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="comment_upvote_max_per_day cannot exceed upvotes_max_per_day")
 
     subreddits = [str(item).strip() for item in list(topic_constraints.get("subreddits") or []) if str(item).strip()]
+    subreddit_policies = [dict(item or {}) for item in list(topic_constraints.get("subreddit_policies") or [])]
     explicit_post_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_post_targets") or []) if str(item).strip()]
     explicit_comment_targets = [str(item).strip() for item in list(topic_constraints.get("explicit_comment_targets") or []) if str(item).strip()]
     mandatory_join_urls = [str(item).strip() for item in list(topic_constraints.get("mandatory_join_urls") or []) if str(item).strip()]
+
+    normalized_subreddits = {normalize_subreddit_name(item).lower() for item in subreddits if normalize_subreddit_name(item)}
+    seen_policy_subreddits: Set[str] = set()
+    for idx, policy in enumerate(subreddit_policies):
+        subreddit = normalize_subreddit_name(policy.get("subreddit"))
+        if not subreddit:
+            raise HTTPException(status_code=400, detail=f"topic_constraints.subreddit_policies[{idx}].subreddit is required")
+        lowered = subreddit.lower()
+        if lowered not in normalized_subreddits:
+            raise HTTPException(
+                status_code=400,
+                detail=f"topic_constraints.subreddit_policies[{idx}].subreddit must also appear in topic_constraints.subreddits",
+            )
+        if lowered in seen_policy_subreddits:
+            raise HTTPException(status_code=400, detail=f"duplicate subreddit policy for r/{subreddit}")
+        seen_policy_subreddits.add(lowered)
+        allocation_weight = int(policy.get("allocation_weight", 1) or 1)
+        if allocation_weight < 1:
+            raise HTTPException(status_code=400, detail=f"topic_constraints.subreddit_policies[{idx}].allocation_weight must be >= 1")
+        profile_user_flairs = dict(policy.get("profile_user_flairs") or {})
+        for profile_name in profile_user_flairs:
+            if str(profile_name).strip() not in profile_names:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"topic_constraints.subreddit_policies[{idx}].profile_user_flairs contains unknown profile {profile_name}",
+                )
 
     if posts_max_per_day > 0 or upvotes_max_per_day > 0 or reply_max_per_day > 0 or mandatory_join_urls:
         if not subreddits and not explicit_post_targets and not explicit_comment_targets and not mandatory_join_urls:
