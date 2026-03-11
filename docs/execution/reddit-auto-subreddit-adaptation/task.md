@@ -29,10 +29,12 @@
 - the flair dialog path is now tightened to reject oversized text matches and to require visible dialog-state signals after clicking the opener; the local reddit regression slice is green again after this patch: `137 passed`.
 - rerun smoke `reddit_program_847a500d01` on the tightened matcher build proved the next real bottleneck honestly: the flair flow no longer fake-clicks page content, but the thread-context recovery path still used fuzzy title clicks and drifted to `https://www.reddit.com/user/daffodilmachete/` instead of deterministically reloading the target thread.
 - thread-context recovery is now deterministic: it reloads the exact target thread and dismisses the open-app sheet instead of clicking arbitrary visible title text. the local reddit regression slice is green again after this patch: `138 passed`.
+- rerun smoke `reddit_program_04a757c30a` on the deterministic thread-recovery build proved the next real bottleneck honestly: the target thread itself loads with `200`, but the open-app-sheet dismissal helper keeps causing unintended navigation into unrelated pages like `https://www.reddit.com/user/daffodilmachete/` and `https://www.reddit.com/r/askvan/`.
+- the open-app-sheet dismissal helper is now tightened to dismiss only when it finds a compact close button inside the same bottom-sheet container as the `open` cta. the local reddit regression slice is green again after this patch: `139 passed`.
 
 ## active todo
 1. commit the explicit-target policy inheritance patch and redeploy it to railway.
-2. deploy the deterministic thread-context recovery fix to railway.
+2. deploy the tightened open-app-sheet dismissal fix to railway.
 3. rerun the exact-target `AskWomenOver40` production smoke on the deployed build with policy-driven flair automation enabled and verify identity evidence plus proof artifacts.
 4. recreate the broader proof-matrix program on the new build and verify real proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
 
@@ -56,6 +58,7 @@
 - attempt `789c5d2a-f227-4f87-b054-7334a17fc5e6` on `reddit_program_3e844ab292` proved that `AskWomenOver40` is not currently blocked by missing compiler policy or missing proof plumbing; the real failure was the executor’s assumption that flair must always start from the subreddit root.
 - attempt `c13f8d00-8fa2-44d0-acac-6ef69a81987c` on `reddit_program_80a6d043c8` proved that the thread-first flair entry path works well enough to get past the old root-network failure, but the next mismatch is selector quality inside the flair dialog workflow rather than infra or compiler policy.
 - attempt `b81263a0-04f6-4d51-bc05-8f5b73327622` on `reddit_program_847a500d01` proved that the tightened flair matcher got us past the old fake dialog clicks, and that the next mismatch is a fuzzy thread-recovery heuristic rather than flair or infra.
+- attempt `f056ce90-e5c6-4cd7-a0e2-cc006314091a` on `reddit_program_04a757c30a` proved that even with deterministic thread reload, the generic open-app-sheet dismissal helper is still loose enough to trigger unrelated navigation on this subreddit surface.
 
 ## open risks
 - production still needs proof that all 10 valid sessions can execute the new proof-matrix flow against real subreddit conditions.

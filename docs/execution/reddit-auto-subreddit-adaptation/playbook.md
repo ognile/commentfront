@@ -25,6 +25,7 @@
 - for subreddit identity work, prefer the actual target thread as the first flair-entry surface and use the subreddit root only as fallback; root navigation can fail independently of the target thread.
 - flair-dialog steps need tighter control matching than general reddit actions; reject oversized text blocks and require dialog-state confirmation so page content cannot masquerade as a flair control.
 - when thread context is lost, recover by navigating back to the exact target url and dismissing any open-app sheet; visible-title clicks are too fuzzy on reddit mobile surfaces.
+- open-app-sheet dismissal needs container-level proof, not just two loosely matching buttons near the bottom of the viewport; if the close control is not clearly in the same sheet as the `open` cta, do not click anything.
 
 ## promotion rules
 - promote only evidence-backed reusable lessons

@@ -446,12 +446,22 @@ def test_detect_community_comment_ban_returns_contributing_reason():
 
 def test_dismiss_reddit_open_app_sheet_clicks_close_button():
     page = _FakePage()
-    page.evaluate_result = True
+    page.evaluate_result = {"dismissed": True}
 
     dismissed = asyncio.run(reddit_bot._dismiss_reddit_open_app_sheet(page))
 
     assert dismissed is True
     assert page.waits == [700]
+
+
+def test_dismiss_reddit_open_app_sheet_returns_false_without_confirmed_sheet():
+    page = _FakePage()
+    page.evaluate_result = {"dismissed": False}
+
+    dismissed = asyncio.run(reddit_bot._dismiss_reddit_open_app_sheet(page))
+
+    assert dismissed is False
+    assert page.waits == []
 
 
 def test_comment_on_post_returns_community_restricted(monkeypatch):

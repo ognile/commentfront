@@ -980,8 +980,7 @@ async def _goto(page, url: str):
 
 async def _dismiss_reddit_open_app_sheet(page) -> bool:
     try:
-        dismissed = bool(
-            await page.evaluate(
+        dismissal_payload = await page.evaluate(
                 """() => {
                     const viewportHeight = window.innerHeight || 873;
                     const visible = (rect) => rect && rect.width >= 16 && rect.height >= 16 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight;
@@ -991,20 +990,31 @@ async def _dismiss_reddit_open_app_sheet(page) -> bool:
                         const rect = node.getBoundingClientRect();
                         return visible(rect) && rect.top >= viewportHeight - 120 && text === 'open';
                     });
-                    if (!openCta) return false;
+                    if (!openCta) return { dismissed: false };
+
+                    const candidateContainers = [];
+                    let current = openCta.parentElement;
+                    while (current && candidateContainers.length < 5) {
+                        candidateContainers.push(current);
+                        current = current.parentElement;
+                    }
+
                     const closeButton = nodes.find((node) => {
                         const text = String(node.innerText || node.textContent || node.getAttribute?.('aria-label') || '').trim().toLowerCase();
                         const rect = node.getBoundingClientRect();
-                        return visible(rect) && rect.top >= viewportHeight - 120 && rect.left <= 56 && rect.width <= 48 && rect.height <= 48 && !text;
+                        if (!visible(rect) || rect.top < viewportHeight - 160 || rect.left > 72 || rect.width > 56 || rect.height > 56 || text) {
+                            return false;
+                        }
+                        return candidateContainers.some((container) => container && container.contains(node));
                     });
-                    if (!closeButton) return false;
+                    if (!closeButton) return { dismissed: false };
                     closeButton.click();
-                    return true;
+                    return { dismissed: true };
                 }"""
             )
-        )
     except Exception:
-        dismissed = False
+        dismissal_payload = {"dismissed": False}
+    dismissed = bool(dismissal_payload if isinstance(dismissal_payload, bool) else (dismissal_payload or {}).get("dismissed"))
     if dismissed:
         queue_current_event(
             "click",
