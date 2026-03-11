@@ -71,6 +71,11 @@ def _extract_quoted_phrases(line: str) -> List[str]:
     return results
 
 
+def _negative_pattern_subject(line: str) -> str:
+    parts = re.split(r"\b(?:instead|dont use|don't use)\b", line, maxsplit=1, flags=re.IGNORECASE)
+    return parts[0].strip()
+
+
 def _read_rule_documents() -> Dict[str, Dict[str, str]]:
     documents: Dict[str, Dict[str, str]] = {}
     for spec in RULE_SOURCE_SPECS:
@@ -100,11 +105,12 @@ def _parse_negative_patterns(content: str) -> List[str]:
             continue
         if not line.startswith("-"):
             continue
-        quoted = _extract_quoted_phrases(line)
+        subject = _negative_pattern_subject(line)
+        quoted = _extract_quoted_phrases(subject)
         if quoted:
             patterns.extend(quoted)
             continue
-        bullet = _normalize_rule_phrase(line.lstrip("-").strip())
+        bullet = _normalize_rule_phrase(subject.lstrip("-").strip())
         if bullet:
             bullet = bullet.split(" - (", 1)[0].strip()
             bullet = bullet.split("    - Example:", 1)[0].strip()

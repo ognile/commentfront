@@ -10,7 +10,7 @@ from reddit_writing_rules import get_writing_rule_snapshot
 
 def test_validate_generated_text_rejects_banned_pattern_and_em_dash():
     result = validate_generated_text(
-        "here's the thing: this isn't just helpful — it's magic.",
+        "but here's the thing: this isn't just helpful — it's magic.",
         persona_snapshot=get_reddit_persona_snapshot("reddit_amy_schaefera"),
         writing_rule_snapshot=get_writing_rule_snapshot(),
     )
@@ -122,3 +122,10 @@ def test_writing_rule_snapshot_contains_exact_hashes_and_paths():
     assert snapshot["rule_source_hashes"]["great-writing-patterns.md"] == "5b8cb44fceb640b2224a04c950a2f79ebebef863e9ac5b43401e73d3123df94f"
     assert snapshot["rule_source_hashes"]["negative-patterns.md"] == "0676cd003f0d8c9382378c364a26e99327c21272aad65bd95bee67a3e78e18a2"
     assert snapshot["rule_source_hashes"]["vocabulary-guidance.md"] == "74a10459bc0d72cfddb6ed26cfa4727069904c39e13888b0e9c3cc94396b0bc5"
+
+
+def test_writing_rule_snapshot_does_not_ban_recommended_replacement_words():
+    snapshot = get_writing_rule_snapshot()
+
+    assert "this" not in [item.lower() for item in snapshot["banned_patterns"]]
+    assert "that [describing something]" in [item.lower() for item in snapshot["banned_patterns"]]
