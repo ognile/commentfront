@@ -974,7 +974,6 @@ async def _goto(page, url: str):
     await _goto_with_retry(page, url, profile_name="reddit_action")
     await page.wait_for_timeout(2500)
     await _dismiss_cookie_banner(page)
-    await _dismiss_reddit_open_app_sheet(page)
     await page.wait_for_timeout(500)
 
 
@@ -983,6 +982,7 @@ async def _dismiss_reddit_open_app_sheet(page) -> bool:
         dismissal_payload = await page.evaluate(
                 """() => {
                     const viewportHeight = window.innerHeight || 873;
+                    const viewportWidth = window.innerWidth || 393;
                     const visible = (rect) => rect && rect.width >= 16 && rect.height >= 16 && rect.bottom >= 0 && rect.right >= 0 && rect.top <= viewportHeight;
                     const nodes = Array.from(document.querySelectorAll('button, a, [role="button"]'));
                     const openCta = nodes.find((node) => {
@@ -992,12 +992,29 @@ async def _dismiss_reddit_open_app_sheet(page) -> bool:
                     });
                     if (!openCta) return { dismissed: false };
 
+                    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
                     const candidateContainers = [];
                     let current = openCta.parentElement;
-                    while (current && candidateContainers.length < 5) {
-                        candidateContainers.push(current);
+                    while (current) {
+                        const rect = current.getBoundingClientRect();
+                        const text = normalize(current.innerText || current.textContent || current.getAttribute?.('aria-label'));
+                        const computed = window.getComputedStyle(current);
+                        const looksLikeSheet = (
+                            rect.width >= viewportWidth * 0.7 &&
+                            rect.height >= 56 &&
+                            rect.top >= viewportHeight - 220 &&
+                            rect.bottom <= viewportHeight + 8 &&
+                            (computed.position === 'fixed' || computed.position === 'sticky' || rect.bottom >= viewportHeight - 4) &&
+                            text.includes('view in reddit app')
+                        );
+                        if (looksLikeSheet) {
+                            candidateContainers.push(current);
+                            break;
+                        }
                         current = current.parentElement;
                     }
+                    if (!candidateContainers.length) return { dismissed: false };
+                    const container = candidateContainers[0];
 
                     const closeButton = nodes.find((node) => {
                         const text = String(node.innerText || node.textContent || node.getAttribute?.('aria-label') || '').trim().toLowerCase();
@@ -1005,7 +1022,7 @@ async def _dismiss_reddit_open_app_sheet(page) -> bool:
                         if (!visible(rect) || rect.top < viewportHeight - 160 || rect.left > 72 || rect.width > 56 || rect.height > 56 || text) {
                             return false;
                         }
-                        return candidateContainers.some((container) => container && container.contains(node));
+                        return container.contains(node);
                     });
                     if (!closeButton) return { dismissed: false };
                     closeButton.click();
@@ -1274,7 +1291,6 @@ async def _ensure_thread_context(page, *, url: str, expected_title: Optional[str
             await _goto(page, url)
         except Exception:
             continue
-        await _dismiss_reddit_open_app_sheet(page)
         if await _thread_context_present(page, expected_title):
             return True
     return False

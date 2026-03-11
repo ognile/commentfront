@@ -30,13 +30,14 @@
 - rerun smoke `reddit_program_847a500d01` on the tightened matcher build proved the next real bottleneck honestly: the flair flow no longer fake-clicks page content, but the thread-context recovery path still used fuzzy title clicks and drifted to `https://www.reddit.com/user/daffodilmachete/` instead of deterministically reloading the target thread.
 - thread-context recovery is now deterministic: it reloads the exact target thread and dismisses the open-app sheet instead of clicking arbitrary visible title text. the local reddit regression slice is green again after this patch: `138 passed`.
 - rerun smoke `reddit_program_04a757c30a` on the deterministic thread-recovery build proved the next real bottleneck honestly: the target thread itself loads with `200`, but the open-app-sheet dismissal helper keeps causing unintended navigation into unrelated pages like `https://www.reddit.com/user/daffodilmachete/` and `https://www.reddit.com/r/askvan/`.
-- the open-app-sheet dismissal helper is now tightened to dismiss only when it finds a compact close button inside the same bottom-sheet container as the `open` cta. the local reddit regression slice is green again after this patch: `139 passed`.
+- rerun smoke `reddit_program_86f6afad91` on the first open-app-sheet hardening build proved the next real bottleneck honestly: even a shared-container heuristic is still too loose because `_goto(...)` and `_ensure_thread_context(...)` keep auto-triggering dismiss clicks during pure navigation recovery, and those clicks still drift into unrelated pages like `https://www.reddit.com/user/daffodilmachete/` and `https://www.reddit.com/r/askvan/`.
+- the navigation seam is now hardened in two places: `_goto(...)` no longer auto-dismisses the open-app sheet, and `_ensure_thread_context(...)` now recovers by exact reload only. the dismiss helper itself is also upgraded to require a real bottom sheet with `view in reddit app` semantics before it clicks anything. the full local reddit regression slice is green again after this patch: `140 passed`.
 
 ## active todo
-1. commit the explicit-target policy inheritance patch and redeploy it to railway.
-2. deploy the tightened open-app-sheet dismissal fix to railway.
-3. rerun the exact-target `AskWomenOver40` production smoke on the deployed build with policy-driven flair automation enabled and verify identity evidence plus proof artifacts.
-4. recreate the broader proof-matrix program on the new build and verify real proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
+1. deploy the navigation-only thread recovery fix to railway from committed github state.
+2. rerun the exact-target `AskWomenOver40` production smoke on the deployed build with policy-driven flair automation enabled and verify that no `open_app_sheet_dismiss` event causes cross-page drift.
+3. if the smoke clears the thread-load gate, continue until `comment_post` reaches real proof artifacts or the next true community constraint is isolated.
+4. once `AskWomenOver40` is honestly proven, recreate the broader proof-matrix program and verify real proof rows across the configured subreddit set, including identity evidence for `AskWomenOver40`.
 
 ## current understanding
 - the right architecture is split across three layers:
@@ -44,6 +45,7 @@
 - orchestrator: decide when subreddit-specific identity work is required and pass that intent into the executor.
 - bot: execute flair discovery/application only when the orchestrator or caller explicitly requested it.
 - if the bot probes flair whenever it merely knows the subreddit, it breaks otherwise-correct direct action flows and hides the real policy boundary.
+- navigation helpers and thread-recovery helpers must not perform side-effectful dismiss clicks; they should establish location only, then let later interaction phases dismiss blocking overlays with explicit proof.
 - balancing create-post allocation only by global subreddit counts is not enough; per-profile load has to be included or the same profiles stay stuck on the same small subset.
 
 ## proven wins
@@ -59,8 +61,9 @@
 - attempt `c13f8d00-8fa2-44d0-acac-6ef69a81987c` on `reddit_program_80a6d043c8` proved that the thread-first flair entry path works well enough to get past the old root-network failure, but the next mismatch is selector quality inside the flair dialog workflow rather than infra or compiler policy.
 - attempt `b81263a0-04f6-4d51-bc05-8f5b73327622` on `reddit_program_847a500d01` proved that the tightened flair matcher got us past the old fake dialog clicks, and that the next mismatch is a fuzzy thread-recovery heuristic rather than flair or infra.
 - attempt `f056ce90-e5c6-4cd7-a0e2-cc006314091a` on `reddit_program_04a757c30a` proved that even with deterministic thread reload, the generic open-app-sheet dismissal helper is still loose enough to trigger unrelated navigation on this subreddit surface.
+- attempt `ffcb0cf2-f372-46c8-9183-2a6a4d3745db` on `reddit_program_86f6afad91` proved the remaining mismatch more precisely: the problem is not just the dismiss helper’s container heuristic, it is the fact that thread navigation helpers were still auto-triggering dismiss clicks during recovery. the fix is to make navigation location-only and require `view in reddit app` sheet semantics before any dismiss click.
 
 ## open risks
 - production still needs proof that all 10 valid sessions can execute the new proof-matrix flow against real subreddit conditions.
-- `AskWomenOver40` may still have community-specific posting/commenting friction beyond flair, so production evidence needs to show the actual limiting factor after the new thread-first flair path lands.
+- `AskWomenOver40` may still have community-specific posting/commenting friction beyond flair, so production evidence needs to show the actual limiting factor after the navigation-only thread recovery patch lands.
 - the current runtime can adapt to flair, but other community-specific identity requirements may still need additional surface discovery rules.

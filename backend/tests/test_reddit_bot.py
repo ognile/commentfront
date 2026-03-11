@@ -335,13 +335,8 @@ def test_ensure_thread_context_recovers_by_reloading_exact_url(monkeypatch):
         calls.append(("goto", url))
         state["loaded"] = True
 
-    async def fake_dismiss(_page):
-        calls.append(("dismiss",))
-        return True
-
     monkeypatch.setattr(reddit_bot, "_thread_context_present", fake_thread_context)
     monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
-    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss)
 
     ok = asyncio.run(
         reddit_bot._ensure_thread_context(
@@ -355,7 +350,6 @@ def test_ensure_thread_context_recovers_by_reloading_exact_url(monkeypatch):
     assert calls == [
         ("thread_context", "Should I visit the urogynecologist?", False),
         ("goto", "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/"),
-        ("dismiss",),
         ("thread_context", "Should I visit the urogynecologist?", True),
     ]
 
@@ -1197,13 +1191,8 @@ def test_ensure_thread_context_retries_navigation_when_title_missing(monkeypatch
         calls.append(("goto", url))
         return None
 
-    async def fake_dismiss(_page):
-        calls.append(("dismiss",))
-        return True
-
     monkeypatch.setattr(reddit_bot, "_thread_context_present", fake_thread_context)
     monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
-    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss)
 
     ok = asyncio.run(
         reddit_bot._ensure_thread_context(
@@ -1217,9 +1206,37 @@ def test_ensure_thread_context_retries_navigation_when_title_missing(monkeypatch
     assert calls == [
         ("thread", "GLP-1 & PCOS"),
         ("goto", "https://www.reddit.com/r/PCOS/comments/1roqvnw/glp1_pcos/"),
-        ("dismiss",),
         ("thread", "GLP-1 & PCOS"),
     ]
+
+
+def test_goto_does_not_trigger_open_app_dismiss(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_goto_with_retry(_page, url, profile_name=None):
+        calls.append(("goto_with_retry", url, profile_name))
+        return None
+
+    async def fake_cookie_banner(_page):
+        calls.append(("cookie",))
+        return False
+
+    async def fake_dismiss(_page):
+        calls.append(("dismiss",))
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_goto_with_retry", fake_goto_with_retry)
+    monkeypatch.setattr(reddit_bot, "_dismiss_cookie_banner", fake_cookie_banner)
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss)
+
+    asyncio.run(reddit_bot._goto(page, "https://www.reddit.com/r/AskWomenOver40/comments/example/"))
+
+    assert calls == [
+        ("goto_with_retry", "https://www.reddit.com/r/AskWomenOver40/comments/example/", "reddit_action"),
+        ("cookie",),
+    ]
+    assert page.waits == [2500, 500]
 
 
 def test_click_composer_region_from_layout_requires_thread_context(monkeypatch):
