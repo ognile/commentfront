@@ -36,6 +36,7 @@
 - when production shows `running` with no forensics, add a timeout around `_resolve_target(...)` first. otherwise the system can hide deficits by hanging forever before any proof artifact exists.
 - for multi-profile reply programs, cache subreddit post pools and thread comment trees per run. otherwise every profile pays the same network/discovery cost again and again.
 - do not truncate reply candidate scanning to an arbitrary shallow prefix before realism/uniqueness filters run; that can manufacture scarcity and push the system into unnecessary retries/timeouts.
+- when a fresh rollout row looks stuck, cross-check `/forensics/attempts/{attempt_id}` and operator-view before declaring a new bug from `/data/reddit_programs_state.json` alone. the state file can lag one save behind live forensics during active execution.
 
 ## promotion rules
 - do not trust a rollout as methodology evidence unless it runs on the deployed scenario-b runtime and shows zero reply target collisions.
@@ -43,3 +44,4 @@
 - keep open risks explicit in the tracker when a path is still manual-text rather than generated.
 - if operator events show impossible bursts of `work_item_start` timestamps, assume program-level concurrency is broken until proved otherwise and replace the rollout after the lock fix.
 - if a cancelled rollout ever reappears as `active`, treat all current live evidence as suspect until cancellation durability is fixed and a fresh rollout replaces the contaminated one.
+- the scenario-b methodology proof gate is satisfied only when one fresh rollout on the latest runtime shows, in the same run, `success_confirmed` proof for every active contract lane plus zero operator unsafe flags. once that gate is passed, remaining uncertainty is rollout duration, not methodology alignment.
