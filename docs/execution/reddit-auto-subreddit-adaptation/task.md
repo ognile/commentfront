@@ -35,12 +35,13 @@
 - exact-target smoke `reddit_program_48dc22d1c4` on the navigation-only build proved that the cross-page drift bug is actually fixed in production: attempt `aecf3245-4fa7-4131-9614-3b84e6ac3eef` stayed on `https://www.reddit.com/r/AskWomenOver40/comments/1rpyi3g/should_i_visit_the_urogynecologist/` and failed honestly with reddit’s own banner, `you're currently banned from this community and can't comment on posts`.
 - public profile evidence now shows the real remaining AskWomenOver40 mismatch is profile capability, not runtime execution: all 10 rollout profiles are still in `warmup_state.stage="new"` and public reddit `comment_karma` ranges from `0` to `23`, far below stricter trust thresholds like `50`.
 - the orchestrator and subreddit policy surface are now extended with pre-execution capability gates: `minimum_comment_karma`, `minimum_comment_karma_for`, and `blocked_warmup_stages`. impossible assignments can be blocked honestly before the browser runner burns attempts.
+- production proof vehicle `reddit_program_5b0f2962ca` on commit `7e962b6` now proves the new gate is live: the exact same AskWomenOver40 item blocks before execution with `status=blocked`, `attempts=0`, `recent_attempt_ids=[]`, and error `reddit profile capability shortfall: warmup stage new is blocked for r/AskWomenOver40`.
 
 ## active todo
-1. deploy the new profile-capability gate to railway from committed github state.
-2. run a fresh exact-target `AskWomenOver40` production smoke with `minimum_comment_karma` and/or `blocked_warmup_stages` policy enabled, and verify the work item blocks honestly before any browser attempt is created.
-3. surface the same profile-capability reason in operator evidence so impossible subreddit assignments are visible without opening raw forensics.
-4. once capability shortfalls are proven and surfaced honestly, recreate the broader proof-matrix program with realistic subreddit policies so valid communities still get coverage and impossible ones reroute without waste.
+1. surface the same profile-capability reason more explicitly in operator evidence so impossible subreddit assignments are visible without reading raw error strings.
+2. add automatic policy derivation or learning for subreddit capability gates so future programs do not depend on hand-entered `minimum_comment_karma` / warmup rules.
+3. recreate the broader proof-matrix program with realistic subreddit policies so valid communities still get coverage and impossible ones reroute without waste.
+4. continue expanding automatic subreddit adaptation beyond flair and capability gates wherever a community exposes additional identity requirements.
 
 ## current understanding
 - the right architecture is split across three layers:
@@ -68,8 +69,9 @@
 - attempt `ffcb0cf2-f372-46c8-9183-2a6a4d3745db` on `reddit_program_86f6afad91` proved the remaining mismatch more precisely: the problem is not just the dismiss helper’s container heuristic, it is the fact that thread navigation helpers were still auto-triggering dismiss clicks during recovery. the fix is to make navigation location-only and require `view in reddit app` sheet semantics before any dismiss click.
 - attempt `aecf3245-4fa7-4131-9614-3b84e6ac3eef` on `reddit_program_48dc22d1c4` proved the navigation work is good enough to reveal the real community response on `AskWomenOver40`; the executor no longer drifts into unrelated pages before it learns the thread is not commentable for this profile.
 - the new policy surface can now express subreddit-specific trust gates directly in the program spec, so production can distinguish `runtime bug` from `profile capability shortfall` before executing expensive reddit actions.
+- `reddit_program_5b0f2962ca` proves the capability gate is active on live production: the item stays blocked with a persisted target url but no attempt id, screenshot, or browser work, which is exactly the honest no-waste behavior the runtime needed.
 
 ## open risks
-- production still needs proof that the new capability gate blocks `AskWomenOver40` honestly before browser execution on the deployed build.
+- operator visibility for profile-capability blockers is still mostly error-string based rather than a dedicated first-class proof field.
 - production still needs proof that all 10 valid sessions can execute the broader proof-matrix flow against real subreddit conditions once impossible assignments are filtered out.
 - the current runtime can adapt to flair and capability policy, but other community-specific identity requirements may still need additional surface discovery rules.
