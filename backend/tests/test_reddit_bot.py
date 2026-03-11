@@ -811,6 +811,21 @@ def test_scroll_target_comment_into_view_scrolls_until_row_appears(monkeypatch):
     assert page.waits == [900]
 
 
+def test_build_reply_target_surfaces_adds_canonical_and_context_variants():
+    surfaces = reddit_bot._build_reply_target_surfaces(
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/o4v87n6/",
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/",
+    )
+
+    assert surfaces == [
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/o4v87n6/",
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/comment/o4v87n6/",
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/?comment=o4v87n6&context=3",
+        "https://www.reddit.com/comments/1r27x9r/_/comment/o4v87n6/?context=3",
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/",
+    ]
+
+
 def test_click_comment_upvote_region_tries_fallback_candidates(monkeypatch):
     page = _FakePage()
     active_points = []
@@ -1271,9 +1286,11 @@ def test_fill_comment_input_reply_uses_inline_box_fallback(monkeypatch):
         calls.append(("active",))
         return len([entry for entry in calls if entry == ("active",)]) > 1
 
-    async def fake_inline_present(target_page):
+    async def fake_inline_present(target_page, *, author=None, row=None):
         assert target_page is page
         calls.append(("inline_present",))
+        assert author is None
+        assert row is None
         return True
 
     async def fake_focus(target_page):
@@ -1321,9 +1338,11 @@ def test_fill_comment_input_reply_uses_placeholder_click_before_focus(monkeypatc
         calls.append(("active",))
         return False
 
-    async def fake_inline_present(target_page):
+    async def fake_inline_present(target_page, *, author=None, row=None):
         assert target_page is page
         calls.append(("inline_present",))
+        assert author == "aenflex"
+        assert row is None
         return True
 
     async def fake_placeholder(target_page, *, author):
@@ -1371,9 +1390,11 @@ def test_ensure_reply_inline_box_uses_dom_retry_when_first_click_does_not_open(m
     page = _FakePage()
     calls = []
 
-    async def fake_inline_present(target_page):
+    async def fake_inline_present(target_page, *, author=None, row=None):
         assert target_page is page
         calls.append("present")
+        assert author == "aenflex"
+        assert row == {"reply": {"x": 152, "y": 702}}
         return len(calls) >= 5
 
     async def fake_click_row(target_page, *, row):
@@ -1494,6 +1515,88 @@ def test_reply_to_comment_retries_after_dismissing_open_app_sheet(monkeypatch):
     assert ensure_calls == [
         ("Pigeon-From-Hell", "GLP-1 & PCOS"),
         ("Pigeon-From-Hell", "GLP-1 & PCOS"),
+    ]
+
+
+def test_reply_to_comment_reports_surface_errors_without_losing_first_failure(monkeypatch):
+    page = _FakePage()
+    goto_calls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_comment_context(_target_comment_url):
+        return {
+            "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/",
+            "author": "horse_oats",
+            "body_snippet": "please go see a doctor",
+            "title": "HELP!!! Insane Vaginitis. Yes, a doctor already saw me. Still struggling.",
+        }
+
+    async def fake_goto(_page, url):
+        goto_calls.append(url)
+        page.url = url
+        return None
+
+    async def fake_dump(_page, _label):
+        return None
+
+    async def fake_raise_if_banned(_page, capture_context=None):
+        return None
+
+    rows = [
+        {"reply": {"x": 152, "y": 702}, "author": {"x": 120, "y": 620}},
+        None,
+        None,
+        None,
+        None,
+    ]
+
+    async def fake_scroll_row(_page, *, target_comment_url=None, author=None, expected_title=None, body_snippet=None, max_scrolls=18):
+        return rows.pop(0)
+
+    async def fake_click_row(_page, *, row):
+        return True
+
+    async def fake_dismiss(_page):
+        return False
+
+    async def fake_ensure_reply_box(_page, *, row, author, expected_title):
+        return True
+
+    async def fake_fill_comment(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_load_target_comment_context", fake_comment_context)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", fake_raise_if_banned)
+    monkeypatch.setattr(reddit_bot, "_scroll_target_comment_into_view", fake_scroll_row)
+    monkeypatch.setattr(reddit_bot, "_click_reply_row_button", fake_click_row)
+    monkeypatch.setattr(reddit_bot, "_click_named_control", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss)
+    monkeypatch.setattr(reddit_bot, "_ensure_reply_inline_box", fake_ensure_reply_box)
+    monkeypatch.setattr(reddit_bot, "_fill_comment_input", fake_fill_comment)
+    monkeypatch.setattr(reddit_bot, "_capture_reddit_failure_state", lambda *_args, **_kwargs: asyncio.sleep(0))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.reply_to_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/o4v87n6/",
+            text="helpful reply",
+        )
+    )
+
+    assert result["success"] is False
+    assert "reply input not found" in result["error"]
+    assert "target comment context not found" in result["error"]
+    assert goto_calls[:3] == [
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/o4v87n6/",
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/comment/o4v87n6/",
+        "https://www.reddit.com/r/Healthyhooha/comments/1r27x9r/help_insane_vaginitis_yes_a_doctor_already_saw_me/?comment=o4v87n6&context=3",
     ]
 
 

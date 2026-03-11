@@ -8,7 +8,7 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 from playwright.async_api import async_playwright
@@ -195,6 +195,55 @@ def _extract_reddit_comment_id(target_comment_url: Optional[str]) -> Optional[st
         if re.fullmatch(r"[a-z0-9]+", tail, flags=re.IGNORECASE):
             return tail
     return None
+
+
+def _set_query_params(url: str, **updates: Optional[str]) -> str:
+    split = urlsplit(str(url or "").strip())
+    query = {key: value for key, value in parse_qsl(split.query, keep_blank_values=True)}
+    for key, value in updates.items():
+        if value is None:
+            query.pop(key, None)
+        else:
+            query[key] = str(value)
+    return urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), split.fragment))
+
+
+def _canonical_reply_comment_url(target_comment_url: str, thread_url: Optional[str]) -> Optional[str]:
+    comment_id = _extract_reddit_comment_id(target_comment_url)
+    if not comment_id:
+        return None
+    base = str(thread_url or target_comment_url or "").split("?", 1)[0].strip().rstrip("/")
+    if not base:
+        return None
+    return f"{base}/comment/{comment_id}/"
+
+
+def _build_reply_target_surfaces(target_comment_url: str, thread_url: Optional[str]) -> List[str]:
+    surfaces: List[str] = []
+    seen = set()
+
+    def add(value: Optional[str]) -> None:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        surfaces.append(normalized)
+
+    comment_id = _extract_reddit_comment_id(target_comment_url)
+    normalized_thread = str(thread_url or "").strip()
+    add(target_comment_url)
+    add(_canonical_reply_comment_url(target_comment_url, normalized_thread))
+    if normalized_thread and comment_id:
+        add(_set_query_params(normalized_thread, comment=comment_id, context="3"))
+        split = urlsplit(normalized_thread)
+        parts = [segment for segment in split.path.split("/") if segment]
+        if "comments" in parts:
+            idx = parts.index("comments")
+            if idx + 1 < len(parts):
+                post_id = parts[idx + 1]
+                add(urlunsplit((split.scheme, split.netloc, f"/comments/{post_id}/_/comment/{comment_id}/", "context=3", "")))
+    add(normalized_thread)
+    return surfaces
 
 
 def _reddit_json_url(url: str) -> str:
@@ -1890,19 +1939,90 @@ async def _dom_click_at_point(page, *, x: float, y: float, action_name: str) -> 
     return True
 
 
-async def _reply_inline_box_present(page) -> bool:
+async def _reply_inline_box_present(
+    page,
+    *,
+    author: Optional[str] = None,
+    row: Optional[Dict[str, Any]] = None,
+) -> bool:
+    normalized_author = _normalize_text(author)
+    row_y = None
+    if row:
+        reply = dict(row.get("reply") or {})
+        author_box = dict(row.get("author") or {})
+        row_y = reply.get("y") or author_box.get("y")
     return bool(
-        await _verify_named_control_state(
-            page,
-            needles=["cancel"],
-            max_vertical_gap=None,
-            require_below_anchor=False,
-        )
-        and await _verify_named_control_state(
-            page,
-            needles=["comment"],
-            max_vertical_gap=None,
-            require_below_anchor=False,
+        await page.evaluate(
+            """({ author, rowY }) => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const visible = (rect) =>
+                    rect &&
+                    rect.width >= 12 &&
+                    rect.height >= 12 &&
+                    rect.bottom >= 0 &&
+                    rect.right >= 0 &&
+                    rect.top <= viewportHeight &&
+                    rect.left <= viewportWidth;
+                const inReplyBand = (rect) => {
+                    if (!visible(rect)) return false;
+                    if (typeof rowY !== 'number' || Number.isNaN(rowY)) return true;
+                    const centerY = rect.top + rect.height / 2;
+                    return Math.abs(centerY - rowY) <= 320 || rect.top >= rowY - 120;
+                };
+                const nodes = Array.from(document.querySelectorAll('button, input, textarea, div, span, [role="textbox"], [contenteditable="true"], [contenteditable="plaintext-only"]'));
+                const replyNeedles = ['reply to u/', 'reply to'];
+                if (author) {
+                    replyNeedles.unshift(`reply to u/${author}`);
+                    replyNeedles.unshift(`reply to ${author}`);
+                }
+                for (const node of nodes) {
+                    const rect = node.getBoundingClientRect();
+                    if (!inReplyBand(rect)) continue;
+                    const text = normalize(node.innerText || node.textContent);
+                    const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                    const placeholder = normalize(node.getAttribute && node.getAttribute('placeholder'));
+                    const combined = [text, aria, placeholder].filter(Boolean).join(' | ');
+                    if (replyNeedles.some((needle) => combined.includes(needle))) {
+                        return true;
+                    }
+                    const tag = normalize(node.tagName);
+                    const role = normalize(node.getAttribute && node.getAttribute('role'));
+                    const contenteditable = normalize(node.getAttribute && node.getAttribute('contenteditable'));
+                    if (
+                        document.activeElement === node &&
+                        (
+                            node.isContentEditable ||
+                            role === 'textbox' ||
+                            contenteditable === 'true' ||
+                            contenteditable === 'plaintext-only' ||
+                            tag === 'textarea' ||
+                            tag === 'input'
+                        )
+                    ) {
+                        return true;
+                    }
+                }
+
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const cancel = buttons.filter((node) => {
+                    const rect = node.getBoundingClientRect();
+                    return inReplyBand(rect) && normalize(node.innerText || node.textContent) === 'cancel';
+                });
+                const comment = buttons.filter((node) => {
+                    const rect = node.getBoundingClientRect();
+                    return inReplyBand(rect) && normalize(node.innerText || node.textContent) === 'comment';
+                });
+                return cancel.some((left) => {
+                    const leftRect = left.getBoundingClientRect();
+                    return comment.some((right) => {
+                        const rightRect = right.getBoundingClientRect();
+                        return Math.abs(leftRect.top - rightRect.top) <= 24 && rightRect.left > leftRect.right - 12;
+                    });
+                });
+            }""",
+            {"author": normalized_author or "", "rowY": float(row_y) if row_y is not None else None},
         )
     )
 
@@ -2044,10 +2164,10 @@ async def _ensure_reply_inline_box(
     author: Optional[str],
     expected_title: Optional[str],
 ) -> bool:
-    if await _reply_inline_box_present(page):
+    if await _reply_inline_box_present(page, author=author, row=row):
         return True
     if row and await _click_reply_row_button(page, row=row):
-        if await _reply_inline_box_present(page):
+        if await _reply_inline_box_present(page, author=author, row=row):
             return True
     reply = dict((row or {}).get("reply") or {})
     if reply and await _dom_click_at_point(
@@ -2056,7 +2176,7 @@ async def _ensure_reply_inline_box(
         y=float(reply.get("y")),
         action_name="reply_comment_dom_retry",
     ):
-        if await _reply_inline_box_present(page):
+        if await _reply_inline_box_present(page, author=author, row=row):
             return True
     if await _click_named_control(
         page,
@@ -2067,7 +2187,7 @@ async def _ensure_reply_inline_box(
         max_vertical_gap=220,
         require_below_anchor=True,
     ):
-        if await _reply_inline_box_present(page):
+        if await _reply_inline_box_present(page, author=author, row=row):
             return True
     return False
 
@@ -2150,7 +2270,7 @@ async def _fill_comment_input(
         return True
     if await _active_editable_present(page):
         return await _keyboard_type_and_verify(page, text, reply=reply)
-    if reply and await _reply_inline_box_present(page):
+    if reply and await _reply_inline_box_present(page, author=target_author):
         if await _click_reply_inline_placeholder(page, author=target_author):
             if await _keyboard_type_and_verify(page, text, reply=reply):
                 return True
@@ -2847,9 +2967,7 @@ async def reply_to_comment(
 ) -> Dict[str, Any]:
     target_context = await _load_target_comment_context(target_comment_url)
     thread_url = str((target_context or {}).get("thread_url") or "").strip()
-    target_surfaces = [str(target_comment_url).strip()]
-    if thread_url and thread_url not in target_surfaces:
-        target_surfaces.append(thread_url)
+    target_surfaces = _build_reply_target_surfaces(target_comment_url, thread_url)
     author = (target_context or {}).get("author") or None
     body_snippet = (target_context or {}).get("body_snippet") or None
     expected_title = (target_context or {}).get("title") or None
@@ -2857,11 +2975,13 @@ async def reply_to_comment(
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             last_error = "Reddit Reply button not found"
+            surface_errors: List[str] = []
             for idx, surface_url in enumerate(target_surfaces):
                 await _goto(page, surface_url)
                 if surface_url == thread_url and thread_url:
                     if not await _ensure_thread_context(page, url=surface_url, expected_title=expected_title):
                         last_error = "Reddit target thread did not load"
+                        surface_errors.append(f"{surface_url}: {last_error}")
                         continue
                 await dump_interactive_elements(page, "REDDIT REPLY TO COMMENT")
                 await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
@@ -2874,6 +2994,7 @@ async def reply_to_comment(
                 )
                 if not row:
                     last_error = "Reddit target comment context not found"
+                    surface_errors.append(f"{surface_url}: {last_error}")
                     if idx + 1 < len(target_surfaces):
                         continue
                     await _capture_reddit_failure_state(page, "REDDIT REPLY TARGET MISSING")
@@ -2892,6 +3013,7 @@ async def reply_to_comment(
                     )
                 if not clicked_reply:
                     last_error = "Reddit Reply button not found"
+                    surface_errors.append(f"{surface_url}: {last_error}")
                     if idx + 1 < len(target_surfaces):
                         continue
                     await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
@@ -2915,6 +3037,7 @@ async def reply_to_comment(
                     ):
                         last_error = "Reddit reply box did not open"
                         if idx + 1 < len(target_surfaces):
+                            surface_errors.append(f"{surface_url}: {last_error}")
                             continue
                         await _capture_reddit_failure_state(page, "REDDIT REPLY BOX MISSING")
                         raise RuntimeError(last_error)
@@ -2928,6 +3051,7 @@ async def reply_to_comment(
                     allow_global_trigger=False,
                 ):
                     last_error = "Reddit reply input not found"
+                    surface_errors.append(f"{surface_url}: {last_error}")
                     if idx + 1 < len(target_surfaces):
                         continue
                     await _capture_reddit_failure_state(page, "REDDIT REPLY INPUT MISSING")
@@ -2935,6 +3059,7 @@ async def reply_to_comment(
 
                 if not await _click_reply_submit(page, text):
                     last_error = "Reddit reply submit button not found"
+                    surface_errors.append(f"{surface_url}: {last_error}")
                     if idx + 1 < len(target_surfaces):
                         continue
                     await _capture_reddit_failure_state(page, "REDDIT REPLY SUBMIT MISSING")
@@ -2954,6 +3079,7 @@ async def reply_to_comment(
                         target_comment_url=target_comment_url,
                     )
                 last_error = "Reddit reply verification failed"
+                surface_errors.append(f"{surface_url}: {last_error}")
                 if idx + 1 < len(target_surfaces):
                     continue
                 return _result(
@@ -2966,6 +3092,8 @@ async def reply_to_comment(
                     target_url=thread_url or surface_url,
                     target_comment_url=target_comment_url,
                 )
+            if surface_errors:
+                raise RuntimeError(" | ".join(dict.fromkeys(surface_errors)))
             raise RuntimeError(last_error)
         except RedditCommunityBanError as exc:
             return _result(
