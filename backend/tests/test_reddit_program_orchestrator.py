@@ -894,6 +894,63 @@ def test_proof_matrix_comment_retries_new_target_after_community_restriction(tmp
     assert program["target_history"][-1]["failure_class"] == "community_restricted"
 
 
+def test_proof_matrix_comment_submit_rejection_clears_target_and_regenerates(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+            topic_constraints={
+                "subreddits": ["women"],
+                "keywords": ["relationship"],
+                "proof_matrix": [{"mode": "per_profile_per_subreddit", "action": "comment_post", "day_offset": 0}],
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["source"] == "proof_matrix")
+    item["target_url"] = "https://www.reddit.com/r/women/comments/thread123/example/"
+    item["generation_evidence"] = {"kind": "comment_post", "text": "generated text"}
+    item["text"] = "generated text"
+    item["attempts"] = 1
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    orchestrator._record_failure(
+        program,
+        item,
+        {
+            "success": False,
+            "action": "comment_post",
+            "error": "unable to create comment",
+            "attempt_id": "attempt-submit-reject",
+            "trace_id": "trace-submit-reject",
+            "final_verdict": "failed_confirmed",
+            "evidence_summary": "submit rejected by reddit",
+            "target_url": "https://www.reddit.com/r/women/comments/thread123/example/",
+            "current_url": "https://www.reddit.com/r/women/comments/thread123/example/",
+        },
+        None,
+    )
+
+    assert item["status"] == "pending"
+    assert item["target_url"] is None
+    assert item["target_comment_url"] is None
+    assert item["text"] is None
+    assert item["generation_evidence"] is None
+    assert item["generation_feedback"]["mode"] == "submit_rejected"
+    assert item["generation_feedback"]["last_error"] == "unable to create comment"
+
+
 def test_orchestrator_reroutes_generated_post_after_community_restriction(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(

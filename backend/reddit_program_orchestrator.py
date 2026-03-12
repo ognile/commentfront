@@ -153,18 +153,38 @@ def _failure_classification(result: Dict[str, Any]) -> str:
         return "profile_capability"
     if failure_class == "community_restricted":
         return "community_restricted"
-    if str(result.get("error") or "").lower().find("session not found") >= 0:
+    error_text = str(result.get("error") or "").lower()
+    if error_text.find("session not found") >= 0:
         return "session_invalid"
-    if "banned from this community" in str(result.get("error") or "").lower():
+    if "banned from this community" in error_text:
         return "community_restricted"
+    if "unable to create comment" in error_text or "something went wrong" in error_text:
+        return "submit_rejected"
     verdict = str(result.get("final_verdict") or "")
     if verdict == "infra_failure" or is_infra_error_text(result.get("error")):
         return "infrastructure"
-    if "not found" in str(result.get("error") or "").lower():
+    if "not found" in error_text:
         return "target_unavailable"
     if not result.get("attempt_id"):
         return "verification_miss"
     return "execution_failed"
+
+
+def _should_regenerate_generated_comment(
+    item: Dict[str, Any],
+    *,
+    classification: str,
+    error: str,
+) -> bool:
+    action = str(item.get("action") or "").strip()
+    if action not in {"comment_post", "reply_comment"}:
+        return False
+    if not str(item.get("text") or "").strip() and not item.get("generation_evidence"):
+        return False
+    normalized_error = str(error or "").lower()
+    if "comment verification failed" in normalized_error:
+        return True
+    return classification in {"target_unavailable", "submit_rejected", "verification_miss"}
 
 
 def _normalize_actor_username(value: Optional[str]) -> str:
@@ -440,6 +460,7 @@ class RedditProgramOrchestrator:
             item["target_comment_url"] = target_payload.get("target_comment_url")
         if generation_evidence:
             item["generation_evidence"] = generation_evidence
+            item["generation_feedback"] = None
             self._remember_generated_text(program, item, generation_evidence)
         result = await self.action_runner(
             session,
@@ -884,12 +905,21 @@ class RedditProgramOrchestrator:
 
         item["status"] = "pending"
         item["scheduled_at"] = _utc_iso(_utc_now() + timedelta(minutes=retry_delay_minutes))
-        if classification in {"target_unavailable", "infrastructure"}:
+        if classification in {"target_unavailable", "infrastructure", "submit_rejected"}:
             item["discovered_target"] = None
             # Keep explicit targets such as mandatory joins intact across retries.
-            if item.get("source", "").startswith("quota_"):
+            if item.get("source", "").startswith("quota_") or item.get("source") == "proof_matrix":
                 item["target_url"] = None
                 item["target_comment_url"] = None
+        if _should_regenerate_generated_comment(item, classification=classification, error=error):
+            item["text"] = None
+            item["generation_evidence"] = None
+            item["generation_feedback"] = {
+                "mode": "submit_rejected" if classification == "submit_rejected" else "retry_generation",
+                "last_error": error,
+                "failed_target_url": result.get("target_url") or item.get("target_url"),
+                "failed_target_comment_url": result.get("target_comment_url") or item.get("target_comment_url"),
+            }
         if item.get("source") in {"quota_generated_post", "quota_random_reply"}:
             item["text"] = None
             item["title"] = None
@@ -1271,6 +1301,7 @@ class RedditProgramOrchestrator:
         profile_name = str(item.get("profile_name") or "")
         subreddit = str(candidate.get("subreddit") or item.get("subreddit") or "").strip()
         thread_url = str(candidate.get("target_url") or candidate.get("thread_url") or "").strip()
+        retry_feedback = dict(item.get("generation_feedback") or {})
         policy_metadata = self._subreddit_policy_metadata(
             program,
             subreddit=subreddit,
@@ -1295,6 +1326,7 @@ class RedditProgramOrchestrator:
             recent_texts=recent_texts,
             same_thread_texts=same_thread_texts,
             same_profile_texts=same_profile_texts,
+            retry_feedback=retry_feedback,
         )
         if not generated.success:
             return {
@@ -1334,6 +1366,8 @@ class RedditProgramOrchestrator:
             "subreddit_policy": policy_metadata,
             "raw_response": generated.raw_response,
         }
+        if retry_feedback:
+            evidence["retry_feedback"] = retry_feedback
         return {
             "target_url": thread_url,
             "target_comment_url": None,

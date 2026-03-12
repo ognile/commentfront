@@ -2932,12 +2932,27 @@ async def _verify_text_visible(page, text: str) -> bool:
 
 
 async def _comment_submission_error(page) -> Optional[str]:
+    known_errors = [
+        ("unable to create comment", "unable to create comment"),
+        ("something went wrong", "something went wrong"),
+        ("try again later", "try again later"),
+    ]
     try:
         body = _normalize_text(await page.locator("body").inner_text())
     except Exception:
-        return None
-    if "unable to create comment" in body:
-        return "unable to create comment"
+        body = ""
+    for needle, message in known_errors:
+        if needle in body:
+            return message
+    for needle, message in known_errors:
+        if await _find_visible_text_region(
+            page,
+            needle=needle,
+            max_top=180,
+            max_height=96,
+            max_width=393,
+        ):
+            return message
     return None
 
 

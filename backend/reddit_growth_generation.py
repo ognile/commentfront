@@ -597,7 +597,24 @@ return json with this exact shape:
         same_profile_texts: List[str],
         persona_snapshot: Dict[str, Any],
         writing_rule_snapshot: Dict[str, Any],
+        retry_feedback: Optional[Dict[str, Any]] = None,
+        validation_feedback: Optional[str] = None,
     ) -> str:
+        anchor_terms = _context_anchor_terms([thread_title, thread_excerpt, *keywords], limit=10)
+        retry_feedback = dict(retry_feedback or {})
+        repair_lines: List[str] = []
+        if validation_feedback:
+            repair_lines.append(f"- previous draft failed validation with: {validation_feedback}")
+        if str(retry_feedback.get("mode") or "").strip() == "submit_rejected":
+            repair_lines.extend(
+                [
+                    "- the previous draft was rejected by reddit after submit",
+                    "- make this version plainer, shorter, and less abstract",
+                    "- favor direct thread language over institutional or diagnostic framing",
+                    "- keep the persona intact, but make the comment easier to post and easier to read at a glance",
+                ]
+            )
+        repair_block = "\n".join(repair_lines) if repair_lines else "- no prior repair feedback"
         return f"""
 you are writing a single top-level reddit comment for a post in r/{subreddit}.
 
@@ -615,6 +632,9 @@ topic keywords:
 target thread:
 {json.dumps({"title": thread_title, "excerpt": thread_excerpt, "author": thread_author}, ensure_ascii=True, indent=2)}
 
+anchor terms from the thread and subreddit keywords:
+{json.dumps(anchor_terms, ensure_ascii=True)}
+
 style samples from the subreddit:
 {json.dumps(summarize_style_samples(style_samples), ensure_ascii=True, indent=2)}
 
@@ -626,7 +646,11 @@ comment requirements:
 - it should sound organic for this persona and community
 - it must address the thread directly, not float as generic empathy
 - it must latch onto at least one concrete detail from the thread title or body
+- it should naturally use at least one anchor term or very close concrete equivalent when that fits the thread
 - avoid repeating the thread title language too literally
+
+repair guidance:
+{repair_block}
 
 return json with this exact shape:
 {{
@@ -722,6 +746,7 @@ return json with this exact shape:
         recent_texts: List[str],
         same_thread_texts: Optional[List[str]] = None,
         same_profile_texts: Optional[List[str]] = None,
+        retry_feedback: Optional[Dict[str, Any]] = None,
         max_attempts: int = 3,
     ) -> GenerationResult:
         persona_snapshot = get_reddit_persona_snapshot(profile_name)
@@ -834,6 +859,7 @@ return json with this exact shape:
         same_thread_texts = list(same_thread_texts or [])
         same_profile_texts = list(same_profile_texts or [])
         last_error = "generation failed"
+        validation_feedback: Optional[str] = None
         for _attempt in range(max_attempts):
             raw = await self._generate_json(
                 self._comment_prompt(
@@ -849,6 +875,8 @@ return json with this exact shape:
                     same_profile_texts=same_profile_texts,
                     persona_snapshot=persona_snapshot,
                     writing_rule_snapshot=writing_rule_snapshot,
+                    retry_feedback=retry_feedback,
+                    validation_feedback=validation_feedback,
                 )
             )
             try:
@@ -883,6 +911,7 @@ return json with this exact shape:
                     word_count=validation.get("word_count") or _word_count(text),
                 )
             last_error = "; ".join(validation["violations"])
+            validation_feedback = last_error
             recent_texts = list(recent_texts) + [text]
         return GenerationResult(
             success=False,

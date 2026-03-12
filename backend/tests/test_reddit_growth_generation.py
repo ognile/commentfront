@@ -96,6 +96,30 @@ def test_validate_generated_text_allows_anchor_context_overlap_when_nearby_top_t
     assert "pelvic" in result["context_overlap_terms"]
 
 
+def test_comment_prompt_includes_anchor_terms_and_retry_feedback():
+    generator = RedditGrowthContentGenerator()
+    prompt = generator._comment_prompt(
+        subreddit="women",
+        thread_title="confused if men actually like their partners at all",
+        thread_excerpt="his partner finished a masters and is job hunting while he resents doing chores.",
+        thread_author="deadtracts",
+        keywords=["relationship", "partner", "chores"],
+        style_samples=[],
+        conversation_context=[],
+        recent_texts=[],
+        same_thread_texts=[],
+        same_profile_texts=[],
+        persona_snapshot=get_reddit_persona_snapshot("reddit_catherine_emmar"),
+        writing_rule_snapshot=get_writing_rule_snapshot(include_contents=True),
+        retry_feedback={"mode": "submit_rejected", "last_error": "unable to create comment"},
+        validation_feedback="does not reference the local conversation strongly enough",
+    )
+
+    assert "anchor terms from the thread and subreddit keywords" in prompt
+    assert "rejected by reddit after submit" in prompt
+    assert "does not reference the local conversation strongly enough" in prompt
+
+
 def test_validate_generated_text_allows_mixed_case_for_proper_case_persona():
     result = validate_generated_text(
         "Open fissures after fluconazole would make me stop assuming uncomplicated yeast.",

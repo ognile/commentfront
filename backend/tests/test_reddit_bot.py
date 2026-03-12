@@ -456,6 +456,15 @@ def test_comment_on_post_classifies_unable_to_create_comment_banner_as_target_un
     assert result["target_url"] == "https://www.reddit.com/r/WomensHealth/comments/thread123/example_post/"
 
 
+def test_comment_submission_error_detects_visible_banner_when_body_text_misses_it():
+    page = _FakePage()
+    page.evaluate_result = {"x": 120, "y": 48, "label": "unable to create comment"}
+
+    error = asyncio.run(reddit_bot._comment_submission_error(page))
+
+    assert error == "unable to create comment"
+
+
 def test_fill_first_falls_back_to_click_and_keyboard_when_fill_is_unsupported(monkeypatch):
     locator = _FakeFillLocator(fill_error=True)
     page = _FakeFillPage(locator)
