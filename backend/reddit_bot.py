@@ -1286,11 +1286,46 @@ async def _fill_first(page, selectors, value: str) -> bool:
 
 
 async def _post_requires_flair(page) -> bool:
+    text_samples: List[str] = []
     try:
-        body = (await page.locator("body").inner_text()).lower()
+        body = str(await page.locator("body").inner_text() or "")
+        if body.strip():
+            text_samples.append(body)
     except Exception:
+        pass
+    try:
+        dom_text = await page.evaluate(
+            """() => {
+                const values = [];
+                const push = (value) => {
+                    const text = String(value || '').replace(/\\s+/g, ' ').trim();
+                    if (text) values.push(text);
+                };
+                push(document.body?.innerText || '');
+                push(document.documentElement?.innerText || '');
+                for (const node of Array.from(document.querySelectorAll('button, [role="button"], label, [aria-label], [role="textbox"], input, textarea, div, span'))) {
+                    push(node.innerText || node.textContent || '');
+                    if (node.getAttribute) {
+                        push(node.getAttribute('aria-label'));
+                        push(node.getAttribute('placeholder'));
+                    }
+                }
+                return values.join('\\n');
+            }"""
+        )
+        if str(dom_text or "").strip():
+            text_samples.append(str(dom_text))
+    except Exception:
+        pass
+    if not text_samples:
         return False
-    return "post must contain post flair" in body or "add post flair" in body
+    haystack = "\n".join(text_samples).lower()
+    return (
+        "post must contain post flair" in haystack
+        or "add post flair" in haystack
+        or "add flair and tags*" in haystack
+        or "add flair*" in haystack
+    )
 
 
 async def _click_first_post_flair_option(page) -> bool:

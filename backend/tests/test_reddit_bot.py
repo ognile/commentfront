@@ -187,6 +187,14 @@ class _FakeViewportPage:
         return self._locator
 
 
+def test_post_requires_flair_detects_required_flair_label_from_dom_text():
+    page = _FakePage()
+    page.body_text = ""
+    page.evaluate_result = "create post\nadd flair and tags*\nbody text (optional)"
+
+    assert asyncio.run(reddit_bot._post_requires_flair(page)) is True
+
+
 def test_fill_comment_input_opens_join_conversation_trigger(monkeypatch):
     page = _FakePage()
     calls = []
