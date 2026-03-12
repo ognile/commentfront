@@ -1526,11 +1526,26 @@ async def _open_subreddit_community_menu(page) -> bool:
         )
         await page.wait_for_timeout(900)
         return True
-    return await _click_named_control(
+    opened = await _click_named_control(
         page,
         action_name="subreddit_community_menu_fallback",
-        needles=["community actions", "more actions", "more"],
+        needles=["community actions", "view community", "more actions", "more"],
+        max_text_length=96,
     )
+    if not opened:
+        opened = await _click_visible_text_region(
+            page,
+            needle="view community",
+            action_name="subreddit_view_community_text",
+            min_top=0,
+            max_top=140,
+            max_text_length=64,
+            max_height=56,
+            max_width=180,
+        )
+    if opened:
+        await page.wait_for_timeout(900)
+    return opened
 
 
 async def _open_user_flair_dialog(page) -> bool:

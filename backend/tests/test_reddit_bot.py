@@ -300,6 +300,33 @@ def test_thread_context_present_accepts_matching_visible_thread_title(monkeypatc
     assert asyncio.run(reddit_bot._thread_context_present(page, "How do you call out weaponized incompetence")) is True
 
 
+def test_open_subreddit_community_menu_falls_back_to_view_community(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_find_header_action(_page):
+        return None
+
+    async def fake_click_named_control(_page, **kwargs):
+        calls.append(("named", kwargs["needles"]))
+        return False
+
+    async def fake_click_visible_text_region(_page, **kwargs):
+        calls.append(("text", kwargs["needle"]))
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_find_subreddit_header_action", fake_find_header_action)
+    monkeypatch.setattr(reddit_bot, "_click_named_control", fake_click_named_control)
+    monkeypatch.setattr(reddit_bot, "_click_visible_text_region", fake_click_visible_text_region)
+
+    assert asyncio.run(reddit_bot._open_subreddit_community_menu(page)) is True
+    assert calls == [
+        ("named", ["community actions", "view community", "more actions", "more"]),
+        ("text", "view community"),
+    ]
+    assert page.waits == [900]
+
+
 def test_fill_comment_input_uses_reply_selectors_for_reply_flow(monkeypatch):
     page = _FakePage()
     selector_sets = []
