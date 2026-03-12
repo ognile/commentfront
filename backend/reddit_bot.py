@@ -1355,10 +1355,17 @@ async def _click_first_post_flair_option(page) -> bool:
                     rect.top <= viewportHeight &&
                     rect.left <= viewportWidth;
                 const banned = new Set([
+                    'title',
+                    'title*',
+                    'body text',
+                    'body text optional',
+                    'body text (optional)',
+                    'add',
                     'add flair and tags',
                     'add flair',
                     'apply',
                     'save',
+                    'save draft',
                     'done',
                     'cancel',
                     'close',
@@ -1375,30 +1382,43 @@ async def _click_first_post_flair_option(page) -> bool:
                     'schedule',
                     'save draft',
                 ]);
-                const nodes = Array.from(document.querySelectorAll('button, [role="button"], [role="option"], label, a, div'));
+                const roots = [];
+                const visitRoot = (root) => {
+                    if (!root || roots.includes(root)) return;
+                    roots.push(root);
+                    if (!root.querySelectorAll) return;
+                    for (const el of Array.from(root.querySelectorAll('*'))) {
+                        if (el.shadowRoot) visitRoot(el.shadowRoot);
+                    }
+                };
+                visitRoot(document);
                 const candidates = [];
-                for (const node of nodes) {
-                    const rect = node.getBoundingClientRect();
-                    if (!visible(rect)) continue;
-                    const text = normalize(node.innerText || node.textContent);
-                    const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
-                    const combined = text || aria;
-                    if (!combined || banned.has(combined)) continue;
-                    if (combined.includes('add flair') || combined.includes('create post') || combined.includes('save draft')) continue;
-                    if (rect.top < 120) continue;
-                    let score = 0;
-                    if (node.getAttribute && node.getAttribute('role') === 'option') score += 6;
-                    if (node.tagName === 'BUTTON') score += 4;
-                    if (rect.width >= 90 && rect.height >= 28) score += 3;
-                    if (combined.length <= 40) score += 2;
-                    if (combined.includes('advice') || combined.includes('question') || combined.includes('discussion')) score += 2;
-                    candidates.push({
-                        x: Math.round(rect.left + rect.width / 2),
-                        y: Math.round(rect.top + rect.height / 2),
-                        text: combined,
-                        score,
-                        top: rect.top,
-                    });
+                for (const root of roots) {
+                    const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, [role="button"], [role="option"], label, a, div, span')) : [];
+                    for (const node of nodes) {
+                        const rect = node.getBoundingClientRect();
+                        if (!visible(rect)) continue;
+                        const text = normalize(node.innerText || node.textContent);
+                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        const combined = text || aria;
+                        if (!combined || banned.has(combined)) continue;
+                        if (combined.includes('add flair') || combined.includes('create post') || combined.includes('save draft')) continue;
+                        if (combined.includes('body text') || combined.includes('title')) continue;
+                        if (rect.top < 320) continue;
+                        let score = 0;
+                        if (node.getAttribute && node.getAttribute('role') === 'option') score += 8;
+                        if (node.tagName === 'BUTTON') score += 5;
+                        if (rect.width >= 90 && rect.height >= 28) score += 3;
+                        if (combined.length <= 40) score += 2;
+                        if (combined.includes('advice') || combined.includes('question') || combined.includes('discussion')) score += 2;
+                        candidates.push({
+                            x: Math.round(rect.left + rect.width / 2),
+                            y: Math.round(rect.top + rect.height / 2),
+                            text: combined,
+                            score,
+                            top: rect.top,
+                        });
+                    }
                 }
                 candidates.sort((a, b) => b.score - a.score || a.top - b.top);
                 return candidates[0] || null;
@@ -1455,7 +1475,9 @@ async def _ensure_post_flair(page, *, force: bool = False) -> bool:
             page,
             needle="Save",
             action_name="create_post_flair_save",
-            min_top=120,
+            min_top=320,
+            max_text_length=6,
+            max_width=140,
         )
     await page.wait_for_timeout(1200)
     return not await _post_requires_flair(page)
