@@ -195,6 +195,28 @@ def test_post_requires_flair_detects_required_flair_label_from_dom_text():
     assert asyncio.run(reddit_bot._post_requires_flair(page)) is True
 
 
+def test_click_first_post_flair_option_expands_view_all_before_selecting_option(monkeypatch):
+    page = _FakePage()
+    targets = iter(
+        [
+            {"x": 108, "y": 445, "text": "view all flairs", "expand": True},
+            {"x": 214, "y": 514, "text": "discussion", "expand": False},
+        ]
+    )
+
+    async def fake_evaluate(_script, *_args):
+        return next(targets, None)
+
+    page.evaluate = fake_evaluate
+    monkeypatch.setattr(reddit_bot, "queue_current_event", lambda *_args, **_kwargs: None)
+
+    ok = asyncio.run(reddit_bot._click_first_post_flair_option(page))
+
+    assert ok is True
+    assert page.mouse.clicks == [(108.0, 445.0), (214.0, 514.0)]
+    assert page.waits == [700, 900, 700]
+
+
 def test_fill_comment_input_opens_join_conversation_trigger(monkeypatch):
     page = _FakePage()
     calls = []

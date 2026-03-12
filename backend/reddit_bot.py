@@ -1340,109 +1340,123 @@ async def _post_requires_flair(page) -> bool:
 
 
 async def _click_first_post_flair_option(page) -> bool:
-    try:
-        target = await page.evaluate(
-            """() => {
-                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-                const viewportWidth = window.innerWidth || 393;
-                const viewportHeight = window.innerHeight || 873;
-                const visible = (rect) =>
-                    rect &&
-                    rect.width >= 18 &&
-                    rect.height >= 18 &&
-                    rect.bottom >= 0 &&
-                    rect.right >= 0 &&
-                    rect.top <= viewportHeight &&
-                    rect.left <= viewportWidth;
-                const banned = new Set([
-                    'title',
-                    'title*',
-                    'body text',
-                    'body text optional',
-                    'body text (optional)',
-                    'add',
-                    'add flair and tags',
-                    'add flair',
-                    'apply',
-                    'save',
-                    'save draft',
-                    'done',
-                    'cancel',
-                    'close',
-                    'back',
-                    'post',
-                    'create post',
-                    'drafts',
-                    'text',
-                    'images & video',
-                    'link',
-                    'ama',
-                    'nsfw',
-                    'spoiler',
-                    'schedule',
-                    'save draft',
-                ]);
-                const roots = [];
-                const visitRoot = (root) => {
-                    if (!root || roots.includes(root)) return;
-                    roots.push(root);
-                    if (!root.querySelectorAll) return;
-                    for (const el of Array.from(root.querySelectorAll('*'))) {
-                        if (el.shadowRoot) visitRoot(el.shadowRoot);
+    for _attempt in range(3):
+        try:
+            target = await page.evaluate(
+                """() => {
+                    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                    const viewportWidth = window.innerWidth || 393;
+                    const viewportHeight = window.innerHeight || 873;
+                    const visible = (rect) =>
+                        rect &&
+                        rect.width >= 18 &&
+                        rect.height >= 18 &&
+                        rect.bottom >= 0 &&
+                        rect.right >= 0 &&
+                        rect.top <= viewportHeight &&
+                        rect.left <= viewportWidth;
+                    const expandLabels = [
+                        'view all flair',
+                        'view all flairs',
+                        'see all flair',
+                        'see all flairs',
+                        'all flairs',
+                    ];
+                    const banned = new Set([
+                        'title',
+                        'title*',
+                        'body text',
+                        'body text optional',
+                        'body text (optional)',
+                        'add',
+                        'add flair and tags',
+                        'add flair',
+                        'apply',
+                        'save',
+                        'save draft',
+                        'done',
+                        'cancel',
+                        'close',
+                        'back',
+                        'post',
+                        'create post',
+                        'drafts',
+                        'text',
+                        'images & video',
+                        'link',
+                        'ama',
+                        'nsfw',
+                        'spoiler',
+                        'schedule',
+                        'save draft',
+                    ]);
+                    const roots = [];
+                    const visitRoot = (root) => {
+                        if (!root || roots.includes(root)) return;
+                        roots.push(root);
+                        if (!root.querySelectorAll) return;
+                        for (const el of Array.from(root.querySelectorAll('*'))) {
+                            if (el.shadowRoot) visitRoot(el.shadowRoot);
+                        }
+                    };
+                    visitRoot(document);
+                    const candidates = [];
+                    for (const root of roots) {
+                        const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, [role="button"], [role="option"], label, a, div, span')) : [];
+                        for (const node of nodes) {
+                            const rect = node.getBoundingClientRect();
+                            if (!visible(rect)) continue;
+                            const text = normalize(node.innerText || node.textContent);
+                            const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                            const combined = text || aria;
+                            if (!combined || banned.has(combined)) continue;
+                            if (combined.includes('add flair') || combined.includes('create post') || combined.includes('save draft')) continue;
+                            if (combined.includes('body text') || combined.includes('title')) continue;
+                            if (rect.top < 320) continue;
+                            const expand = expandLabels.some((label) => combined.includes(label));
+                            let score = 0;
+                            if (node.getAttribute && node.getAttribute('role') === 'option') score += 8;
+                            if (node.tagName === 'BUTTON') score += 5;
+                            if (rect.width >= 90 && rect.height >= 28) score += 3;
+                            if (combined.length <= 40) score += 2;
+                            if (combined.includes('advice') || combined.includes('question') || combined.includes('discussion')) score += 2;
+                            if (expand) score -= 6;
+                            candidates.push({
+                                x: Math.round(rect.left + rect.width / 2),
+                                y: Math.round(rect.top + rect.height / 2),
+                                text: combined,
+                                score,
+                                top: rect.top,
+                                expand,
+                            });
+                        }
                     }
-                };
-                visitRoot(document);
-                const candidates = [];
-                for (const root of roots) {
-                    const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, [role="button"], [role="option"], label, a, div, span')) : [];
-                    for (const node of nodes) {
-                        const rect = node.getBoundingClientRect();
-                        if (!visible(rect)) continue;
-                        const text = normalize(node.innerText || node.textContent);
-                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
-                        const combined = text || aria;
-                        if (!combined || banned.has(combined)) continue;
-                        if (combined.includes('add flair') || combined.includes('create post') || combined.includes('save draft')) continue;
-                        if (combined.includes('body text') || combined.includes('title')) continue;
-                        if (rect.top < 320) continue;
-                        let score = 0;
-                        if (node.getAttribute && node.getAttribute('role') === 'option') score += 8;
-                        if (node.tagName === 'BUTTON') score += 5;
-                        if (rect.width >= 90 && rect.height >= 28) score += 3;
-                        if (combined.length <= 40) score += 2;
-                        if (combined.includes('advice') || combined.includes('question') || combined.includes('discussion')) score += 2;
-                        candidates.push({
-                            x: Math.round(rect.left + rect.width / 2),
-                            y: Math.round(rect.top + rect.height / 2),
-                            text: combined,
-                            score,
-                            top: rect.top,
-                        });
-                    }
-                }
-                candidates.sort((a, b) => b.score - a.score || a.top - b.top);
-                return candidates[0] || null;
-            }"""
+                    candidates.sort((a, b) => Number(a.expand) - Number(b.expand) || b.score - a.score || a.top - b.top);
+                    return candidates[0] || null;
+                }"""
+            )
+        except Exception:
+            return False
+        if not target:
+            return False
+        await page.mouse.click(float(target["x"]), float(target["y"]))
+        queue_current_event(
+            "click",
+            {
+                "method": "flair_option_geometry",
+                "action_name": "create_post_flair_option",
+                "x": target.get("x"),
+                "y": target.get("y"),
+                "matched": target.get("text"),
+            },
+            phase="activation",
+            source="reddit_bot",
         )
-    except Exception:
-        return False
-    if not target:
-        return False
-    await page.mouse.click(float(target["x"]), float(target["y"]))
-    queue_current_event(
-        "click",
-        {
-            "method": "flair_option_geometry",
-            "action_name": "create_post_flair_option",
-            "x": target.get("x"),
-            "y": target.get("y"),
-            "matched": target.get("text"),
-        },
-        phase="activation",
-        source="reddit_bot",
-    )
-    await page.wait_for_timeout(700)
-    return True
+        await page.wait_for_timeout(700)
+        if not target.get("expand"):
+            return True
+        await page.wait_for_timeout(900)
+    return False
 
 
 async def _ensure_post_flair(page, *, force: bool = False) -> bool:
