@@ -2271,6 +2271,42 @@ def test_build_create_post_proof_validation_flags_server_error_submit_surface(mo
     assert "rendered post title did not appear exactly once" in result["violations"]
 
 
+def test_build_create_post_proof_validation_flags_removed_post(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/Shitty_Car_Mods/comments/example/forget_the_sonic/"
+    page.body_text = (
+        "forget the sonic. scrap this heart grille. "
+        "sorry, your submission has been automatically removed. "
+        "this post has been removed by the moderators of r/Shitty_Car_Mods."
+    )
+
+    async def fake_body_line_match_metrics(_page, text):
+        normalized = (text or "").strip().lower()
+        if normalized == "forget the sonic. scrap this heart grille.":
+            return {
+                "count": 2,
+                "matches": [
+                    "forget the sonic. scrap this heart grille. : r/shitty_car_mods",
+                    "forget the sonic. scrap this heart grille.",
+                ],
+            }
+        return {"count": 0, "matches": []}
+
+    monkeypatch.setattr(reddit_bot, "_body_line_match_metrics", fake_body_line_match_metrics)
+
+    result = asyncio.run(
+        reddit_bot._build_create_post_proof_validation(
+            page,
+            title="forget the sonic. scrap this heart grille.",
+            body=None,
+        )
+    )
+
+    assert result["ok"] is False
+    assert "post was removed by moderators or automoderator after submission" in result["violations"]
+    assert result["title_match_count"] == 1
+
+
 def test_click_comment_upvote_region_tries_fallback_candidates(monkeypatch):
     page = _FakePage()
     active_points = []

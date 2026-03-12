@@ -228,6 +228,23 @@ async def _reddit_page_has_unknown_username(page) -> bool:
     )
 
 
+async def _reddit_post_removed_after_submit(page) -> bool:
+    try:
+        body_text = _normalize_text(await page.locator("body").inner_text())
+    except Exception:
+        return False
+    if not body_text:
+        return False
+    patterns = (
+        "this post has been removed by the moderators of r/",
+        "this post was removed by reddit's filters",
+        "sorry, your submission has been automatically removed",
+        "your submission has been automatically removed",
+        "removed by automoderator",
+    )
+    return any(pattern in body_text for pattern in patterns)
+
+
 async def _recover_created_post_permalink_after_submit(
     page,
     *,
@@ -3833,6 +3850,8 @@ async def _build_create_post_proof_validation(
         violations.append("reddit showed a server error before rendered post verification")
     if await _reddit_page_has_unknown_username(page):
         violations.append("recovery navigated to an invalid reddit user page")
+    if await _reddit_post_removed_after_submit(page):
+        violations.append("post was removed by moderators or automoderator after submission")
     if "/submit" in current_url:
         violations.append("post remained on compose surface after submit")
     if title_match_count != 1:
