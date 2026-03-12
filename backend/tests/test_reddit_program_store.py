@@ -86,6 +86,9 @@ def test_program_compiler_builds_contractual_work_items(tmp_path):
     assert len(upvote_items) == 10 * 3 * 3
     assert len(reply_items) == 10 * 3 * 2
     assert all(item["text"] for item in reply_items)
+    assert all(item.get("execution_spec") for item in work_items)
+    assert comment_items[0]["execution_spec"]["action"]["type"] == "comment"
+    assert reply_items[0]["execution_spec"]["target"]["kind"] == "comment"
     assert program["remaining_contract"]["upvote_post"] == len(upvote_items)
     assert program["remaining_contract"]["reply_comment"] == len(reply_items)
 

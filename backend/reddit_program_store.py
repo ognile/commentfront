@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from reddit_execution import sync_work_item_with_execution_spec
 from reddit_subreddit_policies import (
     normalize_subreddit_name,
     normalize_subreddit_policies,
@@ -354,6 +355,7 @@ def compile_reddit_program_state(
                         "target_url": assignment.get("target_url"),
                         "target_comment_url": assignment.get("target_comment_url"),
                         "target_mode": "explicit",
+                        "execution_spec": assignment.get("execution_spec"),
                         "day_offset": day_offset,
                         "verification_requirements": list(assignment.get("verification_requirements") or []),
                         "result": None,
@@ -603,6 +605,11 @@ def compile_reddit_program_state(
             }
         )
 
+    verification_contract = dict(spec.get("verification_contract") or {})
+    work_items = [
+        sync_work_item_with_execution_spec(item, verification=verification_contract)
+        for item in work_items
+    ]
     work_items.sort(key=lambda item: (item.get("scheduled_at") or "", item.get("profile_name") or "", item.get("id") or ""))
 
     program = {
@@ -725,6 +732,7 @@ def compile_reddit_program_state(
 
 def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
     spec = program.setdefault("spec", {})
+    verification_contract = dict(spec.get("verification_contract") or {})
     realism_policy = dict(spec.get("realism_policy") or {})
     spec["realism_policy"] = {
         key: bool(realism_policy.get(key, default_value))
@@ -734,7 +742,12 @@ def refresh_reddit_program_state(program: Dict[str, Any]) -> Dict[str, Any]:
     notification_config["hard_failure_alerts_enabled"] = bool(notification_config.get("hard_failure_alerts_enabled", False))
     spec["notification_config"] = notification_config
 
-    work_items = list(((program.get("compiled") or {}).get("work_items") or []))
+    compiled = program.setdefault("compiled", {})
+    work_items = [
+        sync_work_item_with_execution_spec(item, verification=verification_contract)
+        for item in list((compiled.get("work_items") or []))
+    ]
+    compiled["work_items"] = work_items
     remaining: Dict[str, int] = {}
     retryable_remaining: Dict[str, int] = {}
     daily_progress: Dict[str, Dict[str, Any]] = {}

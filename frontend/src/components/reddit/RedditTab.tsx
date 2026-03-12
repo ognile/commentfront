@@ -14,14 +14,18 @@ import type {
 } from '@/components/reddit/types'
 
 const ACTIONS = [
-  'browse_feed',
+  'browse',
+  'open',
+  'join',
   'upvote',
-  'open_target',
   'create_post',
-  'comment_post',
-  'reply_comment',
-  'upload_media',
+  'comment',
+  'reply',
 ] as const
+
+type RedditExecutionActionType = typeof ACTIONS[number]
+type RedditExecutionTargetKind = 'subreddit' | 'post' | 'comment'
+type RedditExecutionTargetStrategy = 'explicit' | 'discover'
 
 interface RedditTabProps {
   onOpenRemoteControl?: (session: RemoteSessionTarget) => void
@@ -65,6 +69,79 @@ function preferredProgramId(programs: RedditProgramListItem[], currentProgramId:
   return active?.id || programs[0]?.id || ''
 }
 
+function defaultTargetKindForAction(action: string): RedditExecutionTargetKind {
+  if (action === 'comment') return 'post'
+  if (action === 'reply') return 'comment'
+  if (action === 'browse' || action === 'join' || action === 'create_post') return 'subreddit'
+  return 'post'
+}
+
+function buildExecutionRequest({
+  profileName,
+  action,
+  targetKind,
+  targetStrategy,
+  targetUrl,
+  targetCommentUrl,
+  subreddit,
+  text,
+  title,
+  body,
+  imageId,
+  scrolls,
+}: {
+  profileName: string
+  action: string
+  targetKind: RedditExecutionTargetKind
+  targetStrategy: RedditExecutionTargetStrategy
+  targetUrl: string
+  targetCommentUrl: string
+  subreddit: string
+  text: string
+  title: string
+  body: string
+  imageId: string
+  scrolls: string
+}) {
+  const normalizedSubreddit = subreddit.trim()
+  const normalizedTargetUrl = targetUrl.trim()
+  const normalizedTargetCommentUrl = targetCommentUrl.trim()
+  return {
+    actors: [{ profile_name: profileName }],
+    target: {
+      kind: targetKind,
+      strategy: targetStrategy,
+      subreddit: normalizedSubreddit || undefined,
+      target_url: normalizedTargetUrl || undefined,
+      target_comment_url: normalizedTargetCommentUrl || undefined,
+      discovery_constraints: {
+        subreddits: normalizedSubreddit ? [normalizedSubreddit] : [],
+        keywords: [],
+        explicit_post_targets: targetStrategy === 'discover' && targetKind === 'post' && normalizedTargetUrl ? [normalizedTargetUrl] : [],
+        explicit_comment_targets: targetStrategy === 'discover' && targetKind === 'comment' && normalizedTargetCommentUrl ? [normalizedTargetCommentUrl] : [],
+        allow_own_content_targets: false,
+        mandatory_join_urls: [],
+      },
+    },
+    action: {
+      type: action,
+      params: {
+        text: text.trim() || undefined,
+        title: title.trim() || undefined,
+        body: body.trim() || undefined,
+        scrolls: action === 'browse' ? Number(scrolls || '3') : undefined,
+        attachments: imageId.trim() ? [{ image_id: imageId.trim() }] : [],
+      },
+    },
+    verification: {
+      require_success_confirmed: true,
+      require_attempt_id: true,
+      required_evidence_summary: true,
+      required_target_reference: true,
+    },
+  }
+}
+
 export function RedditTab({ onOpenRemoteControl }: RedditTabProps) {
   const [credentials, setCredentials] = useState<RedditCredential[]>([])
   const [sessions, setSessions] = useState<RedditSession[]>([])
@@ -86,24 +163,32 @@ export function RedditTab({ onOpenRemoteControl }: RedditTabProps) {
   const [creatingSession, setCreatingSession] = useState(false)
 
   const [selectedSession, setSelectedSession] = useState('')
-  const [action, setAction] = useState<string>(ACTIONS[0])
+  const [action, setAction] = useState<RedditExecutionActionType>(ACTIONS[0])
+  const [targetKind, setTargetKind] = useState<RedditExecutionTargetKind>(defaultTargetKindForAction(ACTIONS[0]))
+  const [targetStrategy, setTargetStrategy] = useState<RedditExecutionTargetStrategy>('explicit')
   const [targetUrl, setTargetUrl] = useState('')
+  const [targetCommentUrl, setTargetCommentUrl] = useState('')
   const [subreddit, setSubreddit] = useState('')
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [actionText, setActionText] = useState('')
   const [imageId, setImageId] = useState('')
+  const [browseScrolls, setBrowseScrolls] = useState('3')
   const [runningAction, setRunningAction] = useState(false)
 
   const [missionProfile, setMissionProfile] = useState('')
-  const [missionAction, setMissionAction] = useState<string>(ACTIONS[0])
+  const [missionAction, setMissionAction] = useState<RedditExecutionActionType>(ACTIONS[0])
+  const [missionTargetKind, setMissionTargetKind] = useState<RedditExecutionTargetKind>(defaultTargetKindForAction(ACTIONS[0]))
+  const [missionTargetStrategy, setMissionTargetStrategy] = useState<RedditExecutionTargetStrategy>('explicit')
   const [missionUrl, setMissionUrl] = useState('')
+  const [missionTargetCommentUrl, setMissionTargetCommentUrl] = useState('')
   const [missionSubreddit, setMissionSubreddit] = useState('')
   const [missionBrief, setMissionBrief] = useState('')
   const [missionExactText, setMissionExactText] = useState('')
   const [missionTitle, setMissionTitle] = useState('')
   const [missionBody, setMissionBody] = useState('')
   const [missionImageId, setMissionImageId] = useState('')
+  const [missionBrowseScrolls, setMissionBrowseScrolls] = useState('3')
   const [missionCadenceType, setMissionCadenceType] = useState<'once' | 'daily' | 'interval_hours'>('once')
   const [missionHour, setMissionHour] = useState('9')
   const [missionMinute, setMissionMinute] = useState('0')
@@ -233,33 +318,55 @@ export function RedditTab({ onOpenRemoteControl }: RedditTabProps) {
     }
   }
 
-  const handleRunAction = async () => {
+  const handleActionChange = (value: string) => {
+    const nextAction = value as RedditExecutionActionType
+    setAction(nextAction)
+    setTargetKind(defaultTargetKindForAction(nextAction))
+  }
+
+  const handleExecutionRun = async () => {
     if (!selectedSession) return
     setRunningAction(true)
     try {
-      const result = await apiFetch<{ success: boolean; error?: string }>('/reddit/actions/run', {
-        method: 'POST',
-        body: JSON.stringify({
-          profile_name: selectedSession,
-          action,
-          url: targetUrl || undefined,
-          subreddit: subreddit || undefined,
-          title: title || undefined,
-          body: body || undefined,
-          text: actionText || undefined,
-          image_id: imageId || undefined,
-        }),
-      })
+      const result = await apiFetch<{ success?: boolean; results?: Array<{ error?: string }>; proof_summary?: { success_confirmed?: number } }>(
+        '/reddit/executions/run',
+        {
+          method: 'POST',
+          body: JSON.stringify(
+            buildExecutionRequest({
+              profileName: selectedSession,
+              action,
+              targetKind,
+              targetStrategy,
+              targetUrl,
+              targetCommentUrl,
+              subreddit,
+              text: actionText,
+              title,
+              body,
+              imageId,
+              scrolls: browseScrolls,
+            })
+          ),
+        }
+      )
       if (result.success) {
-        toast.success(`action ${action} completed`)
+        toast.success(`${action} confirmed`)
       } else {
-        toast.error(result.error || `${action} failed`)
+        const error = result.results?.find((entry) => entry.error)?.error
+        toast.error(error || `${action} failed`)
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'failed to run reddit action')
+      toast.error(error instanceof Error ? error.message : 'failed to run reddit execution')
     } finally {
       setRunningAction(false)
     }
+  }
+
+  const handleMissionActionChange = (value: string) => {
+    const nextAction = value as RedditExecutionActionType
+    setMissionAction(nextAction)
+    setMissionTargetKind(defaultTargetKindForAction(nextAction))
   }
 
   const handleSaveMission = async () => {
@@ -269,15 +376,20 @@ export function RedditTab({ onOpenRemoteControl }: RedditTabProps) {
       await apiFetch('/reddit/missions', {
         method: 'POST',
         body: JSON.stringify({
-          profile_name: missionProfile,
-          action: missionAction,
-          target_url: missionUrl || undefined,
-          subreddit: missionSubreddit || undefined,
-          brief: missionBrief || undefined,
-          exact_text: missionExactText || undefined,
-          title: missionTitle || undefined,
-          body: missionBody || undefined,
-          image_id: missionImageId || undefined,
+          execution: buildExecutionRequest({
+            profileName: missionProfile,
+            action: missionAction,
+            targetKind: missionTargetKind,
+            targetStrategy: missionTargetStrategy,
+            targetUrl: missionUrl,
+            targetCommentUrl: missionTargetCommentUrl,
+            subreddit: missionSubreddit,
+            text: missionExactText || missionBrief,
+            title: missionTitle,
+            body: missionBody,
+            imageId: missionImageId,
+            scrolls: missionBrowseScrolls,
+          }),
           cadence: {
             type: missionCadenceType,
             hour: missionCadenceType === 'daily' ? Number(missionHour) : undefined,
@@ -362,45 +474,61 @@ export function RedditTab({ onOpenRemoteControl }: RedditTabProps) {
           onOpenRemoteControl={onOpenRemoteControl}
           selectedSession={selectedSession}
           action={action}
+          targetKind={targetKind}
+          targetStrategy={targetStrategy}
           targetUrl={targetUrl}
+          targetCommentUrl={targetCommentUrl}
           subreddit={subreddit}
           title={title}
           body={body}
           actionText={actionText}
           imageId={imageId}
+          browseScrolls={browseScrolls}
           runningAction={runningAction}
           onSelectSession={setSelectedSession}
-          onActionChange={setAction}
+          onActionChange={handleActionChange}
+          onTargetKindChange={setTargetKind}
+          onTargetStrategyChange={setTargetStrategy}
           onTargetUrlChange={setTargetUrl}
+          onTargetCommentUrlChange={setTargetCommentUrl}
           onSubredditChange={setSubreddit}
           onTitleChange={setTitle}
           onBodyChange={setBody}
           onActionTextChange={setActionText}
           onImageIdChange={setImageId}
-          onRunAction={() => void handleRunAction()}
+          onBrowseScrollsChange={setBrowseScrolls}
+          onRunAction={() => void handleExecutionRun()}
           missionProfile={missionProfile}
           missionAction={missionAction}
+          missionTargetKind={missionTargetKind}
+          missionTargetStrategy={missionTargetStrategy}
           missionUrl={missionUrl}
+          missionTargetCommentUrl={missionTargetCommentUrl}
           missionSubreddit={missionSubreddit}
           missionBrief={missionBrief}
           missionExactText={missionExactText}
           missionTitle={missionTitle}
           missionBody={missionBody}
           missionImageId={missionImageId}
+          missionBrowseScrolls={missionBrowseScrolls}
           missionCadenceType={missionCadenceType}
           missionHour={missionHour}
           missionMinute={missionMinute}
           missionIntervalHours={missionIntervalHours}
           savingMission={savingMission}
           onMissionProfileChange={setMissionProfile}
-          onMissionActionChange={setMissionAction}
+          onMissionActionChange={handleMissionActionChange}
+          onMissionTargetKindChange={setMissionTargetKind}
+          onMissionTargetStrategyChange={setMissionTargetStrategy}
           onMissionUrlChange={setMissionUrl}
+          onMissionTargetCommentUrlChange={setMissionTargetCommentUrl}
           onMissionSubredditChange={setMissionSubreddit}
           onMissionBriefChange={setMissionBrief}
           onMissionExactTextChange={setMissionExactText}
           onMissionTitleChange={setMissionTitle}
           onMissionBodyChange={setMissionBody}
           onMissionImageIdChange={setMissionImageId}
+          onMissionBrowseScrollsChange={setMissionBrowseScrolls}
           onMissionCadenceTypeChange={setMissionCadenceType}
           onMissionHourChange={setMissionHour}
           onMissionMinuteChange={setMissionMinute}

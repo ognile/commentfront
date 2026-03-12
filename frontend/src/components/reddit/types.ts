@@ -40,6 +40,20 @@ export interface RedditMission {
   image_id?: string | null
   next_run_at?: string | null
   last_run_at?: string | null
+  execution_request?: {
+    actors: Array<{ profile_name: string }>
+    target: {
+      kind: 'subreddit' | 'post' | 'comment'
+      strategy: 'explicit' | 'discover'
+      subreddit?: string | null
+      target_url?: string | null
+      target_comment_url?: string | null
+    }
+    action: {
+      type: string
+      params?: Record<string, unknown>
+    }
+  }
 }
 
 export interface RedditProgramListItem {

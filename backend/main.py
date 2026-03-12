@@ -31,6 +31,7 @@ CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 import asyncio
 import json
 import random
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 import uuid
@@ -76,6 +77,14 @@ from reddit_login_bot import (
     test_session as test_reddit_session,
 )
 from reddit_bot import run_reddit_action
+from reddit_execution import (
+    build_execution_result,
+    execution_request_from_legacy_payload,
+    first_attachment_image_id,
+    normalize_reddit_execution_spec,
+    subreddit_url,
+)
+from reddit_execution_store import RedditExecutionStore
 from reddit_growth_generation import WRITING_RULE_SOURCE_PATHS
 from reddit_program_notifications import build_program_email_body
 from reddit_mission_store import RedditMissionScheduler, RedditMissionStore
@@ -229,10 +238,12 @@ premium_scheduler = PremiumScheduler(
 reddit_mission_store = RedditMissionStore()
 reddit_mission_scheduler: Optional[RedditMissionScheduler] = None
 reddit_program_store = RedditProgramStore()
+reddit_execution_store = RedditExecutionStore()
 reddit_program_orchestrator = RedditProgramOrchestrator(
     store=reddit_program_store,
     proxy_resolver=lambda: _resolve_effective_proxy(),
     broadcast_update=broadcast_update,
+    media_resolver=lambda image_id: _resolve_reddit_action_media_path(image_id),
 )
 reddit_program_scheduler = RedditProgramScheduler(
     store=reddit_program_store,
@@ -1821,6 +1832,72 @@ class RedditActionRequest(BaseModel):
     image_id: Optional[str] = None
 
 
+class RedditExecutionActor(BaseModel):
+    profile_name: str
+
+
+class RedditExecutionDiscoveryConstraints(BaseModel):
+    subreddits: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    explicit_post_targets: List[str] = Field(default_factory=list)
+    explicit_comment_targets: List[str] = Field(default_factory=list)
+    allow_own_content_targets: bool = False
+    mandatory_join_urls: List[str] = Field(default_factory=list)
+
+
+class RedditExecutionTarget(BaseModel):
+    kind: Literal["subreddit", "post", "comment"]
+    strategy: Literal["explicit", "discover"]
+    subreddit: Optional[str] = None
+    target_url: Optional[str] = None
+    target_comment_url: Optional[str] = None
+    discovery_constraints: RedditExecutionDiscoveryConstraints = Field(default_factory=RedditExecutionDiscoveryConstraints)
+
+
+class RedditExecutionAttachment(BaseModel):
+    image_id: str
+
+
+class RedditExecutionActionParams(BaseModel):
+    text: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    scrolls: Optional[int] = None
+    attachments: List[RedditExecutionAttachment] = Field(default_factory=list)
+
+
+class RedditExecutionAction(BaseModel):
+    type: Literal["browse", "open", "join", "upvote", "comment", "reply", "create_post"]
+    params: RedditExecutionActionParams = Field(default_factory=RedditExecutionActionParams)
+
+
+class RedditExecutionVerification(BaseModel):
+    require_success_confirmed: bool = True
+    require_attempt_id: bool = True
+    required_evidence_summary: bool = True
+    required_target_reference: bool = True
+
+
+class RedditExecutionRequest(BaseModel):
+    actors: List[RedditExecutionActor]
+    target: RedditExecutionTarget
+    action: RedditExecutionAction
+    verification: RedditExecutionVerification = Field(default_factory=RedditExecutionVerification)
+
+
+class RedditExecutionResult(BaseModel):
+    actor: RedditExecutionActor
+    action: RedditExecutionAction
+    resolved_target: Dict[str, Any]
+    status: str
+    attempt_id: Optional[str] = None
+    final_verdict: Optional[str] = None
+    evidence_summary: Optional[str] = None
+    screenshot_artifact_url: Optional[str] = None
+    permalink_or_target_ref: Optional[str] = None
+    error: Optional[str] = None
+
+
 class RedditMissionCadence(BaseModel):
     type: Literal["once", "daily", "interval_hours"] = "once"
     hour: Optional[int] = None
@@ -1829,41 +1906,13 @@ class RedditMissionCadence(BaseModel):
 
 
 class RedditMissionCreateRequest(BaseModel):
-    profile_name: str
-    action: Literal[
-        "browse_feed",
-        "upvote",
-        "upvote_post",
-        "upvote_comment",
-        "join_subreddit",
-        "open_target",
-        "create_post",
-        "comment_post",
-        "reply_comment",
-        "upload_media",
-    ]
-    target_url: Optional[str] = None
-    target_comment_url: Optional[str] = None
-    subreddit: Optional[str] = None
-    brief: Optional[str] = None
-    exact_text: Optional[str] = None
-    title: Optional[str] = None
-    body: Optional[str] = None
-    image_id: Optional[str] = None
+    execution: RedditExecutionRequest
     cadence: RedditMissionCadence = RedditMissionCadence()
-    verification_requirements: Optional[List[str]] = None
 
 
 class RedditMissionUpdateRequest(BaseModel):
     status: Optional[Literal["active", "paused", "completed"]] = None
-    brief: Optional[str] = None
-    exact_text: Optional[str] = None
-    title: Optional[str] = None
-    body: Optional[str] = None
-    image_id: Optional[str] = None
-    target_url: Optional[str] = None
-    target_comment_url: Optional[str] = None
-    subreddit: Optional[str] = None
+    execution: Optional[RedditExecutionRequest] = None
     cadence: Optional[RedditMissionCadence] = None
 
 
@@ -6322,6 +6371,256 @@ def _register_reddit_convergence_task(run_id: str, task: asyncio.Task) -> None:
     task.add_done_callback(_cleanup_reddit_convergence_task)
 
 
+def _normalize_reddit_execution_request_payload(
+    payload: Dict[str, Any],
+    *,
+    require_discovery_seed: bool = True,
+) -> Dict[str, Any]:
+    try:
+        normalized = normalize_reddit_execution_spec(payload, require_discovery_seed=require_discovery_seed)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    sessions_by_name = {
+        str(item.get("profile_name") or "").strip(): item
+        for item in list_saved_reddit_sessions()
+    }
+    profile_names = [str(actor.get("profile_name") or "").strip() for actor in normalized["actors"]]
+    missing_profiles = [name for name in profile_names if name not in sessions_by_name]
+    if missing_profiles:
+        raise HTTPException(status_code=400, detail=f"reddit sessions not found: {missing_profiles}")
+    invalid_profiles = [name for name in profile_names if not sessions_by_name[name].get("has_valid_session")]
+    if invalid_profiles:
+        raise HTTPException(status_code=400, detail=f"reddit sessions do not have valid persisted auth: {invalid_profiles}")
+
+    attachment_image_id = first_attachment_image_id(normalized)
+    if attachment_image_id and not _get_media_or_none(attachment_image_id):
+        raise HTTPException(status_code=400, detail=f"image_id not found or expired: {attachment_image_id}")
+    return normalized
+
+
+def _execution_request_display_fields(execution_request: Dict[str, Any]) -> Dict[str, Any]:
+    target = dict(execution_request.get("target") or {})
+    action = dict(execution_request.get("action") or {})
+    params = dict(action.get("params") or {})
+    attachment_image_id = first_attachment_image_id(execution_request)
+    return {
+        "profile_name": ((execution_request.get("actors") or [{}])[0]).get("profile_name"),
+        "action": action.get("type"),
+        "target_url": target.get("target_url") or (subreddit_url(target.get("subreddit")) if target.get("kind") == "subreddit" else None),
+        "target_comment_url": target.get("target_comment_url"),
+        "subreddit": target.get("subreddit"),
+        "brief": params.get("text") or params.get("body"),
+        "exact_text": params.get("text"),
+        "title": params.get("title"),
+        "body": params.get("body"),
+        "image_id": attachment_image_id,
+    }
+
+
+def _execution_program_spec(
+    execution_request: Dict[str, Any],
+    *,
+    run_id: str,
+    email_enabled: bool,
+    max_attempts_per_item: int,
+) -> Dict[str, Any]:
+    target = dict(execution_request.get("target") or {})
+    discovery_constraints = dict(target.get("discovery_constraints") or {})
+    subreddits: List[str] = []
+    for value in [target.get("subreddit"), *list(discovery_constraints.get("subreddits") or [])]:
+        normalized = normalize_subreddit_name(value)
+        if normalized and normalized not in subreddits:
+            subreddits.append(normalized)
+
+    topic_constraints = {
+        "subreddits": subreddits,
+        "keywords": [str(value).strip() for value in list(discovery_constraints.get("keywords") or []) if str(value).strip()],
+        "explicit_post_targets": [str(value).strip() for value in list(discovery_constraints.get("explicit_post_targets") or []) if str(value).strip()],
+        "explicit_comment_targets": [str(value).strip() for value in list(discovery_constraints.get("explicit_comment_targets") or []) if str(value).strip()],
+        "allow_own_content_targets": bool(discovery_constraints.get("allow_own_content_targets", False)),
+        "mandatory_join_urls": [],
+        "subreddit_policies": [],
+        "proof_matrix": [],
+    }
+    now = datetime.utcnow()
+    end_hour = min(24, now.hour + 1) if now.hour < 23 else 24
+    return {
+        "profile_selection": {
+            "profile_names": [str(actor.get("profile_name") or "").strip() for actor in list(execution_request.get("actors") or [])],
+        },
+        "schedule": {
+            "start_at": now.isoformat() + "Z",
+            "duration_days": 1,
+            "timezone": "UTC",
+            "random_windows": [{"start_hour": now.hour, "end_hour": end_hour}],
+        },
+        "topic_constraints": topic_constraints,
+        "content_assignments": {
+            "items": [
+                {
+                    "id": f"{run_id}:{index}",
+                    "profile_name": actor["profile_name"],
+                    "day_offset": 0,
+                    "execution_spec": {
+                        "actors": [actor],
+                        "target": target,
+                        "action": execution_request.get("action"),
+                        "verification": execution_request.get("verification"),
+                    },
+                }
+                for index, actor in enumerate(list(execution_request.get("actors") or []))
+            ]
+        },
+        "engagement_quotas": {
+            "upvotes_per_day": 0,
+            "upvotes_min_per_day": 0,
+            "upvotes_max_per_day": 0,
+            "posts_min_per_day": 0,
+            "posts_max_per_day": 0,
+            "comment_upvote_min_per_day": 0,
+            "comment_upvote_max_per_day": 0,
+            "reply_min_per_day": 0,
+            "reply_max_per_day": 0,
+            "random_reply_templates": [],
+            "random_upvote_action": "upvote_post",
+        },
+        "generation_config": {
+            "style_sample_count": 3,
+            "writing_rule_paths": list(WRITING_RULE_SOURCE_PATHS),
+            "uniqueness_scope": "program",
+        },
+        "realism_policy": {
+            "forbid_own_content_interactions": True,
+            "require_conversation_context": True,
+            "require_subreddit_style_match": True,
+            "forbid_operator_language": True,
+            "forbid_meta_testing_language": True,
+        },
+        "notification_config": {
+            "email_enabled": email_enabled,
+            "email_account_mode": "default_gog_account",
+            "daily_summary_hour": 20,
+            "hard_failure_alerts_enabled": False,
+        },
+        "verification_contract": dict(execution_request.get("verification") or {}),
+        "execution_policy": {
+            "strict_quotas": True,
+            "allow_target_reuse_within_day": False,
+            "cross_program_target_lookback_days": 30,
+            "cooldown_minutes": 0,
+            "max_actions_per_tick": max(1, len(list(execution_request.get("actors") or []))),
+            "max_discovery_posts_per_subreddit": 6,
+            "max_comment_candidates_per_post": 8,
+            "retry_delay_minutes": 1,
+            "max_attempts_per_item": max(1, int(max_attempts_per_item)),
+            "target_resolution_timeout_seconds": 120,
+        },
+        "metadata": {
+            "mode": "manual_execution",
+            "purpose": "reddit_execution_run",
+            "execution_run_id": run_id,
+        },
+    }
+
+
+async def _finalized_reddit_execution_results(program: Dict[str, Any]) -> List[Dict[str, Any]]:
+    work_items = list(((program.get("compiled") or {}).get("work_items") or []))
+    attempt_ids = [
+        str(((item.get("result") or {}).get("attempt_id") or "")).strip()
+        for item in work_items
+        if str(((item.get("result") or {}).get("attempt_id") or "")).strip()
+    ]
+    details = await asyncio.gather(*(get_forensic_attempt_detail(attempt_id) for attempt_id in attempt_ids), return_exceptions=True) if attempt_ids else []
+    detail_by_attempt = {
+        attempt_id: detail
+        for attempt_id, detail in zip(attempt_ids, details)
+        if not isinstance(detail, Exception)
+    }
+    results: List[Dict[str, Any]] = []
+    for item in work_items:
+        execution_spec = dict(item.get("execution_spec") or {})
+        actor_profile_name = str(item.get("profile_name") or "")
+        attempt_id = str(((item.get("result") or {}).get("attempt_id") or "")).strip()
+        detail = detail_by_attempt.get(attempt_id)
+        results.append(
+            build_execution_result(
+                actor_profile_name=actor_profile_name,
+                execution_spec=execution_spec,
+                item=item,
+                screenshot_artifact_url=_operator_screenshot_artifact_url(detail),
+            )
+        )
+    return results
+
+
+async def _execute_reddit_execution_request(
+    execution_request: Dict[str, Any],
+    *,
+    run_id: Optional[str] = None,
+    email_enabled: bool = False,
+    max_attempts_per_item: int = 1,
+) -> Dict[str, Any]:
+    normalized_request = _normalize_reddit_execution_request_payload(execution_request)
+    resolved_run_id = run_id or f"reddit_execution_{uuid.uuid4().hex[:10]}"
+    temp_path = Path(tempfile.gettempdir()) / f"{resolved_run_id}_program.json"
+    temp_store = RedditProgramStore(file_path=str(temp_path))
+    temp_orchestrator = RedditProgramOrchestrator(
+        store=temp_store,
+        proxy_resolver=lambda: _resolve_effective_proxy(),
+        broadcast_update=broadcast_update,
+        media_resolver=lambda image_id: _resolve_reddit_action_media_path(image_id),
+    )
+    created_at = datetime.utcnow().isoformat() + "Z"
+    try:
+        program = temp_store.create_program(
+            _execution_program_spec(
+                normalized_request,
+                run_id=resolved_run_id,
+                email_enabled=email_enabled,
+                max_attempts_per_item=max_attempts_per_item,
+            )
+        )
+        execution_result = await temp_orchestrator.process_program(program["id"], force_due=True)
+        final_program = temp_store.get_program(program["id"])
+        if not final_program:
+            raise HTTPException(status_code=500, detail=f"temporary reddit execution program disappeared: {program['id']}")
+        results = await _finalized_reddit_execution_results(final_program)
+        proof_summary = {
+            "total": len(results),
+            "success_confirmed": sum(1 for result in results if str(result.get("final_verdict") or "") == "success_confirmed"),
+            "with_attempt_id": sum(1 for result in results if str(result.get("attempt_id") or "").strip()),
+            "with_screenshot": sum(1 for result in results if str(result.get("screenshot_artifact_url") or "").strip()),
+        }
+        success = (
+            bool(results)
+            and proof_summary["success_confirmed"] == len(results)
+            and all(not str(result.get("error") or "").strip() for result in results)
+        )
+        run_record = reddit_execution_store.upsert_run(
+            {
+                "run_id": resolved_run_id,
+                "created_at": created_at,
+                "status": final_program.get("status"),
+                "processed": execution_result.get("processed", 0),
+                "request": normalized_request,
+                "program_id": final_program.get("id"),
+                "results": results,
+                "contract_totals": final_program.get("contract_totals", {}),
+                "remaining_contract": final_program.get("remaining_contract", {}),
+                "proof_summary": proof_summary,
+                "success": success,
+            }
+        )
+        return run_record
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+
+
 def _resolve_reddit_action_media_path(image_id: Optional[str]) -> Optional[str]:
     if not image_id:
         return None
@@ -6765,40 +7064,114 @@ async def run_reddit_action_endpoint(
     return result
 
 
-def _mission_to_action_payload(mission: Dict[str, Any]) -> Dict[str, Any]:
+@app.post("/reddit/executions/preview")
+async def preview_reddit_execution(
+    request: RedditExecutionRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    normalized_request = _normalize_reddit_execution_request_payload(request.model_dump())
+    preview_store = RedditProgramStore(file_path=str(Path(tempfile.gettempdir()) / f"reddit_execution_preview_{uuid.uuid4().hex[:10]}.json"))
+    preview = preview_store.preview_program(
+        _execution_program_spec(
+            normalized_request,
+            run_id=f"preview_{uuid.uuid4().hex[:8]}",
+            email_enabled=False,
+            max_attempts_per_item=1,
+        )
+    )
     return {
-        "profile_name": mission.get("profile_name"),
-        "action": mission.get("action"),
-        "target_url": mission.get("target_url"),
-        "target_comment_url": mission.get("target_comment_url"),
-        "subreddit": mission.get("subreddit"),
-        "brief": mission.get("brief"),
-        "exact_text": mission.get("exact_text"),
-        "title": mission.get("title"),
-        "body": mission.get("body"),
-        "image_id": mission.get("image_id"),
+        "request": normalized_request,
+        "program": {
+            "status": preview.get("status"),
+            "contract_totals": preview.get("contract_totals", {}),
+            "remaining_contract": preview.get("remaining_contract", {}),
+        },
+        "work_items": [
+            {
+                "work_item_id": item.get("id"),
+                "profile_name": item.get("profile_name"),
+                "runtime_action": item.get("action"),
+                "target_mode": item.get("target_mode"),
+                "scheduled_at": item.get("scheduled_at"),
+                "execution_spec": item.get("execution_spec"),
+            }
+            for item in list(((preview.get("compiled") or {}).get("work_items") or []))
+        ],
     }
 
 
+@app.post("/reddit/executions/run")
+async def run_reddit_execution(
+    request: RedditExecutionRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    normalized_request = _normalize_reddit_execution_request_payload(request.model_dump())
+    run_id = f"reddit_execution_{uuid.uuid4().hex[:10]}"
+    await broadcast_update(
+        "reddit_execution_start",
+        {
+            "run_id": run_id,
+            "action": normalized_request["action"]["type"],
+            "profiles": [actor["profile_name"] for actor in normalized_request["actors"]],
+        },
+    )
+    result = await _execute_reddit_execution_request(normalized_request, run_id=run_id)
+    await broadcast_update(
+        "reddit_execution_complete",
+        {
+            "run_id": run_id,
+            "action": normalized_request["action"]["type"],
+            "success": bool(result.get("success")),
+            "proof_summary": result.get("proof_summary", {}),
+        },
+    )
+    return result
+
+
+@app.get("/reddit/executions/{run_id}")
+async def get_reddit_execution_run(
+    run_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    run = reddit_execution_store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"reddit execution run not found: {run_id}")
+    return run
+
+
+def _mission_execution_request(mission: Dict[str, Any]) -> Dict[str, Any]:
+    stored = mission.get("execution_request")
+    if stored:
+        return _normalize_reddit_execution_request_payload(dict(stored), require_discovery_seed=False)
+    return execution_request_from_legacy_payload(
+        mission,
+        verification=mission.get("verification") or mission.get("verification_requirements"),
+    )
+
+
 async def _run_single_reddit_mission(mission: Dict[str, Any]) -> Dict[str, Any]:
-    payload = _mission_to_action_payload(mission)
+    execution_request = _mission_execution_request(mission)
+    profile_names = [actor["profile_name"] for actor in execution_request["actors"]]
     await broadcast_update(
         "reddit_mission_start",
         {
             "mission_id": mission.get("id"),
-            "profile_name": mission.get("profile_name"),
-            "action": mission.get("action"),
+            "profile_names": profile_names,
+            "action": (execution_request.get("action") or {}).get("type"),
         },
     )
-    result = await _execute_reddit_action_payload(payload, proxy_override=_resolve_effective_proxy())
+    result = await _execute_reddit_execution_request(
+        execution_request,
+        run_id=f"{mission.get('id')}_{uuid.uuid4().hex[:8]}",
+    )
     await broadcast_update(
         "reddit_mission_complete",
         {
             "mission_id": mission.get("id"),
-            "profile_name": mission.get("profile_name"),
-            "action": mission.get("action"),
+            "profile_names": profile_names,
+            "action": (execution_request.get("action") or {}).get("type"),
             "success": result.get("success", False),
-            "error": result.get("error"),
+            "error": next((entry.get("error") for entry in list(result.get("results") or []) if entry.get("error")), None),
         },
     )
     return result
@@ -6821,19 +7194,14 @@ async def create_reddit_mission(
     request: RedditMissionCreateRequest,
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
+    normalized_request = _normalize_reddit_execution_request_payload(request.execution.model_dump())
+    if len(list(normalized_request.get("actors") or [])) != 1:
+        raise HTTPException(status_code=400, detail="reddit missions currently require exactly one explicit actor")
     mission = reddit_mission_store.create_mission(
         {
-            "profile_name": request.profile_name,
-            "action": request.action,
-            "target_url": request.target_url,
-            "target_comment_url": request.target_comment_url,
-            "subreddit": request.subreddit,
-            "brief": request.brief,
-            "exact_text": request.exact_text,
-            "title": request.title,
-            "body": request.body,
-            "image_id": request.image_id,
-            "verification_requirements": request.verification_requirements or [],
+            **_execution_request_display_fields(normalized_request),
+            "execution_request": normalized_request,
+            "verification": dict(normalized_request.get("verification") or {}),
             "cadence": request.cadence.model_dump(),
             "created_by": current_user.get("username"),
         }
@@ -6848,6 +7216,13 @@ async def update_reddit_mission(
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
     updates = {k: v for k, v in request.model_dump(exclude_none=True).items()}
+    if "execution" in updates:
+        normalized_request = _normalize_reddit_execution_request_payload(dict((updates.pop("execution") or {})))
+        if len(list(normalized_request.get("actors") or [])) != 1:
+            raise HTTPException(status_code=400, detail="reddit missions currently require exactly one explicit actor")
+        updates.update(_execution_request_display_fields(normalized_request))
+        updates["execution_request"] = normalized_request
+        updates["verification"] = dict(normalized_request.get("verification") or {})
     if "cadence" in updates and isinstance(updates["cadence"], RedditMissionCadence):
         updates["cadence"] = updates["cadence"].model_dump()
     mission = reddit_mission_store.update_mission(mission_id, updates)

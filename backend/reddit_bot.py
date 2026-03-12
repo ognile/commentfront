@@ -2991,10 +2991,16 @@ async def _first_visible_comment_link(page) -> Optional[str]:
     return None
 
 
-async def browse_feed(session: RedditSession, proxy_url: Optional[str] = None, scrolls: int = 3) -> Dict[str, Any]:
+async def browse_feed(
+    session: RedditSession,
+    proxy_url: Optional[str] = None,
+    scrolls: int = 3,
+    url: Optional[str] = None,
+) -> Dict[str, Any]:
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
-            await _goto(page, "https://www.reddit.com/")
+            target_url = str(url or "https://www.reddit.com/").strip()
+            await _goto(page, target_url)
             await dump_interactive_elements(page, "REDDIT BROWSE FEED")
             for _ in range(max(1, scrolls)):
                 await page.mouse.wheel(0, 500)
@@ -3006,6 +3012,7 @@ async def browse_feed(session: RedditSession, proxy_url: Optional[str] = None, s
                 profile_name=session.profile_name,
                 screenshot=screenshot,
                 current_url=page.url,
+                target_url=target_url,
             )
         except Exception as exc:
             return _result(success=False, action="browse_feed", profile_name=session.profile_name, error=str(exc))
@@ -3915,6 +3922,7 @@ async def run_reddit_action(
     *,
     action: str,
     proxy_url: Optional[str] = None,
+    scrolls: Optional[int] = None,
     url: Optional[str] = None,
     target_comment_url: Optional[str] = None,
     text: Optional[str] = None,
@@ -3964,7 +3972,7 @@ async def run_reddit_action(
 
     async def _dispatch_action() -> Dict[str, Any]:
         if normalized == "browse_feed":
-            return await browse_feed(session, proxy_url=proxy_url)
+            return await browse_feed(session, proxy_url=proxy_url, scrolls=max(1, int(scrolls or 3)), url=url)
         if normalized in {"upvote", "upvote_post"}:
             if not url:
                 return _result(success=False, action="upvote_post", profile_name=session.profile_name, error="url is required")

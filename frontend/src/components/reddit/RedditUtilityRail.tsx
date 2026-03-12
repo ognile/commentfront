@@ -12,14 +12,17 @@ import type { RemoteSessionTarget } from '@/components/remote/types'
 import type { RedditCredential, RedditMission, RedditSession } from '@/components/reddit/types'
 
 const ACTIONS = [
-  'browse_feed',
+  'browse',
+  'open',
+  'join',
   'upvote',
-  'open_target',
   'create_post',
-  'comment_post',
-  'reply_comment',
-  'upload_media',
+  'comment',
+  'reply',
 ] as const
+
+const TARGET_KINDS = ['subreddit', 'post', 'comment'] as const
+const TARGET_STRATEGIES = ['explicit', 'discover'] as const
 
 interface RedditUtilityRailProps {
   credentials: RedditCredential[]
@@ -37,31 +40,43 @@ interface RedditUtilityRailProps {
   onOpenRemoteControl?: (session: RemoteSessionTarget) => void
   selectedSession: string
   action: string
+  targetKind: 'subreddit' | 'post' | 'comment'
+  targetStrategy: 'explicit' | 'discover'
   targetUrl: string
+  targetCommentUrl: string
   subreddit: string
   title: string
   body: string
   actionText: string
   imageId: string
+  browseScrolls: string
   runningAction: boolean
   onSelectSession: (value: string) => void
   onActionChange: (value: string) => void
+  onTargetKindChange: (value: 'subreddit' | 'post' | 'comment') => void
+  onTargetStrategyChange: (value: 'explicit' | 'discover') => void
   onTargetUrlChange: (value: string) => void
+  onTargetCommentUrlChange: (value: string) => void
   onSubredditChange: (value: string) => void
   onTitleChange: (value: string) => void
   onBodyChange: (value: string) => void
   onActionTextChange: (value: string) => void
   onImageIdChange: (value: string) => void
+  onBrowseScrollsChange: (value: string) => void
   onRunAction: () => void
   missionProfile: string
   missionAction: string
+  missionTargetKind: 'subreddit' | 'post' | 'comment'
+  missionTargetStrategy: 'explicit' | 'discover'
   missionUrl: string
+  missionTargetCommentUrl: string
   missionSubreddit: string
   missionBrief: string
   missionExactText: string
   missionTitle: string
   missionBody: string
   missionImageId: string
+  missionBrowseScrolls: string
   missionCadenceType: 'once' | 'daily' | 'interval_hours'
   missionHour: string
   missionMinute: string
@@ -69,13 +84,17 @@ interface RedditUtilityRailProps {
   savingMission: boolean
   onMissionProfileChange: (value: string) => void
   onMissionActionChange: (value: string) => void
+  onMissionTargetKindChange: (value: 'subreddit' | 'post' | 'comment') => void
+  onMissionTargetStrategyChange: (value: 'explicit' | 'discover') => void
   onMissionUrlChange: (value: string) => void
+  onMissionTargetCommentUrlChange: (value: string) => void
   onMissionSubredditChange: (value: string) => void
   onMissionBriefChange: (value: string) => void
   onMissionExactTextChange: (value: string) => void
   onMissionTitleChange: (value: string) => void
   onMissionBodyChange: (value: string) => void
   onMissionImageIdChange: (value: string) => void
+  onMissionBrowseScrollsChange: (value: string) => void
   onMissionCadenceTypeChange: (value: 'once' | 'daily' | 'interval_hours') => void
   onMissionHourChange: (value: string) => void
   onMissionMinuteChange: (value: string) => void
@@ -100,31 +119,43 @@ export function RedditUtilityRail({
   onOpenRemoteControl,
   selectedSession,
   action,
+  targetKind,
+  targetStrategy,
   targetUrl,
+  targetCommentUrl,
   subreddit,
   title,
   body,
   actionText,
   imageId,
+  browseScrolls,
   runningAction,
   onSelectSession,
   onActionChange,
+  onTargetKindChange,
+  onTargetStrategyChange,
   onTargetUrlChange,
+  onTargetCommentUrlChange,
   onSubredditChange,
   onTitleChange,
   onBodyChange,
   onActionTextChange,
   onImageIdChange,
+  onBrowseScrollsChange,
   onRunAction,
   missionProfile,
   missionAction,
+  missionTargetKind,
+  missionTargetStrategy,
   missionUrl,
+  missionTargetCommentUrl,
   missionSubreddit,
   missionBrief,
   missionExactText,
   missionTitle,
   missionBody,
   missionImageId,
+  missionBrowseScrolls,
   missionCadenceType,
   missionHour,
   missionMinute,
@@ -132,13 +163,17 @@ export function RedditUtilityRail({
   savingMission,
   onMissionProfileChange,
   onMissionActionChange,
+  onMissionTargetKindChange,
+  onMissionTargetStrategyChange,
   onMissionUrlChange,
+  onMissionTargetCommentUrlChange,
   onMissionSubredditChange,
   onMissionBriefChange,
   onMissionExactTextChange,
   onMissionTitleChange,
   onMissionBodyChange,
   onMissionImageIdChange,
+  onMissionBrowseScrollsChange,
   onMissionCadenceTypeChange,
   onMissionHourChange,
   onMissionMinuteChange,
@@ -311,14 +346,50 @@ export function RedditUtilityRail({
                   </SelectContent>
                 </Select>
               </div>
-              <Input value={targetUrl} onChange={(event) => onTargetUrlChange(event.target.value)} placeholder="target url" className="border-[#d8d3c5] bg-white" />
-              <Input value={subreddit} onChange={(event) => onSubredditChange(event.target.value)} placeholder="subreddit" className="border-[#d8d3c5] bg-white" />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>target kind</Label>
+                  <Select value={targetKind} onValueChange={(value) => onTargetKindChange(value as 'subreddit' | 'post' | 'comment')}>
+                    <SelectTrigger className="border-[#d8d3c5] bg-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TARGET_KINDS.map((item) => (
+                        <SelectItem key={item} value={item}>{item}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>target strategy</Label>
+                  <Select value={targetStrategy} onValueChange={(value) => onTargetStrategyChange(value as 'explicit' | 'discover')}>
+                    <SelectTrigger className="border-[#d8d3c5] bg-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TARGET_STRATEGIES.map((item) => (
+                        <SelectItem key={item} value={item}>{item}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {targetKind !== 'comment' ? (
+                <Input value={targetUrl} onChange={(event) => onTargetUrlChange(event.target.value)} placeholder="target url" className="border-[#d8d3c5] bg-white" />
+              ) : null}
+              {targetKind === 'comment' ? (
+                <Input value={targetCommentUrl} onChange={(event) => onTargetCommentUrlChange(event.target.value)} placeholder="target comment url" className="border-[#d8d3c5] bg-white" />
+              ) : null}
+              <Input value={subreddit} onChange={(event) => onSubredditChange(event.target.value)} placeholder="subreddit or discovery seed" className="border-[#d8d3c5] bg-white" />
+              {action === 'browse' ? (
+                <Input value={browseScrolls} onChange={(event) => onBrowseScrollsChange(event.target.value)} placeholder="scroll count" className="border-[#d8d3c5] bg-white" />
+              ) : null}
               <Input value={imageId} onChange={(event) => onImageIdChange(event.target.value)} placeholder="image id" className="border-[#d8d3c5] bg-white" />
               <Input value={title} onChange={(event) => onTitleChange(event.target.value)} placeholder="title" className="border-[#d8d3c5] bg-white" />
               <Textarea value={body} onChange={(event) => onBodyChange(event.target.value)} placeholder="body" className="border-[#d8d3c5] bg-white" />
               <Textarea value={actionText} onChange={(event) => onActionTextChange(event.target.value)} placeholder="comment or reply text" className="border-[#d8d3c5] bg-white" />
               <Button onClick={onRunAction} disabled={runningAction || !selectedSession} className="w-full">
-                {runningAction ? 'running...' : 'run reddit action'}
+                {runningAction ? 'running...' : 'run reddit execution'}
               </Button>
             </CardContent>
           </Card>
@@ -356,10 +427,46 @@ export function RedditUtilityRail({
                   </SelectContent>
                 </Select>
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>target kind</Label>
+                  <Select value={missionTargetKind} onValueChange={(value) => onMissionTargetKindChange(value as 'subreddit' | 'post' | 'comment')}>
+                    <SelectTrigger className="border-[#d8d3c5] bg-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TARGET_KINDS.map((item) => (
+                        <SelectItem key={item} value={item}>{item}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>target strategy</Label>
+                  <Select value={missionTargetStrategy} onValueChange={(value) => onMissionTargetStrategyChange(value as 'explicit' | 'discover')}>
+                    <SelectTrigger className="border-[#d8d3c5] bg-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TARGET_STRATEGIES.map((item) => (
+                        <SelectItem key={item} value={item}>{item}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
               <Textarea value={missionBrief} onChange={(event) => onMissionBriefChange(event.target.value)} placeholder="brief" className="border-[#d8d3c5] bg-white" />
               <Textarea value={missionExactText} onChange={(event) => onMissionExactTextChange(event.target.value)} placeholder="exact text override" className="border-[#d8d3c5] bg-white" />
-              <Input value={missionUrl} onChange={(event) => onMissionUrlChange(event.target.value)} placeholder="target url" className="border-[#d8d3c5] bg-white" />
-              <Input value={missionSubreddit} onChange={(event) => onMissionSubredditChange(event.target.value)} placeholder="subreddit" className="border-[#d8d3c5] bg-white" />
+              {missionTargetKind !== 'comment' ? (
+                <Input value={missionUrl} onChange={(event) => onMissionUrlChange(event.target.value)} placeholder="target url" className="border-[#d8d3c5] bg-white" />
+              ) : null}
+              {missionTargetKind === 'comment' ? (
+                <Input value={missionTargetCommentUrl} onChange={(event) => onMissionTargetCommentUrlChange(event.target.value)} placeholder="target comment url" className="border-[#d8d3c5] bg-white" />
+              ) : null}
+              <Input value={missionSubreddit} onChange={(event) => onMissionSubredditChange(event.target.value)} placeholder="subreddit or discovery seed" className="border-[#d8d3c5] bg-white" />
+              {missionAction === 'browse' ? (
+                <Input value={missionBrowseScrolls} onChange={(event) => onMissionBrowseScrollsChange(event.target.value)} placeholder="scroll count" className="border-[#d8d3c5] bg-white" />
+              ) : null}
               <Input value={missionImageId} onChange={(event) => onMissionImageIdChange(event.target.value)} placeholder="image id" className="border-[#d8d3c5] bg-white" />
               <Input value={missionTitle} onChange={(event) => onMissionTitleChange(event.target.value)} placeholder="title" className="border-[#d8d3c5] bg-white" />
               <Textarea value={missionBody} onChange={(event) => onMissionBodyChange(event.target.value)} placeholder="body" className="border-[#d8d3c5] bg-white" />

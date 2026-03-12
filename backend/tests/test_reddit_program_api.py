@@ -14,12 +14,25 @@ from reddit_program_store import RedditProgramStore
 def test_create_reddit_mission_persists_target_comment_url(tmp_path, monkeypatch):
     temp_store = RedditMissionStore(file_path=str(tmp_path / "reddit_missions.json"))
     monkeypatch.setattr(main, "reddit_mission_store", temp_store)
+    monkeypatch.setattr(
+        main,
+        "list_saved_reddit_sessions",
+        lambda: [{"profile_name": "reddit_amy", "has_valid_session": True}],
+    )
 
     request = main.RedditMissionCreateRequest(
-        profile_name="reddit_amy",
-        action="reply_comment",
-        target_comment_url="https://www.reddit.com/r/womenshealth/comments/abc123/endometrial_biopsy/comment/xyz789/",
-        exact_text="this is the reply",
+        execution=main.RedditExecutionRequest(
+            actors=[main.RedditExecutionActor(profile_name="reddit_amy")],
+            target=main.RedditExecutionTarget(
+                kind="comment",
+                strategy="explicit",
+                target_comment_url="https://www.reddit.com/r/womenshealth/comments/abc123/endometrial_biopsy/comment/xyz789/",
+            ),
+            action=main.RedditExecutionAction(
+                type="reply",
+                params=main.RedditExecutionActionParams(text="this is the reply"),
+            ),
+        ),
         cadence=main.RedditMissionCadence(type="once"),
     )
 
@@ -27,6 +40,7 @@ def test_create_reddit_mission_persists_target_comment_url(tmp_path, monkeypatch
     stored = temp_store.list_missions()[0]
 
     assert stored["target_comment_url"].endswith("/comment/xyz789/")
+    assert stored["execution_request"]["target"]["kind"] == "comment"
 
 
 def test_validate_reddit_program_payload_accepts_subreddit_policies(tmp_path, monkeypatch):

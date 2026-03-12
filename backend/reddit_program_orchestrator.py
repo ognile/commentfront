@@ -14,6 +14,11 @@ from urllib.parse import quote
 import httpx
 
 from forensics import is_infra_error_text
+from reddit_execution import (
+    first_attachment_image_id,
+    runtime_action_for_execution_spec,
+    sync_work_item_with_execution_spec,
+)
 from reddit_bot import REDDIT_HTTP_HEADERS, run_reddit_action
 from reddit_growth_generation import RedditGrowthContentGenerator, get_writing_rule_snapshot
 from reddit_subreddit_policies import (
@@ -213,6 +218,7 @@ class RedditProgramOrchestrator:
         action_runner=run_reddit_action,
         content_generator: Optional[RedditGrowthContentGenerator] = None,
         notification_service: Optional[RedditProgramNotificationService] = None,
+        media_resolver: Optional[Callable[[str], Optional[str]]] = None,
     ):
         self.store = store
         self.proxy_resolver = proxy_resolver or (lambda: None)
@@ -220,6 +226,7 @@ class RedditProgramOrchestrator:
         self.action_runner = action_runner
         self.content_generator = content_generator or RedditGrowthContentGenerator()
         self.notification_service = notification_service or RedditProgramNotificationService()
+        self.media_resolver = media_resolver
         self._lock = asyncio.Lock()
         self._program_locks: Dict[str, asyncio.Lock] = {}
         self._subreddit_post_cache: Dict[tuple[str, tuple[str, ...], int], List[Dict[str, Any]]] = {}
@@ -373,6 +380,7 @@ class RedditProgramOrchestrator:
         item = next((entry for entry in work_items if entry.get("id") == work_item_id), None)
         if not item:
             return program
+        item.update(sync_work_item_with_execution_spec(item, verification=_verification_contract(program)))
 
         item["status"] = "running"
         item["attempts"] = int(item.get("attempts", 0)) + 1
@@ -450,7 +458,8 @@ class RedditProgramOrchestrator:
                 consume_attempt=bool(target_payload.get("consume_attempt", False)),
             )
 
-        action = str(item.get("action") or "")
+        execution_spec = dict(item.get("execution_spec") or {})
+        action = runtime_action_for_execution_spec(execution_spec)
         proxy_url = self.proxy_resolver() if callable(self.proxy_resolver) else None
         generation_evidence = dict(target_payload.get("generation_evidence") or {})
         item["discovered_target"] = target_payload.get("discovered_target")
@@ -462,6 +471,27 @@ class RedditProgramOrchestrator:
             item["generation_evidence"] = generation_evidence
             item["generation_feedback"] = None
             self._remember_generated_text(program, item, generation_evidence)
+        image_path = None
+        attachment_image_id = first_attachment_image_id(execution_spec)
+        if attachment_image_id:
+            if not self.media_resolver:
+                return self._finalize_without_execution(
+                    program,
+                    item,
+                    status="blocked",
+                    error="reddit execution attachments require a configured media resolver",
+                    failure_class="configuration_error",
+                )
+            try:
+                image_path = self.media_resolver(attachment_image_id)
+            except Exception as exc:
+                return self._finalize_without_execution(
+                    program,
+                    item,
+                    status="blocked",
+                    error=str(exc),
+                    failure_class="configuration_error",
+                )
         result = await self.action_runner(
             session,
             action=action,
@@ -472,8 +502,10 @@ class RedditProgramOrchestrator:
             title=target_payload.get("title"),
             body=target_payload.get("body"),
             subreddit=target_payload.get("subreddit"),
+            image_path=image_path,
             user_flair_hint=target_payload.get("user_flair_hint"),
             auto_user_flair=bool(target_payload.get("auto_user_flair", False)),
+            scrolls=item.get("scrolls"),
             forensic_context={
                 "run_id": program["id"],
                 "campaign_id": program["id"],
