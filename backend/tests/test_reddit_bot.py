@@ -1687,6 +1687,42 @@ def test_run_reddit_action_finalizes_timeout(monkeypatch):
     assert recorder.finalized[0]["verdict"].final_verdict == "infra_failure"
 
 
+def test_run_reddit_action_classifies_browser_launch_error_as_infrastructure(monkeypatch):
+    recorder = _FakeRecorder()
+
+    async def fake_start_forensic_attempt(**_kwargs):
+        return recorder
+
+    async def fake_attach_artifact(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(reddit_bot, "start_forensic_attempt", fake_start_forensic_attempt)
+    monkeypatch.setattr(reddit_bot, "attach_current_json_artifact", fake_attach_artifact)
+    monkeypatch.setattr(reddit_bot, "set_current_forensic_recorder", lambda _recorder: "token")
+    monkeypatch.setattr(reddit_bot, "reset_current_forensic_recorder", lambda _token: None)
+
+    async def fake_wait_for(awaitable, timeout):
+        awaitable.close()
+        raise RuntimeError("BrowserType.launch: Executable doesn't exist at /root/.cache/ms-playwright/chromium")
+
+    monkeypatch.setattr(reddit_bot.asyncio, "wait_for", fake_wait_for)
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.run_reddit_action(
+            session,
+            action="browse_feed",
+            forensic_context={"metadata": {"action_timeout_seconds": 30}},
+        )
+    )
+
+    assert result["success"] is False
+    assert result["failure_class"] == "infrastructure"
+    assert "executable doesn't exist" in result["error"].lower()
+    assert recorder.finalized
+    assert recorder.finalized[0]["verdict"].final_verdict == "infra_failure"
+
+
 def test_click_composer_text_region_uses_evaluate_candidate():
     page = _FakePage()
     page.evaluate_result = {

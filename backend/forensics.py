@@ -60,6 +60,9 @@ INFRA_FAILURE_KEYWORDS = [
     "tunnel",
     "econnrefused",
     "econnreset",
+    "browsertype.launch",
+    "executable doesn't exist",
+    "playwright",
 ]
 
 SENSITIVE_HEADER_KEYS = {

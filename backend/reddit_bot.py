@@ -26,6 +26,7 @@ from forensics import (
     attach_current_json_artifact,
     build_generic_verdict,
     get_current_forensic_recorder,
+    is_infra_error_text,
     queue_current_event,
     reset_current_forensic_recorder,
     set_current_forensic_recorder,
