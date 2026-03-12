@@ -18,7 +18,7 @@ type MockSocket = {
 
 type RemotePointerDownEvent = Parameters<ReturnType<typeof useRemoteControl>['handleRemotePointerDown']>[0]
 
-const { mockedToast, socketRegistry, fetchMock } = vi.hoisted(() => ({
+const { mockedToast, socketRegistry, fetchMock, clipboardReadTextMock, clipboardWriteTextMock } = vi.hoisted(() => ({
   mockedToast: Object.assign(vi.fn(), {
     success: vi.fn(),
     error: vi.fn(),
@@ -32,6 +32,8 @@ const { mockedToast, socketRegistry, fetchMock } = vi.hoisted(() => ({
     status: 200,
     json: async () => ({ success: true }),
   })),
+  clipboardReadTextMock: vi.fn(async () => 'clipboard text'),
+  clipboardWriteTextMock: vi.fn(async () => undefined),
 }))
 
 vi.mock('sonner', () => ({ toast: mockedToast }))
@@ -81,59 +83,24 @@ describe('useRemoteControl', () => {
       randomUUID: vi.fn(() => `action-${++actionCounter}`),
     })
     vi.stubGlobal('fetch', fetchMock)
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: clipboardReadTextMock,
+        writeText: clipboardWriteTextMock,
+      },
+    })
+    clipboardReadTextMock.mockReset()
+    clipboardWriteTextMock.mockReset()
+    clipboardReadTextMock.mockResolvedValue('clipboard text')
+    clipboardWriteTextMock.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
   })
 
-  it('tracks observer state and sends takeover requests', () => {
-    const { result } = renderHook(() => useRemoteControl())
-
-    act(() => {
-      result.current.openRemoteModal({
-        platform: 'facebook',
-        profileName: 'alpha',
-        displayName: 'Alpha',
-        valid: true,
-      })
-    })
-
-    const socket = socketRegistry.instances[0]
-    act(() => {
-      socket.emitOpen()
-      socket.emitMessage({
-        type: 'state',
-        data: {
-          url: 'https://example.com',
-          role: 'observer',
-          can_control: false,
-          controller_user: 'alice',
-          viewer_count: 2,
-          lease_id: 'lease-alpha',
-        },
-      })
-    })
-
-    expect(result.current.remoteRole).toBe('observer')
-    expect(result.current.remoteCanControl).toBe(false)
-    expect(result.current.remoteControllerUser).toBe('alice')
-    expect(result.current.remoteViewerCount).toBe(2)
-
-    act(() => {
-      result.current.handleTakeover()
-    })
-
-    expect(JSON.parse(socket.sent.at(-1) || '{}')).toMatchObject({
-      type: 'takeover',
-      data: {},
-      action_id: 'action-1',
-    })
-  })
-
-  it('sends paste_text when clipboard text is pasted into an armed controller session', () => {
-    const { result } = renderHook(() => useRemoteControl())
-
+  function openArmedController(result: { current: ReturnType<typeof useRemoteControl> }) {
     const container = document.createElement('div')
     const image = document.createElement('img')
     image.getBoundingClientRect = () =>
@@ -185,6 +152,57 @@ describe('useRemoteControl', () => {
       } as unknown as RemotePointerDownEvent)
     })
 
+    return socket
+  }
+
+  it('tracks observer state and sends takeover requests', () => {
+    const { result } = renderHook(() => useRemoteControl())
+
+    act(() => {
+      result.current.openRemoteModal({
+        platform: 'facebook',
+        profileName: 'alpha',
+        displayName: 'Alpha',
+        valid: true,
+      })
+    })
+
+    const socket = socketRegistry.instances[0]
+    act(() => {
+      socket.emitOpen()
+      socket.emitMessage({
+        type: 'state',
+        data: {
+          url: 'https://example.com',
+          role: 'observer',
+          can_control: false,
+          controller_user: 'alice',
+          viewer_count: 2,
+          lease_id: 'lease-alpha',
+        },
+      })
+    })
+
+    expect(result.current.remoteRole).toBe('observer')
+    expect(result.current.remoteCanControl).toBe(false)
+    expect(result.current.remoteControllerUser).toBe('alice')
+    expect(result.current.remoteViewerCount).toBe(2)
+
+    act(() => {
+      result.current.handleTakeover()
+    })
+
+    expect(JSON.parse(socket.sent.at(-1) || '{}')).toMatchObject({
+      type: 'takeover',
+      data: {},
+      action_id: 'action-1',
+    })
+  })
+
+  it('sends paste_text when clipboard text is pasted into an armed controller session', () => {
+    const { result } = renderHook(() => useRemoteControl())
+    const socket = openArmedController(result)
+
     const pasteEvent = new Event('paste', { bubbles: true, cancelable: true })
     Object.defineProperty(pasteEvent, 'clipboardData', {
       value: { getData: () => 'hello world' },
@@ -197,6 +215,224 @@ describe('useRemoteControl', () => {
     expect(JSON.parse(socket.sent.at(-1) || '{}')).toMatchObject({
       type: 'paste_text',
       data: { text: 'hello world' },
+      action_id: 'action-1',
+    })
+  })
+
+  it('uses meta+v to read the local clipboard and send paste_text', async () => {
+    const { result } = renderHook(() => useRemoteControl())
+    const socket = openArmedController(result)
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', metaKey: true, bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(clipboardReadTextMock).toHaveBeenCalledTimes(1)
+    const message = JSON.parse(socket.sent.at(-1) || '{}')
+    expect(message).toMatchObject({
+      type: 'paste_text',
+      data: { text: 'clipboard text' },
+      action_id: 'action-1',
+    })
+
+    act(() => {
+      socket.emitMessage({
+        type: 'action_result',
+        data: {
+          action_id: 'action-1',
+          success: true,
+          action: 'paste_text',
+          focus_snapshot: { tag_name: 'div', is_content_editable: true },
+          selection_kind: 'contenteditable',
+          selection_length: 0,
+        },
+      })
+    })
+
+    expect(result.current.actionLog[0]?.status).toBe('success')
+  })
+
+  it('surfaces clipboard read failures on meta+v without sending a remote action', async () => {
+    clipboardReadTextMock.mockRejectedValueOnce(new Error('clipboard read denied'))
+
+    const { result } = renderHook(() => useRemoteControl())
+    const socket = openArmedController(result)
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', metaKey: true, bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(socket.sent).toHaveLength(0)
+    expect(mockedToast.error).toHaveBeenCalledWith('clipboard read denied')
+  })
+
+  it('uses meta+a to send select_all', async () => {
+    const { result } = renderHook(() => useRemoteControl())
+    const socket = openArmedController(result)
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(JSON.parse(socket.sent.at(-1) || '{}')).toMatchObject({
+      type: 'select_all',
+      data: {},
+      action_id: 'action-1',
+    })
+
+    act(() => {
+      socket.emitMessage({
+        type: 'action_result',
+        data: {
+          action_id: 'action-1',
+          success: true,
+          action: 'select_all',
+          selection_kind: 'contenteditable',
+          selection_length: 12,
+        },
+      })
+    })
+
+    expect(result.current.actionLog[0]?.status).toBe('success')
+  })
+
+  it('uses meta+c to copy the remote selection into the local clipboard', async () => {
+    const { result } = renderHook(() => useRemoteControl())
+    const socket = openArmedController(result)
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(JSON.parse(socket.sent.at(-1) || '{}')).toMatchObject({
+      type: 'copy_selection',
+      data: {},
+      action_id: 'action-1',
+    })
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'action_result',
+        data: {
+          action_id: 'action-1',
+          success: true,
+          action: 'copy_selection',
+          clipboard_text: 'remote copied text',
+          selection_kind: 'contenteditable',
+          selection_length: 18,
+          can_delete: true,
+          focus_snapshot: { tag_name: 'div', is_content_editable: true },
+        },
+      })
+      await Promise.resolve()
+    })
+
+    expect(clipboardWriteTextMock).toHaveBeenCalledWith('remote copied text')
+  })
+
+  it('uses meta+x to copy first and only then delete the remote selection', async () => {
+    const { result } = renderHook(() => useRemoteControl())
+    const socket = openArmedController(result)
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', metaKey: true, bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(JSON.parse(socket.sent.at(-1) || '{}')).toMatchObject({
+      type: 'copy_selection',
+      data: {},
+      action_id: 'action-1',
+    })
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'action_result',
+        data: {
+          action_id: 'action-1',
+          success: true,
+          action: 'copy_selection',
+          clipboard_text: 'remote cut text',
+          selection_kind: 'contenteditable',
+          selection_length: 15,
+          can_delete: true,
+          focus_snapshot: { tag_name: 'div', is_content_editable: true },
+        },
+      })
+      await Promise.resolve()
+    })
+
+    expect(clipboardWriteTextMock).toHaveBeenCalledWith('remote cut text')
+    expect(JSON.parse(socket.sent.at(-1) || '{}')).toMatchObject({
+      type: 'delete_selection',
+      data: {},
+      action_id: 'action-2',
+    })
+
+    act(() => {
+      socket.emitMessage({
+        type: 'action_result',
+        data: {
+          action_id: 'action-2',
+          success: true,
+          action: 'delete_selection',
+          selection_kind: 'contenteditable',
+          selection_length: 15,
+          can_delete: true,
+        },
+      })
+    })
+
+    expect(result.current.actionLog.some((entry) => entry.type === 'cut')).toBe(true)
+  })
+
+  it('does not delete on meta+x when clipboard write fails', async () => {
+    clipboardWriteTextMock.mockRejectedValueOnce(new Error('clipboard denied'))
+
+    const { result } = renderHook(() => useRemoteControl())
+    const socket = openArmedController(result)
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', metaKey: true, bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'action_result',
+        data: {
+          action_id: 'action-1',
+          success: true,
+          action: 'copy_selection',
+          clipboard_text: 'remote cut text',
+          selection_kind: 'contenteditable',
+          selection_length: 15,
+          can_delete: true,
+          focus_snapshot: { tag_name: 'div', is_content_editable: true },
+        },
+      })
+      await Promise.resolve()
+    })
+
+    expect(socket.sent).toHaveLength(1)
+    expect(mockedToast.error).toHaveBeenCalledWith('clipboard denied')
+  })
+
+  it('keeps plain typing on the text_input action path', () => {
+    const { result } = renderHook(() => useRemoteControl())
+    const socket = openArmedController(result)
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }))
+    })
+
+    expect(JSON.parse(socket.sent.at(-1) || '{}')).toMatchObject({
+      type: 'text_input',
+      data: { text: 'a' },
       action_id: 'action-1',
     })
   })

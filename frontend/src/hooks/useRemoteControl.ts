@@ -18,6 +18,77 @@ const TERMINAL_REMOTE_ERROR_CODES = new Set([
 ])
 
 type RemoteWheelEvent = Pick<WheelEvent, 'clientX' | 'clientY' | 'deltaY' | 'preventDefault'>
+type RemoteActionPayload = { type: string; data?: Record<string, unknown> }
+type RemoteFocusSnapshot = {
+  tag_name?: string | null
+  input_type?: string | null
+  aria_label?: string | null
+  role?: string | null
+  placeholder?: string | null
+  is_content_editable?: boolean
+}
+type RemoteActionResult = {
+  action_id: string
+  success: boolean
+  action?: string
+  error?: string
+  clipboard_text?: string
+  selection_kind?: string
+  selection_length?: number
+  can_delete?: boolean
+  focus_snapshot?: RemoteFocusSnapshot | null
+}
+type PendingRemoteAction = {
+  resolve: (result: RemoteActionResult) => void
+  reject: (error: Error) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
+const MODIFIER_KEYS = ['Meta', 'Control', 'Alt', 'Shift'] as const
+
+function isModifierKey(key: string): boolean {
+  return MODIFIER_KEYS.includes(key as (typeof MODIFIER_KEYS)[number])
+}
+
+function pressedModifierKeys(event: KeyboardEvent): string[] {
+  return MODIFIER_KEYS.filter((key) => {
+    switch (key) {
+      case 'Meta':
+        return event.metaKey
+      case 'Control':
+        return event.ctrlKey
+      case 'Alt':
+        return event.altKey
+      case 'Shift':
+        return event.shiftKey
+    }
+  })
+}
+
+function isLogicalClipboardShortcut(event: KeyboardEvent, key: string): boolean {
+  if (event.altKey || event.shiftKey) {
+    return false
+  }
+  if (!event.metaKey && !event.ctrlKey) {
+    return false
+  }
+  return ['a', 'c', 'v', 'x'].includes(key.toLowerCase())
+}
+
+function describeFocusSnapshot(snapshot: RemoteFocusSnapshot | null | undefined): string | null {
+  if (!snapshot) {
+    return null
+  }
+  const parts = [
+    snapshot.tag_name,
+    snapshot.input_type ? `type=${snapshot.input_type}` : null,
+    snapshot.aria_label ? `label=${snapshot.aria_label}` : null,
+    snapshot.role ? `role=${snapshot.role}` : null,
+    snapshot.placeholder ? `placeholder=${snapshot.placeholder}` : null,
+    snapshot.is_content_editable ? 'contenteditable' : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(' ') : null
+}
 
 function getRemoteWsPath(session: RemoteSessionTarget): string {
   const encodedProfile = encodeURIComponent(session.profileName)
@@ -112,6 +183,7 @@ export function useRemoteControl() {
   const terminalSocketCloseRef = useRef(false)
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null)
   const activeKeysRef = useRef<Set<string>>(new Set())
+  const pendingActionWaitersRef = useRef<Map<string, PendingRemoteAction>>(new Map())
 
   useEffect(() => {
     remoteModalOpenRef.current = remoteModalOpen
@@ -145,6 +217,14 @@ export function useRemoteControl() {
     setUploadReady(false)
   }, [])
 
+  const rejectPendingRemoteActions = useCallback((message: string) => {
+    for (const waiter of pendingActionWaitersRef.current.values()) {
+      clearTimeout(waiter.timeout)
+      waiter.reject(new Error(message))
+    }
+    pendingActionWaitersRef.current.clear()
+  }, [])
+
   const getAuthHeaders = useCallback((): HeadersInit => {
     const token = getAccessToken()
     return token ? { Authorization: `Bearer ${token}` } : {}
@@ -159,6 +239,12 @@ export function useRemoteControl() {
       status: 'sent',
     }
     setActionLog((prev) => [entry, ...prev].slice(0, 100))
+  }, [])
+
+  const updateActionLogEntry = useCallback((actionId: string, updater: (entry: ActionLogEntry) => ActionLogEntry) => {
+    setActionLog((prev) =>
+      prev.map((entry) => (entry.id === actionId ? updater(entry) : entry)),
+    )
   }, [])
 
   const updateLeaseState = useCallback((payload: Record<string, unknown>) => {
@@ -184,10 +270,11 @@ export function useRemoteControl() {
       remoteWsRef.current.close()
       remoteWsRef.current = null
     }
+    rejectPendingRemoteActions('remote browser disconnected')
     setRemoteConnected(false)
     setRemoteConnecting(false)
     resetRemoteLeaseState()
-  }, [resetRemoteLeaseState])
+  }, [rejectPendingRemoteActions, resetRemoteLeaseState])
 
   const terminateRemoteModal = useCallback(() => {
     reconnectEnabledRef.current = false
@@ -260,13 +347,27 @@ export function useRemoteControl() {
               terminateRemoteModal()
               break
             case 'action_result':
-              setActionLog((prev) =>
-                prev.map((entry) =>
-                  entry.id === message.data.action_id
-                    ? { ...entry, status: message.data.success ? 'success' : 'failed' }
-                    : entry,
-                ),
-              )
+              updateActionLogEntry(message.data.action_id, (entry) => {
+                const focusDetails = describeFocusSnapshot(message.data.focus_snapshot)
+                const selectionDetails =
+                  typeof message.data.selection_length === 'number'
+                    ? `selection=${message.data.selection_length}`
+                    : null
+                const extraDetails = [focusDetails, selectionDetails].filter(Boolean).join(' | ')
+                return {
+                  ...entry,
+                  status: message.data.success ? 'success' : 'failed',
+                  details: extraDetails ? `${entry.details} | ${extraDetails}` : entry.details,
+                }
+              })
+              {
+                const waiter = pendingActionWaitersRef.current.get(message.data.action_id)
+                if (waiter) {
+                  clearTimeout(waiter.timeout)
+                  pendingActionWaitersRef.current.delete(message.data.action_id)
+                  waiter.resolve(message.data as RemoteActionResult)
+                }
+              }
               if (!message.data.success && message.data.error) {
                 toast.error(message.data.error)
               }
@@ -289,6 +390,7 @@ export function useRemoteControl() {
         if (remoteWsRef.current === ws) {
           remoteWsRef.current = null
         }
+        rejectPendingRemoteActions('remote browser disconnected')
         setRemoteConnected(false)
         setRemoteConnecting(false)
         setKeyboardCaptureEnabled(false)
@@ -327,15 +429,37 @@ export function useRemoteControl() {
       setRemoteConnecting(false)
       setRemoteProgress(null)
     }
-  }, [terminateRemoteModal, updateLeaseState])
+  }, [rejectPendingRemoteActions, terminateRemoteModal, updateActionLogEntry, updateLeaseState])
 
-  const sendRemoteAction = useCallback((action: { type: string; data?: Record<string, unknown> }) => {
-    if (remoteWsRef.current?.readyState === WebSocket.OPEN) {
-      const actionId = crypto.randomUUID()
-      remoteWsRef.current.send(JSON.stringify({ ...action, action_id: actionId }))
-      return actionId
+  const sendRemoteAction = useCallback((action: RemoteActionPayload) => {
+    if (remoteWsRef.current?.readyState !== WebSocket.OPEN) {
+      return null
     }
-    return null
+    const actionId = crypto.randomUUID()
+    remoteWsRef.current.send(JSON.stringify({ ...action, action_id: actionId }))
+    return actionId
+  }, [])
+
+  const sendRemoteActionAwaitResult = useCallback((
+    action: RemoteActionPayload,
+    timeoutMs = 10000,
+    onDispatch?: (actionId: string) => void,
+  ) => {
+    if (remoteWsRef.current?.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('remote browser is not connected'))
+    }
+
+    const actionId = crypto.randomUUID()
+    return new Promise<RemoteActionResult>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        pendingActionWaitersRef.current.delete(actionId)
+        reject(new Error(`timed out waiting for remote action: ${action.type}`))
+      }, timeoutMs)
+
+      pendingActionWaitersRef.current.set(actionId, { resolve, reject, timeout })
+      onDispatch?.(actionId)
+      remoteWsRef.current?.send(JSON.stringify({ ...action, action_id: actionId }))
+    })
   }, [])
 
   const resolveViewportPoint = useCallback((clientX: number, clientY: number) => {
@@ -511,6 +635,104 @@ export function useRemoteControl() {
     if (!remoteModalOpen || !remoteConnected || !remoteCanControl || !keyboardCaptureEnabled) return
     const activeKeys = activeKeysRef.current
 
+    const sendRawKeyDown = (key: string) => {
+      if (activeKeys.has(key)) {
+        return
+      }
+      const actionId = sendRemoteAction({ type: 'key_down', data: { key } })
+      if (actionId) {
+        activeKeys.add(key)
+        addActionLogEntry('key', `key down: ${key}`, actionId)
+      }
+    }
+
+    const sendRawKeyUp = (key: string) => {
+      if (!activeKeys.has(key)) {
+        return
+      }
+      activeKeys.delete(key)
+      sendRemoteAction({ type: 'key_up', data: { key } })
+    }
+
+    const ensureRawModifierKeys = (event: KeyboardEvent) => {
+      for (const modifier of pressedModifierKeys(event)) {
+        sendRawKeyDown(modifier)
+      }
+    }
+
+    const readClipboardText = async () => {
+      if (!navigator.clipboard?.readText) {
+        throw new Error('clipboard read is unavailable in this browser')
+      }
+      const text = (await navigator.clipboard.readText()).replace(/\r\n/g, '\n')
+      if (!text) {
+        throw new Error('clipboard is empty')
+      }
+      return text
+    }
+
+    const writeClipboardText = async (text: string) => {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('clipboard write is unavailable in this browser')
+      }
+      await navigator.clipboard.writeText(text)
+    }
+
+    const handleLogicalPaste = async () => {
+      const text = await readClipboardText()
+      const result = await sendRemoteActionAwaitResult(
+        { type: 'paste_text', data: { text } },
+        10000,
+        (actionId) => addActionLogEntry('paste', `paste ${text.length} chars`, actionId),
+      )
+      if (!result.success) {
+        throw new Error(result.error || 'remote paste failed')
+      }
+    }
+
+    const handleLogicalSelectAll = async () => {
+      const result = await sendRemoteActionAwaitResult(
+        { type: 'select_all', data: {} },
+        10000,
+        (actionId) => addActionLogEntry('select', 'select all', actionId),
+      )
+      if (!result.success) {
+        throw new Error(result.error || 'remote select all failed')
+      }
+    }
+
+    const handleLogicalCopy = async (mode: 'copy' | 'cut') => {
+      const copyResult = await sendRemoteActionAwaitResult(
+        { type: 'copy_selection', data: {} },
+        10000,
+        (actionId) => addActionLogEntry(mode, `${mode} selection`, actionId),
+      )
+      if (!copyResult.success) {
+        throw new Error(copyResult.error || `remote ${mode} failed`)
+      }
+
+      const clipboardText = copyResult.clipboard_text || ''
+      if (!clipboardText) {
+        throw new Error('no remote selection to copy')
+      }
+
+      await writeClipboardText(clipboardText)
+
+      if (mode === 'cut') {
+        if (!copyResult.can_delete) {
+          throw new Error(copyResult.error || 'non-editable selection cannot be cut')
+        }
+        const deleteResult = await sendRemoteActionAwaitResult(
+          { type: 'delete_selection', data: {} },
+          10000,
+          (actionId) => addActionLogEntry('cut', 'delete selected text', actionId),
+        )
+        if (!deleteResult.success) {
+          throw new Error(deleteResult.error || 'remote cut failed')
+        }
+      }
+    }
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || isEditableElement(event.target)) {
         return
@@ -518,6 +740,34 @@ export function useRemoteControl() {
 
       const key = normalizeRemoteKey(event.key)
       const hasShortcutModifier = event.ctrlKey || event.metaKey || event.altKey
+
+      if (isModifierKey(key)) {
+        event.preventDefault()
+        return
+      }
+
+      if (isLogicalClipboardShortcut(event, key)) {
+        event.preventDefault()
+        const lowerKey = key.toLowerCase()
+        if (lowerKey === 'v') {
+          void handleLogicalPaste().catch((error) => {
+            toast.error(error instanceof Error ? error.message : 'remote paste failed')
+          })
+          return
+        }
+        if (lowerKey === 'a') {
+          void handleLogicalSelectAll().catch((error) => {
+            toast.error(error instanceof Error ? error.message : 'remote select all failed')
+          })
+          return
+        }
+        if (lowerKey === 'c' || lowerKey === 'x') {
+          void handleLogicalCopy(lowerKey === 'x' ? 'cut' : 'copy').catch((error) => {
+            toast.error(error instanceof Error ? error.message : `remote ${lowerKey === 'x' ? 'cut' : 'copy'} failed`)
+          })
+          return
+        }
+      }
 
       if (!hasShortcutModifier && key.length === 1 && !event.repeat) {
         event.preventDefault()
@@ -534,12 +784,8 @@ export function useRemoteControl() {
       }
 
       event.preventDefault()
-      activeKeys.add(key)
-
-      const actionId = sendRemoteAction({ type: 'key_down', data: { key } })
-      if (actionId) {
-        addActionLogEntry('key', `key down: ${key}`, actionId)
-      }
+      ensureRawModifierKeys(event)
+      sendRawKeyDown(key)
     }
 
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -553,8 +799,7 @@ export function useRemoteControl() {
       }
 
       event.preventDefault()
-      activeKeys.delete(key)
-      sendRemoteAction({ type: 'key_up', data: { key } })
+      sendRawKeyUp(key)
     }
 
     const handlePaste = (event: ClipboardEvent) => {
@@ -584,7 +829,7 @@ export function useRemoteControl() {
       window.removeEventListener('paste', handlePaste)
       activeKeys.clear()
     }
-  }, [addActionLogEntry, keyboardCaptureEnabled, remoteCanControl, remoteConnected, remoteModalOpen, sendRemoteAction])
+  }, [addActionLogEntry, keyboardCaptureEnabled, remoteCanControl, remoteConnected, remoteModalOpen, sendRemoteAction, sendRemoteActionAwaitResult])
 
   const handleRemoteNavigate = useCallback(() => {
     if (!remoteConnected || !remoteCanControl || !remoteUrlInput.trim()) return

@@ -1,0 +1,18 @@
+
+> frontend@0.0.0 test
+> vitest run
+
+
+ RUN  v4.0.18 /Users/nikitalienov/Documents/commentfront/frontend
+
+ ✓ src/hooks/useRemoteControl.test.tsx (14 tests) 33ms
+ ✓ src/components/analytics/CampaignReliabilityAuditCard.test.tsx (1 test) 42ms
+ ✓ src/components/analytics/ProfileHealthConsole.test.tsx (2 tests) 52ms
+ ✓ src/components/remote/RemoteControlModal.test.tsx (1 test) 84ms
+ ✓ src/components/reddit/RedditTab.test.tsx (3 tests) 735ms
+
+ Test Files  5 passed (5)
+      Tests  21 passed (21)
+   Start at  20:24:19
+   Duration  1.61s (transform 405ms, setup 637ms, import 734ms, tests 946ms, environment 1.99s)
+

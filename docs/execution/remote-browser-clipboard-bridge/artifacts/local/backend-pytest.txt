@@ -1,0 +1,462 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.9, pytest-9.0.2, pluggy-1.5.0
+rootdir: /Users/nikitalienov/Documents/commentfront/backend
+plugins: anyio-4.12.1
+collected 370 items
+
+tests/test_adaptive_agent_matching.py ....                               [  1%]
+tests/test_adaptive_agent_reply_fallback.py ....                         [  2%]
+tests/test_browser_factory.py ...                                        [  2%]
+tests/test_campaign_ai.py ............................                   [ 10%]
+tests/test_campaign_reliability_audit.py .....                           [ 11%]
+tests/test_credentials_platform.py ..                                    [ 12%]
+tests/test_dedupe_planning.py .                                          [ 12%]
+tests/test_duplicate_text_guard.py .                                     [ 12%]
+tests/test_forensics.py .....                                            [ 14%]
+tests/test_health_deep_reliability.py ..                                 [ 14%]
+tests/test_job_validation.py ...                                         [ 15%]
+tests/test_media_upload_persistence.py ..                                [ 16%]
+tests/test_premium_actions.py ..................                         [ 21%]
+tests/test_premium_content.py ....                                       [ 22%]
+tests/test_premium_models.py ....                                        [ 23%]
+tests/test_premium_orchestrator.py ................                      [ 27%]
+tests/test_premium_rules.py ..                                           [ 28%]
+tests/test_premium_safety.py ........                                    [ 30%]
+tests/test_premium_scheduler.py ..                                       [ 30%]
+tests/test_premium_store_runs.py .......                                 [ 32%]
+tests/test_premium_verify.py ...                                         [ 33%]
+tests/test_queue_drafts_recovery.py ...........                          [ 36%]
+tests/test_reddit_bot.py ............................................... [ 49%]
+.....................................                                    [ 59%]
+tests/test_reddit_convergence.py ..                                      [ 59%]
+tests/test_reddit_execution.py ....                                      [ 60%]
+tests/test_reddit_growth_generation.py .......................           [ 67%]
+tests/test_reddit_login_audit.py .....                                   [ 68%]
+tests/test_reddit_login_bot.py .........                                 [ 70%]
+tests/test_reddit_login_learning.py .....                                [ 72%]
+tests/test_reddit_mission_store.py ..                                    [ 72%]
+tests/test_reddit_program_api.py ......                                  [ 74%]
+tests/test_reddit_program_notifications.py ..                            [ 74%]
+tests/test_reddit_program_orchestrator.py .............................. [ 82%]
+...                                                                      [ 83%]
+tests/test_reddit_program_store.py ........                              [ 85%]
+tests/test_reddit_rollout.py ....                                        [ 87%]
+tests/test_reddit_session.py ......                                      [ 88%]
+tests/test_remote_lease_service.py ........................              [ 95%]
+tests/test_remote_reservation_regressions.py .........                   [ 97%]
+tests/test_reply_submission_evidence.py ....                             [ 98%]
+tests/test_restriction_recovery_reliability.py .....                     [100%]
+
+=============================== warnings summary ===============================
+../../../../../opt/miniconda3/lib/python3.12/site-packages/starlette/formparsers.py:10
+  /opt/miniconda3/lib/python3.12/site-packages/starlette/formparsers.py:10: PendingDeprecationWarning: Please use `import python_multipart` instead.
+    import multipart
+
+premium_models.py:21
+  /Users/nikitalienov/Documents/commentfront/backend/premium_models.py:21: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    @validator("end_hour")
+
+premium_models.py:34
+  /Users/nikitalienov/Documents/commentfront/backend/premium_models.py:34: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    @validator("ambient_posts")
+
+campaign_ai_product_store.py:23: 1 warning
+tests/test_campaign_ai.py: 96 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/campaign_ai_product_store.py:23: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return datetime.utcnow().isoformat()
+
+main.py:1508
+tests/test_media_upload_persistence.py::test_get_media_or_none_rehydrates_persisted_index
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:1508: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_campaign_ai.py: 28 warnings
+tests/test_health_deep_reliability.py: 2 warnings
+tests/test_queue_drafts_recovery.py: 35 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:341: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "updated_at": datetime.utcnow().isoformat(),
+
+tests/test_campaign_ai.py: 38 warnings
+tests/test_queue_drafts_recovery.py: 16 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/draft_manager.py:58: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "updated_at": datetime.utcnow().isoformat(),
+
+tests/test_campaign_ai.py::test_campaign_ai_generate_creates_draft_with_metadata
+tests/test_campaign_ai.py::test_campaign_ai_generate_updates_existing_draft
+tests/test_campaign_ai.py::test_campaign_ai_generate_updates_last_used_product
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_one_updates_only_target_index
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_all_replaces_full_list
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_all_supports_legacy_intent_metadata
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:4076: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "generated_at": datetime.utcnow().isoformat(),
+
+tests/test_campaign_ai.py::test_campaign_ai_generate_creates_draft_with_metadata
+tests/test_campaign_ai.py::test_campaign_ai_generate_updates_existing_draft
+tests/test_campaign_ai.py::test_campaign_ai_generate_updates_last_used_product
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_one_updates_only_target_index
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_all_replaces_full_list
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_all_supports_legacy_intent_metadata
+tests/test_queue_drafts_recovery.py::test_draft_crud_and_publish_delete_flow
+tests/test_queue_drafts_recovery.py::test_draft_crud_and_publish_delete_flow
+  /Users/nikitalienov/Documents/commentfront/backend/draft_manager.py:86: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow().isoformat()
+
+tests/test_campaign_ai.py::test_campaign_ai_generate_updates_existing_draft
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_one_updates_only_target_index
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_all_replaces_full_list
+tests/test_campaign_ai.py::test_campaign_ai_regenerate_all_supports_legacy_intent_metadata
+tests/test_queue_drafts_recovery.py::test_draft_crud_and_publish_delete_flow
+  /Users/nikitalienov/Documents/commentfront/backend/draft_manager.py:138: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "updated_at": datetime.utcnow().isoformat(),
+
+tests/test_credentials_platform.py: 2 warnings
+tests/test_reddit_convergence.py: 2 warnings
+tests/test_reddit_rollout.py: 6 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/credentials.py:186: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": existing.get("created_at") or datetime.utcnow().isoformat(),
+
+tests/test_credentials_platform.py: 2 warnings
+tests/test_reddit_convergence.py: 2 warnings
+tests/test_reddit_rollout.py: 7 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/credentials.py:187: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "updated_at": datetime.utcnow().isoformat(),
+
+tests/test_credentials_platform.py: 2 warnings
+tests/test_reddit_convergence.py: 3 warnings
+tests/test_reddit_rollout.py: 7 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/credentials.py:122: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "updated_at": datetime.utcnow().isoformat(),
+
+tests/test_dedupe_planning.py::test_dedupe_plan_is_deterministic_and_split_correctly
+tests/test_dedupe_planning.py::test_dedupe_plan_is_deterministic_and_split_correctly
+  /Users/nikitalienov/Documents/commentfront/backend/name_dedupe_workflow.py:171: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "generated_at": datetime.utcnow().isoformat(),
+
+tests/test_duplicate_text_guard.py::test_duplicate_guard_checks_current_campaign_and_history_window
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_duplicate_text_guard.py:12: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_forensics.py::test_profile_manager_marks_suspected_restriction_as_cooldown
+  /Users/nikitalienov/Documents/commentfront/backend/profile_manager.py:601: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_forensics.py: 1 warning
+tests/test_restriction_recovery_reliability.py: 10 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/profile_manager.py:423: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    event_time = timestamp or (datetime.utcnow().isoformat() + "Z")
+
+tests/test_forensics.py::test_profile_manager_marks_suspected_restriction_as_cooldown
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+tests/test_restriction_recovery_reliability.py::test_scheduler_keeps_followup_profiles_for_later_retry
+  /Users/nikitalienov/Documents/commentfront/backend/profile_manager.py:724: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_health_deep_reliability.py::test_health_deep_does_not_trigger_queue_recovery
+tests/test_health_deep_reliability.py::test_health_deep_reports_runtime_proxy_health_fields
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:2619: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "timestamp": datetime.utcnow().isoformat() + "Z",
+
+tests/test_job_validation.py::test_reply_job_validation_positive
+tests/test_job_validation.py::test_reply_job_validation_requires_comment_id
+tests/test_job_validation.py::test_duplicate_guard_flags_text_already_in_active_campaign_without_blocking
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_job_validation.py:26: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "uploaded_at": datetime.utcnow().isoformat(),
+
+tests/test_job_validation.py::test_reply_job_validation_positive
+tests/test_job_validation.py::test_reply_job_validation_requires_comment_id
+tests/test_job_validation.py::test_duplicate_guard_flags_text_already_in_active_campaign_without_blocking
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_job_validation.py:27: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "expires_at": (datetime.utcnow() + timedelta(hours=1)).isoformat(),
+
+tests/test_job_validation.py::test_reply_job_validation_positive
+tests/test_job_validation.py::test_duplicate_guard_flags_text_already_in_active_campaign_without_blocking
+tests/test_media_upload_persistence.py::test_get_media_or_none_rehydrates_persisted_index
+tests/test_media_upload_persistence.py::test_cleanup_expired_media_removes_disk_and_index_entry
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:1474: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_job_validation.py::test_duplicate_guard_flags_text_already_in_active_campaign_without_blocking
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_job_validation.py:96: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_job_validation.py::test_duplicate_guard_flags_text_already_in_active_campaign_without_blocking
+tests/test_queue_drafts_recovery.py::test_queue_duplicate_conflict_returns_warning_and_enqueues
+tests/test_queue_drafts_recovery.py::test_draft_crud_and_publish_delete_flow
+tests/test_queue_drafts_recovery.py::test_test_campaign_duplicate_guard_blocks_history_conflict
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:586: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_job_validation.py::test_duplicate_guard_flags_text_already_in_active_campaign_without_blocking
+tests/test_queue_drafts_recovery.py::test_queue_duplicate_conflict_returns_warning_and_enqueues
+tests/test_queue_drafts_recovery.py::test_draft_crud_and_publish_delete_flow
+tests/test_queue_drafts_recovery.py::test_test_campaign_duplicate_guard_blocks_history_conflict
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:729: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_job_validation.py::test_duplicate_guard_flags_text_already_in_active_campaign_without_blocking
+tests/test_queue_drafts_recovery.py::test_queue_duplicate_conflict_returns_warning_and_enqueues
+tests/test_queue_drafts_recovery.py::test_draft_crud_and_publish_delete_flow
+tests/test_queue_drafts_recovery.py::test_test_campaign_duplicate_guard_blocks_history_conflict
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:206: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    current_time = now or datetime.utcnow()
+
+tests/test_media_upload_persistence.py::test_get_media_or_none_rehydrates_persisted_index
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_media_upload_persistence.py:30: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "uploaded_at": datetime.utcnow().isoformat(),
+
+tests/test_media_upload_persistence.py::test_get_media_or_none_rehydrates_persisted_index
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_media_upload_persistence.py:31: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "expires_at": (datetime.utcnow() + timedelta(hours=1)).isoformat(),
+
+tests/test_media_upload_persistence.py::test_cleanup_expired_media_removes_disk_and_index_entry
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_media_upload_persistence.py:66: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "uploaded_at": datetime.utcnow().isoformat(),
+
+tests/test_media_upload_persistence.py::test_cleanup_expired_media_removes_disk_and_index_entry
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_media_upload_persistence.py:67: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "expires_at": (datetime.utcnow() - timedelta(minutes=1)).isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_queue_duplicate_conflict_returns_warning_and_enqueues
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:59: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_queue_duplicate_conflict_returns_warning_and_enqueues
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:60: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "completed_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_queue_duplicate_conflict_returns_warning_and_enqueues
+tests/test_queue_drafts_recovery.py::test_draft_crud_and_publish_delete_flow
+tests/test_queue_drafts_recovery.py::test_inflight_submit_clicked_recovery_marks_uncertain_no_repost
+tests/test_queue_drafts_recovery.py::test_due_auto_retry_runs_even_with_pending_campaign
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:407: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_inflight_submit_clicked_recovery_marks_uncertain_no_repost
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:839: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "updated_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_test_campaign_duplicate_guard_blocks_history_conflict
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:242: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_test_campaign_duplicate_guard_blocks_history_conflict
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:243: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "completed_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_success_marks_job_exhausted_to_prevent_repost
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:277: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_success_marks_job_exhausted_to_prevent_repost
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:278: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "completed_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_success_marks_job_exhausted_to_prevent_repost
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:291: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "next_retry_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_success_marks_job_exhausted_to_prevent_repost
+tests/test_queue_drafts_recovery.py::test_auto_retry_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:976: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "retried_at": datetime.utcnow().isoformat()
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_success_marks_job_exhausted_to_prevent_repost
+tests/test_queue_drafts_recovery.py::test_auto_retry_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:1014: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    campaign["last_retry_at"] = datetime.utcnow().isoformat()
+
+tests/test_queue_drafts_recovery.py::test_due_auto_retry_runs_even_with_pending_campaign
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:345: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_due_auto_retry_runs_even_with_pending_campaign
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:346: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "completed_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_due_auto_retry_runs_even_with_pending_campaign
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:361: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "next_retry_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_due_auto_retry_runs_even_with_pending_campaign
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:930: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow().isoformat()
+
+tests/test_queue_drafts_recovery.py::test_due_auto_retry_runs_even_with_pending_campaign
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:585: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    overdue_seconds = max(0, int((datetime.utcnow() - next_retry_dt).total_seconds()))
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:405: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:406: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "completed_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:422: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "next_retry_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_auto_retry_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:1062: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ar["completed_at"] = datetime.utcnow().isoformat()
+
+tests/test_queue_drafts_recovery.py::test_retry_all_does_not_exhaust_early_on_infrastructure_failures
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:503: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_retry_all_does_not_exhaust_early_on_infrastructure_failures
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:504: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "completed_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py: 10 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:5449: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "retried_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py: 14 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/queue_manager.py:636: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    campaign["last_retry_at"] = datetime.utcnow().isoformat()
+
+tests/test_queue_drafts_recovery.py::test_retry_all_does_not_exhaust_early_on_infrastructure_failures
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:5377: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "retried_at": datetime.utcnow().isoformat()
+
+tests/test_queue_drafts_recovery.py::test_retry_all_still_exhausts_early_when_post_is_dead
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:595: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_retry_all_still_exhausts_early_when_post_is_dead
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:596: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "completed_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_retry_all_still_exhausts_early_when_post_is_dead
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:5482: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "retried_at": datetime.utcnow().isoformat()
+
+tests/test_queue_drafts_recovery.py::test_retry_all_still_exhausts_early_when_post_is_dead
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:5272: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "retried_at": datetime.utcnow().isoformat()
+
+tests/test_queue_drafts_recovery.py::test_retry_all_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:694: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_retry_all_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/tests/test_queue_drafts_recovery.py:695: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "completed_at": datetime.utcnow().isoformat(),
+
+tests/test_queue_drafts_recovery.py::test_retry_all_reconciles_existing_comment_before_repost
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:5321: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "retried_at": datetime.utcnow().isoformat(),
+
+tests/test_reddit_bot.py::test_ensure_subreddit_user_flair_prefers_thread_url_before_root
+  /Users/nikitalienov/Documents/commentfront/backend/reddit_bot.py:2482: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "updated_at": datetime.utcnow().isoformat(),
+
+tests/test_reddit_convergence.py::test_execute_reddit_unlinked_convergence_uses_existing_linked_session
+  /Users/nikitalienov/Documents/commentfront/backend/credentials.py:275: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self.credentials[storage_key]["updated_at"] = datetime.utcnow().isoformat()
+
+tests/test_reddit_convergence.py: 10 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/reddit_convergence.py:45: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return datetime.utcnow().isoformat() + "Z"
+
+tests/test_reddit_execution.py::test_execute_reddit_execution_request_persists_run_record
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:6727: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    created_at = datetime.utcnow().isoformat() + "Z"
+
+tests/test_reddit_execution.py::test_execute_reddit_execution_request_persists_run_record
+  /Users/nikitalienov/Documents/commentfront/backend/main.py:6599: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_reddit_login_learning.py::test_learning_store_records_attempts_and_recommends_strategy
+tests/test_reddit_login_learning.py::test_learning_store_prioritizes_otp_retry_for_otp_stage_interaction_failures
+tests/test_reddit_login_learning.py::test_learning_store_remembers_older_otp_stage_progress
+tests/test_reddit_login_learning.py::test_learning_store_remembers_older_otp_stage_progress
+tests/test_reddit_login_learning.py::test_learning_store_prioritizes_actual_otp_reaching_strategy_for_username_accounts
+tests/test_reddit_login_learning.py::test_learning_store_prioritizes_actual_otp_reaching_strategy_for_username_accounts
+  /Users/nikitalienov/Documents/commentfront/backend/reddit_login_learning.py:283: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "ts": datetime.utcnow().isoformat() + "Z",
+
+tests/test_reddit_login_learning.py::test_learning_store_records_attempts_and_recommends_strategy
+tests/test_reddit_login_learning.py::test_learning_store_prioritizes_otp_retry_for_otp_stage_interaction_failures
+tests/test_reddit_login_learning.py::test_learning_store_remembers_older_otp_stage_progress
+tests/test_reddit_login_learning.py::test_learning_store_remembers_older_otp_stage_progress
+tests/test_reddit_login_learning.py::test_learning_store_prioritizes_actual_otp_reaching_strategy_for_username_accounts
+tests/test_reddit_login_learning.py::test_learning_store_prioritizes_actual_otp_reaching_strategy_for_username_accounts
+tests/test_reddit_login_learning.py::test_learning_store_syncs_existing_linked_sessions
+  /Users/nikitalienov/Documents/commentfront/backend/reddit_login_learning.py:174: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self.data["updated_at"] = datetime.utcnow().isoformat() + "Z"
+
+tests/test_reddit_mission_store.py: 8 warnings
+tests/test_reddit_program_api.py: 3 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/reddit_mission_store.py:18: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return datetime.utcnow()
+
+tests/test_reddit_rollout.py: 27 warnings
+  /Users/nikitalienov/Documents/commentfront/backend/reddit_rollout.py:39: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return datetime.utcnow().isoformat() + "Z"
+
+tests/test_reddit_session.py::test_extract_from_context_persists_device_and_identity_fields
+  /Users/nikitalienov/Documents/commentfront/backend/reddit_session.py:78: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "extracted_at": datetime.utcnow().isoformat(),
+
+tests/test_reddit_session.py::test_subreddit_identity_state_round_trip
+  /Users/nikitalienov/Documents/commentfront/backend/reddit_session.py:200: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self.data["updated_at"] = datetime.utcnow().isoformat()
+
+tests/test_remote_lease_service.py: 6 warnings
+tests/test_remote_reservation_regressions.py: 5 warnings
+tests/test_restriction_recovery_reliability.py: 1 warning
+  /Users/nikitalienov/Documents/commentfront/backend/profile_manager.py:107: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "reserved_at": datetime.utcnow().isoformat() + "Z",
+
+tests/test_restriction_recovery_reliability.py::test_reset_exhausted_appeal_state_does_not_increment_attempts
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+tests/test_restriction_recovery_reliability.py::test_verify_all_counts_followup_and_busy_skips
+tests/test_restriction_recovery_reliability.py::test_verify_all_counts_followup_and_busy_skips
+tests/test_restriction_recovery_reliability.py::test_verify_all_counts_followup_and_busy_skips
+tests/test_restriction_recovery_reliability.py::test_verify_all_counts_followup_and_busy_skips
+tests/test_restriction_recovery_reliability.py::test_verify_all_counts_followup_and_busy_skips
+tests/test_restriction_recovery_reliability.py::test_scheduler_keeps_followup_profiles_for_later_retry
+  /Users/nikitalienov/Documents/commentfront/backend/profile_manager.py:544: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_restriction_recovery_reliability.py::test_reset_exhausted_appeal_state_does_not_increment_attempts
+tests/test_restriction_recovery_reliability.py::test_reset_exhausted_appeal_state_does_not_increment_attempts
+tests/test_restriction_recovery_reliability.py::test_reset_exhausted_appeal_state_does_not_increment_attempts
+  /Users/nikitalienov/Documents/commentfront/backend/profile_manager.py:902: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_restriction_recovery_reliability.py::test_reset_exhausted_appeal_state_does_not_increment_attempts
+  /Users/nikitalienov/Documents/commentfront/backend/profile_manager.py:679: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow().isoformat() + "Z"
+
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+tests/test_restriction_recovery_reliability.py::test_analytics_endpoint_keeps_zero_usage_and_manual_unblock_visible
+  /Users/nikitalienov/Documents/commentfront/backend/profile_manager.py:467: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_restriction_recovery_reliability.py::test_verify_all_counts_followup_and_busy_skips
+  /Users/nikitalienov/Documents/commentfront/backend/appeal_manager.py:488: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    batch_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+tests/test_restriction_recovery_reliability.py::test_scheduler_keeps_followup_profiles_for_later_retry
+  /Users/nikitalienov/Documents/commentfront/backend/appeal_scheduler.py:122: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self.state["last_run_at"] = datetime.utcnow().isoformat()
+
+tests/test_restriction_recovery_reliability.py::test_scheduler_keeps_followup_profiles_for_later_retry
+  /Users/nikitalienov/Documents/commentfront/backend/appeal_scheduler.py:220: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    results["completed_at"] = datetime.utcnow().isoformat()
+
+tests/test_restriction_recovery_reliability.py::test_scheduler_keeps_followup_profiles_for_later_retry
+  /Users/nikitalienov/Documents/commentfront/backend/appeal_scheduler.py:75: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self.state["next_run_at"] = (datetime.utcnow() + timedelta(hours=interval)).isoformat()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+====================== 370 passed, 481 warnings in 27.66s ======================

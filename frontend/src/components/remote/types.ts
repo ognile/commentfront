@@ -10,7 +10,7 @@ export interface RemoteSessionTarget {
 export interface ActionLogEntry {
   id: string
   timestamp: string
-  type: 'tap' | 'drag' | 'scroll' | 'key' | 'navigate' | 'type' | 'paste' | 'takeover'
+  type: 'tap' | 'drag' | 'scroll' | 'key' | 'navigate' | 'type' | 'paste' | 'takeover' | 'copy' | 'cut' | 'select'
   details: string
   status: 'sent' | 'success' | 'failed'
 }

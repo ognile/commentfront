@@ -1218,9 +1218,120 @@ class RemoteLease:
 
         if action_type == "paste_text":
             text = str(action_data.get("text") or "")
+            selection = await self._selection_snapshot()
+            if selection.get("selection_kind") not in {"input", "textarea", "contenteditable"}:
+                return {
+                    "success": False,
+                    "action": "paste_text",
+                    "error": "no focused editable target",
+                    "focus_snapshot": selection.get("focus_snapshot"),
+                    "selection_kind": selection.get("selection_kind"),
+                    "selection_length": int(selection.get("selection_length") or 0),
+                }
             await self._insert_text(text)
-            self._log_event("paste_text", {"length": len(text), "user": viewer.username})
-            return {"success": True, "action": "paste_text", "length": len(text)}
+            self._log_event(
+                "paste_text",
+                {"length": len(text), "user": viewer.username, "focus_snapshot": selection.get("focus_snapshot")},
+            )
+            return {
+                "success": True,
+                "action": "paste_text",
+                "length": len(text),
+                "focus_snapshot": selection.get("focus_snapshot"),
+                "selection_kind": selection.get("selection_kind"),
+                "selection_length": int(selection.get("selection_length") or 0),
+            }
+
+        if action_type == "copy_selection":
+            selection = await self._selection_snapshot()
+            selection_length = int(selection.get("selection_length") or 0)
+            clipboard_text = str(selection.get("selected_text") or "")
+            if not clipboard_text:
+                return {
+                    "success": False,
+                    "action": "copy_selection",
+                    "error": "no remote selection",
+                    "clipboard_text": "",
+                    "selection_kind": selection.get("selection_kind"),
+                    "selection_length": selection_length,
+                    "can_delete": bool(selection.get("can_delete")),
+                    "focus_snapshot": selection.get("focus_snapshot"),
+                }
+            self._log_event(
+                "copy_selection",
+                {
+                    "user": viewer.username,
+                    "selection_kind": selection.get("selection_kind"),
+                    "selection_length": selection_length,
+                    "can_delete": bool(selection.get("can_delete")),
+                    "focus_snapshot": selection.get("focus_snapshot"),
+                },
+            )
+            return {
+                "success": True,
+                "action": "copy_selection",
+                "clipboard_text": clipboard_text,
+                "selection_kind": selection.get("selection_kind"),
+                "selection_length": selection_length,
+                "can_delete": bool(selection.get("can_delete")),
+                "focus_snapshot": selection.get("focus_snapshot"),
+            }
+
+        if action_type == "delete_selection":
+            selection = await self._selection_snapshot()
+            selection_length = int(selection.get("selection_length") or 0)
+            if selection_length == 0:
+                return {
+                    "success": False,
+                    "action": "delete_selection",
+                    "error": "no remote selection",
+                    "selection_kind": selection.get("selection_kind"),
+                    "selection_length": selection_length,
+                    "can_delete": bool(selection.get("can_delete")),
+                    "focus_snapshot": selection.get("focus_snapshot"),
+                }
+            if not selection.get("can_delete"):
+                return {
+                    "success": False,
+                    "action": "delete_selection",
+                    "error": "non-editable selection cannot be cut",
+                    "selection_kind": selection.get("selection_kind"),
+                    "selection_length": selection_length,
+                    "can_delete": False,
+                    "focus_snapshot": selection.get("focus_snapshot"),
+                }
+            await self._page.keyboard.press("Backspace")
+            self._log_event(
+                "delete_selection",
+                {
+                    "user": viewer.username,
+                    "selection_kind": selection.get("selection_kind"),
+                    "selection_length": selection_length,
+                    "focus_snapshot": selection.get("focus_snapshot"),
+                },
+            )
+            return {
+                "success": True,
+                "action": "delete_selection",
+                "selection_kind": selection.get("selection_kind"),
+                "selection_length": selection_length,
+                "can_delete": True,
+                "focus_snapshot": selection.get("focus_snapshot"),
+            }
+
+        if action_type == "select_all":
+            result = await self._select_all()
+            if result.get("success"):
+                self._log_event(
+                    "select_all",
+                    {
+                        "user": viewer.username,
+                        "selection_kind": result.get("selection_kind"),
+                        "selection_length": result.get("selection_length"),
+                        "focus_snapshot": result.get("focus_snapshot"),
+                    },
+                )
+            return result
 
         if action_type == "key_down":
             key = str(action_data.get("key") or "")
@@ -1327,6 +1438,189 @@ class RemoteLease:
             return
         assert self._page is not None
         await self._page.keyboard.insert_text(text)
+
+    async def _selection_snapshot(self) -> Dict[str, Any]:
+        assert self._page is not None
+        snapshot = await self._page.evaluate(
+            """() => {
+                const selection = window.getSelection();
+                const active = document.activeElement instanceof Element ? document.activeElement : null;
+                const textInputTypes = new Set([
+                  'text', 'search', 'url', 'tel', 'email', 'password', 'number',
+                ]);
+                const isTextControl = (node) => {
+                  if (node instanceof HTMLTextAreaElement) return true;
+                  if (!(node instanceof HTMLInputElement)) return false;
+                  const type = (node.type || 'text').toLowerCase();
+                  return textInputTypes.has(type);
+                };
+                const contentEditableAncestor = (node) => {
+                  let element = node instanceof Element ? node : node && node.parentElement;
+                  while (element) {
+                    if (element instanceof HTMLElement && element.isContentEditable) {
+                      return element;
+                    }
+                    element = element.parentElement;
+                  }
+                  return null;
+                };
+                const describe = (element) => {
+                  if (!(element instanceof Element)) return null;
+                  const ariaLabel = element.getAttribute('aria-label');
+                  const role = element.getAttribute('role');
+                  const placeholder =
+                    element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+                      ? element.placeholder || null
+                      : element.getAttribute('placeholder');
+                  return {
+                    tag_name: element.tagName.toLowerCase(),
+                    input_type: element instanceof HTMLInputElement ? (element.type || 'text').toLowerCase() : null,
+                    aria_label: ariaLabel || null,
+                    role: role || null,
+                    placeholder: placeholder || null,
+                    is_content_editable: element instanceof HTMLElement ? element.isContentEditable : false,
+                  };
+                };
+
+                const editableTarget = (() => {
+                  if (isTextControl(active)) {
+                    return active;
+                  }
+                  if (active instanceof HTMLElement && active.isContentEditable) {
+                    return active;
+                  }
+                  if (selection && selection.rangeCount > 0) {
+                    return contentEditableAncestor(selection.anchorNode);
+                  }
+                  return null;
+                })();
+
+                if (isTextControl(editableTarget)) {
+                  const start = Number(editableTarget.selectionStart ?? 0);
+                  const end = Number(editableTarget.selectionEnd ?? start);
+                  const selectedText = String(editableTarget.value || '').slice(start, end);
+                  return {
+                    selection_kind: editableTarget instanceof HTMLTextAreaElement ? 'textarea' : 'input',
+                    selection_length: selectedText.length,
+                    selected_text: selectedText,
+                    can_delete: selectedText.length > 0,
+                    focus_snapshot: describe(editableTarget),
+                  };
+                }
+
+                if (editableTarget instanceof HTMLElement && editableTarget.isContentEditable) {
+                  const selectedText = selection ? selection.toString() : '';
+                  return {
+                    selection_kind: 'contenteditable',
+                    selection_length: selectedText.length,
+                    selected_text: selectedText,
+                    can_delete: selectedText.length > 0,
+                    focus_snapshot: describe(editableTarget),
+                  };
+                }
+
+                const selectedText = selection ? selection.toString() : '';
+                return {
+                  selection_kind: selectedText ? 'page' : 'none',
+                  selection_length: selectedText.length,
+                  selected_text: selectedText,
+                  can_delete: false,
+                  focus_snapshot: describe(active),
+                };
+            }"""
+        )
+        return dict(snapshot or {})
+
+    async def _select_all(self) -> Dict[str, Any]:
+        assert self._page is not None
+        result = await self._page.evaluate(
+            """() => {
+                const selection = window.getSelection();
+                const active = document.activeElement instanceof Element ? document.activeElement : null;
+                const textInputTypes = new Set([
+                  'text', 'search', 'url', 'tel', 'email', 'password', 'number',
+                ]);
+                const isTextControl = (node) => {
+                  if (node instanceof HTMLTextAreaElement) return true;
+                  if (!(node instanceof HTMLInputElement)) return false;
+                  const type = (node.type || 'text').toLowerCase();
+                  return textInputTypes.has(type);
+                };
+                const contentEditableAncestor = (node) => {
+                  let element = node instanceof Element ? node : node && node.parentElement;
+                  while (element) {
+                    if (element instanceof HTMLElement && element.isContentEditable) {
+                      return element;
+                    }
+                    element = element.parentElement;
+                  }
+                  return null;
+                };
+                const describe = (element) => {
+                  if (!(element instanceof Element)) return null;
+                  const ariaLabel = element.getAttribute('aria-label');
+                  const role = element.getAttribute('role');
+                  const placeholder =
+                    element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+                      ? element.placeholder || null
+                      : element.getAttribute('placeholder');
+                  return {
+                    tag_name: element.tagName.toLowerCase(),
+                    input_type: element instanceof HTMLInputElement ? (element.type || 'text').toLowerCase() : null,
+                    aria_label: ariaLabel || null,
+                    role: role || null,
+                    placeholder: placeholder || null,
+                    is_content_editable: element instanceof HTMLElement ? element.isContentEditable : false,
+                  };
+                };
+
+                if (isTextControl(active)) {
+                  active.focus();
+                  const value = String(active.value || '');
+                  active.setSelectionRange(0, value.length);
+                  return {
+                    success: true,
+                    action: 'select_all',
+                    selection_kind: active instanceof HTMLTextAreaElement ? 'textarea' : 'input',
+                    selection_length: value.length,
+                    can_delete: value.length > 0,
+                    focus_snapshot: describe(active),
+                  };
+                }
+
+                const editableTarget =
+                  (active instanceof HTMLElement && active.isContentEditable ? active : null) ||
+                  (selection && selection.rangeCount > 0 ? contentEditableAncestor(selection.anchorNode) : null);
+
+                if (editableTarget instanceof HTMLElement && editableTarget.isContentEditable) {
+                  editableTarget.focus();
+                  const range = document.createRange();
+                  range.selectNodeContents(editableTarget);
+                  selection?.removeAllRanges();
+                  selection?.addRange(range);
+                  const selectedText = selection ? selection.toString() : '';
+                  return {
+                    success: true,
+                    action: 'select_all',
+                    selection_kind: 'contenteditable',
+                    selection_length: selectedText.length,
+                    can_delete: selectedText.length > 0,
+                    focus_snapshot: describe(editableTarget),
+                  };
+                }
+
+                return {
+                  success: false,
+                  action: 'select_all',
+                  error: 'no focused editable target',
+                  selection_kind: 'none',
+                  selection_length: 0,
+                  can_delete: false,
+                  focus_snapshot: describe(active),
+                };
+            }"""
+        )
+        return dict(result or {})
 
     def _refresh_page_state(self) -> None:
         if not self._page or self._page.is_closed():

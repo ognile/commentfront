@@ -103,6 +103,7 @@ class _FakePage:
     def __init__(self):
         self.goto_calls = []
         self.viewport_size = {"width": 393, "height": 873}
+        self.keyboard = _FakeKeyboard()
 
     async def goto(self, url, wait_until, timeout):
         self.goto_calls.append({"url": url, "wait_until": wait_until, "timeout": timeout})
@@ -111,12 +112,66 @@ class _FakePage:
         return False
 
 
+class _FakeKeyboard:
+    def __init__(self):
+        self.down_calls = []
+        self.up_calls = []
+        self.press_calls = []
+        self.insert_text_calls = []
+
+    async def down(self, key):
+        self.down_calls.append(key)
+
+    async def up(self, key):
+        self.up_calls.append(key)
+
+    async def press(self, key):
+        self.press_calls.append(key)
+
+    async def insert_text(self, text):
+        self.insert_text_calls.append(text)
+
+
+class _ScriptedEvaluatePage(_FakePage):
+    def __init__(self, evaluate_results):
+        super().__init__()
+        self.evaluate_results = list(evaluate_results)
+        self.evaluate_calls = []
+
+    async def evaluate(self, script, arg=None):
+        self.evaluate_calls.append({"script": script, "arg": arg})
+        if not self.evaluate_results:
+            return None
+        result = self.evaluate_results.pop(0)
+        return result(arg) if callable(result) else result
+
+
 async def _async_noop(*_args, **_kwargs):
     return None
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+async def _build_action_lease(page, monkeypatch):
+    service = remote_lease_service.RemoteLeaseService()
+    lease = remote_lease_service.RemoteLease(
+        service=service,
+        lease_id="lease-action",
+        session_id="alpha",
+        platform="facebook",
+        controller_user="alice",
+    )
+    lease._action_worker_task.cancel()
+    try:
+        await lease._action_worker_task
+    except asyncio.CancelledError:
+        pass
+
+    monkeypatch.setattr(lease, "ensure_browser_ready", _async_noop)
+    lease._page = page
+    return lease
 
 
 @pytest.fixture
@@ -635,6 +690,172 @@ def test_action_result_prunes_disconnected_viewer(isolated_remote_environment, m
     assert service.get_viewer(ws) is None
 
     _run(service.close_lease(lease, reason="test_done"))
+
+
+@pytest.mark.parametrize(
+    ("selection_kind", "selected_text", "can_delete", "focus_snapshot"),
+    [
+        ("input", "hello", True, {"tag_name": "input", "input_type": "text"}),
+        ("textarea", "hello textarea", True, {"tag_name": "textarea"}),
+        ("contenteditable", "hello div", True, {"tag_name": "div", "is_content_editable": True}),
+        ("page", "page selection", False, {"tag_name": "body"}),
+    ],
+)
+def test_copy_selection_returns_selection_payload(selection_kind, selected_text, can_delete, focus_snapshot, monkeypatch):
+    async def _exercise():
+        page = _ScriptedEvaluatePage(
+            [
+                {
+                    "selection_kind": selection_kind,
+                    "selection_length": len(selected_text),
+                    "selected_text": selected_text,
+                    "can_delete": can_delete,
+                    "focus_snapshot": focus_snapshot,
+                }
+            ]
+        )
+        lease = await _build_action_lease(page, monkeypatch)
+        viewer = remote_lease_service.RemoteViewer(websocket=_FakeWebSocket(), username="alice", role="controller")
+
+        result = await lease._execute_action(viewer=viewer, action_type="copy_selection", action_data={})
+
+        assert result == {
+            "success": True,
+            "action": "copy_selection",
+            "clipboard_text": selected_text,
+            "selection_kind": selection_kind,
+            "selection_length": len(selected_text),
+            "can_delete": can_delete,
+            "focus_snapshot": focus_snapshot,
+        }
+
+    _run(_exercise())
+
+
+def test_delete_selection_rejects_noneditable_selection(monkeypatch):
+    async def _exercise():
+        page = _ScriptedEvaluatePage(
+            [
+                {
+                    "selection_kind": "page",
+                    "selection_length": 6,
+                    "selected_text": "public",
+                    "can_delete": False,
+                    "focus_snapshot": {"tag_name": "body"},
+                }
+            ]
+        )
+        lease = await _build_action_lease(page, monkeypatch)
+        viewer = remote_lease_service.RemoteViewer(websocket=_FakeWebSocket(), username="alice", role="controller")
+
+        result = await lease._execute_action(viewer=viewer, action_type="delete_selection", action_data={})
+
+        assert result["success"] is False
+        assert result["error"] == "non-editable selection cannot be cut"
+        assert page.keyboard.press_calls == []
+
+    _run(_exercise())
+
+
+def test_delete_selection_uses_backspace_for_editable_selection(monkeypatch):
+    async def _exercise():
+        page = _ScriptedEvaluatePage(
+            [
+                {
+                    "selection_kind": "textarea",
+                    "selection_length": 12,
+                    "selected_text": "hello world!",
+                    "can_delete": True,
+                    "focus_snapshot": {"tag_name": "textarea"},
+                }
+            ]
+        )
+        lease = await _build_action_lease(page, monkeypatch)
+        viewer = remote_lease_service.RemoteViewer(websocket=_FakeWebSocket(), username="alice", role="controller")
+
+        result = await lease._execute_action(viewer=viewer, action_type="delete_selection", action_data={})
+
+        assert result["success"] is True
+        assert result["selection_kind"] == "textarea"
+        assert page.keyboard.press_calls == ["Backspace"]
+
+    _run(_exercise())
+
+
+def test_select_all_returns_focus_snapshot(monkeypatch):
+    async def _exercise():
+        page = _ScriptedEvaluatePage(
+            [
+                {
+                    "success": True,
+                    "action": "select_all",
+                    "selection_kind": "contenteditable",
+                    "selection_length": 9,
+                    "can_delete": True,
+                    "focus_snapshot": {"tag_name": "div", "aria_label": "Write a comment", "is_content_editable": True},
+                }
+            ]
+        )
+        lease = await _build_action_lease(page, monkeypatch)
+        viewer = remote_lease_service.RemoteViewer(websocket=_FakeWebSocket(), username="alice", role="controller")
+
+        result = await lease._execute_action(viewer=viewer, action_type="select_all", action_data={})
+
+        assert result["success"] is True
+        assert result["focus_snapshot"]["aria_label"] == "Write a comment"
+        assert result["selection_length"] == 9
+
+    _run(_exercise())
+
+
+def test_paste_text_requires_editable_focus_and_returns_focus_snapshot(monkeypatch):
+    async def _exercise():
+        page = _ScriptedEvaluatePage(
+            [
+                {
+                    "selection_kind": "contenteditable",
+                    "selection_length": 0,
+                    "selected_text": "",
+                    "can_delete": False,
+                    "focus_snapshot": {"tag_name": "div", "aria_label": "Write a comment", "is_content_editable": True},
+                }
+            ]
+        )
+        lease = await _build_action_lease(page, monkeypatch)
+        viewer = remote_lease_service.RemoteViewer(websocket=_FakeWebSocket(), username="alice", role="controller")
+
+        result = await lease._execute_action(viewer=viewer, action_type="paste_text", action_data={"text": "hello"})
+
+        assert result["success"] is True
+        assert result["focus_snapshot"]["aria_label"] == "Write a comment"
+        assert page.keyboard.insert_text_calls == ["hello"]
+
+    _run(_exercise())
+
+
+def test_paste_text_rejects_missing_editable_focus(monkeypatch):
+    async def _exercise():
+        page = _ScriptedEvaluatePage(
+            [
+                {
+                    "selection_kind": "none",
+                    "selection_length": 0,
+                    "selected_text": "",
+                    "can_delete": False,
+                    "focus_snapshot": {"tag_name": "body"},
+                }
+            ]
+        )
+        lease = await _build_action_lease(page, monkeypatch)
+        viewer = remote_lease_service.RemoteViewer(websocket=_FakeWebSocket(), username="alice", role="controller")
+
+        result = await lease._execute_action(viewer=viewer, action_type="paste_text", action_data={"text": "hello"})
+
+        assert result["success"] is False
+        assert result["error"] == "no focused editable target"
+        assert page.keyboard.insert_text_calls == []
+
+    _run(_exercise())
 
 
 def test_takeover_prunes_dead_observer_and_keeps_live_controller(isolated_remote_environment, monkeypatch):

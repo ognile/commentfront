@@ -214,5 +214,12 @@ def test_normalize_remote_action_keeps_only_canonical_shape():
         "action_id": "action-1",
     }
 
+    copy_action = main._normalize_remote_action("copy_selection", {}, "action-2")
+    assert copy_action == {
+        "type": "copy_selection",
+        "data": {},
+        "action_id": "action-2",
+    }
+
     with pytest.raises(main.RemoteLeaseError, match="unsupported remote action: scroll"):
         main._normalize_remote_action("scroll", {"deltaY": 120}, "legacy-1")
