@@ -3254,15 +3254,33 @@ async def _same_author_text_match_count(page, *, author_username: Optional[str],
                     const rect = node.getBoundingClientRect();
                     return rect.width >= 12 && rect.height >= 12 && rect.bottom >= 0 && rect.right >= 0;
                 };
-                const candidates = Array.from(document.querySelectorAll('article, shreddit-comment, faceplate-tracker, div'));
+                const rootSelector = 'shreddit-comment, faceplate-tracker, article, [data-testid="comment"]';
+                const highestRelevantRoot = (node) => {
+                    let current = node.closest(rootSelector);
+                    if (!current) return node;
+                    let parent = current.parentElement ? current.parentElement.closest(rootSelector) : null;
+                    while (parent) {
+                        current = parent;
+                        parent = current.parentElement ? current.parentElement.closest(rootSelector) : null;
+                    }
+                    return current;
+                };
+                const candidates = Array.from(document.querySelectorAll(rootSelector));
+                const seen = new Set();
                 let matches = 0;
                 for (const node of candidates) {
-                    if (!visible(node)) continue;
-                    const combined = normalize(node.innerText || node.textContent || '');
+                    const root = highestRelevantRoot(node);
+                    if (!visible(root)) continue;
+                    const combined = normalize(root.innerText || root.textContent || '');
                     if (!combined.includes(textNeedle)) continue;
                     if (!usernameNeedles.some((needle) => combined.includes(`u/${needle}`) || combined.includes(` ${needle} `) || combined.startsWith(needle))) {
                         continue;
                     }
+                    const key = root.getAttribute('thingid')
+                        || root.getAttribute('id')
+                        || `${root.tagName}:${combined.slice(0, 240)}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
                     matches += 1;
                 }
                 return matches;

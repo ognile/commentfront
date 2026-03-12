@@ -1778,6 +1778,27 @@ def test_build_reply_target_surfaces_adds_canonical_and_context_variants():
     ]
 
 
+def test_same_author_text_match_count_uses_unique_comment_roots():
+    class _Page:
+        async def evaluate(self, script, arg):
+            assert 'div' not in script
+            assert 'highestRelevantRoot' in script
+            assert '[data-testid="comment"]' in script
+            assert arg["textNeedle"] == "reply text"
+            assert "amy_schaefera" in arg["usernameNeedles"]
+            return 1
+
+    count = asyncio.run(
+        reddit_bot._same_author_text_match_count(
+            _Page(),
+            author_username="Amy_Schaefera",
+            text="reply text",
+        )
+    )
+
+    assert count == 1
+
+
 def test_click_comment_upvote_region_tries_fallback_candidates(monkeypatch):
     page = _FakePage()
     active_points = []
