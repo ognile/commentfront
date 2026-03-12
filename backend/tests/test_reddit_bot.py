@@ -1435,6 +1435,82 @@ def test_create_post_retries_submit_after_required_flair(monkeypatch):
     assert post_clicks == ["post", "post"]
 
 
+def test_create_post_retries_submit_when_flair_requirement_appears_after_first_click(monkeypatch, tmp_path):
+    upload_locator = _FakeUploadLocator()
+    image_path = tmp_path / "proof.png"
+    image_path.write_bytes(b"png")
+
+    class _FakeMediaPage(_FakePage):
+        def locator(self, selector):
+            if selector == "body":
+                return _FakeBodyLocator(self.body_text)
+            if selector == 'input[type="file"]':
+                return upload_locator
+            raise AssertionError(f"unexpected locator: {selector}")
+
+    page = _FakeMediaPage()
+    page.url = "https://www.reddit.com/r/ATBGE/submit?type=IMAGE"
+    post_clicks = []
+    ensured_flair = []
+    selected_tabs = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_click_first(_page, selectors, timeout_ms=4000):
+        if tuple(selectors) == tuple(reddit_bot.POST["post_button"]):
+            post_clicks.append("post")
+            if len(post_clicks) >= 2:
+                page.url = "https://www.reddit.com/r/ATBGE/comments/example/new_post/"
+            return True
+        raise AssertionError(f"unexpected selectors: {selectors}")
+
+    flair_checks = iter([False, True])
+
+    async def fake_requires_flair(_page):
+        return next(flair_checks)
+
+    async def fake_ensure_post_flair(_page):
+        ensured_flair.append("ensured")
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_select_post_compose_tab", lambda *_args, label: asyncio.sleep(0, result=selected_tabs.append(label) or True))
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_fill_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
+    monkeypatch.setattr(reddit_bot, "_post_requires_flair", fake_requires_flair)
+    monkeypatch.setattr(reddit_bot, "_ensure_post_flair", fake_ensure_post_flair)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="hello title",
+            subreddit="ATBGE",
+            image_path=str(image_path),
+        )
+    )
+
+    assert result["success"] is True
+    assert result["current_url"] == "https://www.reddit.com/r/ATBGE/comments/example/new_post/"
+    assert post_clicks == ["post", "post"]
+    assert ensured_flair == ["ensured"]
+    assert selected_tabs == ["Images & Video"]
+    assert upload_locator.paths == [str(image_path.resolve())]
+
+
 def test_create_post_returns_error_when_required_flair_cannot_be_selected(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/PCOS/submit?type=TEXT"

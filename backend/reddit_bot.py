@@ -3982,6 +3982,15 @@ async def create_post(
 
             await page.wait_for_timeout(5000)
             current_url = page.url
+            if "/submit" in str(current_url or "") and await _post_requires_flair(page):
+                if not await _ensure_post_flair(page):
+                    await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED DELAYED")
+                    raise RuntimeError("Reddit post flair selection failed")
+                await _dismiss_reddit_open_app_sheet(page)
+                if not await _click_first(page, POST["post_button"], timeout_ms=5000):
+                    raise RuntimeError("Reddit Post button not found after delayed flair selection")
+                await page.wait_for_timeout(5000)
+                current_url = page.url
             actor_username = session.get_username() if hasattr(session, "get_username") else None
             created_post_url = current_url if "/comments/" in current_url else None
             if not created_post_url:
