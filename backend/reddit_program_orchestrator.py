@@ -484,7 +484,13 @@ class RedditProgramOrchestrator:
             item["result"] = self._compact_result(result)
             self._append_target_history(program, item, result, actor_username=actor_username)
         else:
-            self._record_failure(program, item, result, verification_error)
+            self._record_failure(
+                program,
+                item,
+                result,
+                verification_error,
+                actor_username=actor_username,
+            )
 
         program.setdefault("events", []).append(
             {
@@ -845,6 +851,7 @@ class RedditProgramOrchestrator:
         verification_error: Optional[str],
         *,
         consume_attempt: bool = True,
+        actor_username: Optional[str] = None,
     ) -> None:
         policy = _execution_policy(program)
         max_attempts = max(1, int(policy.get("max_attempts_per_item", 5)))
@@ -856,6 +863,14 @@ class RedditProgramOrchestrator:
             item["attempts"] = max(0, int(item.get("attempts", 0)) - 1)
         item["result"] = self._compact_result(result)
         item["error"] = error
+        self._append_target_history(program, item, result, actor_username=actor_username)
+
+        if classification == "community_restricted" and self._retry_discovered_target_after_community_restriction(
+            program,
+            item=item,
+            result=result,
+        ):
+            return
 
         if classification in {"community_restricted", "profile_capability"} and self._reroute_after_community_block(program, item=item, result=result):
             return
@@ -935,8 +950,43 @@ class RedditProgramOrchestrator:
         item["error"] = f"rerouting after community restriction in r/{subreddit}" if subreddit else "rerouting after community restriction"
         return True
 
+    def _retry_discovered_target_after_community_restriction(
+        self,
+        program: Dict[str, Any],
+        *,
+        item: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> bool:
+        target_mode = str(item.get("target_mode") or "").strip().lower()
+        if target_mode not in {"discover_post", "discover_comment"}:
+            return False
+
+        retry_delay_minutes = max(1, int(_execution_policy(program).get("retry_delay_minutes", 20)))
+        item["status"] = "pending"
+        item["scheduled_at"] = _utc_iso(_utc_now() + timedelta(minutes=retry_delay_minutes))
+        item["discovered_target"] = None
+        item["target_url"] = None
+        item["target_comment_url"] = None
+        if item.get("generation_evidence"):
+            item["text"] = None
+            item["title"] = None
+            item["body"] = None
+            item["generation_evidence"] = None
+        subreddit = (
+            str(item.get("subreddit") or "").strip()
+            or str(result.get("subreddit") or "").strip()
+            or _subreddit_from_url(result.get("target_url"))
+            or _subreddit_from_url(result.get("target_comment_url"))
+        )
+        item["error"] = (
+            f"retrying new target after community restriction in r/{subreddit}"
+            if subreddit
+            else "retrying new target after community restriction"
+        )
+        return True
+
     def _append_target_history(self, program: Dict[str, Any], item: Dict[str, Any], result: Dict[str, Any], *, actor_username: Optional[str] = None) -> None:
-        target_ref = _target_ref(item)
+        target_ref = _target_ref(item) or str(result.get("target_comment_url") or result.get("target_url") or "").strip()
         if not target_ref:
             return
         entry = {
@@ -952,10 +1002,14 @@ class RedditProgramOrchestrator:
             "subreddit": item.get("subreddit") or ((item.get("discovered_target") or {}).get("subreddit")) or result.get("subreddit"),
             "target_author": ((item.get("discovered_target") or {}).get("author")),
             "attempt_id": result.get("attempt_id"),
+            "success": bool(result.get("success")),
+            "final_verdict": result.get("final_verdict"),
+            "failure_class": result.get("failure_class"),
         }
         history = list(program.get("target_history") or [])
         history.append(entry)
         program["target_history"] = history[-500:]
+        self._cross_program_target_ref_cache.clear()
 
     async def _maybe_send_item_notification(self, program: Dict[str, Any], *, work_item_id: str) -> Dict[str, Any]:
         item = next((entry for entry in ((program.get("compiled") or {}).get("work_items") or []) if entry.get("id") == work_item_id), None)

@@ -834,6 +834,66 @@ def test_orchestrator_blocks_community_restricted_items(tmp_path, monkeypatch):
     assert item["error"] == "reddit community ban: can't comment on posts"
 
 
+def test_proof_matrix_comment_retries_new_target_after_community_restriction(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+            topic_constraints={
+                "subreddits": ["AskWomenOver40"],
+                "keywords": ["medical"],
+                "proof_matrix": [{"mode": "per_profile_per_subreddit", "action": "comment_post", "day_offset": 0}],
+            },
+        )
+    )
+    item = next(entry for entry in program["compiled"]["work_items"] if entry["source"] == "proof_matrix")
+    item["target_url"] = "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example/"
+    item["generation_evidence"] = {"kind": "comment_post", "text": "generated text"}
+    item["text"] = "generated text"
+    item["attempts"] = 1
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    orchestrator._record_failure(
+        program,
+        item,
+        {
+            "success": False,
+            "action": "comment_post",
+            "error": "reddit community ban: can't comment on posts",
+            "failure_class": "community_restricted",
+            "attempt_id": "attempt-ban",
+            "trace_id": "trace-ban",
+            "final_verdict": "failed_confirmed",
+            "evidence_summary": "community ban detected",
+            "subreddit": "AskWomenOver40",
+            "target_url": "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example/",
+            "current_url": "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example/",
+        },
+        None,
+    )
+
+    assert item["status"] == "pending"
+    assert item["target_url"] is None
+    assert item["target_comment_url"] is None
+    assert item["text"] is None
+    assert item["generation_evidence"] is None
+    assert "retrying new target after community restriction" in item["error"]
+    assert program["target_history"][-1]["target_ref"] == "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example/"
+    assert program["target_history"][-1]["failure_class"] == "community_restricted"
+
+
 def test_orchestrator_reroutes_generated_post_after_community_restriction(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
