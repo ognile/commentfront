@@ -534,13 +534,16 @@ async def _find_visible_text_region(
     expected_title: Optional[str] = None,
     min_top: float = 0.0,
     max_top: Optional[float] = None,
+    max_text_length: Optional[int] = None,
+    max_height: Optional[float] = None,
+    max_width: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     normalized = _normalize_text(needle)
     if not normalized:
         return None
     try:
         result = await page.evaluate(
-            """({ needle, expectedTitle, minTop, maxTop }) => {
+            """({ needle, expectedTitle, minTop, maxTop, maxTextLength, maxHeight, maxWidth }) => {
                 const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
                 const viewportWidth = window.innerWidth || 393;
                 const viewportHeight = window.innerHeight || 873;
@@ -582,6 +585,9 @@ async def _find_visible_text_region(
                     if (titleRect && rect.top <= titleRect.bottom - 6) return;
                     if (rect.top < minTop) return;
                     if (typeof maxTop === 'number' && rect.top > maxTop) return;
+                    if (typeof maxHeight === 'number' && rect.height > maxHeight) return;
+                    if (typeof maxWidth === 'number' && rect.width > maxWidth) return;
+                    if (typeof maxTextLength === 'number' && normalize(label).length > maxTextLength) return;
                     const centerX = Math.round(Math.max(12, Math.min(viewportWidth - 12, rect.left + rect.width / 2)));
                     const centerY = Math.round(Math.max(12, Math.min(viewportHeight - 12, rect.top + rect.height / 2)));
                     const verticalOffset = titleRect ? Math.max(0, rect.top - titleRect.bottom) : rect.top;
@@ -633,6 +639,9 @@ async def _find_visible_text_region(
                 "expectedTitle": expected_title or "",
                 "minTop": float(min_top or 0.0),
                 "maxTop": None if max_top is None else float(max_top),
+                "maxTextLength": None if max_text_length is None else int(max_text_length),
+                "maxHeight": None if max_height is None else float(max_height),
+                "maxWidth": None if max_width is None else float(max_width),
             },
         )
     except Exception:
@@ -648,6 +657,9 @@ async def _click_visible_text_region(
     expected_title: Optional[str] = None,
     min_top: float = 0.0,
     max_top: Optional[float] = None,
+    max_text_length: Optional[int] = None,
+    max_height: Optional[float] = None,
+    max_width: Optional[float] = None,
 ) -> bool:
     candidate = await _find_visible_text_region(
         page,
@@ -655,6 +667,9 @@ async def _click_visible_text_region(
         expected_title=expected_title,
         min_top=min_top,
         max_top=max_top,
+        max_text_length=max_text_length,
+        max_height=max_height,
+        max_width=max_width,
     )
     if not candidate:
         return False
@@ -1451,6 +1466,9 @@ async def _open_user_flair_dialog(page) -> bool:
             needle="user flair",
             action_name="subreddit_open_user_flair_text",
             min_top=80,
+            max_text_length=80,
+            max_height=96,
+            max_width=380,
         )
     if not opened:
         return False
@@ -1473,6 +1491,9 @@ async def _open_user_flair_dialog(page) -> bool:
                 needle="view all flair",
                 action_name="subreddit_view_all_flair_text",
                 min_top=80,
+                max_text_length=48,
+                max_height=96,
+                max_width=380,
             )
         await page.wait_for_timeout(900)
     return True

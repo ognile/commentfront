@@ -760,6 +760,47 @@ def test_open_user_flair_dialog_rejects_false_positive_without_dialog_state(monk
     ]
 
 
+def test_open_user_flair_dialog_text_fallback_uses_compact_region_filters(monkeypatch):
+    page = _FakePage()
+    fallback_calls = []
+
+    monkeypatch.setattr(reddit_bot, "_open_subreddit_community_menu", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_click_named_control", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_verify_named_control_state",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+    )
+
+    async def fake_click_region(_page, **kwargs):
+        fallback_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_click_visible_text_region", fake_click_region)
+
+    ok = asyncio.run(reddit_bot._open_user_flair_dialog(page))
+
+    assert ok is True
+    assert fallback_calls == [
+        {
+            "needle": "user flair",
+            "action_name": "subreddit_open_user_flair_text",
+            "min_top": 80,
+            "max_text_length": 80,
+            "max_height": 96,
+            "max_width": 380,
+        },
+        {
+            "needle": "view all flair",
+            "action_name": "subreddit_view_all_flair_text",
+            "min_top": 80,
+            "max_text_length": 48,
+            "max_height": 96,
+            "max_width": 380,
+        },
+    ]
+
+
 def test_create_post_uses_semantic_title_fallback_when_selector_title_is_missing(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
