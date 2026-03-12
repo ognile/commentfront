@@ -1,0 +1,37 @@
+[
+  {
+    "id": "1e2f264a-134b-437e-93d3-3ba1b5c8aaf6",
+    "status": "SUCCESS",
+    "createdAt": "2026-03-12T13:14:35.476Z",
+    "commitHash": "0c5b03ce4b03cbdaae0ac71136b8773dc1e8cc79",
+    "commitMessage": "replace remote singleton with lease service"
+  },
+  {
+    "id": "8b6f55d5-db17-406f-90ee-c90e5daf01dd",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T12:37:28.481Z",
+    "commitHash": "faa7f926ebe4158029b17507573faffdc405f0bd",
+    "commitMessage": "add reddit proof review links"
+  },
+  {
+    "id": "5c881321-db6f-4016-b013-f50773f351ff",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T12:22:51.834Z",
+    "commitHash": "951d741a78b014b476f62ad2e1b54d787d48e3e0",
+    "commitMessage": "record reddit unified execution proof"
+  },
+  {
+    "id": "7d7764dd-127e-4870-abf9-482557ee3141",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T12:13:28.123Z",
+    "commitHash": "1448195438f15a8e2172b4b22f512d134ef7357d",
+    "commitMessage": "harden reddit create post verification"
+  },
+  {
+    "id": "a4aea04e-c615-4461-ab14-0f9105d9790d",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T11:48:46.259Z",
+    "commitHash": "e78ff2f8151f97dba867302516750cfa276698b5",
+    "commitMessage": "add reddit unified execution contract"
+  }
+]

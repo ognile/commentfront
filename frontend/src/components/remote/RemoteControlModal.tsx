@@ -39,12 +39,21 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
     actionLog,
     pendingUpload,
     uploadReady,
+    remoteRole,
+    remoteCanControl,
+    remoteControllerUser,
+    remoteViewerCount,
+    remoteLeaseId,
+    keyboardCaptureEnabled,
     screenshotContainerRef,
     closeRemoteModal,
-    handleRemoteClick,
+    handleRemotePointerDown,
+    handleRemotePointerUp,
+    handleRemotePointerCancel,
     handleRemoteScroll,
     handleRemoteNavigate,
     handleRemoteRestart,
+    handleTakeover,
     handleImageUpload,
     prepareFileUpload,
   } = remote
@@ -58,8 +67,8 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
       <div className="flex max-h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
         <div className="shrink-0 border-b bg-white px-4 py-2">
           <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
                 <div
                   className={`h-3 w-3 rounded-full ${
                     remoteConnected
@@ -72,15 +81,28 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
                 <span className="text-sm font-medium">
                   {remoteConnected ? 'connected' : remoteConnecting ? 'connecting...' : 'disconnected'}
                 </span>
+                </div>
+                <Badge variant="outline">{platformLabel(remoteSession.platform)}</Badge>
+                <Badge variant={remoteRole === 'controller' ? 'default' : 'secondary'}>
+                  {remoteRole || 'connecting'}
+                </Badge>
+                <div className="text-sm text-[#999999]">
+                  session: <span className="font-medium text-[#111111]">{remoteSession.profileName}</span>
+                </div>
+                <div className="text-sm text-[#999999]">
+                  viewers: <span className="font-medium text-[#111111]">{remoteViewerCount}</span>
+                </div>
               </div>
-              <Badge variant="outline">{platformLabel(remoteSession.platform)}</Badge>
-              <div className="text-sm text-[#999999]">
-                session: <span className="font-medium text-[#111111]">{remoteSession.profileName}</span>
-              </div>
+            <div className="flex items-center gap-2">
+              {remoteRole === 'observer' ? (
+                <Button variant="outline" size="sm" onClick={handleTakeover} disabled={!remoteConnected}>
+                  take over
+                </Button>
+              ) : null}
+              <Button variant="ghost" size="sm" onClick={closeRemoteModal}>
+                <X className="h-5 w-5" />
+              </Button>
             </div>
-            <Button variant="ghost" size="sm" onClick={closeRemoteModal}>
-              <X className="h-5 w-5" />
-            </Button>
           </div>
         </div>
 
@@ -93,10 +115,10 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
             placeholder="enter url..."
             className="flex-1 bg-white"
           />
-          <Button variant="outline" onClick={() => void handleRemoteRestart()} disabled={!remoteSession}>
+          <Button variant="outline" onClick={() => void handleRemoteRestart()} disabled={!remoteSession || !remoteCanControl}>
             restart
           </Button>
-          <Button onClick={handleRemoteNavigate} disabled={!remoteConnected}>
+          <Button onClick={handleRemoteNavigate} disabled={!remoteConnected || !remoteCanControl}>
             go
           </Button>
         </div>
@@ -106,13 +128,16 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
             <div
               ref={screenshotContainerRef}
               className="relative flex h-full cursor-crosshair items-center justify-center outline-none"
-              onClick={handleRemoteClick}
+              onPointerDown={handleRemotePointerDown}
+              onPointerUp={handleRemotePointerUp}
+              onPointerCancel={handleRemotePointerCancel}
               onWheel={handleRemoteScroll}
+              onContextMenu={(event) => event.preventDefault()}
               tabIndex={0}
             >
               {remoteFrame ? (
                 <img
-                  src={`data:image/jpeg;base64,${remoteFrame}`}
+                  src={remoteFrame}
                   alt="browser view"
                   className="rounded-lg object-contain shadow-lg"
                   style={{
@@ -149,6 +174,7 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
                 <Input
                   type="file"
                   accept=".jpg,.jpeg,.png,.webp"
+                  disabled={!remoteCanControl}
                   onChange={(event) => {
                     const file = event.target.files?.[0]
                     if (file) {
@@ -168,6 +194,7 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
                         size="sm"
                         variant="outline"
                         onClick={() => void prepareFileUpload()}
+                        disabled={!remoteCanControl}
                         className="mt-2 w-full text-xs"
                       >
                         prepare for upload
@@ -208,7 +235,9 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
                 ))}
                 {actionLog.length === 0 ? (
                   <div className="py-8 text-center text-sm text-[#999999]">
-                    no actions yet. click on the browser to interact.
+                    {remoteRole === 'observer'
+                      ? 'observer mode. take over to interact.'
+                      : 'no actions yet. click the browser to arm keyboard capture.'}
                   </div>
                 ) : null}
               </div>
@@ -220,11 +249,17 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
           <div className="flex items-center gap-4">
             <span>viewport: 393x873 mobile</span>
             <span>|</span>
-            <span className={remoteConnected ? 'text-green-600' : 'text-[#999999]'}>
-              {remoteConnected ? 'keyboard capture: on (click browser area first)' : 'keyboard capture: off'}
+            <span className={remoteCanControl && keyboardCaptureEnabled ? 'text-green-600' : 'text-[#999999]'}>
+              {remoteCanControl && keyboardCaptureEnabled ? 'keyboard capture: armed' : 'keyboard capture: idle'}
             </span>
+            {remoteControllerUser ? (
+              <>
+                <span>|</span>
+                <span>controller: {remoteControllerUser}</span>
+              </>
+            ) : null}
           </div>
-          <div>actions: {actionLog.length}</div>
+          <div>{remoteLeaseId ? `lease ${remoteLeaseId}` : `actions: ${actionLog.length}`}</div>
         </div>
       </div>
     </div>

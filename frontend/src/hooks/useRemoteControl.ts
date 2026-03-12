@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react'
+import type {
+  PointerEvent as ReactPointerEvent,
+  WheelEvent as ReactWheelEvent,
+} from 'react'
 import { toast } from 'sonner'
 
-import { API_BASE, createAuthenticatedWebSocket } from '@/lib/api'
-import { getAccessToken } from '@/lib/auth'
 import type { ActionLogEntry, PendingUpload, RemoteSessionTarget } from '@/components/remote/types'
 import { REMOTE_VIEWPORT_HEIGHT, REMOTE_VIEWPORT_WIDTH } from '@/components/remote/types'
+import { API_BASE, createAuthenticatedWebSocket } from '@/lib/api'
+import { getAccessToken } from '@/lib/auth'
 
 function getRemoteWsPath(session: RemoteSessionTarget): string {
   const encodedProfile = encodeURIComponent(session.profileName)
@@ -31,6 +34,38 @@ function getPrepareUploadPath(session: RemoteSessionTarget): string {
   return `${API_BASE}/sessions/${encodeURIComponent(session.profileName)}/prepare-file-upload`
 }
 
+function normalizeRemoteKey(key: string): string {
+  switch (key) {
+    case ' ':
+    case 'Spacebar':
+      return 'Space'
+    case 'Esc':
+      return 'Escape'
+    case 'Del':
+      return 'Delete'
+    case 'Up':
+      return 'ArrowUp'
+    case 'Down':
+      return 'ArrowDown'
+    case 'Left':
+      return 'ArrowLeft'
+    case 'Right':
+      return 'ArrowRight'
+    default:
+      return key
+  }
+}
+
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+  if (target.isContentEditable) {
+    return true
+  }
+  return target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+}
+
 export function useRemoteControl() {
   const [remoteModalOpen, setRemoteModalOpen] = useState(false)
   const [remoteSession, setRemoteSession] = useState<RemoteSessionTarget | null>(null)
@@ -42,6 +77,12 @@ export function useRemoteControl() {
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([])
   const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null)
   const [uploadReady, setUploadReady] = useState(false)
+  const [remoteRole, setRemoteRole] = useState<'controller' | 'observer' | null>(null)
+  const [remoteCanControl, setRemoteCanControl] = useState(false)
+  const [remoteControllerUser, setRemoteControllerUser] = useState<string | null>(null)
+  const [remoteViewerCount, setRemoteViewerCount] = useState(0)
+  const [remoteLeaseId, setRemoteLeaseId] = useState<string | null>(null)
+  const [keyboardCaptureEnabled, setKeyboardCaptureEnabled] = useState(false)
 
   const remoteWsRef = useRef<WebSocket | null>(null)
   const screenshotContainerRef = useRef<HTMLDivElement>(null)
@@ -50,6 +91,8 @@ export function useRemoteControl() {
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const remoteModalOpenRef = useRef(remoteModalOpen)
   const remoteSessionRef = useRef<RemoteSessionTarget | null>(remoteSession)
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null)
+  const activeKeysRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     remoteModalOpenRef.current = remoteModalOpen
@@ -58,6 +101,17 @@ export function useRemoteControl() {
   useEffect(() => {
     remoteSessionRef.current = remoteSession
   }, [remoteSession])
+
+  const resetRemoteLeaseState = useCallback(() => {
+    setRemoteRole(null)
+    setRemoteCanControl(false)
+    setRemoteControllerUser(null)
+    setRemoteViewerCount(0)
+    setRemoteLeaseId(null)
+    setKeyboardCaptureEnabled(false)
+    pointerStartRef.current = null
+    activeKeysRef.current.clear()
+  }, [])
 
   const getAuthHeaders = useCallback((): HeadersInit => {
     const token = getAccessToken()
@@ -75,6 +129,15 @@ export function useRemoteControl() {
     setActionLog((prev) => [entry, ...prev].slice(0, 100))
   }, [])
 
+  const updateLeaseState = useCallback((payload: Record<string, unknown>) => {
+    setRemoteUrlInput(typeof payload.url === 'string' ? payload.url : '')
+    setRemoteRole(payload.role === 'observer' ? 'observer' : payload.role === 'controller' ? 'controller' : null)
+    setRemoteCanControl(Boolean(payload.can_control))
+    setRemoteControllerUser(typeof payload.controller_user === 'string' ? payload.controller_user : null)
+    setRemoteViewerCount(typeof payload.viewer_count === 'number' ? payload.viewer_count : 0)
+    setRemoteLeaseId(typeof payload.lease_id === 'string' ? payload.lease_id : null)
+  }, [])
+
   const disconnectRemoteWebSocket = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
@@ -90,7 +153,8 @@ export function useRemoteControl() {
     }
     setRemoteConnected(false)
     setRemoteConnecting(false)
-  }, [])
+    resetRemoteLeaseState()
+  }, [resetRemoteLeaseState])
 
   const connectRemoteWebSocket = useCallback((session: RemoteSessionTarget) => {
     if (remoteWsRef.current) {
@@ -98,7 +162,7 @@ export function useRemoteControl() {
     }
 
     setRemoteConnecting(true)
-    setRemoteProgress(null)
+    setRemoteProgress('connecting')
 
     try {
       const ws = createAuthenticatedWebSocket(getRemoteWsPath(session))
@@ -124,38 +188,31 @@ export function useRemoteControl() {
           const message = JSON.parse(event.data)
 
           switch (message.type) {
-            case 'frame':
-              setRemoteFrame(message.data.image)
+            case 'frame': {
+              const format = message.data?.format || 'jpeg'
+              const image = message.data?.image || ''
+              setRemoteFrame(image ? `data:image/${format};base64,${image}` : null)
               setRemoteProgress(null)
               break
+            }
             case 'state':
-              setRemoteUrlInput(message.data.url || '')
+              updateLeaseState(message.data || {})
               break
-            case 'progress':
-              setRemoteProgress(message.data.stage)
+            case 'lease_role':
+              setRemoteRole(message.data?.role === 'observer' ? 'observer' : message.data?.role === 'controller' ? 'controller' : null)
+              setRemoteCanControl(Boolean(message.data?.can_control))
+              setRemoteControllerUser(message.data?.controller_user || null)
               break
             case 'browser_ready':
+              setRemoteLeaseId(message.data?.lease_id || null)
               setRemoteProgress(null)
               toast.success('browser ready')
               break
-            case 'session_auto_heal_start':
-              setRemoteProgress('auto_heal')
-              toast.loading('recovering browser session...', { id: 'remote-auto-heal' })
-              break
-            case 'stream_restarted':
-              setRemoteProgress('stream_restarted')
-              toast.success('browser stream restarted')
-              break
-            case 'session_auto_heal_done':
-              if (message.data?.success) {
-                setRemoteProgress(null)
-                toast.success('browser session recovered', { id: 'remote-auto-heal' })
-              } else {
-                toast.error(message.data?.error || 'browser recovery failed', { id: 'remote-auto-heal' })
-              }
-              break
             case 'session_idle_timeout_close':
-              toast('session closed after 5 minutes of idle time')
+              toast('session closed after idle timeout')
+              break
+            case 'session_closed':
+              toast(message.data?.reason ? `session closed: ${message.data.reason}` : 'session closed')
               break
             case 'action_result':
               setActionLog((prev) =>
@@ -165,9 +222,12 @@ export function useRemoteControl() {
                     : entry,
                 ),
               )
+              if (!message.data.success && message.data.error) {
+                toast.error(message.data.error)
+              }
               break
             case 'error':
-              toast.error(message.data.message)
+              toast.error(message.data?.message || 'remote browser error')
               break
           }
         } catch (error) {
@@ -178,6 +238,7 @@ export function useRemoteControl() {
       ws.onclose = () => {
         setRemoteConnected(false)
         setRemoteConnecting(false)
+        setKeyboardCaptureEnabled(false)
 
         if (heartbeatIntervalRef.current) {
           clearInterval(heartbeatIntervalRef.current)
@@ -186,7 +247,7 @@ export function useRemoteControl() {
 
         if (remoteModalOpenRef.current && reconnectAttemptRef.current < 5) {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 10000)
-          toast.loading('reconnecting...', { id: 'reconnect' })
+          toast.loading('reconnecting...', { id: 'remote-reconnect' })
           reconnectTimeoutRef.current = setTimeout(() => {
             reconnectAttemptRef.current += 1
             if (remoteSessionRef.current) {
@@ -204,10 +265,11 @@ export function useRemoteControl() {
     } catch (error) {
       console.error('failed to create remote websocket:', error)
       setRemoteConnecting(false)
+      setRemoteProgress(null)
     }
-  }, [])
+  }, [updateLeaseState])
 
-  const sendRemoteAction = useCallback((action: { type: string; data: Record<string, unknown> }) => {
+  const sendRemoteAction = useCallback((action: { type: string; data?: Record<string, unknown> }) => {
     if (remoteWsRef.current?.readyState === WebSocket.OPEN) {
       const actionId = crypto.randomUUID()
       remoteWsRef.current.send(JSON.stringify({ ...action, action_id: actionId }))
@@ -216,15 +278,36 @@ export function useRemoteControl() {
     return null
   }, [])
 
+  const resolveViewportPoint = useCallback((clientX: number, clientY: number) => {
+    const img = screenshotContainerRef.current?.querySelector('img')
+    if (!img) {
+      return null
+    }
+
+    const rect = img.getBoundingClientRect()
+    const relativeX = clientX - rect.left
+    const relativeY = clientY - rect.top
+
+    if (relativeX < 0 || relativeX > rect.width || relativeY < 0 || relativeY > rect.height) {
+      return null
+    }
+
+    const x = Math.round((relativeX / rect.width) * REMOTE_VIEWPORT_WIDTH)
+    const y = Math.round((relativeY / rect.height) * REMOTE_VIEWPORT_HEIGHT)
+    return { x, y }
+  }, [])
+
   const openRemoteModal = useCallback((session: RemoteSessionTarget) => {
     setRemoteSession(session)
     setRemoteModalOpen(true)
     setRemoteFrame(null)
+    setRemoteProgress('connecting')
     setActionLog([])
     setPendingUpload(null)
     setUploadReady(false)
+    resetRemoteLeaseState()
     connectRemoteWebSocket(session)
-  }, [connectRemoteWebSocket])
+  }, [connectRemoteWebSocket, resetRemoteLeaseState])
 
   const closeRemoteModal = useCallback(() => {
     disconnectRemoteWebSocket()
@@ -238,78 +321,150 @@ export function useRemoteControl() {
     setUploadReady(false)
   }, [disconnectRemoteWebSocket])
 
-  const handleRemoteClick = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
-    if (!remoteConnected || !screenshotContainerRef.current) return
+  const handleRemotePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!remoteConnected || !remoteCanControl) return
 
-    const img = screenshotContainerRef.current.querySelector('img')
-    if (!img) return
+    const point = resolveViewportPoint(event.clientX, event.clientY)
+    if (!point) return
 
-    const imgRect = img.getBoundingClientRect()
-    const scale = imgRect.width / REMOTE_VIEWPORT_WIDTH
-    const relativeX = e.clientX - imgRect.left
-    const relativeY = e.clientY - imgRect.top
+    event.preventDefault()
+    event.currentTarget.focus()
+    pointerStartRef.current = point
+    setKeyboardCaptureEnabled(true)
+  }, [remoteCanControl, remoteConnected, resolveViewportPoint])
 
-    if (relativeX < 0 || relativeX > imgRect.width || relativeY < 0 || relativeY > imgRect.height) {
+  const handleRemotePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = pointerStartRef.current
+    pointerStartRef.current = null
+    if (!remoteConnected || !remoteCanControl || !start) return
+
+    const end = resolveViewportPoint(event.clientX, event.clientY) || start
+    const moved = Math.abs(end.x - start.x) > 8 || Math.abs(end.y - start.y) > 8
+
+    if (moved) {
+      const actionId = sendRemoteAction({
+        type: 'drag',
+        data: {
+          startX: start.x,
+          startY: start.y,
+          endX: end.x,
+          endY: end.y,
+        },
+      })
+      if (actionId) {
+        addActionLogEntry('drag', `drag from (${start.x}, ${start.y}) to (${end.x}, ${end.y})`, actionId)
+      }
       return
     }
 
-    const x = Math.round(relativeX / scale)
-    const y = Math.round(relativeY / scale)
-
-    const actionId = sendRemoteAction({ type: 'click', data: { x, y } })
+    const actionId = sendRemoteAction({ type: 'tap', data: start })
     if (actionId) {
-      addActionLogEntry('click', `click at (${x}, ${y})`, actionId)
+      addActionLogEntry('tap', `tap at (${start.x}, ${start.y})`, actionId)
     }
-  }, [addActionLogEntry, remoteConnected, sendRemoteAction])
+  }, [addActionLogEntry, remoteCanControl, remoteConnected, resolveViewportPoint, sendRemoteAction])
 
-  const handleRemoteScroll = useCallback((e: ReactWheelEvent<HTMLDivElement>) => {
-    if (!remoteConnected) return
-    e.preventDefault()
+  const handleRemotePointerCancel = useCallback(() => {
+    pointerStartRef.current = null
+  }, [])
+
+  const handleRemoteScroll = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    if (!remoteConnected || !remoteCanControl) return
+    event.preventDefault()
+
+    const point = resolveViewportPoint(event.clientX, event.clientY)
+    if (!point) return
 
     const actionId = sendRemoteAction({
-      type: 'scroll',
-      data: { x: REMOTE_VIEWPORT_WIDTH / 2, y: REMOTE_VIEWPORT_HEIGHT / 2, deltaY: e.deltaY },
+      type: 'scroll_gesture',
+      data: { x: point.x, y: point.y, deltaY: event.deltaY },
     })
     if (actionId) {
-      const direction = e.deltaY > 0 ? 'down' : 'up'
+      const direction = event.deltaY > 0 ? 'down' : 'up'
       addActionLogEntry('scroll', `scroll ${direction}`, actionId)
     }
-  }, [addActionLogEntry, remoteConnected, sendRemoteAction])
+  }, [addActionLogEntry, remoteCanControl, remoteConnected, resolveViewportPoint, sendRemoteAction])
 
   useEffect(() => {
-    if (!remoteModalOpen || !remoteConnected) return
+    if (!remoteModalOpen || !remoteConnected || !remoteCanControl || !keyboardCaptureEnabled) return
+    const activeKeys = activeKeysRef.current
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      const activeElement = document.activeElement
-      if (activeElement?.tagName === 'INPUT' || activeElement?.tagName === 'TEXTAREA') {
+      if (event.isComposing || isEditableElement(event.target)) {
+        return
+      }
+
+      const key = normalizeRemoteKey(event.key)
+      const hasShortcutModifier = event.ctrlKey || event.metaKey || event.altKey
+
+      if (!hasShortcutModifier && key.length === 1 && !event.repeat) {
+        event.preventDefault()
+        const actionId = sendRemoteAction({ type: 'text_input', data: { text: key } })
+        if (actionId) {
+          addActionLogEntry('type', `type "${key}"`, actionId)
+        }
+        return
+      }
+
+      if (event.repeat && activeKeys.has(key)) {
+        event.preventDefault()
         return
       }
 
       event.preventDefault()
+      activeKeys.add(key)
 
-      const modifiers: string[] = []
-      if (event.ctrlKey) modifiers.push('Control')
-      if (event.altKey) modifiers.push('Alt')
-      if (event.shiftKey) modifiers.push('Shift')
-      if (event.metaKey) modifiers.push('Meta')
-
-      const actionId = sendRemoteAction({
-        type: 'key',
-        data: { key: event.key, modifiers },
-      })
-
+      const actionId = sendRemoteAction({ type: 'key_down', data: { key } })
       if (actionId) {
-        const keyDisplay = modifiers.length > 0 ? `${modifiers.join('+')}+${event.key}` : event.key
-        addActionLogEntry('key', `key: ${keyDisplay}`, actionId)
+        addActionLogEntry('key', `key down: ${key}`, actionId)
+      }
+    }
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.isComposing || isEditableElement(event.target)) {
+        return
+      }
+
+      const key = normalizeRemoteKey(event.key)
+      if (!activeKeys.has(key)) {
+        return
+      }
+
+      event.preventDefault()
+      activeKeys.delete(key)
+      sendRemoteAction({ type: 'key_up', data: { key } })
+    }
+
+    const handlePaste = (event: ClipboardEvent) => {
+      if (isEditableElement(event.target)) {
+        return
+      }
+
+      const text = event.clipboardData?.getData('text')?.replace(/\r\n/g, '\n') || ''
+      if (!text) {
+        return
+      }
+
+      event.preventDefault()
+      const actionId = sendRemoteAction({ type: 'paste_text', data: { text } })
+      if (actionId) {
+        addActionLogEntry('paste', `paste ${text.length} chars`, actionId)
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [addActionLogEntry, remoteConnected, remoteModalOpen, sendRemoteAction])
+    window.addEventListener('keyup', handleKeyUp)
+    window.addEventListener('paste', handlePaste)
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+      window.removeEventListener('paste', handlePaste)
+      activeKeys.clear()
+    }
+  }, [addActionLogEntry, keyboardCaptureEnabled, remoteCanControl, remoteConnected, remoteModalOpen, sendRemoteAction])
 
   const handleRemoteNavigate = useCallback(() => {
-    if (!remoteConnected || !remoteUrlInput.trim()) return
+    if (!remoteConnected || !remoteCanControl || !remoteUrlInput.trim()) return
 
     let url = remoteUrlInput.trim()
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -320,12 +475,21 @@ export function useRemoteControl() {
     if (actionId) {
       addActionLogEntry('navigate', `navigate to ${url}`, actionId)
     }
-  }, [addActionLogEntry, remoteConnected, remoteUrlInput, sendRemoteAction])
+  }, [addActionLogEntry, remoteCanControl, remoteConnected, remoteUrlInput, sendRemoteAction])
+
+  const handleTakeover = useCallback(() => {
+    if (!remoteConnected || remoteRole !== 'observer') return
+
+    const actionId = sendRemoteAction({ type: 'takeover', data: {} })
+    if (actionId) {
+      addActionLogEntry('takeover', 'request controller takeover', actionId)
+    }
+  }, [addActionLogEntry, remoteConnected, remoteRole, sendRemoteAction])
 
   const handleRemoteRestart = useCallback(async () => {
-    if (!remoteSession) return
+    if (!remoteSession || !remoteCanControl) return
     try {
-      setRemoteProgress('auto_heal')
+      setRemoteProgress('restarting')
       setRemoteFrame(null)
       const response = await fetch(getRemoteRestartPath(remoteSession), {
         method: 'POST',
@@ -333,17 +497,17 @@ export function useRemoteControl() {
       })
       const data = await response.json()
       if (!response.ok || !data.success) {
-        throw new Error(data.error || data.detail || 'failed to restart remote browser')
+        throw new Error(data.error || data.detail?.message || data.detail || 'failed to restart remote browser')
       }
       toast.success('remote browser restart triggered')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'failed to restart remote browser')
       setRemoteProgress(null)
     }
-  }, [getAuthHeaders, remoteSession])
+  }, [getAuthHeaders, remoteCanControl, remoteSession])
 
   const handleImageUpload = useCallback(async (file: File) => {
-    if (!remoteSession || remoteSession.platform !== 'facebook') return
+    if (!remoteSession || remoteSession.platform !== 'facebook' || !remoteCanControl) return
 
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
     if (!allowedTypes.includes(file.type)) {
@@ -372,6 +536,7 @@ export function useRemoteControl() {
           filename: result.filename,
           size: result.size,
           imageId: result.image_id,
+          expiresAt: result.expires_at,
         })
         setUploadReady(false)
         toast.success(`image uploaded: ${result.filename}`)
@@ -381,10 +546,10 @@ export function useRemoteControl() {
     } catch (error) {
       toast.error(`upload error: ${error}`)
     }
-  }, [getAuthHeaders, remoteSession])
+  }, [getAuthHeaders, remoteCanControl, remoteSession])
 
   const prepareFileUpload = useCallback(async () => {
-    if (!remoteSession || remoteSession.platform !== 'facebook') return
+    if (!remoteSession || remoteSession.platform !== 'facebook' || !remoteCanControl) return
 
     try {
       const response = await fetch(getPrepareUploadPath(remoteSession), {
@@ -394,14 +559,14 @@ export function useRemoteControl() {
       const result = await response.json()
       if (result.success) {
         setUploadReady(true)
-        toast.success('file ready! click the upload button on facebook.')
+        toast.success('file ready. click the upload control in the browser.')
       } else {
-        toast.error(result.error || 'failed to prepare upload')
+        toast.error(result.error || result.detail?.message || 'failed to prepare upload')
       }
     } catch (error) {
       toast.error(`error: ${error}`)
     }
-  }, [getAuthHeaders, remoteSession])
+  }, [getAuthHeaders, remoteCanControl, remoteSession])
 
   return {
     remoteModalOpen,
@@ -415,13 +580,22 @@ export function useRemoteControl() {
     actionLog,
     pendingUpload,
     uploadReady,
+    remoteRole,
+    remoteCanControl,
+    remoteControllerUser,
+    remoteViewerCount,
+    remoteLeaseId,
+    keyboardCaptureEnabled,
     screenshotContainerRef,
     openRemoteModal,
     closeRemoteModal,
-    handleRemoteClick,
+    handleRemotePointerDown,
+    handleRemotePointerUp,
+    handleRemotePointerCancel,
     handleRemoteScroll,
     handleRemoteNavigate,
     handleRemoteRestart,
+    handleTakeover,
     handleImageUpload,
     prepareFileUpload,
   }

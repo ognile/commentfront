@@ -10,7 +10,7 @@ export interface RemoteSessionTarget {
 export interface ActionLogEntry {
   id: string
   timestamp: string
-  type: 'click' | 'scroll' | 'key' | 'navigate' | 'type'
+  type: 'tap' | 'drag' | 'scroll' | 'key' | 'navigate' | 'type' | 'paste' | 'takeover'
   details: string
   status: 'sent' | 'success' | 'failed'
 }
@@ -19,6 +19,7 @@ export interface PendingUpload {
   filename: string
   size: number
   imageId: string
+  expiresAt?: string | null
 }
 
 export const REMOTE_VIEWPORT_WIDTH = 393
