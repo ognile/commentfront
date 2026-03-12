@@ -27,15 +27,16 @@
 - the only pre-existing worktree change is `.claude/CLAUDE.md`.
 
 ## active todo
-1. cut the backend-only commit, push it, and verify railway deployment plus prod compatibility with the old frontend.
-2. cut the frontend commit, push it, and verify vercel plus railway plus production remote smoke.
-3. remove rollout-only action translation and the legacy singleton file, rerun verification, and push the cleanup commit.
-4. re-run production smoke after cleanup and close the pass/fail matrix with evidence.
+1. cut the cleanup commit that removes the rollout shim and singleton file, then push it.
+2. verify railway and vercel are serving the intended github commits after the cleanup push.
+3. run final production smoke for facebook/reddit remote control, observer attach plus takeover, capacity enforcement, reservation conflicts, and post-disconnect health/status behavior.
+4. close the pass/fail matrix with artifact-backed evidence and no leftover untracked files.
 
 ## current understanding
 - the main correctness bug is architectural, not cosmetic: one global browser slot plus direct websocket-to-page mutation creates unavoidable interference and poor input fidelity.
 - a non-breaking rollout requires preserving the current remote routes while swapping their internals first, then upgrading the frontend, then removing compatibility code.
 - remote leases must own reservation state, browser lifecycle, proof logs, and upload state.
+- the last production regression was a dead-websocket handling bug: closed sockets were not pruned consistently and the websocket loop treated some closed-socket runtime errors as generic failures, which could spin logs and obscure the actual lease state.
 
 ## proven wins
 - the adaptive execution tracker is initialized and baseline production health/remote artifacts are saved.
@@ -43,7 +44,7 @@
 - the frontend remote-client rewrite and tests/build are green locally.
 - local api smoke proves the new reservation metadata is exposed and a remote start without proxy fails cleanly instead of hanging.
 - local browser-level verification proves the new remote modal renders and surfaces the proxy failure state to the operator.
+- the final cleanup is implemented locally: `backend/browser_manager.py` is deleted, `backend/main.py` only accepts canonical remote actions, dead websocket sends prune viewers, and the full backend suite now passes at `333 passed`.
 
 ## open risks
-- the production deploy window can still expose frontend/backend skew if compatibility coverage is incomplete.
-- local end-to-end interaction quality for actual facebook/reddit browser control remains blocked by missing local proxy config, so final interaction proof must come from production.
+- the last remaining proof gap is production-only: local browser launch is still blocked by missing proxy config, so the fixed disconnect path, takeover stability, and capacity behavior must be proven on railway/vercel.

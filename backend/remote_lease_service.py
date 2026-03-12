@@ -336,13 +336,41 @@ class RemoteLease:
         self._persist_meta()
         logger.info(f"remote lease {self.lease_id}: {action} {json.dumps(details or {})}")
 
+    async def _send_json_to_viewer(
+        self,
+        viewer: RemoteViewer,
+        payload: Dict[str, Any],
+        *,
+        detach_on_failure: bool,
+    ) -> bool:
+        ok = await viewer.send_json(payload)
+        if not ok and detach_on_failure and viewer.websocket in self._viewers:
+            await self.detach_viewer(viewer.websocket)
+        return ok
+
+    async def _send_text_to_viewer(
+        self,
+        viewer: RemoteViewer,
+        payload: str,
+        *,
+        detach_on_failure: bool,
+    ) -> bool:
+        ok = await viewer.send_text(payload)
+        if not ok and detach_on_failure and viewer.websocket in self._viewers:
+            await self.detach_viewer(viewer.websocket)
+        return ok
+
     async def _safe_broadcast_json(
         self,
         payload_factory: Callable[[RemoteViewer], Dict[str, Any]],
     ) -> None:
         disconnected: List[RemoteViewer] = []
         for viewer in list(self._viewers.values()):
-            ok = await viewer.send_json(payload_factory(viewer))
+            ok = await self._send_json_to_viewer(
+                viewer,
+                payload_factory(viewer),
+                detach_on_failure=False,
+            )
             if not ok:
                 disconnected.append(viewer)
         for viewer in disconnected:
@@ -375,14 +403,19 @@ class RemoteLease:
 
         disconnected: List[RemoteViewer] = []
         for viewer in list(self._viewers.values()):
-            ok = await viewer.send_json(await _send(viewer))
+            ok = await self._send_json_to_viewer(
+                viewer,
+                await _send(viewer),
+                detach_on_failure=False,
+            )
             if not ok:
                 disconnected.append(viewer)
         for viewer in disconnected:
             await self.detach_viewer(viewer.websocket)
 
-    async def _send_browser_ready(self, viewer: RemoteViewer) -> None:
-        await viewer.send_json(
+    async def _send_browser_ready(self, viewer: RemoteViewer) -> bool:
+        return await self._send_json_to_viewer(
+            viewer,
             {
                 "type": "browser_ready",
                 "data": {
@@ -392,11 +425,13 @@ class RemoteLease:
                     "role": viewer.role,
                     "timestamp": _iso_now(),
                 },
-            }
+            },
+            detach_on_failure=True,
         )
 
-    async def _send_role_event(self, viewer: RemoteViewer) -> None:
-        await viewer.send_json(
+    async def _send_role_event(self, viewer: RemoteViewer) -> bool:
+        return await self._send_json_to_viewer(
+            viewer,
             {
                 "type": "lease_role",
                 "data": {
@@ -406,7 +441,8 @@ class RemoteLease:
                     "can_control": viewer.role == "controller",
                     "timestamp": _iso_now(),
                 },
-            }
+            },
+            detach_on_failure=True,
         )
 
     async def _notify_and_close_viewers(self, *, reason: str) -> None:
@@ -451,7 +487,11 @@ class RemoteLease:
             }
         )
         for viewer in list(self._viewers.values()):
-            ok = await viewer.send_text(payload)
+            ok = await self._send_text_to_viewer(
+                viewer,
+                payload,
+                detach_on_failure=False,
+            )
             if ok:
                 viewer.last_frame_at = _iso_now()
             else:
@@ -538,11 +578,18 @@ class RemoteLease:
         self._viewers[websocket] = viewer
         self.viewer_count = len(self._viewers)
         self._cancel_idle_close()
-        await self._send_role_event(viewer)
+        if not await self._send_role_event(viewer):
+            raise RemoteLeaseError(
+                "remote viewer disconnected during attach",
+                status_code=410,
+                code="remote_viewer_disconnected",
+                details={"lease_id": self.lease_id, "session_id": self.session_id},
+            )
         await self._broadcast_state()
         await self._start_screencast()
         if self.latest_frame:
-            await viewer.send_text(
+            sent = await self._send_text_to_viewer(
+                viewer,
                 json.dumps(
                     {
                         "type": "frame",
@@ -555,8 +602,16 @@ class RemoteLease:
                             "timestamp": _iso_now(),
                         },
                     }
-                )
+                ),
+                detach_on_failure=True,
             )
+            if not sent:
+                raise RemoteLeaseError(
+                    "remote viewer disconnected during attach",
+                    status_code=410,
+                    code="remote_viewer_disconnected",
+                    details={"lease_id": self.lease_id, "session_id": self.session_id},
+                )
         return viewer
 
     async def detach_viewer(self, websocket: WebSocket) -> None:
@@ -750,7 +805,7 @@ class RemoteLease:
     async def set_controller(self, username: str, *, takeover: bool) -> None:
         previous = self.controller_user
         self.controller_user = username
-        for viewer in self._viewers.values():
+        for viewer in list(self._viewers.values()):
             viewer.role = self.get_role_for(viewer.username)
             await self._send_role_event(viewer)
         self._log_event(
@@ -775,8 +830,12 @@ class RemoteLease:
         *,
         action_id: str,
         result: Dict[str, Any],
-    ) -> None:
-        await viewer.send_json({"type": "action_result", "data": {"action_id": action_id, **result}})
+    ) -> bool:
+        return await self._send_json_to_viewer(
+            viewer,
+            {"type": "action_result", "data": {"action_id": action_id, **result}},
+            detach_on_failure=True,
+        )
 
     async def _action_worker(self) -> None:
         while True:
@@ -1108,7 +1167,13 @@ class RemoteLeaseService:
             await lease.refresh_title()
             viewer = await lease.add_viewer(websocket, username)
             await lease._broadcast_state()
-            await lease._send_browser_ready(viewer)
+            if not await lease._send_browser_ready(viewer):
+                raise RemoteLeaseError(
+                    "remote viewer disconnected during attach",
+                    status_code=410,
+                    code="remote_viewer_disconnected",
+                    details={"lease_id": lease.lease_id, "session_id": session_id, "platform": platform},
+                )
             if not lease.latest_frame:
                 frame = await lease._capture_bootstrap_frame()
                 if frame:

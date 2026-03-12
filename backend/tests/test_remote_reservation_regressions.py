@@ -191,3 +191,28 @@ def test_reddit_session_test_releases_operation_reservation(isolated_profile_man
 
     assert result["success"] is True
     assert pm.get_reservation("reddit_alpha") is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "WebSocket is not connected. Need to call 'accept' first.",
+        "Cannot call 'receive' once a disconnect message has been received.",
+        "Cannot call 'send' once a close message has been sent.",
+    ],
+)
+def test_remote_websocket_disconnect_classifier_matches_starlette_runtime_errors(message):
+    assert main._is_remote_websocket_disconnect(RuntimeError(message)) is True
+
+
+def test_normalize_remote_action_keeps_only_canonical_shape():
+    action = main._normalize_remote_action("key_down", {"key": "Esc"}, "action-1")
+
+    assert action == {
+        "type": "key_down",
+        "data": {"key": "Escape"},
+        "action_id": "action-1",
+    }
+
+    with pytest.raises(main.RemoteLeaseError, match="unsupported remote action: scroll"):
+        main._normalize_remote_action("scroll", {"deltaY": 120}, "legacy-1")

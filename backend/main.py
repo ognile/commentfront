@@ -8713,7 +8713,22 @@ def _normalize_remote_key(key: str) -> str:
     return mapping.get(key, key)
 
 
-def _canonical_remote_actions(action_type: str, action_data: Dict[str, Any], action_id: str) -> List[Dict[str, Any]]:
+def _is_remote_websocket_disconnect(exc: Exception) -> bool:
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "websocket is not connected",
+            "once a disconnect message has been received",
+            "once a close message has been sent",
+            "once a close message has been received",
+        )
+    )
+
+
+def _normalize_remote_action(action_type: str, action_data: Dict[str, Any], action_id: str) -> Dict[str, Any]:
     payload = dict(action_data or {})
 
     if action_type in {
@@ -8731,47 +8746,7 @@ def _canonical_remote_actions(action_type: str, action_data: Dict[str, Any], act
     }:
         if action_type in {"key_down", "key_up"}:
             payload["key"] = _normalize_remote_key(str(payload.get("key") or ""))
-        return [{"type": action_type, "data": payload, "action_id": action_id}]
-
-    if action_type == "click":
-        return [{"type": "tap", "data": {"x": payload.get("x", 0), "y": payload.get("y", 0)}, "action_id": action_id}]
-
-    if action_type == "scroll":
-        return [{
-            "type": "scroll_gesture",
-            "data": {
-                "x": payload.get("x", 0),
-                "y": payload.get("y", 0),
-                "deltaY": payload.get("deltaY", payload.get("delta_y", 0)),
-            },
-            "action_id": action_id,
-        }]
-
-    if action_type == "type":
-        return [{"type": "text_input", "data": {"text": str(payload.get("text") or "")}, "action_id": action_id}]
-
-    if action_type == "key":
-        key = _normalize_remote_key(str(payload.get("key") or ""))
-        modifiers: List[str] = []
-        seen: Set[str] = set()
-        for item in list(payload.get("modifiers") or []):
-            normalized = _normalize_remote_key(str(item or ""))
-            if not normalized or normalized == key or normalized in seen:
-                continue
-            modifiers.append(normalized)
-            seen.add(normalized)
-
-        if not modifiers and len(key) == 1:
-            return [{"type": "text_input", "data": {"text": key}, "action_id": action_id}]
-
-        actions: List[Dict[str, Any]] = []
-        for index, modifier in enumerate(modifiers):
-            actions.append({"type": "key_down", "data": {"key": modifier}, "action_id": f"{action_id}:modifier_down:{index}"})
-        actions.append({"type": "key_down", "data": {"key": key}, "action_id": action_id})
-        actions.append({"type": "key_up", "data": {"key": key}, "action_id": f"{action_id}:key_up"})
-        for index, modifier in enumerate(reversed(modifiers)):
-            actions.append({"type": "key_up", "data": {"key": modifier}, "action_id": f"{action_id}:modifier_up:{index}"})
-        return actions
+        return {"type": action_type, "data": payload, "action_id": action_id}
 
     raise RemoteLeaseError(
         f"unsupported remote action: {action_type}",
@@ -8840,9 +8815,6 @@ async def _websocket_session_control_impl(
                 action_type = data.get("type")
                 action_data = data.get("data", {})
                 action_id = data.get("action_id", "")
-                if action_type == "ping":
-                    await websocket.send_json({"type": "action_result", "data": {"action_id": action_id, "success": True, "action": "pong"}})
-                    continue
 
                 current_lease = lease_service.get_lease_by_websocket(websocket)
                 current_viewer = lease_service.get_viewer(websocket)
@@ -8854,25 +8826,38 @@ async def _websocket_session_control_impl(
                         details={"session_id": session_id, "platform": platform},
                     )
 
-                if action_type == "takeover":
-                    result = await lease_service.handle_takeover(lease=current_lease, username=username)
-                    await websocket.send_json({"type": "action_result", "data": {"action_id": action_id, **result}})
+                if action_type == "ping":
+                    sent = await current_viewer.send_json(
+                        {"type": "action_result", "data": {"action_id": action_id, "success": True, "action": "pong"}}
+                    )
+                    if not sent:
+                        break
                     continue
 
-                actions = _canonical_remote_actions(str(action_type or ""), dict(action_data or {}), action_id)
-                for item in actions:
-                    await current_lease.enqueue_action(
-                        viewer=current_viewer,
-                        action_type=item["type"],
-                        action_data=item["data"],
-                        action_id=item["action_id"],
+                if action_type == "takeover":
+                    result = await lease_service.handle_takeover(lease=current_lease, username=username)
+                    sent = await current_viewer.send_json(
+                        {"type": "action_result", "data": {"action_id": action_id, **result}}
                     )
+                    if not sent:
+                        break
+                    continue
+
+                item = _normalize_remote_action(str(action_type or ""), dict(action_data or {}), action_id)
+                await current_lease.enqueue_action(
+                    viewer=current_viewer,
+                    action_type=item["type"],
+                    action_data=item["data"],
+                    action_id=item["action_id"],
+                )
 
             except WebSocketDisconnect:
                 break
             except json.JSONDecodeError as exc:
                 await _send_remote_ws_error(websocket, RemoteLeaseError(f"invalid json: {exc}", status_code=400, code="invalid_json"))
             except Exception as exc:
+                if _is_remote_websocket_disconnect(exc):
+                    break
                 logger.error(f"error handling remote ws message for {session_id} ({platform}): {exc}")
                 await _send_remote_ws_error(websocket, exc)
 

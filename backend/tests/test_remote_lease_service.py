@@ -79,11 +79,17 @@ class _FakeWebSocket:
         self.json_messages = []
         self.text_messages = []
         self.closed = []
+        self.fail_json = False
+        self.fail_text = False
 
     async def send_json(self, payload):
+        if self.fail_json:
+            raise RuntimeError("WebSocket is not connected. Need to call 'accept' first.")
         self.json_messages.append(payload)
 
     async def send_text(self, payload):
+        if self.fail_text:
+            raise RuntimeError("WebSocket is not connected. Need to call 'accept' first.")
         self.text_messages.append(payload)
 
     async def close(self, code=1000, reason=""):
@@ -248,5 +254,84 @@ def test_prepare_upload_excludes_temp_path(isolated_remote_environment, monkeypa
     assert result["success"] is True
     assert result["filename"] == "private-file.png"
     assert "path" not in result
+
+    _run(service.close_lease(lease, reason="test_done"))
+
+
+def test_action_result_prunes_disconnected_viewer(isolated_remote_environment, monkeypatch):
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "ensure_browser_ready", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "refresh_title", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_screencast", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_stop_screencast", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_capture_bootstrap_frame", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_schedule_idle_close", lambda self: None)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_teardown_browser", _async_noop)
+
+    service = remote_lease_service.RemoteLeaseService()
+    ws = _FakeWebSocket()
+    lease, viewer = _run(
+        service.attach(
+            websocket=ws,
+            session_id="alpha",
+            platform="facebook",
+            username="alice",
+        )
+    )
+
+    ws.fail_json = True
+    sent = _run(
+        lease._send_action_result(
+            viewer,
+            action_id="action-1",
+            result={"success": True, "action": "tap"},
+        )
+    )
+
+    assert sent is False
+    assert lease.viewer_count == 0
+    assert service.get_viewer(ws) is None
+
+    _run(service.close_lease(lease, reason="test_done"))
+
+
+def test_takeover_prunes_dead_observer_and_keeps_live_controller(isolated_remote_environment, monkeypatch):
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "ensure_browser_ready", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "refresh_title", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_screencast", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_stop_screencast", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_capture_bootstrap_frame", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_schedule_idle_close", lambda self: None)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_teardown_browser", _async_noop)
+
+    service = remote_lease_service.RemoteLeaseService()
+    ws_controller = _FakeWebSocket()
+    ws_observer = _FakeWebSocket()
+
+    lease, _controller = _run(
+        service.attach(
+            websocket=ws_controller,
+            session_id="alpha",
+            platform="facebook",
+            username="alice",
+        )
+    )
+    _run(
+        service.attach(
+            websocket=ws_observer,
+            session_id="alpha",
+            platform="facebook",
+            username="bob",
+        )
+    )
+
+    ws_observer.fail_json = True
+    takeover = _run(service.handle_takeover(lease=lease, username="bob"))
+
+    assert takeover["controller_user"] == "bob"
+    assert lease.viewer_count == 1
+    assert service.get_viewer(ws_observer) is None
+    live_viewer = service.get_viewer(ws_controller)
+    assert live_viewer is not None
+    assert live_viewer.role == "observer"
 
     _run(service.close_lease(lease, reason="test_done"))
