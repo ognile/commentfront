@@ -9,7 +9,7 @@ import copy
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
 logger = logging.getLogger("ProfileManager")
@@ -47,7 +47,7 @@ class ProfileManager:
             os.path.join(os.path.dirname(__file__), "sessions")
         )
         self.state: Dict[str, Dict] = {"profiles": {}}
-        self._reserved_profiles: Set[str] = set()
+        self._reservations: Dict[str, Dict[str, Any]] = {}
         self._reserve_lock = asyncio.Lock()
         self._load_state()
         self._sync_with_sessions()
@@ -92,24 +92,78 @@ class ProfileManager:
                 profile[key] = copy.deepcopy(value)
         return profile
 
-    async def reserve_profile(self, profile_name: str) -> bool:
+    def _reservation_payload(
+        self,
+        *,
+        profile_name: str,
+        source: str,
+        owner: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        return {
+            "profile_name": profile_name,
+            "source": source,
+            "owner": owner,
+            "reserved_at": datetime.utcnow().isoformat() + "Z",
+            "metadata": copy.deepcopy(metadata or {}),
+        }
+
+    async def reserve_profile(
+        self,
+        profile_name: str,
+        *,
+        source: str = "browser",
+        owner: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Reserve a profile for exclusive browser use. Returns False if already reserved."""
         normalized = self._normalize_name(profile_name)
         async with self._reserve_lock:
-            if normalized in self._reserved_profiles:
+            current = self._reservations.get(normalized)
+            if current:
+                if owner and current.get("owner") == owner and current.get("source") == source:
+                    current["metadata"] = copy.deepcopy(metadata or current.get("metadata") or {})
+                    self._reservations[normalized] = current
+                    return True
                 return False
-            self._reserved_profiles.add(normalized)
+            self._reservations[normalized] = self._reservation_payload(
+                profile_name=normalized,
+                source=source,
+                owner=owner,
+                metadata=metadata,
+            )
             return True
 
-    async def release_profile(self, profile_name: str):
+    async def release_profile(
+        self,
+        profile_name: str,
+        *,
+        source: Optional[str] = None,
+        owner: Optional[str] = None,
+    ) -> bool:
         """Release a profile after browser closes."""
         normalized = self._normalize_name(profile_name)
         async with self._reserve_lock:
-            self._reserved_profiles.discard(normalized)
+            current = self._reservations.get(normalized)
+            if current is None:
+                return False
+            if source is not None and current.get("source") != source:
+                return False
+            if owner is not None and current.get("owner") != owner:
+                return False
+            self._reservations.pop(normalized, None)
+            return True
 
     def is_reserved(self, profile_name: str) -> bool:
         """Check if a profile is currently reserved (browser running)."""
-        return self._normalize_name(profile_name) in self._reserved_profiles
+        return self._normalize_name(profile_name) in self._reservations
+
+    def get_reservation(self, profile_name: str) -> Optional[Dict[str, Any]]:
+        normalized = self._normalize_name(profile_name)
+        reservation = self._reservations.get(normalized)
+        if reservation is None:
+            return None
+        return copy.deepcopy(reservation)
 
     def _load_state(self):
         """Load state from disk with automatic recovery from backup."""
@@ -773,6 +827,7 @@ class ProfileManager:
         profile = self.state["profiles"].get(normalized)
         if not profile:
             return None
+        reservation = self.get_reservation(normalized) or {}
 
         # Calculate success rate
         daily_stats = profile.get("daily_stats", {})
@@ -798,6 +853,9 @@ class ProfileManager:
             "usage_history": profile.get("usage_history", [])[-10:],  # Last 10
             "restriction_history": profile.get("restriction_history", []),
             "is_reserved": self.is_reserved(normalized),
+            "reservation_source": reservation.get("source"),
+            "reservation_owner": reservation.get("owner"),
+            "reservation_metadata": reservation.get("metadata"),
             "recovery_state": profile.get("recovery_state", "none"),
             "recovery_last_event": profile.get("recovery_last_event"),
             "recovery_last_event_at": profile.get("recovery_last_event_at"),

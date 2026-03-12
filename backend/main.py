@@ -69,7 +69,10 @@ from queue_manager import (
     NEAR_DUPLICATE_THRESHOLD,
 )
 from login_bot import create_session_from_credentials, refresh_session_profile_name, refresh_session_picture, fetch_profile_data_from_cookies
-from browser_manager import get_browser_manager, UPLOAD_DIR
+from remote_lease_service import (
+    RemoteLeaseError,
+    get_remote_lease_service,
+)
 from reddit_login_bot import (
     compare_attempts as compare_reddit_login_attempts,
     create_session_from_credentials as create_reddit_session_from_credentials,
@@ -1665,6 +1668,12 @@ class SessionInfo(BaseModel):
     proxy_source: Optional[str] = None  # "session" or "env" to show source
     profile_picture: Optional[str] = None  # Base64 encoded PNG
     tags: List[str] = []  # Session tags for filtering
+    is_reserved: bool = False
+    reservation_source: Optional[str] = None
+    reservation_owner: Optional[str] = None
+    reservation_controller_user: Optional[str] = None
+    reservation_platform: Optional[str] = None
+    reservation_metadata: Optional[Dict[str, Any]] = None
 
 
 class TagUpdateRequest(BaseModel):
@@ -1770,6 +1779,12 @@ class RedditSessionInfo(BaseModel):
     fixture: bool = False
     linked_credential_id: Optional[str] = None
     warmup_state: Dict[str, Any] = {}
+    is_reserved: bool = False
+    reservation_source: Optional[str] = None
+    reservation_owner: Optional[str] = None
+    reservation_controller_user: Optional[str] = None
+    reservation_platform: Optional[str] = None
+    reservation_metadata: Optional[Dict[str, Any]] = None
 
 
 class RedditSessionCreateRequest(BaseModel):
@@ -2659,8 +2674,13 @@ async def get_analytics_summary(current_user: dict = Depends(get_current_user)):
     pending = queue_manager.get_full_state().get("pending", [])
     delivery_rows = history + pending
 
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    week_start = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    reference_dates = [
+        str(item.get("completed_at") or item.get("created_at") or item.get("started_at") or "")[:10]
+        for item in delivery_rows
+        if str(item.get("completed_at") or item.get("created_at") or item.get("started_at") or "")[:10]
+    ]
+    anchor_date = max(reference_dates) if reference_dates else datetime.utcnow().strftime("%Y-%m-%d")
+    week_start = (datetime.fromisoformat(anchor_date) - timedelta(days=7)).strftime("%Y-%m-%d")
 
     delivery_today_total = 0
     delivery_today_success = 0
@@ -2679,7 +2699,7 @@ async def get_analytics_summary(current_user: dict = Depends(get_current_user)):
         success_jobs = get_campaign_success_count(campaign)
         remaining_jobs = max(0, total_jobs - success_jobs)
 
-        if reference_date == today:
+        if reference_date == anchor_date:
             delivery_today_total += total_jobs
             delivery_today_success += success_jobs
         if reference_date and reference_date >= week_start:
@@ -2849,6 +2869,52 @@ async def websocket_live(websocket: WebSocket, token: str = Query(None)):
         logger.info(f"WS disconnected. Total: {len(active_connections)}")
 
 
+def _reservation_view(profile_name: str) -> Dict[str, Any]:
+    from profile_manager import get_profile_manager
+
+    reservation = get_profile_manager().get_reservation(profile_name) or {}
+    metadata = dict(reservation.get("metadata") or {})
+    return {
+        "is_reserved": bool(reservation),
+        "reservation_source": reservation.get("source"),
+        "reservation_owner": reservation.get("owner"),
+        "reservation_controller_user": metadata.get("controller_user"),
+        "reservation_platform": metadata.get("platform"),
+        "reservation_metadata": metadata or None,
+    }
+
+
+async def _reserve_profile_operation_or_raise(
+    profile_name: str,
+    *,
+    operation: str,
+    source: str = "profile_operation",
+) -> str:
+    from profile_manager import get_profile_manager
+
+    reservation_owner = f"{operation}:{uuid.uuid4().hex[:12]}"
+    profile_manager = get_profile_manager()
+    reserved = await profile_manager.reserve_profile(
+        profile_name,
+        source=source,
+        owner=reservation_owner,
+        metadata={"operation": operation},
+    )
+    if reserved:
+        return reservation_owner
+
+    reservation = profile_manager.get_reservation(profile_name) or {}
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "message": f"profile '{profile_name}' is reserved by another browser task",
+            "profile_name": profile_name,
+            "operation": operation,
+            "reservation": reservation,
+        },
+    )
+
+
 @app.get("/sessions")
 async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[SessionInfo]:
     """Get all saved sessions with proxy info."""
@@ -2879,6 +2945,7 @@ async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[S
             proxy_masked = None
             proxy_source = None
             proxy_label = None
+        reservation = _reservation_view(s["profile_name"])
 
         results.append(SessionInfo(
             file=s["file"],
@@ -2892,6 +2959,7 @@ async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[S
             proxy_source=proxy_source,
             profile_picture=s.get("profile_picture"),
             tags=s.get("tags", []),
+            **reservation,
         ))
 
     return results
@@ -2949,9 +3017,19 @@ async def sync_all_sessions_to_env_proxy(current_user: dict = Depends(get_curren
 @app.post("/sessions/{profile_name}/test")
 async def test_session_endpoint(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Test if a session is valid."""
-    session = FacebookSession(profile_name)
-    result = await test_session(session, get_system_proxy())
-    return result
+    reservation_owner = await _reserve_profile_operation_or_raise(profile_name, operation="facebook_session_test")
+    try:
+        session = FacebookSession(profile_name)
+        result = await test_session(session, get_system_proxy())
+        return result
+    finally:
+        from profile_manager import get_profile_manager
+
+        await get_profile_manager().release_profile(
+            profile_name,
+            source="profile_operation",
+            owner=reservation_owner,
+        )
 
 
 @app.delete("/sessions/{profile_name}")
@@ -6730,6 +6808,7 @@ async def get_reddit_sessions(current_user: dict = Depends(get_current_user)):
         stored_proxy = item.get("proxy")
         proxy_masked = _mask_proxy_value(stored_proxy or get_system_proxy())
         proxy_source = "session" if stored_proxy else ("env" if get_system_proxy() else None)
+        reservation = _reservation_view(item["profile_name"])
         results.append(
             RedditSessionInfo(
                 file=item["file"],
@@ -6747,6 +6826,7 @@ async def get_reddit_sessions(current_user: dict = Depends(get_current_user)):
                 fixture=bool(item.get("fixture", False)),
                 linked_credential_id=item.get("linked_credential_id"),
                 warmup_state=item.get("warmup_state", {}),
+                **reservation,
             )
         )
     return results
@@ -7028,8 +7108,18 @@ async def test_reddit_session_endpoint(
     profile_name: str,
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
-    session = RedditSession(profile_name)
-    return await test_reddit_session(session, _resolve_effective_proxy())
+    reservation_owner = await _reserve_profile_operation_or_raise(profile_name, operation="reddit_session_test")
+    try:
+        session = RedditSession(profile_name)
+        return await test_reddit_session(session, _resolve_effective_proxy())
+    finally:
+        from profile_manager import get_profile_manager
+
+        await get_profile_manager().release_profile(
+            profile_name,
+            source="profile_operation",
+            owner=reservation_owner,
+        )
 
 
 @app.delete("/reddit/sessions/{profile_name}")
@@ -8367,21 +8457,41 @@ async def refresh_profile_name(profile_name: str, current_user: dict = Depends(g
     This navigates to /me/ using the session's cookies and extracts the real profile name.
     The session file is renamed and the credential is updated.
     """
-    result = await refresh_session_profile_name(profile_name)
+    reservation_owner = await _reserve_profile_operation_or_raise(profile_name, operation="refresh_profile_name")
+    try:
+        result = await refresh_session_profile_name(profile_name)
 
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "Failed to refresh profile name"))
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to refresh profile name"))
 
-    return result
+        return result
+    finally:
+        from profile_manager import get_profile_manager
+
+        await get_profile_manager().release_profile(
+            profile_name,
+            source="profile_operation",
+            owner=reservation_owner,
+        )
 
 
 @app.post("/sessions/{profile_name}/refresh-picture")
 async def refresh_profile_picture(profile_name: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """Refresh the profile picture for a session by visiting Facebook and extracting the current photo."""
-    result = await refresh_session_picture(profile_name)
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "Failed to refresh profile picture"))
-    return result
+    reservation_owner = await _reserve_profile_operation_or_raise(profile_name, operation="refresh_profile_picture")
+    try:
+        result = await refresh_session_picture(profile_name)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to refresh profile picture"))
+        return result
+    finally:
+        from profile_manager import get_profile_manager
+
+        await get_profile_manager().release_profile(
+            profile_name,
+            source="profile_operation",
+            owner=reservation_owner,
+        )
 
 
 class BatchRefreshPicturesRequest(BaseModel):
@@ -8395,8 +8505,20 @@ async def batch_refresh_pictures(request: BatchRefreshPicturesRequest, current_u
     results = {"total": len(request.profile_names), "success_count": 0, "failure_count": 0, "results": []}
 
     async def refresh_one(name: str):
-        async with semaphore:
-            return await refresh_session_picture(name)
+        reservation_owner: Optional[str] = None
+        try:
+            reservation_owner = await _reserve_profile_operation_or_raise(name, operation="batch_refresh_profile_picture")
+            async with semaphore:
+                return await refresh_session_picture(name)
+        finally:
+            if reservation_owner:
+                from profile_manager import get_profile_manager
+
+                await get_profile_manager().release_profile(
+                    name,
+                    source="profile_operation",
+                    owner=reservation_owner,
+                )
 
     tasks = [refresh_one(name) for name in request.profile_names]
     completed = await asyncio.gather(*tasks, return_exceptions=True)
@@ -8466,7 +8588,17 @@ async def refresh_all_profile_names(current_user: dict = Depends(get_current_use
             continue
 
         try:
-            result = await refresh_session_profile_name(profile_name)
+            reservation_owner = await _reserve_profile_operation_or_raise(profile_name, operation="refresh_all_profile_names")
+            try:
+                result = await refresh_session_profile_name(profile_name)
+            finally:
+                from profile_manager import get_profile_manager
+
+                await get_profile_manager().release_profile(
+                    profile_name,
+                    source="profile_operation",
+                    owner=reservation_owner,
+                )
             if result.get("success"):
                 results["success"] += 1
                 results["updates"].append({
@@ -8535,19 +8667,6 @@ async def workflow_dedupe_profile_names(
 # Interactive Remote Control Endpoints
 # ============================================================================
 
-# Models for remote control
-class RemoteActionRequest(BaseModel):
-    """Generic action request for remote control."""
-    action_type: str  # "click", "key", "scroll", "navigate", "type"
-    x: Optional[int] = None
-    y: Optional[int] = None
-    key: Optional[str] = None
-    modifiers: Optional[List[str]] = None
-    text: Optional[str] = None
-    delta_y: Optional[int] = None
-    url: Optional[str] = None
-
-
 class ImageUploadResponse(BaseModel):
     success: bool
     image_id: Optional[str] = None
@@ -8557,8 +8676,109 @@ class ImageUploadResponse(BaseModel):
     error: Optional[str] = None
 
 
-# In-memory storage for pending uploads (per-session)
-pending_uploads: Dict[str, Dict] = {}
+def _remote_error_payload(exc: Exception) -> Dict[str, Any]:
+    if isinstance(exc, RemoteLeaseError):
+        return {
+            "message": str(exc),
+            "code": exc.code,
+            **dict(exc.details or {}),
+        }
+    return {"message": str(exc), "code": "remote_error"}
+
+
+def _raise_remote_http_error(exc: Exception) -> None:
+    payload = _remote_error_payload(exc)
+    status_code = exc.status_code if isinstance(exc, RemoteLeaseError) else 500
+    raise HTTPException(status_code=status_code, detail=payload)
+
+
+async def _send_remote_ws_error(websocket: WebSocket, exc: Exception) -> None:
+    try:
+        await websocket.send_json({"type": "error", "data": _remote_error_payload(exc)})
+    except Exception:
+        pass
+
+
+def _normalize_remote_key(key: str) -> str:
+    mapping = {
+        " ": "Space",
+        "Spacebar": "Space",
+        "Esc": "Escape",
+        "Del": "Delete",
+        "Up": "ArrowUp",
+        "Down": "ArrowDown",
+        "Left": "ArrowLeft",
+        "Right": "ArrowRight",
+    }
+    return mapping.get(key, key)
+
+
+def _canonical_remote_actions(action_type: str, action_data: Dict[str, Any], action_id: str) -> List[Dict[str, Any]]:
+    payload = dict(action_data or {})
+
+    if action_type in {
+        "tap",
+        "pointer_move",
+        "pointer_down",
+        "pointer_up",
+        "drag",
+        "scroll_gesture",
+        "text_input",
+        "paste_text",
+        "key_down",
+        "key_up",
+        "navigate",
+    }:
+        if action_type in {"key_down", "key_up"}:
+            payload["key"] = _normalize_remote_key(str(payload.get("key") or ""))
+        return [{"type": action_type, "data": payload, "action_id": action_id}]
+
+    if action_type == "click":
+        return [{"type": "tap", "data": {"x": payload.get("x", 0), "y": payload.get("y", 0)}, "action_id": action_id}]
+
+    if action_type == "scroll":
+        return [{
+            "type": "scroll_gesture",
+            "data": {
+                "x": payload.get("x", 0),
+                "y": payload.get("y", 0),
+                "deltaY": payload.get("deltaY", payload.get("delta_y", 0)),
+            },
+            "action_id": action_id,
+        }]
+
+    if action_type == "type":
+        return [{"type": "text_input", "data": {"text": str(payload.get("text") or "")}, "action_id": action_id}]
+
+    if action_type == "key":
+        key = _normalize_remote_key(str(payload.get("key") or ""))
+        modifiers: List[str] = []
+        seen: Set[str] = set()
+        for item in list(payload.get("modifiers") or []):
+            normalized = _normalize_remote_key(str(item or ""))
+            if not normalized or normalized == key or normalized in seen:
+                continue
+            modifiers.append(normalized)
+            seen.add(normalized)
+
+        if not modifiers and len(key) == 1:
+            return [{"type": "text_input", "data": {"text": key}, "action_id": action_id}]
+
+        actions: List[Dict[str, Any]] = []
+        for index, modifier in enumerate(modifiers):
+            actions.append({"type": "key_down", "data": {"key": modifier}, "action_id": f"{action_id}:modifier_down:{index}"})
+        actions.append({"type": "key_down", "data": {"key": key}, "action_id": action_id})
+        actions.append({"type": "key_up", "data": {"key": key}, "action_id": f"{action_id}:key_up"})
+        for index, modifier in enumerate(reversed(modifiers)):
+            actions.append({"type": "key_up", "data": {"key": modifier}, "action_id": f"{action_id}:modifier_up:{index}"})
+        return actions
+
+    raise RemoteLeaseError(
+        f"unsupported remote action: {action_type}",
+        status_code=400,
+        code="remote_action_unsupported",
+        details={"action_type": action_type},
+    )
 
 
 async def _websocket_session_control_impl(
@@ -8567,72 +8787,51 @@ async def _websocket_session_control_impl(
     *,
     platform: Literal["facebook", "reddit"],
     token: Optional[str] = None,
+    api_key: Optional[str] = None,
 ):
-    """
-    WebSocket endpoint for interactive browser control. Requires token query parameter.
+    username: Optional[str] = None
+    user: Optional[Dict[str, Any]] = None
 
-    Handles:
-    - Frame streaming (server -> client, JSON with base64 image)
-    - Input events (client -> server, JSON)
-    - State updates (bidirectional, JSON)
-    """
-    # Validate token before accepting connection
-    if not token:
-        await websocket.close(code=4001, reason="Token required")
-        return
+    if api_key and CLAUDE_API_KEY and api_key == CLAUDE_API_KEY:
+        username = "claude_api_key"
+        user = {"username": username, "role": "admin", "is_active": True}
+    else:
+        if not token:
+            await websocket.close(code=4001, reason="Token required")
+            return
 
-    payload = decode_token(token)
-    if not payload or payload.get("type") != "access":
-        await websocket.close(code=4001, reason="Invalid token")
-        return
+        payload = decode_token(token)
+        if not payload or payload.get("type") != "access":
+            await websocket.close(code=4001, reason="Invalid token")
+            return
 
-    username = payload.get("sub")
-    user = user_manager.get_user(username)
-    if not user or not user.get("is_active"):
-        await websocket.close(code=4001, reason="User not found or inactive")
-        return
+        username = payload.get("sub")
+        user = user_manager.get_user(username)
+        if not user or not user.get("is_active"):
+            await websocket.close(code=4001, reason="User not found or inactive")
+            return
 
     await websocket.accept()
-    manager = get_browser_manager()
+    lease_service = get_remote_lease_service()
+    lease = None
+    viewer = None
 
     try:
-        # Subscribe FIRST so we receive progress updates during start_session
-        manager.subscribe(websocket)
-
-        # Health-aware readiness check even for same session id.
-        result = await manager.ensure_session_ready(session_id, platform=platform)
-        if not result["success"]:
-            manager.unsubscribe(websocket)
-            await websocket.send_json({"type": "error", "data": {"message": result.get("error", "Failed to start session")}})
-            await websocket.close()
-            return
-
-        # Send initial state
-        state = await manager.get_current_state()
         try:
-            await websocket.send_json({"type": "state", "data": state})
-            await websocket.send_json({"type": "browser_ready", "data": {"session_id": session_id}})
-            bootstrap_sent = await manager.send_bootstrap_frame(websocket)
-            if not bootstrap_sent:
-                await asyncio.sleep(3.0)
-                if not manager.subscriber_has_recent_frame(websocket, within_seconds=3.0):
-                    heal_result = await manager.auto_heal_session(
-                        session_id=session_id,
-                        platform=platform,
-                        reason="bootstrap_frame_timeout",
-                    )
-                    if not heal_result.get("success"):
-                        await websocket.send_json({
-                            "type": "error",
-                            "data": {"message": heal_result.get("error", "Auto-heal failed")},
-                        })
-                    else:
-                        await manager.send_bootstrap_frame(websocket)
-        except Exception as e:
-            logger.warning(f"Failed to send initial state: {e}")
+            lease, viewer = await lease_service.attach(
+                websocket=websocket,
+                session_id=session_id,
+                platform=platform,
+                username=username,
+            )
+        except Exception as exc:
+            await _send_remote_ws_error(websocket, exc)
+            try:
+                await websocket.close(code=1011, reason=str(exc))
+            except Exception:
+                pass
             return
 
-        # Handle incoming messages
         while True:
             try:
                 message = await websocket.receive_text()
@@ -8641,290 +8840,205 @@ async def _websocket_session_control_impl(
                 action_type = data.get("type")
                 action_data = data.get("data", {})
                 action_id = data.get("action_id", "")
+                if action_type == "ping":
+                    await websocket.send_json({"type": "action_result", "data": {"action_id": action_id, "success": True, "action": "pong"}})
+                    continue
 
-                result = {"success": False, "error": "Unknown action"}
+                current_lease = lease_service.get_lease_by_websocket(websocket)
+                current_viewer = lease_service.get_viewer(websocket)
+                if current_lease is None or current_viewer is None:
+                    raise RemoteLeaseError(
+                        "remote lease disconnected",
+                        status_code=410,
+                        code="remote_lease_disconnected",
+                        details={"session_id": session_id, "platform": platform},
+                    )
 
-                if action_type == "click":
-                    result = await manager.handle_click(
-                        x=action_data.get("x", 0),
-                        y=action_data.get("y", 0)
-                    )
-                elif action_type == "key":
-                    result = await manager.handle_keyboard(
-                        key=action_data.get("key", ""),
-                        modifiers=action_data.get("modifiers", [])
-                    )
-                elif action_type == "type":
-                    result = await manager.handle_type(
-                        text=action_data.get("text", "")
-                    )
-                elif action_type == "scroll":
-                    result = await manager.handle_scroll(
-                        x=action_data.get("x", 0),
-                        y=action_data.get("y", 0),
-                        delta_y=action_data.get("deltaY", 0)
-                    )
-                elif action_type == "navigate":
-                    result = await manager.navigate(
-                        url=action_data.get("url", "")
-                    )
-                elif action_type == "ping":
-                    result = {"success": True, "action": "pong"}
+                if action_type == "takeover":
+                    result = await lease_service.handle_takeover(lease=current_lease, username=username)
+                    await websocket.send_json({"type": "action_result", "data": {"action_id": action_id, **result}})
+                    continue
 
-                # Send action result
-                await websocket.send_json({
-                    "type": "action_result",
-                    "data": {
-                        "action_id": action_id,
-                        **result
-                    }
-                })
+                actions = _canonical_remote_actions(str(action_type or ""), dict(action_data or {}), action_id)
+                for item in actions:
+                    await current_lease.enqueue_action(
+                        viewer=current_viewer,
+                        action_type=item["type"],
+                        action_data=item["data"],
+                        action_id=item["action_id"],
+                    )
 
             except WebSocketDisconnect:
                 break
-            except json.JSONDecodeError as e:
-                try:
-                    await websocket.send_json({"type": "error", "data": {"message": f"Invalid JSON: {e}"}})
-                except Exception:
-                    pass  # Connection already dead
-            except Exception as e:
-                logger.error(f"Error handling WS message: {e}")
-                try:
-                    await websocket.send_json({"type": "error", "data": {"message": str(e)}})
-                except Exception:
-                    pass  # Connection already dead
+            except json.JSONDecodeError as exc:
+                await _send_remote_ws_error(websocket, RemoteLeaseError(f"invalid json: {exc}", status_code=400, code="invalid_json"))
+            except Exception as exc:
+                logger.error(f"error handling remote ws message for {session_id} ({platform}): {exc}")
+                await _send_remote_ws_error(websocket, exc)
 
     except WebSocketDisconnect:
-        logger.info(f"Remote control WS disconnected for session {session_id} ({platform})")
-    except Exception as e:
-        logger.error(f"Remote control WS error: {e}")
+        logger.info(f"remote control ws disconnected for session {session_id} ({platform})")
+    except Exception as exc:
+        logger.error(f"remote control ws error for {session_id} ({platform}): {exc}")
     finally:
-        manager.unsubscribe(websocket)
-        # Note: Browser stays open for reconnection
+        await lease_service.detach(websocket)
 
 
 @app.websocket("/ws/session/{session_id}/control")
-async def websocket_session_control(websocket: WebSocket, session_id: str, token: str = Query(None)):
-    await _websocket_session_control_impl(websocket, session_id, platform="facebook", token=token)
+async def websocket_session_control(
+    websocket: WebSocket,
+    session_id: str,
+    token: str = Query(None),
+    api_key: str = Query(None),
+):
+    await _websocket_session_control_impl(websocket, session_id, platform="facebook", token=token, api_key=api_key)
 
 
 @app.websocket("/ws/reddit/session/{session_id}/control")
-async def websocket_reddit_session_control(websocket: WebSocket, session_id: str, token: str = Query(None)):
-    await _websocket_session_control_impl(websocket, session_id, platform="reddit", token=token)
+async def websocket_reddit_session_control(
+    websocket: WebSocket,
+    session_id: str,
+    token: str = Query(None),
+    api_key: str = Query(None),
+):
+    await _websocket_session_control_impl(websocket, session_id, platform="reddit", token=token, api_key=api_key)
 
 
 @app.post("/sessions/{session_id}/remote/start")
 async def start_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Start a remote control session for the given session."""
-    manager = get_browser_manager()
-    return await manager.start_session(session_id, platform="facebook")
+    try:
+        return await get_remote_lease_service().start_detached(
+            session_id=session_id,
+            platform="facebook",
+            username=current_user.get("username", "unknown"),
+        )
+    except Exception as exc:
+        _raise_remote_http_error(exc)
 
 
 @app.post("/sessions/{session_id}/remote/restart")
 async def restart_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Force restart remote control browser for the same session id."""
-    manager = get_browser_manager()
-    return await manager.restart_session(
-        session_id,
-        platform="facebook",
-        reason=f"manual_restart:{current_user.get('username', 'unknown')}",
-    )
+    try:
+        return await get_remote_lease_service().restart(
+            session_id=session_id,
+            platform="facebook",
+            requested_by=current_user.get("username", "unknown"),
+        )
+    except Exception as exc:
+        _raise_remote_http_error(exc)
 
 
 @app.post("/sessions/{session_id}/remote/stop")
 async def stop_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Stop the current remote control session."""
-    manager = get_browser_manager()
-    if manager.session_id != session_id or manager.platform != "facebook":
-        return {"success": False, "error": "Session not active"}
-    return await manager.close_session()
+    return await get_remote_lease_service().stop(session_id=session_id, platform="facebook")
 
 
 @app.get("/sessions/remote/status")
 async def get_remote_status(current_user: dict = Depends(get_current_user)) -> Dict:
-    """Get current remote session status."""
-    manager = get_browser_manager()
-    return await manager.get_current_state()
+    return get_remote_lease_service().status_snapshot()
 
 
 @app.get("/sessions/{session_id}/remote/logs")
 async def get_session_action_logs(session_id: str, limit: int = 100, current_user: dict = Depends(get_current_user)) -> List[Dict]:
-    """Get action logs for the current session."""
-    manager = get_browser_manager()
-    if manager.session_id == session_id and manager.platform == "facebook":
-        return manager.get_action_log(limit)
-    return []
+    return get_remote_lease_service().get_logs(session_id=session_id, platform="facebook", limit=limit)
 
 
 @app.post("/reddit/sessions/{session_id}/remote/start")
 async def start_reddit_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Start a Reddit remote control session for the given saved session."""
-    manager = get_browser_manager()
-    return await manager.start_session(session_id, platform="reddit")
+    try:
+        return await get_remote_lease_service().start_detached(
+            session_id=session_id,
+            platform="reddit",
+            username=current_user.get("username", "unknown"),
+        )
+    except Exception as exc:
+        _raise_remote_http_error(exc)
 
 
 @app.post("/reddit/sessions/{session_id}/remote/restart")
 async def restart_reddit_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Force restart the current Reddit remote control browser for the same session id."""
-    manager = get_browser_manager()
-    return await manager.restart_session(
-        session_id,
-        platform="reddit",
-        reason=f"manual_restart:{current_user.get('username', 'unknown')}",
-    )
+    try:
+        return await get_remote_lease_service().restart(
+            session_id=session_id,
+            platform="reddit",
+            requested_by=current_user.get("username", "unknown"),
+        )
+    except Exception as exc:
+        _raise_remote_http_error(exc)
 
 
 @app.post("/reddit/sessions/{session_id}/remote/stop")
 async def stop_reddit_remote_session(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Stop the current Reddit remote control session."""
-    manager = get_browser_manager()
-    if manager.session_id != session_id or manager.platform != "reddit":
-        return {"success": False, "error": "Session not active"}
-    return await manager.close_session()
+    return await get_remote_lease_service().stop(session_id=session_id, platform="reddit")
 
 
 @app.get("/reddit/sessions/{session_id}/remote/logs")
 async def get_reddit_session_action_logs(session_id: str, limit: int = 100, current_user: dict = Depends(get_current_user)) -> List[Dict]:
-    """Get action logs for the current Reddit remote session."""
-    manager = get_browser_manager()
-    if manager.session_id == session_id and manager.platform == "reddit":
-        return manager.get_action_log(limit)
-    return []
+    return get_remote_lease_service().get_logs(session_id=session_id, platform="reddit", limit=limit)
 
 
-# Image upload for file chooser interception
 @app.post("/sessions/{session_id}/upload-image", response_model=ImageUploadResponse)
 async def upload_image_for_session(session_id: str, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)) -> ImageUploadResponse:
-    """
-    Upload an image for use in an interactive session.
-    Stores temporarily and associates with the session for file chooser interception.
-    """
-    from datetime import timedelta
-    from pathlib import Path
-    import uuid
-
-    # Validation
-    allowed_types = ['image/jpeg', 'image/png', 'image/webp']
-    max_size = 10 * 1024 * 1024  # 10MB
-
-    if file.content_type not in allowed_types:
-        return ImageUploadResponse(
-            success=False,
-            error=f"Invalid file type. Allowed: {', '.join(allowed_types)}"
-        )
-
     content = await file.read()
-    if len(content) > max_size:
-        return ImageUploadResponse(
-            success=False,
-            error=f"File too large. Max size: {max_size // (1024*1024)}MB"
+    try:
+        result = await get_remote_lease_service().store_upload(
+            session_id=session_id,
+            filename=file.filename or "upload.jpg",
+            content_type=file.content_type or "application/octet-stream",
+            content=content,
         )
-
-    # Generate unique ID and save to temp location
-    image_id = str(uuid.uuid4())[:8]
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Preserve original extension
-    ext = Path(file.filename).suffix or '.jpg'
-    temp_path = UPLOAD_DIR / f"{image_id}{ext}"
-    temp_path.write_bytes(content)
-
-    # Store in pending uploads with expiration
-    expires_at = datetime.now() + timedelta(minutes=30)
-    pending_uploads[session_id] = {
-        "image_id": image_id,
-        "path": str(temp_path),
-        "filename": file.filename,
-        "size": len(content),
-        "uploaded_at": datetime.now().isoformat(),
-        "expires_at": expires_at.isoformat()
-    }
-
-    logger.info(f"Image uploaded for session {session_id}: {image_id}")
+    except Exception as exc:
+        payload = _remote_error_payload(exc)
+        return ImageUploadResponse(success=False, error=payload.get("message", "upload failed"))
 
     return ImageUploadResponse(
         success=True,
-        image_id=image_id,
-        filename=file.filename,
-        size=len(content),
-        expires_at=expires_at.isoformat()
+        image_id=result.get("image_id"),
+        filename=result.get("filename"),
+        size=result.get("size"),
+        expires_at=result.get("expires_at"),
     )
 
 
 @app.delete("/sessions/{session_id}/upload-image")
 async def clear_pending_upload(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Clear pending upload for a session."""
-    from pathlib import Path
-
-    if session_id in pending_uploads:
-        upload = pending_uploads.pop(session_id)
-        # Delete temp file
-        try:
-            Path(upload["path"]).unlink(missing_ok=True)
-        except Exception as e:
-            logger.warning(f"Failed to delete temp upload file: {e}")
+    cleared = get_remote_lease_service().clear_upload(session_id=session_id)
+    if cleared:
         return {"success": True}
     return {"success": False, "error": "No pending upload"}
 
 
 @app.get("/sessions/{session_id}/pending-upload")
 async def get_pending_upload(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Check if session has a pending upload."""
-    if session_id in pending_uploads:
-        return {"has_pending": True, **pending_uploads[session_id]}
-    return {"has_pending": False}
+    return get_remote_lease_service().get_pending_upload(session_id=session_id)
 
 
 @app.post("/sessions/{session_id}/prepare-file-upload")
 async def prepare_file_upload(session_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """
-    Prepare the interactive session to use the pending upload.
-    Call this before the user clicks a file input on the page.
-    """
-    manager = get_browser_manager()
-
-    if manager.session_id != session_id or manager.platform != "facebook":
-        raise HTTPException(404, "Interactive session not found or not active")
-
-    if session_id not in pending_uploads:
-        raise HTTPException(400, "No pending upload for this session")
-
-    upload = pending_uploads[session_id]
-
-    # Set the file on the browser manager for interception
-    manager.set_pending_file(upload["path"])
-
-    return {
-        "success": True,
-        "message": "File ready. Click the upload button on the page to use it.",
-        "filename": upload["filename"]
-    }
+    try:
+        return get_remote_lease_service().prepare_upload(session_id=session_id)
+    except Exception as exc:
+        _raise_remote_http_error(exc)
 
 
-# Cleanup task for expired uploads
 async def cleanup_expired_uploads():
-    """Background task to clean up expired uploads."""
-    from pathlib import Path
-
     while True:
-        await asyncio.sleep(300)  # Run every 5 minutes
+        await asyncio.sleep(300)
 
-        now = datetime.now()
-        expired = []
-
-        for session_id, upload in pending_uploads.items():
-            expires_at = datetime.fromisoformat(upload["expires_at"])
+        now = datetime.utcnow()
+        for lease in list(get_remote_lease_service().active_leases()):
+            upload = dict(lease.pending_upload or {})
+            expires_at_raw = str(upload.get("expires_at") or "")
+            if not expires_at_raw:
+                continue
+            try:
+                expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                lease.clear_upload()
+                continue
             if now > expires_at:
-                expired.append(session_id)
-
-        for session_id in expired:
-            upload = pending_uploads.pop(session_id, None)
-            if upload:
-                try:
-                    Path(upload["path"]).unlink(missing_ok=True)
-                    logger.info(f"Cleaned up expired upload: {upload['image_id']}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up expired upload: {e}")
+                lease.clear_upload()
+                logger.info(f"cleaned up expired upload for remote lease {lease.lease_id}")
 
 
 # ===========================================================================

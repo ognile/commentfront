@@ -27,3 +27,6 @@ backend/appeal_scheduler_state.json.bak
 backend/campaign_ai_products.json
 backend/premium_automation_state.json
 backend/premium_automation_state.json.bak
+backend/reddit_programs_state.json
+backend/reddit_programs_state.json.bak
+backend/remote_leases/

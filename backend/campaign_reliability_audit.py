@@ -308,7 +308,16 @@ def build_campaign_reliability_audit(
     lookback_days: int = 2,
     min_total_count: int = 6,
 ) -> Dict[str, Any]:
-    date_to = datetime.now(UTC).date()
+    history_items = list(history)
+    observed_dates = [
+        observed.date()
+        for observed in (
+            _parse_iso_datetime(campaign.get("completed_at") or campaign.get("created_at"))
+            for campaign in history_items
+        )
+        if observed is not None
+    ]
+    date_to = max(observed_dates) if observed_dates else datetime.now(UTC).date()
     date_from = date_to - timedelta(days=max(lookback_days - 1, 0))
 
     qualifying_campaigns: List[Dict[str, Any]] = []
@@ -327,7 +336,7 @@ def build_campaign_reliability_audit(
 
     campaign_profile_names: Set[str] = set()
 
-    for campaign in history:
+    for campaign in history_items:
         total_jobs = _get_total_jobs(campaign)
         if total_jobs < min_total_count:
             continue
