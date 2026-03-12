@@ -650,6 +650,7 @@ def test_ensure_subreddit_user_flair_prefers_thread_url_before_root(monkeypatch)
         return None
 
     monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "_body_mentions_user_flair_requirement", lambda _page: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "_open_user_flair_dialog", fake_open_dialog)
     monkeypatch.setattr(reddit_bot, "_collect_user_flair_options", fake_collect)
     monkeypatch.setattr(reddit_bot, "_select_user_flair_option", fake_select)
@@ -686,6 +687,42 @@ def test_ensure_subreddit_user_flair_prefers_thread_url_before_root(monkeypatch)
     assert evidence["chosen_flair"] == "widowed"
     assert session.state["AskWomenOver40"]["user_flair"] == "widowed"
     assert artifacts == ["attached"]
+
+
+def test_ensure_subreddit_user_flair_skips_when_requirement_not_signaled(monkeypatch):
+    page = _FakePage()
+    visited = []
+
+    class _Session:
+        profile_name = "reddit_alpha"
+
+        def get_subreddit_identity_state(self, subreddit):
+            return {}
+
+    async def fake_goto(_page, url):
+        visited.append(url)
+        _page.url = url
+
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "_body_mentions_user_flair_requirement", lambda _page: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_open_user_flair_dialog", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+
+    evidence = asyncio.run(
+        reddit_bot._ensure_subreddit_user_flair(
+            page,
+            _Session(),
+            subreddit="VaginalMicrobiome",
+            action="comment_post",
+            auto_user_flair=True,
+            preferred_url="https://www.reddit.com/r/VaginalMicrobiome/comments/thread123/example_post/",
+        )
+    )
+
+    assert visited == [
+        "https://www.reddit.com/r/VaginalMicrobiome/comments/thread123/example_post/",
+        "https://www.reddit.com/r/VaginalMicrobiome/",
+    ]
+    assert evidence["status"] == "not_required"
 
 
 def test_comment_on_post_passes_target_url_as_preferred_flair_entry(monkeypatch):

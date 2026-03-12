@@ -1661,6 +1661,7 @@ async def _ensure_subreddit_user_flair(
         entry_urls.append(root_url)
 
     dialog_opened = False
+    requirement_signaled = bool(str(desired_flair or "").strip())
     for entry_url in entry_urls:
         attempted_urls.append(entry_url)
         try:
@@ -1669,6 +1670,10 @@ async def _ensure_subreddit_user_flair(
         except Exception as exc:
             navigation_errors.append(f"{entry_url}: {exc}")
             continue
+        if not requirement_signaled:
+            requirement_signaled = await _body_mentions_user_flair_requirement(page)
+        if not requirement_signaled:
+            continue
         if await _open_user_flair_dialog(page):
             dialog_opened = True
             break
@@ -1676,6 +1681,15 @@ async def _ensure_subreddit_user_flair(
     if not dialog_opened:
         if navigation_errors and len(navigation_errors) == len(attempted_urls):
             raise RuntimeError("; ".join(navigation_errors))
+        if not requirement_signaled:
+            return {
+                "subreddit": normalized_subreddit,
+                "action": action,
+                "auto_user_flair": True,
+                "status": "not_required",
+                "attempted_urls": attempted_urls,
+                "navigation_errors": navigation_errors,
+            }
         return {
             "subreddit": normalized_subreddit,
             "action": action,
