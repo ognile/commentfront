@@ -1,0 +1,238 @@
+{
+  "start_facebook": {
+    "http_status": 200,
+    "payload": {
+      "success": true,
+      "lease_id": "2785a3d57690",
+      "session_id": "adele_compton",
+      "platform": "facebook",
+      "controller_user": "claude_api",
+      "viewer_count": 0,
+      "status": "ready",
+      "created_at": "2026-03-12T13:46:41.661574Z",
+      "updated_at": "2026-03-12T13:46:42.846316Z",
+      "closed_at": null,
+      "url": "https://m.facebook.com/",
+      "title": "",
+      "last_frame_at": null,
+      "last_action_at": null,
+      "browser_started_at": "2026-03-12T13:46:42.839835Z",
+      "browser_restart_count": 1,
+      "last_error": null,
+      "viewport": {
+        "width": 393,
+        "height": 873
+      },
+      "reservation_source": "remote_lease",
+      "reservation_owner": "2785a3d57690",
+      "active": true
+    }
+  },
+  "start_reddit": {
+    "http_status": 200,
+    "payload": {
+      "success": true,
+      "lease_id": "684bb982592d",
+      "session_id": "reddit_neera_allvere",
+      "platform": "reddit",
+      "controller_user": "claude_api",
+      "viewer_count": 0,
+      "status": "ready",
+      "created_at": "2026-03-12T13:46:43.065425Z",
+      "updated_at": "2026-03-12T13:46:45.632264Z",
+      "closed_at": null,
+      "url": "https://www.reddit.com/user/Neera_Allvere/",
+      "title": "DeNeera1 (u/Neera_Allvere) - Reddit",
+      "last_frame_at": null,
+      "last_action_at": null,
+      "browser_started_at": "2026-03-12T13:46:45.620186Z",
+      "browser_restart_count": 1,
+      "last_error": null,
+      "viewport": {
+        "width": 393,
+        "height": 873
+      },
+      "reservation_source": "remote_lease",
+      "reservation_owner": "684bb982592d",
+      "active": true
+    }
+  },
+  "status_with_two_leases": {
+    "http_status": 200,
+    "payload": {
+      "active": true,
+      "active_leases": [
+        {
+          "lease_id": "2785a3d57690",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "controller_user": "claude_api",
+          "viewer_count": 0,
+          "status": "ready",
+          "created_at": "2026-03-12T13:46:41.661574Z",
+          "updated_at": "2026-03-12T13:46:42.846316Z",
+          "closed_at": null,
+          "url": "https://m.facebook.com/",
+          "title": "",
+          "last_frame_at": null,
+          "last_action_at": null,
+          "browser_started_at": "2026-03-12T13:46:42.839835Z",
+          "browser_restart_count": 1,
+          "last_error": null,
+          "viewport": {
+            "width": 393,
+            "height": 873
+          },
+          "reservation_source": "remote_lease",
+          "reservation_owner": "2785a3d57690",
+          "active": true
+        },
+        {
+          "lease_id": "684bb982592d",
+          "session_id": "reddit_neera_allvere",
+          "platform": "reddit",
+          "controller_user": "claude_api",
+          "viewer_count": 0,
+          "status": "ready",
+          "created_at": "2026-03-12T13:46:43.065425Z",
+          "updated_at": "2026-03-12T13:46:45.632264Z",
+          "closed_at": null,
+          "url": "https://www.reddit.com/user/Neera_Allvere/",
+          "title": "DeNeera1 (u/Neera_Allvere) - Reddit",
+          "last_frame_at": null,
+          "last_action_at": null,
+          "browser_started_at": "2026-03-12T13:46:45.620186Z",
+          "browser_restart_count": 1,
+          "last_error": null,
+          "viewport": {
+            "width": 393,
+            "height": 873
+          },
+          "reservation_source": "remote_lease",
+          "reservation_owner": "684bb982592d",
+          "active": true
+        }
+      ],
+      "count": 2,
+      "session_id": "adele_compton",
+      "platform": "facebook",
+      "url": "https://m.facebook.com/",
+      "title": "",
+      "capacity_limit": 2,
+      "streaming_active": false
+    }
+  },
+  "third_start_rejected": {
+    "http_status": 409,
+    "payload": {
+      "detail": {
+        "message": "remote capacity full: 2/2 active leases",
+        "code": "remote_capacity_full",
+        "capacity_limit": 2,
+        "active_leases": [
+          {
+            "lease_id": "2785a3d57690",
+            "session_id": "adele_compton",
+            "platform": "facebook",
+            "controller_user": "claude_api",
+            "viewer_count": 0,
+            "status": "ready",
+            "created_at": "2026-03-12T13:46:41.661574Z",
+            "updated_at": "2026-03-12T13:46:42.846316Z",
+            "closed_at": null,
+            "url": "https://m.facebook.com/",
+            "title": "",
+            "last_frame_at": null,
+            "last_action_at": null,
+            "browser_started_at": "2026-03-12T13:46:42.839835Z",
+            "browser_restart_count": 1,
+            "last_error": null,
+            "viewport": {
+              "width": 393,
+              "height": 873
+            },
+            "reservation_source": "remote_lease",
+            "reservation_owner": "2785a3d57690",
+            "active": true
+          },
+          {
+            "lease_id": "684bb982592d",
+            "session_id": "reddit_neera_allvere",
+            "platform": "reddit",
+            "controller_user": "claude_api",
+            "viewer_count": 0,
+            "status": "ready",
+            "created_at": "2026-03-12T13:46:43.065425Z",
+            "updated_at": "2026-03-12T13:46:45.632264Z",
+            "closed_at": null,
+            "url": "https://www.reddit.com/user/Neera_Allvere/",
+            "title": "DeNeera1 (u/Neera_Allvere) - Reddit",
+            "last_frame_at": null,
+            "last_action_at": null,
+            "browser_started_at": "2026-03-12T13:46:45.620186Z",
+            "browser_restart_count": 1,
+            "last_error": null,
+            "viewport": {
+              "width": 393,
+              "height": 873
+            },
+            "reservation_source": "remote_lease",
+            "reservation_owner": "684bb982592d",
+            "active": true
+          }
+        ]
+      }
+    }
+  },
+  "refresh_rejected": {
+    "http_status": 409,
+    "payload": {
+      "detail": {
+        "message": "profile 'adele_compton' is reserved by another browser task",
+        "profile_name": "adele_compton",
+        "operation": "refresh_profile_name",
+        "reservation": {
+          "profile_name": "adele_compton",
+          "source": "remote_lease",
+          "owner": "2785a3d57690",
+          "reserved_at": "2026-03-12T13:46:41.661531Z",
+          "metadata": {
+            "platform": "facebook",
+            "controller_user": "claude_api",
+            "lease_id": "2785a3d57690"
+          }
+        }
+      }
+    }
+  },
+  "stop_facebook": {
+    "http_status": 200,
+    "payload": {
+      "success": true,
+      "session_id": "adele_compton",
+      "platform": "facebook"
+    }
+  },
+  "stop_reddit": {
+    "http_status": 200,
+    "payload": {
+      "success": true,
+      "session_id": "reddit_neera_allvere",
+      "platform": "reddit"
+    }
+  },
+  "final_status": {
+    "http_status": 200,
+    "payload": {
+      "active": false,
+      "active_leases": [],
+      "count": 0,
+      "session_id": null,
+      "platform": null,
+      "url": null,
+      "title": null,
+      "capacity_limit": 2,
+      "streaming_active": false
+    }
+  }
+}

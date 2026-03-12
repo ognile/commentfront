@@ -1,0 +1,26 @@
+Vercel CLI 50.1.3
+Fetching deployment "commentfront.vercel.app" in ogniles-projects
+> Fetched deployment "commentfront-frontend-32ngyvpib-ogniles-projects.vercel.app" in ogniles-projects [410ms]
+
+  General
+
+    id		dpl_CvTB2NLLifm4iiAX19JLfLPr2Ee3
+    name	commentfront-frontend
+    target	production
+    status	● Ready
+    url		https://commentfront-frontend-32ngyvpib-ogniles-projects.vercel.app
+    created	Thu Mar 12 2026 14:36:43 GMT+0100 (Central European Standard Time) [12m ago]
+
+
+  Aliases
+
+    ╶ https://commentfront.vercel.app
+    ╶ https://commentfront-frontend-ogniles-projects.vercel.app
+    ╶ https://commentfront-frontend-git-main-ogniles-projects.vercel.app
+    
+
+  Builds
+
+    ╶ .        [0ms]
+    
+

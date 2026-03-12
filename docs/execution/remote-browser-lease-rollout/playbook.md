@@ -16,6 +16,7 @@
 - add proof rules here
 - save command outputs under `docs/execution/<task>/artifacts/` rather than relying on terminal scrollback.
 - separate code-level proof from environment proof: green tests/builds prove correctness, while local/prod smoke proves runtime prerequisites and operator-visible behavior.
+- after a remote modal closes, expect the lease to remain alive at `viewer_count=0` until idle timeout or explicit stop; production verifiers should assert that detached state rather than assuming immediate lease deletion.
 
 ## promotion rules
 - promote only evidence-backed reusable lessons

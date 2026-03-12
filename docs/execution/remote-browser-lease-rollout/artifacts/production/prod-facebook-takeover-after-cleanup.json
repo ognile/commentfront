@@ -1,0 +1,602 @@
+{
+  "success": true,
+  "summary": {
+    "controller_initial": {
+      "type": "state",
+      "data": {
+        "role": "controller",
+        "controller_user": "ognile",
+        "can_control": true,
+        "viewer_count": 1,
+        "lease_id": "0997fcd657c6",
+        "session_id": "adele_compton",
+        "platform": "facebook",
+        "status": "ready",
+        "url": "https://m.facebook.com/",
+        "title": "Facebook"
+      }
+    },
+    "controller_scroll_before_takeover": {
+      "type": "action_result",
+      "data": {
+        "action_id": "controller-scroll-1",
+        "action": "scroll_gesture",
+        "success": true
+      }
+    },
+    "observer_initial": {
+      "type": "state",
+      "data": {
+        "role": "observer",
+        "controller_user": "ognile",
+        "can_control": false,
+        "viewer_count": 2,
+        "lease_id": "0997fcd657c6",
+        "session_id": "adele_compton",
+        "platform": "facebook",
+        "status": "ready",
+        "url": "https://m.facebook.com/",
+        "title": "Facebook"
+      }
+    },
+    "takeover_result": {
+      "type": "action_result",
+      "data": {
+        "action_id": "observer-takeover",
+        "action": "takeover",
+        "success": true,
+        "controller_user": "ollietr",
+        "lease_id": "0997fcd657c6"
+      }
+    },
+    "status_after_takeover": {
+      "active": true,
+      "active_leases": [
+        {
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "controller_user": "ollietr",
+          "viewer_count": 2,
+          "status": "ready",
+          "created_at": "2026-03-12T13:44:27.378643Z",
+          "updated_at": "2026-03-12T13:44:29.679580Z",
+          "closed_at": null,
+          "url": "https://m.facebook.com/",
+          "title": "Facebook",
+          "last_frame_at": "2026-03-12T13:44:29.552475Z",
+          "last_action_at": "2026-03-12T13:44:29.250387Z",
+          "browser_started_at": "2026-03-12T13:44:28.521568Z",
+          "browser_restart_count": 1,
+          "last_error": null,
+          "viewport": {
+            "width": 393,
+            "height": 873
+          },
+          "reservation_source": "remote_lease",
+          "reservation_owner": "0997fcd657c6",
+          "active": true
+        }
+      ],
+      "count": 1,
+      "session_id": "adele_compton",
+      "platform": "facebook",
+      "url": "https://m.facebook.com/",
+      "title": "Facebook",
+      "capacity_limit": 2,
+      "streaming_active": true
+    },
+    "status_after_controller_disconnect": {
+      "active": true,
+      "active_leases": [
+        {
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "controller_user": "ollietr",
+          "viewer_count": 1,
+          "status": "ready",
+          "created_at": "2026-03-12T13:44:27.378643Z",
+          "updated_at": "2026-03-12T13:44:29.679580Z",
+          "closed_at": null,
+          "url": "https://m.facebook.com/",
+          "title": "Facebook",
+          "last_frame_at": "2026-03-12T13:44:29.552475Z",
+          "last_action_at": "2026-03-12T13:44:29.250387Z",
+          "browser_started_at": "2026-03-12T13:44:28.521568Z",
+          "browser_restart_count": 1,
+          "last_error": null,
+          "viewport": {
+            "width": 393,
+            "height": 873
+          },
+          "reservation_source": "remote_lease",
+          "reservation_owner": "0997fcd657c6",
+          "active": true
+        }
+      ],
+      "count": 1,
+      "session_id": "adele_compton",
+      "platform": "facebook",
+      "url": "https://m.facebook.com/",
+      "title": "Facebook",
+      "capacity_limit": 2,
+      "streaming_active": true
+    },
+    "observer_scroll_after_controller_disconnect": {
+      "type": "action_result",
+      "data": {
+        "action_id": "observer-scroll-2",
+        "action": "scroll_gesture",
+        "success": true
+      }
+    },
+    "status_after_all_viewers_disconnect": {
+      "active": true,
+      "active_leases": [
+        {
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "controller_user": "ollietr",
+          "viewer_count": 0,
+          "status": "ready",
+          "created_at": "2026-03-12T13:44:27.378643Z",
+          "updated_at": "2026-03-12T13:44:30.644334Z",
+          "closed_at": null,
+          "url": "https://m.facebook.com/",
+          "title": "Facebook",
+          "last_frame_at": "2026-03-12T13:44:29.552475Z",
+          "last_action_at": "2026-03-12T13:44:30.440882Z",
+          "browser_started_at": "2026-03-12T13:44:28.521568Z",
+          "browser_restart_count": 1,
+          "last_error": null,
+          "viewport": {
+            "width": 393,
+            "height": 873
+          },
+          "reservation_source": "remote_lease",
+          "reservation_owner": "0997fcd657c6",
+          "active": true
+        }
+      ],
+      "count": 1,
+      "session_id": "adele_compton",
+      "platform": "facebook",
+      "url": "https://m.facebook.com/",
+      "title": "Facebook",
+      "capacity_limit": 2,
+      "streaming_active": false
+    },
+    "stop_after_disconnect": {
+      "http_status": 200,
+      "payload": {
+        "success": true,
+        "session_id": "adele_compton",
+        "platform": "facebook"
+      }
+    },
+    "post_stop_status": {
+      "active": false,
+      "active_leases": [],
+      "count": 0,
+      "session_id": null,
+      "platform": null,
+      "url": null,
+      "title": null,
+      "capacity_limit": 2,
+      "streaming_active": false
+    },
+    "post_stop_health": {
+      "status": "healthy"
+    }
+  },
+  "trace": [
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "lease_role",
+        "data": {
+          "role": "controller",
+          "controller_user": "ognile",
+          "can_control": true,
+          "lease_id": "0997fcd657c6"
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "controller",
+          "controller_user": "ognile",
+          "can_control": true,
+          "viewer_count": 1,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "controller",
+          "controller_user": "ognile",
+          "can_control": true,
+          "viewer_count": 1,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "browser_ready",
+        "data": {
+          "role": "controller",
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook"
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "frame",
+        "data": {
+          "width": 393,
+          "height": 873,
+          "bootstrap": false,
+          "format": "jpeg",
+          "image_length": 3128
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "send",
+      "event": {
+        "type": "scroll_gesture",
+        "action_id": "controller-scroll-1",
+        "data": {
+          "x": 196,
+          "y": 436,
+          "deltaY": 240
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "frame",
+        "data": {
+          "width": 393,
+          "height": 873,
+          "bootstrap": true,
+          "format": "jpeg",
+          "image_length": 6984
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "frame",
+        "data": {
+          "width": 393,
+          "height": 873,
+          "bootstrap": false,
+          "format": "jpeg",
+          "image_length": 6352
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "action_result",
+        "data": {
+          "action_id": "controller-scroll-1",
+          "action": "scroll_gesture",
+          "success": true
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "controller",
+          "controller_user": "ognile",
+          "can_control": true,
+          "viewer_count": 2,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "controller",
+          "controller_user": "ognile",
+          "can_control": true,
+          "viewer_count": 2,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "frame",
+        "data": {
+          "width": 393,
+          "height": 873,
+          "bootstrap": false,
+          "format": "jpeg",
+          "image_length": 6352
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "lease_role",
+        "data": {
+          "role": "observer",
+          "controller_user": "ognile",
+          "can_control": false,
+          "lease_id": "0997fcd657c6"
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "observer",
+          "controller_user": "ognile",
+          "can_control": false,
+          "viewer_count": 2,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "frame",
+        "data": {
+          "width": 393,
+          "height": 873,
+          "bootstrap": true,
+          "format": "jpeg",
+          "image_length": 6352
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "observer",
+          "controller_user": "ognile",
+          "can_control": false,
+          "viewer_count": 2,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "browser_ready",
+        "data": {
+          "role": "observer",
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook"
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "frame",
+        "data": {
+          "width": 393,
+          "height": 873,
+          "bootstrap": false,
+          "format": "jpeg",
+          "image_length": 6352
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "send",
+      "event": {
+        "type": "takeover",
+        "action_id": "observer-takeover",
+        "data": {}
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "lease_role",
+        "data": {
+          "role": "controller",
+          "controller_user": "ollietr",
+          "can_control": true,
+          "lease_id": "0997fcd657c6"
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "controller",
+          "controller_user": "ollietr",
+          "can_control": true,
+          "viewer_count": 2,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "action_result",
+        "data": {
+          "action_id": "observer-takeover",
+          "action": "takeover",
+          "success": true,
+          "controller_user": "ollietr",
+          "lease_id": "0997fcd657c6"
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "lease_role",
+        "data": {
+          "role": "observer",
+          "controller_user": "ollietr",
+          "can_control": false,
+          "lease_id": "0997fcd657c6"
+        }
+      }
+    },
+    {
+      "client": "controller",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "observer",
+          "controller_user": "ollietr",
+          "can_control": false,
+          "viewer_count": 2,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "send",
+      "event": {
+        "type": "scroll_gesture",
+        "action_id": "observer-scroll-2",
+        "data": {
+          "x": 196,
+          "y": 436,
+          "deltaY": 180
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "state",
+        "data": {
+          "role": "controller",
+          "controller_user": "ollietr",
+          "can_control": true,
+          "viewer_count": 1,
+          "lease_id": "0997fcd657c6",
+          "session_id": "adele_compton",
+          "platform": "facebook",
+          "status": "ready",
+          "url": "https://m.facebook.com/",
+          "title": "Facebook"
+        }
+      }
+    },
+    {
+      "client": "observer",
+      "direction": "recv",
+      "event": {
+        "type": "action_result",
+        "data": {
+          "action_id": "observer-scroll-2",
+          "action": "scroll_gesture",
+          "success": true
+        }
+      }
+    }
+  ]
+}

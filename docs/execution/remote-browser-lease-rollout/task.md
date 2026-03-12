@@ -21,16 +21,15 @@
 - do not modify the user's existing change in `.claude/CLAUDE.md`.
 
 ## current state
-- current remote control is implemented as a singleton `PersistentBrowserManager` with an explicit one-session-at-a-time model.
-- production baseline artifacts are saved under `artifacts/baseline/`.
-- current production already exhibited failed remote-stream states and idle-close cleanup.
-- the only pre-existing worktree change is `.claude/CLAUDE.md`.
+- the remote singleton has been fully removed and production now runs on the lease service only.
+- production baseline artifacts and final production proof artifacts are both saved under `artifacts/`.
+- the only pre-existing worktree change outside this task remains `.claude/CLAUDE.md`.
 
 ## active todo
-1. cut the cleanup commit that removes the rollout shim and singleton file, then push it.
-2. verify railway and vercel are serving the intended github commits after the cleanup push.
-3. run final production smoke for facebook/reddit remote control, observer attach plus takeover, capacity enforcement, reservation conflicts, and post-disconnect health/status behavior.
-4. close the pass/fail matrix with artifact-backed evidence and no leftover untracked files.
+1. stage the final proof artifacts and tracker updates.
+2. cut the final documentation/proof commit without touching `.claude/CLAUDE.md`.
+3. push the proof commit and re-verify production health on the no-code redeploy.
+4. finish with a zero-untracked worktree.
 
 ## current understanding
 - the main correctness bug is architectural, not cosmetic: one global browser slot plus direct websocket-to-page mutation creates unavoidable interference and poor input fidelity.
@@ -45,6 +44,19 @@
 - local api smoke proves the new reservation metadata is exposed and a remote start without proxy fails cleanly instead of hanging.
 - local browser-level verification proves the new remote modal renders and surfaces the proxy failure state to the operator.
 - the final cleanup is implemented locally: `backend/browser_manager.py` is deleted, `backend/main.py` only accepts canonical remote actions, dead websocket sends prune viewers, and the full backend suite now passes at `333 passed`.
+- railway serves commit `8a6f8f31e2205917d860c4d04f0350329e92628d` and vercel serves deployment `dpl_CvTB2NLLifm4iiAX19JLfLPr2Ee3` on `commentfront.vercel.app`.
+- production capacity, reservation, takeover, disconnect, health, and frontend-ui smokes are all confirmed with saved artifacts.
 
 ## open risks
-- the last remaining proof gap is production-only: local browser launch is still blocked by missing proxy config, so the fixed disconnect path, takeover stability, and capacity behavior must be proven on railway/vercel.
+- none for the remote lease rollout itself; remaining warnings in local verification are pre-existing deprecation/lint warnings outside this task scope.
+
+## final pass/fail matrix
+- `[pass]` two different profiles can hold active leases concurrently. evidence: `artifacts/production/prod-capacity-and-reservation-after-cleanup.json`
+- `[pass]` a third lease is rejected at the hard capacity limit with `409 remote_capacity_full`. evidence: `artifacts/production/prod-capacity-and-reservation-after-cleanup.json`
+- `[pass]` a leased profile blocks refresh work with `409` and explicit reservation metadata. evidence: `artifacts/production/prod-capacity-and-reservation-after-cleanup.json`
+- `[pass]` observer attach plus instant takeover work on production and controller ownership changes to the takeover user. evidence: `artifacts/production/prod-facebook-takeover-after-cleanup.json`
+- `[pass]` after the original controller disconnects, the surviving controller can still execute a canonical scroll action successfully. evidence: `artifacts/production/prod-facebook-takeover-after-cleanup.json`
+- `[pass]` after all viewers disconnect, the lease remains detached at `viewer_count=0` until explicit stop, then returns to zero active leases. evidence: `artifacts/production/prod-facebook-takeover-after-cleanup.json`
+- `[pass]` production backend health is healthy and remote status is zero-active after cleanup verification. evidence: `artifacts/production/backend-health-after-cleanup.json`, `artifacts/production/prod-remote-status-after-cleanup.json`
+- `[pass]` recent railway logs contain zero matches for the previous closed-websocket spam signatures. evidence: `artifacts/production/prod-remote-log-check-after-cleanup.json`
+- `[pass]` the shipped frontend sessions UI opens a live facebook remote modal and renders a connected browser frame against the cleaned-up backend. evidence: `artifacts/production/prod-frontend-ui-smoke.md`
