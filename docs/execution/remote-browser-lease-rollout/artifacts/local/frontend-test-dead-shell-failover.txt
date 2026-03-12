@@ -5,14 +5,15 @@
 
  RUN  v4.0.18 /Users/nikitalienov/Documents/commentfront/frontend
 
- ✓ src/hooks/useRemoteControl.test.tsx (7 tests) 20ms
- ✓ src/components/analytics/CampaignReliabilityAuditCard.test.tsx (1 test) 39ms
- ✓ src/components/analytics/ProfileHealthConsole.test.tsx (2 tests) 49ms
- ✓ src/components/remote/RemoteControlModal.test.tsx (1 test) 78ms
- ✓ src/components/reddit/RedditTab.test.tsx (3 tests) 753ms
+ ✓ src/hooks/useRemoteControl.test.tsx (7 tests) 18ms
+ ✓ src/components/analytics/CampaignReliabilityAuditCard.test.tsx (1 test) 38ms
+ ✓ src/components/analytics/ProfileHealthConsole.test.tsx (2 tests) 46ms
+ ✓ src/components/remote/RemoteControlModal.test.tsx (1 test) 76ms
+ ✓ src/components/reddit/RedditTab.test.tsx (3 tests) 720ms
+     ✓ opens proof links through authenticated document fetches  301ms
 
  Test Files  5 passed (5)
       Tests  14 passed (14)
-   Start at  18:55:30
-   Duration  1.53s (transform 321ms, setup 469ms, import 660ms, tests 940ms, environment 1.86s)
+   Start at  19:00:04
+   Duration  1.46s (transform 274ms, setup 414ms, import 593ms, tests 898ms, environment 1.90s)
 

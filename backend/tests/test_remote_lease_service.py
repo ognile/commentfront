@@ -317,6 +317,61 @@ def test_wait_for_renderable_document_exits_early_on_persistent_dead_shell(monke
     _run(_exercise())
 
 
+def test_navigate_initial_page_uses_shorter_timeout_when_requested(monkeypatch):
+    async def _exercise():
+        service = remote_lease_service.RemoteLeaseService()
+        lease = remote_lease_service.RemoteLease(
+            service=service,
+            lease_id="lease-nav-timeout",
+            session_id="alpha",
+            platform="facebook",
+            controller_user="alice",
+        )
+        lease._action_worker_task.cancel()
+        try:
+            await lease._action_worker_task
+        except asyncio.CancelledError:
+            pass
+
+        fake_page = _FakePage()
+        lease._page = fake_page
+
+        async def _renderable():
+            return {
+                "readyState": "interactive",
+                "visibilityState": "visible",
+                "bodyTextLength": 0,
+                "htmlLength": 4096,
+                "title": "",
+                "url": fake_page.goto_calls[-1]["url"],
+            }
+
+        monkeypatch.setattr(lease, "_wait_for_renderable_document", _renderable)
+
+        spec = remote_lease_service.RemoteSessionSpec(
+            platform="facebook",
+            session_id="alpha",
+            user_agent="facebook-agent",
+            viewport={"width": 393, "height": 873},
+            timezone_id="America/New_York",
+            locale="en-US",
+            proxy_url="http://session-proxy:8080",
+            proxy_source="session",
+            start_url="https://m.facebook.com/me/?v=timeline",
+        )
+
+        await lease._navigate_initial_page(
+            spec,
+            reason="attach",
+            proxy_source="session",
+            navigation_timeout_seconds=3,
+        )
+
+        assert fake_page.goto_calls[0]["timeout"] == 3000
+
+    _run(_exercise())
+
+
 def test_navigate_initial_page_fast_fails_dead_shell_proxy(monkeypatch):
     async def _exercise():
         service = remote_lease_service.RemoteLeaseService()
@@ -365,7 +420,12 @@ def test_navigate_initial_page_fast_fails_dead_shell_proxy(monkeypatch):
         )
 
         with pytest.raises(RuntimeError, match="empty loading shell"):
-            await lease._navigate_initial_page(spec, reason="attach", proxy_source="session")
+            await lease._navigate_initial_page(
+                spec,
+                reason="attach",
+                proxy_source="session",
+                navigation_timeout_seconds=remote_lease_service.REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS,
+            )
 
         assert [call["url"] for call in fake_page.goto_calls] == ["https://m.facebook.com/me/?v=timeline"]
 
@@ -429,7 +489,12 @@ def test_navigate_initial_page_keeps_trying_partial_documents(monkeypatch):
             fallback_start_urls=["https://m.facebook.com/me/"],
         )
 
-        result = await lease._navigate_initial_page(spec, reason="attach", proxy_source="session")
+        result = await lease._navigate_initial_page(
+            spec,
+            reason="attach",
+            proxy_source="session",
+            navigation_timeout_seconds=remote_lease_service.REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS,
+        )
 
         assert result["url"] == "https://m.facebook.com/me/"
         assert result["attempt"] == 2

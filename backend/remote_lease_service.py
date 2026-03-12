@@ -49,6 +49,9 @@ REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_FRAME_CAPTURE_TIM
 REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS", "8"))
 REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS", "6"))
 REMOTE_STARTUP_DEAD_SHELL_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_DEAD_SHELL_TIMEOUT_SECONDS", "2"))
+REMOTE_SESSION_PROXY_NAVIGATION_TIMEOUT_SECONDS = float(
+    os.getenv("REMOTE_SESSION_PROXY_NAVIGATION_TIMEOUT_SECONDS", "3")
+)
 REMOTE_RENDERABLE_MIN_HTML_LENGTH = int(os.getenv("REMOTE_RENDERABLE_MIN_HTML_LENGTH", "2048"))
 
 
@@ -611,6 +614,7 @@ class RemoteLease:
         *,
         reason: str,
         proxy_source: str,
+        navigation_timeout_seconds: float,
     ) -> Dict[str, Any]:
         assert self._page is not None
         candidates: List[str] = []
@@ -624,7 +628,7 @@ class RemoteLease:
 
         last_error = ""
         last_health: Dict[str, Any] = {}
-        nav_timeout_ms = max(3000, int(REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS * 1000))
+        nav_timeout_ms = max(1500, int(navigation_timeout_seconds * 1000))
         for index, candidate in enumerate(candidates, start=1):
             if self.closed_at:
                 raise asyncio.CancelledError()
@@ -969,10 +973,17 @@ class RemoteLease:
                 self._page.on("filechooser", lambda chooser: asyncio.create_task(self._handle_file_chooser(chooser)))
                 self._page.on("close", lambda: asyncio.create_task(self._handle_page_closed("page_closed")))
                 self._page.on("crash", lambda: asyncio.create_task(self._handle_page_closed("page_crashed")))
+                navigation_timeout_seconds = REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS
+                if proxy_source == "session" and session_spec.fallback_proxy_url:
+                    navigation_timeout_seconds = min(
+                        navigation_timeout_seconds,
+                        REMOTE_SESSION_PROXY_NAVIGATION_TIMEOUT_SECONDS,
+                    )
                 navigation_result = await self._navigate_initial_page(
                     session_spec,
                     reason=reason,
                     proxy_source=proxy_source,
+                    navigation_timeout_seconds=navigation_timeout_seconds,
                 )
 
                 self._cdp = await self._context.new_cdp_session(self._page)
