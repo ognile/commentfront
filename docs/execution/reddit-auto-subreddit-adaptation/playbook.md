@@ -9,6 +9,7 @@
 - persist per-subreddit identity state on the session so automatically discovered flair choices can be reused.
 - use a proof-matrix compiler contract when you need guaranteed `(profile, subreddit)` coverage instead of hoping weighted random allocation will prove it.
 - on reddit mobile threads, scroll until the comment surface or action row is visible before trying composer selectors.
+- when a mixed proof vehicle partially succeeds, peel the remaining profiles into fresh single-profile proof vehicles so each proof stays attributable and stale mixed rows do not contaminate acceptance.
 
 ## failure patterns
 - add recurring traps here
