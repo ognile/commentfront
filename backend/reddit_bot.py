@@ -280,11 +280,12 @@ async def _recover_created_post_permalink_after_submit(
                 continue
             if await _reddit_page_has_unknown_username(page):
                 continue
+            candidate_actor_username = None if "/user/" in candidate_url else actor_username
             permalink = await _find_created_post_permalink_on_feed(
                 page,
                 title=title,
                 body=body,
-                actor_username=actor_username,
+                actor_username=candidate_actor_username,
                 profile_name=None,
             )
             if permalink:
@@ -1559,6 +1560,46 @@ _POST_FLAIR_SUBSTRING_BANNED = (
     "change image",
     "change video",
     "media",
+    "view in reddit app",
+)
+
+_POST_FLAIR_CONTENT_RULES = (
+    {
+        "label_terms": ("art car", "auto art"),
+        "positive_terms": ("art", "styling", "style", "design", "paint", "grille", "grill", "body kit", "concept", "futuristic"),
+        "reward": 14,
+        "missing_penalty": 0,
+    },
+    {
+        "label_terms": ("amphibious",),
+        "positive_terms": ("amphibious", "water", "boat", "marine", "river", "lake", "float", "floating", "swim"),
+        "reward": 12,
+        "missing_penalty": 10,
+    },
+    {
+        "label_terms": ("all terrain", "off road", "off-road"),
+        "positive_terms": ("all terrain", "off road", "off-road", "mud", "trail", "terrain", "dirt", "rock crawler"),
+        "reward": 12,
+        "missing_penalty": 8,
+    },
+    {
+        "label_terms": ("article", "news"),
+        "positive_terms": ("article", "writeup", "write-up", "news", "report", "source", "interview", "story", "link"),
+        "reward": 12,
+        "missing_penalty": 9,
+    },
+    {
+        "label_terms": ("2 wheels", "two wheels"),
+        "positive_terms": ("2 wheels", "two wheels", "bike", "bicycle", "motorcycle"),
+        "reward": 12,
+        "missing_penalty": 8,
+    },
+    {
+        "label_terms": ("3 wheels", "three wheels"),
+        "positive_terms": ("3 wheels", "three wheels", "trike", "three-wheeler"),
+        "reward": 12,
+        "missing_penalty": 8,
+    },
 )
 
 
@@ -1689,10 +1730,36 @@ def _post_flair_candidate_meta(candidate: Dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
+def _post_flair_content_score(
+    flair_label: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+) -> int:
+    normalized_label = _normalize_text(flair_label)
+    if not normalized_label:
+        return 0
+    content = _normalize_text(" ".join(part for part in (title, body) if str(part or "").strip()))
+    if not content:
+        return 0
+    score = 0
+    for rule in _POST_FLAIR_CONTENT_RULES:
+        if not any(term in normalized_label for term in rule["label_terms"]):
+            continue
+        matches = sum(1 for term in rule["positive_terms"] if term in content)
+        if matches:
+            score += int(rule["reward"]) + min(matches - 1, 3)
+        else:
+            score -= int(rule["missing_penalty"])
+    return score
+
+
 def _pick_post_flair_candidate(
     candidates: List[Dict[str, Any]],
     *,
     prefer_modal_surface: bool = False,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     ranked: List[Dict[str, Any]] = []
     for candidate in list(candidates or []):
@@ -1725,6 +1792,7 @@ def _pick_post_flair_candidate(
             score += 2
         if any(term in combined for term in ("advice", "question", "discussion")):
             score += 2
+        score += _post_flair_content_score(combined, title=title, body=body)
         if prefer_modal_surface and not in_modal_surface and not expand:
             score -= 18
         if not text and aria and float(candidate.get("width") or 0.0) <= 72 and float(candidate.get("height") or 0.0) <= 72:
@@ -1832,12 +1900,20 @@ async def _capture_post_flair_sheet_state(page, label: str) -> None:
     )
 
 
-async def _click_first_post_flair_option(page, *, prefer_modal_surface: bool = False) -> bool:
+async def _click_first_post_flair_option(
+    page,
+    *,
+    prefer_modal_surface: bool = False,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+) -> bool:
     expanded_once = False
     for _attempt in range(3):
         candidate = _pick_post_flair_candidate(
             await _collect_post_flair_candidates(page),
             prefer_modal_surface=prefer_modal_surface or expanded_once,
+            title=title,
+            body=body,
         )
         if not candidate:
             return False
@@ -1864,7 +1940,13 @@ async def _click_first_post_flair_option(page, *, prefer_modal_surface: bool = F
     return False
 
 
-async def _ensure_post_flair(page, *, force: bool = False) -> bool:
+async def _ensure_post_flair(
+    page,
+    *,
+    force: bool = False,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+) -> bool:
     if not force and not await _post_requires_flair(page):
         return True
     opened = await _click_first(page, POST["flair_button"], timeout_ms=4000)
@@ -1881,7 +1963,12 @@ async def _ensure_post_flair(page, *, force: bool = False) -> bool:
     expanded = await _click_post_flair_expansion(page)
     if expanded:
         await _capture_post_flair_sheet_state(page, "REDDIT POST FLAIR SHEET EXPANDED")
-    selected = await _click_first_post_flair_option(page, prefer_modal_surface=expanded)
+    selected = await _click_first_post_flair_option(
+        page,
+        prefer_modal_surface=expanded,
+        title=title,
+        body=body,
+    )
     if not selected:
         await _capture_post_flair_sheet_state(page, "REDDIT POST FLAIR SHEET UNRESOLVED")
         return False
@@ -4477,7 +4564,7 @@ async def create_post(
 
             await page.wait_for_timeout(1800)
             if await _post_requires_flair(page):
-                if not await _ensure_post_flair(page):
+                if not await _ensure_post_flair(page, title=title, body=body):
                     await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED")
                     raise RuntimeError("Reddit post flair selection failed")
                 await _dismiss_reddit_open_app_sheet(page)
@@ -4490,7 +4577,7 @@ async def create_post(
                 delayed_flair_required = await _post_requires_flair(page)
                 delayed_flair_visible = await _post_flair_ui_visible(page)
                 if delayed_flair_required or delayed_flair_visible:
-                    if not await _ensure_post_flair(page, force=True):
+                    if not await _ensure_post_flair(page, force=True, title=title, body=body):
                         await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED DELAYED")
                         raise RuntimeError("Reddit post flair selection failed")
                     await _dismiss_reddit_open_app_sheet(page)
@@ -4505,13 +4592,15 @@ async def create_post(
                 current_url = page.url
             actor_username = session.get_username() if hasattr(session, "get_username") else None
             actor_profile_url = session.get_profile_url() if hasattr(session, "get_profile_url") else None
+            feed_match_body = None if image_path else body
+            actor_for_current_page = None if "/user/" in str(page.url or "") else actor_username
             created_post_url = current_url if "/comments/" in current_url else None
             if not created_post_url:
                 created_post_url = await _find_created_post_permalink_on_feed(
                     page,
                     title=title,
-                    body=body,
-                    actor_username=actor_username,
+                    body=feed_match_body,
+                    actor_username=actor_for_current_page,
                     profile_name=None,
                 )
             if not created_post_url and (
@@ -4520,7 +4609,7 @@ async def create_post(
                 created_post_url = await _recover_created_post_permalink_after_submit(
                     page,
                     title=title,
-                    body=body,
+                    body=feed_match_body,
                     actor_username=actor_username,
                     profile_url=actor_profile_url,
                     subreddit=normalized,

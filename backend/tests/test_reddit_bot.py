@@ -275,6 +275,55 @@ def test_pick_post_flair_candidate_prefers_modal_surface_after_expansion():
     assert candidate["matched"] == "discussion"
 
 
+def test_pick_post_flair_candidate_prefers_content_aligned_flair():
+    candidate = reddit_bot._pick_post_flair_candidate(
+        [
+            {
+                "text": "amphibious",
+                "aria": "",
+                "role": "option",
+                "tag": "DIV",
+                "width": 132,
+                "height": 36,
+                "top": 493,
+                "x": 196,
+                "y": 493,
+                "inModalSurface": True,
+            },
+            {
+                "text": "art car",
+                "aria": "",
+                "role": "option",
+                "tag": "DIV",
+                "width": 132,
+                "height": 36,
+                "top": 541,
+                "x": 196,
+                "y": 541,
+                "inModalSurface": True,
+            },
+            {
+                "text": "article",
+                "aria": "",
+                "role": "option",
+                "tag": "DIV",
+                "width": 132,
+                "height": 36,
+                "top": 589,
+                "x": 196,
+                "y": 589,
+                "inModalSurface": True,
+            },
+        ],
+        prefer_modal_surface=True,
+        title="This heart grille turns the whole thing into a failed concept car.",
+        body="The front end looks like somebody forced a valentine prop onto an old wagon and called it futuristic styling.",
+    )
+
+    assert candidate is not None
+    assert candidate["matched"] == "art car"
+
+
 def test_click_first_post_flair_option_expands_view_all_before_selecting_option(monkeypatch):
     page = _FakePage()
     candidate_sets = iter(
@@ -1494,8 +1543,10 @@ def test_create_post_uses_visible_flair_ui_when_detector_misses_requirement(monk
             page.url = "https://www.reddit.com/r/WeirdWheels/comments/example/new_post/"
         return True
 
-    async def fake_ensure_post_flair(_page, *, force=False):
+    async def fake_ensure_post_flair(_page, *, force=False, title=None, body=None):
         ensure_flair_forces.append(force)
+        assert title == "image proof title"
+        assert body is None
         return True
 
     monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
@@ -1616,6 +1667,92 @@ def test_create_post_recovery_uses_authoritative_profile_url_not_internal_profil
     assert result["target_url"] == "https://www.reddit.com/r/ATBGE/comments/example/profile_recovered_post/"
     assert "https://www.reddit.com/user/Amy_Schaefera/submitted/" in goto_urls
     assert "https://www.reddit.com/user/reddit_amy_schaefera/submitted/" not in goto_urls
+    assert upload_locator.paths == [str(image_path.resolve())]
+
+
+def test_create_post_recovery_relaxes_image_feed_matching_on_profile_pages(monkeypatch, tmp_path):
+    upload_locator = _FakeUploadLocator()
+    image_path = tmp_path / "proof.png"
+    image_path.write_bytes(b"png")
+
+    class _FakeMediaPage(_FakePage):
+        def locator(self, selector):
+            if selector == "body":
+                return _FakeBodyLocator(self.body_text)
+            if selector == 'input[type="file"]':
+                return upload_locator
+            raise AssertionError(f"unexpected locator: {selector}")
+
+    page = _FakeMediaPage()
+    page.url = "https://www.reddit.com/r/WeirdWheels/submit?type=IMAGE"
+    page.body_text = "server error we have encountered an error. please try again later."
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, url):
+        page.url = url
+        if "/submit" in url:
+            page.body_text = "server error we have encountered an error. please try again later."
+        elif "/user/" in url:
+            page.body_text = "recent posts from victor"
+        else:
+            page.body_text = ""
+
+    async def fake_find_created_permalink(_page, *, title, body, actor_username, profile_name):
+        assert title == "image proof title"
+        assert profile_name is None
+        if page.url == "https://www.reddit.com/r/WeirdWheels/new/":
+            assert body is None
+            assert actor_username == "Victor_Saunders"
+            return None
+        if page.url == "https://www.reddit.com/user/Victor_Saunders/submitted/":
+            assert body is None
+            assert actor_username is None
+            return "https://www.reddit.com/r/WeirdWheels/comments/example/profile_recovered_post/"
+        return None
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_select_post_compose_tab", lambda *_args, label: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_ensure_subreddit_user_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(reddit_bot, "_fill_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_post_requires_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_find_created_post_permalink_on_feed", fake_find_created_permalink)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
+
+    session = type(
+        "Session",
+        (),
+        {
+            "profile_name": "reddit_victor_saunders",
+            "get_username": lambda self: "Victor_Saunders",
+            "get_profile_url": lambda self: "https://www.reddit.com/user/Victor_Saunders/",
+        },
+    )()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="image proof title",
+            body="image body should not be required on feed cards",
+            subreddit="WeirdWheels",
+            image_path=str(image_path),
+        )
+    )
+
+    assert result["success"] is True
+    assert result["target_url"] == "https://www.reddit.com/r/WeirdWheels/comments/example/profile_recovered_post/"
     assert upload_locator.paths == [str(image_path.resolve())]
 
 
@@ -1847,8 +1984,10 @@ def test_create_post_retries_submit_when_flair_requirement_appears_after_first_c
     async def fake_requires_flair(_page):
         return next(flair_checks)
 
-    async def fake_ensure_post_flair(_page, *, force=False):
+    async def fake_ensure_post_flair(_page, *, force=False, title=None, body=None):
         assert force is True
+        assert title == "hello title"
+        assert body is None
         ensured_flair.append("ensured")
         return True
 
@@ -1906,8 +2045,10 @@ def test_create_post_retries_submit_without_forcing_flair_when_submit_page_linge
             return True
         raise AssertionError(f"unexpected selectors: {selectors}")
 
-    async def fake_ensure_post_flair(_page, *, force=False):
+    async def fake_ensure_post_flair(_page, *, force=False, title=None, body=None):
         ensured_flair.append(force)
+        assert title == "hello title"
+        assert body is None
         return True
 
     monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
