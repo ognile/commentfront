@@ -497,6 +497,44 @@ def test_comment_on_post_returns_community_restricted(monkeypatch):
     assert "community ban" in result["error"]
 
 
+def test_comment_on_post_preserves_identity_evidence_on_community_restricted(monkeypatch):
+    page = _FakePage()
+    page.body_text = "you’re currently banned from this community and can’t comment on posts."
+    page.url = "https://www.reddit.com/r/AskWomenOver40/comments/example/post/"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(
+        reddit_bot,
+        "_ensure_subreddit_user_flair",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"status": "applied", "chosen_flair": "widowed"}),
+    )
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_load_post_context", lambda *_args, **_kwargs: asyncio.sleep(0, result={"title": "Example"}))
+    monkeypatch.setattr(reddit_bot, "_ensure_thread_context", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_scroll_until_comment_surface_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_capture_reddit_failure_state", lambda *_args, **_kwargs: asyncio.sleep(0))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.comment_on_post(
+            session,
+            url="https://www.reddit.com/r/AskWomenOver40/comments/example/post/",
+            text="supportive text",
+            subreddit="AskWomenOver40",
+            auto_user_flair=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["failure_class"] == "community_restricted"
+    assert result["identity_evidence"] == {"status": "applied", "chosen_flair": "widowed"}
+
+
 def test_ensure_subreddit_user_flair_prefers_thread_url_before_root(monkeypatch):
     page = _FakePage()
     visited = []
@@ -779,6 +817,50 @@ def test_create_post_returns_community_restricted(monkeypatch):
     assert "community ban" in result["error"]
 
 
+def test_create_post_preserves_identity_evidence_on_community_restricted(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/AskWomenOver40/submit?type=TEXT"
+    page.body_text = "you've been banned from contributing to this community"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_fill_first(_page, selectors, value):
+        if tuple(selectors) == tuple(reddit_bot.POST["title_input"]):
+            return True
+        if tuple(selectors) == tuple(reddit_bot.POST["body_input"]):
+            return True
+        raise AssertionError(f"unexpected selectors: {selectors}")
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_ensure_subreddit_user_flair",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"status": "applied", "chosen_flair": "widowed"}),
+    )
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill_first)
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_capture_reddit_failure_state", lambda *_args, **_kwargs: asyncio.sleep(0))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="hello title",
+            body="body text",
+            subreddit="AskWomenOver40",
+            auto_user_flair=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["failure_class"] == "community_restricted"
+    assert result["identity_evidence"] == {"status": "applied", "chosen_flair": "widowed"}
+
+
 def test_create_post_accepts_subreddit_feed_permalink_when_post_appears_in_feed(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/Healthyhooha/"
@@ -981,6 +1063,72 @@ def test_upvote_comment_prefers_target_comment_surface(monkeypatch):
     assert not any(call[0] == "ensure_thread" for call in calls)
 
 
+def test_upvote_comment_falls_back_to_canonical_comment_surface(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/o4v87n6/"
+    goto_calls = []
+    rows = [
+        None,
+        {
+            "author": {"x": 120, "y": 120},
+            "focus": {"left": 92, "bottom": 618, "top": 560},
+            "vote": {"x": 28, "y": 640},
+        },
+    ]
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, url):
+        goto_calls.append(url)
+
+    monkeypatch.setattr(
+        reddit_bot,
+        "_load_target_comment_context",
+        lambda _url: asyncio.sleep(
+            0,
+            result={
+                "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/",
+                "author": "helper_user",
+                "body_snippet": "helpful reply target",
+                "title": "example post",
+            },
+        ),
+    )
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "_ensure_thread_context", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_scroll_target_comment_into_view",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=rows.pop(0)),
+    )
+    monkeypatch.setattr(reddit_bot, "_vote_point_is_active", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_verify_named_control_state", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_click_named_control", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_click_comment_upvote_region", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_capture_row_signature", lambda *_args, **_kwargs: asyncio.sleep(0, result=["after"]))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(reddit_bot, "_network_has_vote_mutation", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(reddit_bot, "get_current_forensic_recorder", lambda: object())
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.upvote_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/o4v87n6/",
+        )
+    )
+
+    assert result["success"] is True
+    assert goto_calls[:2] == [
+        "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/o4v87n6/",
+        "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/o4v87n6/",
+    ]
+
+
 def test_reply_comment_prefers_target_comment_surface(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/"
@@ -1041,6 +1189,54 @@ def test_reply_comment_prefers_target_comment_surface(monkeypatch):
     assert result["success"] is True
     assert result["target_url"] == "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/"
     assert calls[0] == ("goto", "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/")
+
+
+def test_reply_comment_preserves_identity_evidence_on_community_restriction(monkeypatch):
+    page = _FakePage()
+    page.body_text = "you’re currently banned from this community and can’t comment on posts."
+    page.url = "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/comment/c1/"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    monkeypatch.setattr(
+        reddit_bot,
+        "_load_target_comment_context",
+        lambda _url: asyncio.sleep(
+            0,
+            result={
+                "thread_url": "https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/",
+                "author": "helper_user",
+                "body_snippet": "helpful reply target",
+                "title": "example post",
+            },
+        ),
+    )
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(
+        reddit_bot,
+        "_ensure_subreddit_user_flair",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"status": "applied", "chosen_flair": "widowed"}),
+    )
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_capture_reddit_failure_state", lambda *_args, **_kwargs: asyncio.sleep(0))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.reply_to_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/AskWomenOver40/comments/thread123/example_post/comment/c1/",
+            text="reply text",
+            subreddit="AskWomenOver40",
+            auto_user_flair=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["failure_class"] == "community_restricted"
+    assert result["identity_evidence"] == {"status": "applied", "chosen_flair": "widowed"}
 
 
 def test_scroll_target_comment_into_view_scrolls_until_row_appears(monkeypatch):

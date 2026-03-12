@@ -1830,6 +1830,51 @@ async def _comment_action_row(
                     }
                 }
 
+                let commentFocusRect = null;
+                const focusCandidates = [];
+                const snippetNeedle = normalize(bodySnippet);
+                for (const root of scopedRoots) {
+                    const nodes = root.querySelectorAll
+                        ? Array.from(root.querySelectorAll('a, button, div, span, p, article, section'))
+                        : [];
+                    for (const node of nodes) {
+                        const text = normalize(node.innerText || node.textContent);
+                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        const href = normalize(node.getAttribute && node.getAttribute('href'));
+                        const rect = node.getBoundingClientRect();
+                        if (!visibleRect(rect)) continue;
+                        if (titleRect && rect.top <= titleRect.bottom + 6) continue;
+                        let score = 0;
+                        if (commentNeedle && (href.includes(commentNeedle) || text.includes(commentNeedle) || aria.includes(commentNeedle))) {
+                            score += 12;
+                        }
+                        if (snippetNeedle) {
+                            if (text.includes(snippetNeedle)) score += 8;
+                            else if (snippetNeedle.includes(text) && text.length >= 24) score += 4;
+                        }
+                        if (author && (text === author || text.includes(author) || aria.includes(author))) {
+                            score += 2;
+                        }
+                        if (score <= 0) continue;
+                        focusCandidates.push({
+                            left: rect.left,
+                            top: rect.top,
+                            right: rect.right,
+                            bottom: rect.bottom,
+                            width: rect.width,
+                            height: rect.height,
+                            x: Math.round(rect.left + rect.width / 2),
+                            y: Math.round(rect.top + rect.height / 2),
+                            text,
+                            aria,
+                            href,
+                            score,
+                        });
+                    }
+                }
+                focusCandidates.sort((a, b) => b.score - a.score || a.top - b.top || a.left - b.left);
+                commentFocusRect = focusCandidates[0] || null;
+
                 const replies = [];
                 for (const root of scopedRoots) {
                     const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, a, div, span')) : [];
@@ -1874,9 +1919,19 @@ async def _comment_action_row(
                         } else if (!aria.includes("profile") && !text) {
                             continue;
                         }
-                        if (rect.top > reply.top) continue;
-                        const verticalGap = reply.top - rect.bottom;
-                        if (verticalGap < 0 || verticalGap > 220) continue;
+                        if (reply) {
+                            if (rect.top > reply.top) continue;
+                        } else if (commentFocusRect) {
+                            if (rect.top > commentFocusRect.top + 24) continue;
+                        }
+                        const verticalGap = reply
+                            ? reply.top - rect.bottom
+                            : Math.abs(rect.bottom - ((commentFocusRect && commentFocusRect.top) || rect.bottom));
+                        if (reply) {
+                            if (verticalGap < 0 || verticalGap > 220) continue;
+                        } else if (verticalGap > 220) {
+                            continue;
+                        }
                         authors.push({
                             left: rect.left,
                             top: rect.top,
@@ -1893,7 +1948,6 @@ async def _comment_action_row(
                 authors.sort((a, b) => a.verticalGap - b.verticalGap || a.top - b.top || a.left - b.left);
                 authorRect = authors[0] || null;
                 let bodyRect = null;
-                const snippetNeedle = normalize(bodySnippet);
                 if (snippetNeedle) {
                     const bodyCandidates = [];
                     for (const root of scopedRoots) {
@@ -1920,7 +1974,7 @@ async def _comment_action_row(
                     bodyCandidates.sort((a, b) => a.top - b.top || a.left - b.left);
                     bodyRect = bodyCandidates[0] || null;
                 }
-                const actionAnchor = bodyRect || authorRect;
+                const actionAnchor = bodyRect || authorRect || commentFocusRect;
                 if (!reply && !actionAnchor) return null;
                 const voteY = reply
                     ? reply.y
@@ -1946,6 +2000,7 @@ async def _comment_action_row(
                 return {
                     author: authorRect,
                     body: bodyRect,
+                    focus: commentFocusRect,
                     reply,
                     vote: {
                         x: preferredVoteX,
@@ -2903,9 +2958,7 @@ async def upvote_comment(
     author = (target_context or {}).get("author") or None
     body_snippet = (target_context or {}).get("body_snippet") or None
     thread_url = str((target_context or {}).get("thread_url") or "").strip()
-    target_surfaces = [str(target_comment_url).strip()]
-    if thread_url and thread_url not in target_surfaces:
-        target_surfaces.append(thread_url)
+    target_surfaces = _build_reply_target_surfaces(target_comment_url, thread_url)
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
@@ -3189,6 +3242,7 @@ async def create_post(
         target_url = f"https://www.reddit.com/r/{quote(normalized)}/submit?type=TEXT"
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
+        identity_evidence: Optional[Dict[str, Any]] = None
         try:
             await _goto(page, target_url)
             await page.evaluate("window.scrollTo(0, 0)")
@@ -3286,9 +3340,17 @@ async def create_post(
                 throttle_reason=str(exc),
                 current_url=page.url,
                 subreddit=subreddit,
+                identity_evidence=identity_evidence,
             )
         except Exception as exc:
-            return _result(success=False, action="create_post", profile_name=session.profile_name, error=str(exc))
+            return _result(
+                success=False,
+                action="create_post",
+                profile_name=session.profile_name,
+                error=str(exc),
+                current_url=page.url,
+                identity_evidence=identity_evidence,
+            )
 
 
 async def _click_reply_submit(page, reply_text: str) -> bool:
@@ -3333,6 +3395,7 @@ async def comment_on_post(
     auto_user_flair: bool = False,
 ) -> Dict[str, Any]:
     async with _session_page(session, proxy_url) as (_browser, _context, page):
+        identity_evidence: Optional[Dict[str, Any]] = None
         try:
             identity_evidence = await _ensure_subreddit_user_flair(
                 page,
@@ -3386,9 +3449,17 @@ async def comment_on_post(
                 throttled=True,
                 throttle_reason=str(exc),
                 current_url=page.url,
+                identity_evidence=identity_evidence,
             )
         except Exception as exc:
-            return _result(success=False, action="comment_post", profile_name=session.profile_name, error=str(exc))
+            return _result(
+                success=False,
+                action="comment_post",
+                profile_name=session.profile_name,
+                error=str(exc),
+                current_url=page.url,
+                identity_evidence=identity_evidence,
+            )
 
 
 async def reply_to_comment(
@@ -3409,6 +3480,7 @@ async def reply_to_comment(
     expected_title = (target_context or {}).get("title") or None
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
+        identity_evidence: Optional[Dict[str, Any]] = None
         try:
             identity_evidence = await _ensure_subreddit_user_flair(
                 page,
@@ -3554,9 +3626,19 @@ async def reply_to_comment(
                 current_url=page.url,
                 target_url=thread_url or target_comment_url,
                 target_comment_url=target_comment_url,
+                identity_evidence=identity_evidence,
             )
         except Exception as exc:
-            return _result(success=False, action="reply_comment", profile_name=session.profile_name, error=str(exc))
+            return _result(
+                success=False,
+                action="reply_comment",
+                profile_name=session.profile_name,
+                error=str(exc),
+                current_url=page.url,
+                target_url=thread_url or target_comment_url,
+                target_comment_url=target_comment_url,
+                identity_evidence=identity_evidence,
+            )
 
 
 async def upload_media_only(
