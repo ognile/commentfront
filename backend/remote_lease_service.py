@@ -571,6 +571,13 @@ class RemoteLease:
             or (ready_state in {"interactive", "complete"} and html_length >= REMOTE_RENDERABLE_MIN_HTML_LENGTH)
         )
 
+    def _page_is_dead_shell(self, health: Dict[str, Any]) -> bool:
+        html_length = int(health.get("htmlLength") or 0)
+        body_text_length = int(health.get("bodyTextLength") or 0)
+        title = str(health.get("title") or "").strip()
+        ready_state = str(health.get("readyState") or "").strip().lower()
+        return html_length == 0 and body_text_length == 0 and not title and ready_state in {"", "loading"}
+
     async def _wait_for_renderable_document(
         self,
         *,
@@ -589,7 +596,13 @@ class RemoteLease:
             await asyncio.sleep(0.5)
         return last_health
 
-    async def _navigate_initial_page(self, session_spec: RemoteSessionSpec, *, reason: str) -> Dict[str, Any]:
+    async def _navigate_initial_page(
+        self,
+        session_spec: RemoteSessionSpec,
+        *,
+        reason: str,
+        proxy_source: str,
+    ) -> Dict[str, Any]:
         assert self._page is not None
         candidates: List[str] = []
         seen: set[str] = set()
@@ -623,8 +636,31 @@ class RemoteLease:
             last_health = health
             self._log_event(
                 "browser_start_url_empty",
-                {"reason": reason, "url": candidate, "attempt": index, "page_health": health},
+                {
+                    "reason": reason,
+                    "url": candidate,
+                    "attempt": index,
+                    "proxy_source": proxy_source,
+                    "page_health": health,
+                },
             )
+            if self._page_is_dead_shell(health):
+                self._log_event(
+                    "browser_proxy_dead_shell",
+                    {
+                        "reason": reason,
+                        "url": candidate,
+                        "attempt": index,
+                        "proxy_source": proxy_source,
+                        "page_health": health,
+                    },
+                )
+                raise RuntimeError(
+                    "proxy returned an empty loading shell while starting the remote browser"
+                    + f" proxy_source={proxy_source}"
+                    + f" url={candidate}"
+                    + f" health={json.dumps(health, ensure_ascii=True)}"
+                )
 
         raise RuntimeError(
             f"failed to load a renderable {self.platform} start page"
@@ -924,7 +960,11 @@ class RemoteLease:
                 self._page.on("filechooser", lambda chooser: asyncio.create_task(self._handle_file_chooser(chooser)))
                 self._page.on("close", lambda: asyncio.create_task(self._handle_page_closed("page_closed")))
                 self._page.on("crash", lambda: asyncio.create_task(self._handle_page_closed("page_crashed")))
-                navigation_result = await self._navigate_initial_page(session_spec, reason=reason)
+                navigation_result = await self._navigate_initial_page(
+                    session_spec,
+                    reason=reason,
+                    proxy_source=proxy_source,
+                )
 
                 self._cdp = await self._context.new_cdp_session(self._page)
                 await self._cdp.send("Page.enable")

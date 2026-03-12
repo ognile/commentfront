@@ -99,6 +99,18 @@ class _FakeWebSocket:
         self.closed.append({"code": code, "reason": reason})
 
 
+class _FakePage:
+    def __init__(self):
+        self.goto_calls = []
+        self.viewport_size = {"width": 393, "height": 873}
+
+    async def goto(self, url, wait_until, timeout):
+        self.goto_calls.append({"url": url, "wait_until": wait_until, "timeout": timeout})
+
+    def is_closed(self):
+        return False
+
+
 async def _async_noop(*_args, **_kwargs):
     return None
 
@@ -232,6 +244,146 @@ def test_page_renderable_document_rejects_loading_shell():
                 "title": "Facebook",
             }
         ) is True
+        assert lease._page_is_dead_shell(
+            {
+                "readyState": "loading",
+                "bodyTextLength": 0,
+                "htmlLength": 0,
+                "title": "",
+            }
+        ) is True
+        assert lease._page_is_dead_shell(
+            {
+                "readyState": "interactive",
+                "bodyTextLength": 0,
+                "htmlLength": 4096,
+                "title": "",
+            }
+        ) is False
+
+    _run(_exercise())
+
+
+def test_navigate_initial_page_fast_fails_dead_shell_proxy(monkeypatch):
+    async def _exercise():
+        service = remote_lease_service.RemoteLeaseService()
+        lease = remote_lease_service.RemoteLease(
+            service=service,
+            lease_id="lease-dead-shell",
+            session_id="alpha",
+            platform="facebook",
+            controller_user="alice",
+        )
+        lease._action_worker_task.cancel()
+        try:
+            await lease._action_worker_task
+        except asyncio.CancelledError:
+            pass
+
+        fake_page = _FakePage()
+        lease._page = fake_page
+
+        async def _dead_shell():
+            return {
+                "readyState": "loading",
+                "visibilityState": "visible",
+                "bodyTextLength": 0,
+                "htmlLength": 0,
+                "title": "",
+                "url": fake_page.goto_calls[-1]["url"],
+            }
+
+        monkeypatch.setattr(lease, "_wait_for_renderable_document", _dead_shell)
+
+        spec = remote_lease_service.RemoteSessionSpec(
+            platform="facebook",
+            session_id="alpha",
+            user_agent="facebook-agent",
+            viewport={"width": 393, "height": 873},
+            timezone_id="America/New_York",
+            locale="en-US",
+            proxy_url="http://session-proxy:8080",
+            proxy_source="session",
+            start_url="https://m.facebook.com/me/?v=timeline",
+            fallback_start_urls=[
+                "https://m.facebook.com/me/",
+                "https://www.facebook.com/",
+            ],
+        )
+
+        with pytest.raises(RuntimeError, match="empty loading shell"):
+            await lease._navigate_initial_page(spec, reason="attach", proxy_source="session")
+
+        assert [call["url"] for call in fake_page.goto_calls] == ["https://m.facebook.com/me/?v=timeline"]
+
+    _run(_exercise())
+
+
+def test_navigate_initial_page_keeps_trying_partial_documents(monkeypatch):
+    async def _exercise():
+        service = remote_lease_service.RemoteLeaseService()
+        lease = remote_lease_service.RemoteLease(
+            service=service,
+            lease_id="lease-partial-doc",
+            session_id="alpha",
+            platform="facebook",
+            controller_user="alice",
+        )
+        lease._action_worker_task.cancel()
+        try:
+            await lease._action_worker_task
+        except asyncio.CancelledError:
+            pass
+
+        fake_page = _FakePage()
+        lease._page = fake_page
+        health_sequence = iter(
+            [
+                {
+                    "readyState": "interactive",
+                    "visibilityState": "visible",
+                    "bodyTextLength": 0,
+                    "htmlLength": 512,
+                    "title": "",
+                    "url": "https://m.facebook.com/me/?v=timeline",
+                },
+                {
+                    "readyState": "interactive",
+                    "visibilityState": "visible",
+                    "bodyTextLength": 0,
+                    "htmlLength": 4096,
+                    "title": "",
+                    "url": "https://m.facebook.com/me/",
+                },
+            ]
+        )
+
+        async def _next_health():
+            return next(health_sequence)
+
+        monkeypatch.setattr(lease, "_wait_for_renderable_document", _next_health)
+
+        spec = remote_lease_service.RemoteSessionSpec(
+            platform="facebook",
+            session_id="alpha",
+            user_agent="facebook-agent",
+            viewport={"width": 393, "height": 873},
+            timezone_id="America/New_York",
+            locale="en-US",
+            proxy_url="http://session-proxy:8080",
+            proxy_source="session",
+            start_url="https://m.facebook.com/me/?v=timeline",
+            fallback_start_urls=["https://m.facebook.com/me/"],
+        )
+
+        result = await lease._navigate_initial_page(spec, reason="attach", proxy_source="session")
+
+        assert result["url"] == "https://m.facebook.com/me/"
+        assert result["attempt"] == 2
+        assert [call["url"] for call in fake_page.goto_calls] == [
+            "https://m.facebook.com/me/?v=timeline",
+            "https://m.facebook.com/me/",
+        ]
 
     _run(_exercise())
 
