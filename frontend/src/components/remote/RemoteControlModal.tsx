@@ -50,7 +50,6 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
     handleRemotePointerDown,
     handleRemotePointerUp,
     handleRemotePointerCancel,
-    handleRemoteScroll,
     handleRemoteNavigate,
     handleRemoteRestart,
     handleTakeover,
@@ -131,7 +130,6 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
               onPointerDown={handleRemotePointerDown}
               onPointerUp={handleRemotePointerUp}
               onPointerCancel={handleRemotePointerCancel}
-              onWheel={handleRemoteScroll}
               onContextMenu={(event) => event.preventDefault()}
               tabIndex={0}
             >

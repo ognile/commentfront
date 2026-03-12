@@ -192,6 +192,50 @@ def test_resolve_remote_session_spec_rejects_reddit_without_persisted_auth(monke
         remote_lease_service._resolve_remote_session_spec("reddit_neera_allvere", "reddit")
 
 
+def test_page_renderable_document_rejects_loading_shell():
+    async def _exercise():
+        service = remote_lease_service.RemoteLeaseService()
+        lease = remote_lease_service.RemoteLease(
+            service=service,
+            lease_id="lease-alpha",
+            session_id="alpha",
+            platform="facebook",
+            controller_user="alice",
+        )
+        lease._action_worker_task.cancel()
+        try:
+            await lease._action_worker_task
+        except asyncio.CancelledError:
+            pass
+
+        assert lease._page_has_renderable_document(
+            {
+                "readyState": "loading",
+                "bodyTextLength": 0,
+                "htmlLength": 1851,
+                "title": "",
+            }
+        ) is False
+        assert lease._page_has_renderable_document(
+            {
+                "readyState": "interactive",
+                "bodyTextLength": 0,
+                "htmlLength": 4096,
+                "title": "",
+            }
+        ) is True
+        assert lease._page_has_renderable_document(
+            {
+                "readyState": "loading",
+                "bodyTextLength": 0,
+                "htmlLength": 10,
+                "title": "Facebook",
+            }
+        ) is True
+
+    _run(_exercise())
+
+
 def test_attach_reuses_same_profile_as_observer_and_persists_logs(isolated_remote_environment, monkeypatch):
     pm, _leases_dir = isolated_remote_environment
     monkeypatch.setattr(remote_lease_service.RemoteLease, "ensure_browser_ready", _async_noop)

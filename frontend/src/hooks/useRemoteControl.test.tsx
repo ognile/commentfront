@@ -19,11 +19,11 @@ type MockSocket = {
 type RemotePointerDownEvent = Parameters<ReturnType<typeof useRemoteControl>['handleRemotePointerDown']>[0]
 
 const { mockedToast, socketRegistry, fetchMock } = vi.hoisted(() => ({
-  mockedToast: {
+  mockedToast: Object.assign(vi.fn(), {
     success: vi.fn(),
     error: vi.fn(),
     loading: vi.fn(),
-  },
+  }),
   socketRegistry: {
     instances: [] as MockSocket[],
   },
@@ -72,6 +72,7 @@ describe('useRemoteControl', () => {
   beforeEach(() => {
     socketRegistry.instances = []
     actionCounter = 0
+    mockedToast.mockReset()
     mockedToast.success.mockReset()
     mockedToast.error.mockReset()
     mockedToast.loading.mockReset()
@@ -275,5 +276,98 @@ describe('useRemoteControl', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     expect(socketRegistry.instances).toHaveLength(1)
     expect(result.current.remoteModalOpen).toBe(false)
+  })
+
+  it('closes the modal without reconnecting when the server closes the session', () => {
+    const { result } = renderHook(() => useRemoteControl())
+
+    act(() => {
+      result.current.openRemoteModal({
+        platform: 'facebook',
+        profileName: 'alpha',
+        displayName: 'Alpha',
+        valid: true,
+      })
+    })
+
+    const socket = socketRegistry.instances[0]
+    act(() => {
+      socket.emitOpen()
+      socket.emitMessage({
+        type: 'session_closed',
+        data: { reason: 'manual_stop' },
+      })
+    })
+
+    expect(result.current.remoteModalOpen).toBe(false)
+    expect(socketRegistry.instances).toHaveLength(1)
+  })
+
+  it('closes the modal without reconnecting on terminal remote errors', () => {
+    const { result } = renderHook(() => useRemoteControl())
+
+    act(() => {
+      result.current.openRemoteModal({
+        platform: 'facebook',
+        profileName: 'alpha',
+        displayName: 'Alpha',
+        valid: true,
+      })
+    })
+
+    const socket = socketRegistry.instances[0]
+    act(() => {
+      socket.emitOpen()
+      socket.emitMessage({
+        type: 'error',
+        data: {
+          message: 'remote capacity full: 2/2 active leases',
+          code: 'remote_capacity_full',
+        },
+      })
+    })
+
+    expect(mockedToast.error).toHaveBeenCalledWith('remote capacity full: 2/2 active leases')
+    expect(result.current.remoteModalOpen).toBe(false)
+    expect(socketRegistry.instances).toHaveLength(1)
+  })
+
+  it('stops a sole-controller lease on pagehide with keepalive', () => {
+    const { result } = renderHook(() => useRemoteControl())
+
+    act(() => {
+      result.current.openRemoteModal({
+        platform: 'facebook',
+        profileName: 'alpha',
+        displayName: 'Alpha',
+        valid: true,
+      })
+    })
+
+    const socket = socketRegistry.instances[0]
+    act(() => {
+      socket.emitOpen()
+      socket.emitMessage({
+        type: 'state',
+        data: {
+          url: 'https://m.facebook.com/',
+          role: 'controller',
+          can_control: true,
+          controller_user: 'tester',
+          viewer_count: 1,
+          lease_id: 'lease-alpha',
+        },
+      })
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8000/sessions/alpha/remote/stop', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+      keepalive: true,
+    })
   })
 })

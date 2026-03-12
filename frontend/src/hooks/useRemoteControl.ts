@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   PointerEvent as ReactPointerEvent,
-  WheelEvent as ReactWheelEvent,
 } from 'react'
 import { toast } from 'sonner'
 
@@ -9,6 +8,16 @@ import type { ActionLogEntry, PendingUpload, RemoteSessionTarget } from '@/compo
 import { REMOTE_VIEWPORT_HEIGHT, REMOTE_VIEWPORT_WIDTH } from '@/components/remote/types'
 import { API_BASE, createAuthenticatedWebSocket } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
+
+const TERMINAL_REMOTE_ERROR_CODES = new Set([
+  'profile_busy',
+  'remote_capacity_full',
+  'remote_session_closed',
+  'remote_session_not_found',
+  'remote_viewer_disconnected',
+])
+
+type RemoteWheelEvent = Pick<WheelEvent, 'clientX' | 'clientY' | 'deltaY' | 'preventDefault'>
 
 function getRemoteWsPath(session: RemoteSessionTarget): string {
   const encodedProfile = encodeURIComponent(session.profileName)
@@ -100,6 +109,7 @@ export function useRemoteControl() {
   const remoteModalOpenRef = useRef(remoteModalOpen)
   const remoteSessionRef = useRef<RemoteSessionTarget | null>(remoteSession)
   const reconnectEnabledRef = useRef(false)
+  const terminalSocketCloseRef = useRef(false)
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null)
   const activeKeysRef = useRef<Set<string>>(new Set())
 
@@ -120,6 +130,19 @@ export function useRemoteControl() {
     setKeyboardCaptureEnabled(false)
     pointerStartRef.current = null
     activeKeysRef.current.clear()
+  }, [])
+
+  const clearRemoteModalState = useCallback(() => {
+    remoteModalOpenRef.current = false
+    remoteSessionRef.current = null
+    setRemoteModalOpen(false)
+    setRemoteSession(null)
+    setRemoteFrame(null)
+    setRemoteProgress(null)
+    setRemoteUrlInput('')
+    setActionLog([])
+    setPendingUpload(null)
+    setUploadReady(false)
   }, [])
 
   const getAuthHeaders = useCallback((): HeadersInit => {
@@ -166,6 +189,13 @@ export function useRemoteControl() {
     resetRemoteLeaseState()
   }, [resetRemoteLeaseState])
 
+  const terminateRemoteModal = useCallback(() => {
+    reconnectEnabledRef.current = false
+    terminalSocketCloseRef.current = true
+    disconnectRemoteWebSocket()
+    clearRemoteModalState()
+  }, [clearRemoteModalState, disconnectRemoteWebSocket])
+
   const connectRemoteWebSocket = useCallback((session: RemoteSessionTarget) => {
     if (remoteWsRef.current) {
       remoteWsRef.current.onclose = null
@@ -175,6 +205,7 @@ export function useRemoteControl() {
 
     setRemoteConnecting(true)
     setRemoteProgress('connecting')
+    terminalSocketCloseRef.current = false
 
     try {
       const ws = createAuthenticatedWebSocket(getRemoteWsPath(session))
@@ -222,9 +253,11 @@ export function useRemoteControl() {
               break
             case 'session_idle_timeout_close':
               toast('session closed after idle timeout')
+              terminateRemoteModal()
               break
             case 'session_closed':
               toast(message.data?.reason ? `session closed: ${message.data.reason}` : 'session closed')
+              terminateRemoteModal()
               break
             case 'action_result':
               setActionLog((prev) =>
@@ -239,6 +272,11 @@ export function useRemoteControl() {
               }
               break
             case 'error':
+              if (TERMINAL_REMOTE_ERROR_CODES.has(String(message.data?.code || ''))) {
+                toast.error(message.data?.message || 'remote browser error')
+                terminateRemoteModal()
+                break
+              }
               toast.error(message.data?.message || 'remote browser error')
               break
           }
@@ -264,6 +302,7 @@ export function useRemoteControl() {
           reconnectEnabledRef.current &&
           remoteModalOpenRef.current &&
           remoteSessionRef.current &&
+          !terminalSocketCloseRef.current &&
           reconnectAttemptRef.current < 5 &&
           remoteWsRef.current === null
         ) {
@@ -288,7 +327,7 @@ export function useRemoteControl() {
       setRemoteConnecting(false)
       setRemoteProgress(null)
     }
-  }, [updateLeaseState])
+  }, [terminateRemoteModal, updateLeaseState])
 
   const sendRemoteAction = useCallback((action: { type: string; data?: Record<string, unknown> }) => {
     if (remoteWsRef.current?.readyState === WebSocket.OPEN) {
@@ -342,17 +381,9 @@ export function useRemoteControl() {
     )
 
     reconnectEnabledRef.current = false
-    remoteModalOpenRef.current = false
-    remoteSessionRef.current = null
+    terminalSocketCloseRef.current = true
     disconnectRemoteWebSocket()
-    setRemoteModalOpen(false)
-    setRemoteSession(null)
-    setRemoteFrame(null)
-    setRemoteProgress(null)
-    setRemoteUrlInput('')
-    setActionLog([])
-    setPendingUpload(null)
-    setUploadReady(false)
+    clearRemoteModalState()
     if (!session || !shouldStopLease) {
       return
     }
@@ -372,7 +403,7 @@ export function useRemoteControl() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'failed to stop remote browser')
     }
-  }, [disconnectRemoteWebSocket, getAuthHeaders, remoteRole, remoteViewerCount])
+  }, [clearRemoteModalState, disconnectRemoteWebSocket, getAuthHeaders, remoteRole, remoteViewerCount])
 
   const handleRemotePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!remoteConnected || !remoteCanControl) return
@@ -420,7 +451,7 @@ export function useRemoteControl() {
     pointerStartRef.current = null
   }, [])
 
-  const handleRemoteScroll = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+  const handleRemoteScroll = useCallback((event: RemoteWheelEvent) => {
     if (!remoteConnected || !remoteCanControl) return
     event.preventDefault()
 
@@ -436,6 +467,45 @@ export function useRemoteControl() {
       addActionLogEntry('scroll', `scroll ${direction}`, actionId)
     }
   }, [addActionLogEntry, remoteCanControl, remoteConnected, resolveViewportPoint, sendRemoteAction])
+
+  useEffect(() => {
+    if (!remoteModalOpen) return
+    const container = screenshotContainerRef.current
+    if (!container) return
+
+    const handleWheel = (event: WheelEvent) => {
+      handleRemoteScroll(event)
+    }
+
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      container.removeEventListener('wheel', handleWheel)
+    }
+  }, [handleRemoteScroll, remoteModalOpen])
+
+  useEffect(() => {
+    if (!remoteModalOpen || !remoteSession) return
+
+    const handlePageHide = () => {
+      const session = remoteSessionRef.current
+      if (!session || remoteRole === 'observer' || remoteViewerCount > 1) {
+        return
+      }
+
+      reconnectEnabledRef.current = false
+      const token = getAccessToken()
+      void fetch(getRemoteStopPath(session), {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        keepalive: true,
+      }).catch(() => undefined)
+    }
+
+    window.addEventListener('pagehide', handlePageHide)
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide)
+    }
+  }, [remoteModalOpen, remoteRole, remoteSession, remoteViewerCount])
 
   useEffect(() => {
     if (!remoteModalOpen || !remoteConnected || !remoteCanControl || !keyboardCaptureEnabled) return

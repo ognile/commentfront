@@ -39,7 +39,7 @@ logger = logging.getLogger("RemoteLeaseService")
 RemotePlatform = Literal["facebook", "reddit"]
 RemoteRole = Literal["controller", "observer"]
 
-IDLE_CLOSE_SECONDS = int(os.getenv("REMOTE_IDLE_CLOSE_SECONDS", "300"))
+VIEWERLESS_READY_CLOSE_SECONDS = int(os.getenv("REMOTE_VIEWERLESS_READY_CLOSE_SECONDS", "15"))
 MAX_ACTIVE_LEASES = int(os.getenv("REMOTE_MAX_ACTIVE_LEASES", "2"))
 REMOTE_FRAME_IDLE_INTERVAL_SECONDS = float(os.getenv("REMOTE_FRAME_IDLE_INTERVAL_SECONDS", "0.10"))
 REMOTE_FRAME_ACTIVE_INTERVAL_SECONDS = float(os.getenv("REMOTE_FRAME_ACTIVE_INTERVAL_SECONDS", "0.033"))
@@ -48,6 +48,7 @@ REMOTE_FRAME_SEND_STALE_SECONDS = float(os.getenv("REMOTE_FRAME_SEND_STALE_SECON
 REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS", "10"))
 REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS", "8"))
 REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS", "6"))
+REMOTE_RENDERABLE_MIN_HTML_LENGTH = int(os.getenv("REMOTE_RENDERABLE_MIN_HTML_LENGTH", "2048"))
 
 
 class RemoteLeaseError(RuntimeError):
@@ -564,7 +565,11 @@ class RemoteLease:
         body_text_length = int(health.get("bodyTextLength") or 0)
         title = str(health.get("title") or "").strip()
         ready_state = str(health.get("readyState") or "")
-        return html_length > 0 or body_text_length > 0 or bool(title) or ready_state in {"interactive", "complete"}
+        return (
+            body_text_length > 0
+            or bool(title)
+            or (ready_state in {"interactive", "complete"} and html_length >= REMOTE_RENDERABLE_MIN_HTML_LENGTH)
+        )
 
     async def _wait_for_renderable_document(
         self,
@@ -814,20 +819,21 @@ class RemoteLease:
         self._idle_close_task = asyncio.create_task(self._idle_close_worker())
 
     async def _idle_close_worker(self) -> None:
+        idle_seconds = max(1, VIEWERLESS_READY_CLOSE_SECONDS)
         try:
-            await asyncio.sleep(max(1, IDLE_CLOSE_SECONDS))
+            await asyncio.sleep(idle_seconds)
         except asyncio.CancelledError:
             return
         if self._viewers:
             return
-        self._log_event("session_idle_timeout_close", {"idle_seconds": IDLE_CLOSE_SECONDS})
+        self._log_event("session_idle_timeout_close", {"idle_seconds": idle_seconds})
         await self._broadcast_event(
             "session_idle_timeout_close",
             {
                 "lease_id": self.lease_id,
                 "session_id": self.session_id,
                 "platform": self.platform,
-                "idle_seconds": IDLE_CLOSE_SECONDS,
+                "idle_seconds": idle_seconds,
             },
         )
         await self.service.close_lease(self, reason="idle_timeout")
