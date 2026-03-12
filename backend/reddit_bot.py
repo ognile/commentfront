@@ -2140,8 +2140,6 @@ async def _comment_surface_visible(page) -> bool:
         return True
     if await _visible_selector_exists(page, COMMENT["composer_trigger"]):
         return True
-    if await _first_viewport_locator(page, COMMENT["share_button"]):
-        return True
     if await _first_viewport_locator(page, COMMENT["search_comments_input"]):
         return True
     return False
@@ -2801,6 +2799,16 @@ async def _verify_text_visible(page, text: str) -> bool:
     return bool(snippet and snippet in body)
 
 
+async def _comment_submission_error(page) -> Optional[str]:
+    try:
+        body = _normalize_text(await page.locator("body").inner_text())
+    except Exception:
+        return None
+    if "unable to create comment" in body:
+        return "unable to create comment"
+    return None
+
+
 async def upvote_post(
     session: RedditSession,
     *,
@@ -3412,13 +3420,23 @@ async def comment_on_post(
             if not await _ensure_thread_context(page, url=url, expected_title=expected_title):
                 await _capture_reddit_failure_state(page, "REDDIT THREAD CONTEXT MISSING")
                 raise RuntimeError("Reddit target thread did not load")
-            await _scroll_until_comment_surface_visible(page, max_scrolls=6)
             await dump_interactive_elements(page, "REDDIT COMMENT ON POST")
             await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")
 
-            if not await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url):
+            filled = await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url)
+            if not filled:
+                await _scroll_until_comment_surface_visible(page, max_scrolls=6)
+                filled = await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url)
+            if not filled:
+                try:
+                    await page.evaluate("window.scrollTo(0, 0)")
+                    await page.wait_for_timeout(400)
+                except Exception:
+                    pass
                 if not await _thread_context_present(page, expected_title):
                     await _ensure_thread_context(page, url=url, expected_title=expected_title)
+                filled = await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url)
+            if not filled:
                 await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")
                 await _capture_reddit_failure_state(page, "REDDIT COMMENT COMPOSER MISSING")
                 raise RuntimeError("Reddit comment composer not found")
@@ -3430,14 +3448,17 @@ async def comment_on_post(
             await page.wait_for_timeout(4000)
             screenshot = await save_debug_screenshot(page, f"reddit_comment_{session.profile_name}")
             success = await _verify_text_visible(page, text)
+            submission_error = await _comment_submission_error(page) if not success else None
             return _result(
                 success=success,
                 action="comment_post",
                 profile_name=session.profile_name,
                 screenshot=screenshot,
                 current_url=page.url,
+                target_url=url,
                 identity_evidence=identity_evidence,
-                error=None if success else "Reddit comment verification failed",
+                failure_class="target_unavailable" if submission_error else None,
+                error=None if success else submission_error or "Reddit comment verification failed",
             )
         except RedditCommunityBanError as exc:
             return _result(

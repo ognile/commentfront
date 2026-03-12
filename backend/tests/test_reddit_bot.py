@@ -250,7 +250,7 @@ def test_fill_comment_input_uses_reply_selectors_for_reply_flow(monkeypatch):
     assert page.waits == []
 
 
-def test_scroll_until_comment_surface_visible_scrolls_until_share_row_appears(monkeypatch):
+def test_scroll_until_comment_surface_visible_scrolls_until_search_input_appears(monkeypatch):
     page = _FakePage()
     state = {"count": 0}
 
@@ -261,7 +261,7 @@ def test_scroll_until_comment_surface_visible_scrolls_until_share_row_appears(mo
         return False
 
     async def fake_first_viewport_locator(_page, selectors):
-        if tuple(selectors) == tuple(reddit_bot.COMMENT["share_button"]):
+        if tuple(selectors) == tuple(reddit_bot.COMMENT["search_comments_input"]):
             state["count"] += 1
             return object() if state["count"] >= 3 else None
         return None
@@ -275,6 +275,86 @@ def test_scroll_until_comment_surface_visible_scrolls_until_share_row_appears(mo
     assert ok is True
     assert page.mouse.wheels == [(0, 520), (0, 520)]
     assert page.waits == [900, 900]
+
+
+def test_comment_on_post_attempts_fill_before_scrolling(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_fill_comment_input(_page, text, **_kwargs):
+        calls.append(("fill", text))
+        return len(calls) > 1
+
+    async def fake_scroll(_page, **_kwargs):
+        calls.append(("scroll",))
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_ensure_subreddit_user_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result={"status": "skipped"}))
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_load_post_context", lambda *_args, **_kwargs: asyncio.sleep(0, result={"title": "Example"}))
+    monkeypatch.setattr(reddit_bot, "_ensure_thread_context", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_fill_comment_input", fake_fill_comment_input)
+    monkeypatch.setattr(reddit_bot, "_scroll_until_comment_surface_visible", fake_scroll)
+    monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(reddit_bot, "_verify_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.comment_on_post(
+            session,
+            url="https://www.reddit.com/r/WomensHealth/comments/thread123/example_post/",
+            text="supportive text",
+            subreddit="WomensHealth",
+        )
+    )
+
+    assert result["success"] is True
+    assert calls == [("fill", "supportive text"), ("scroll",), ("fill", "supportive text")]
+
+
+def test_comment_on_post_classifies_unable_to_create_comment_banner_as_target_unavailable(monkeypatch):
+    page = _FakePage()
+    page.body_text = "unable to create comment try that again"
+    page.url = "https://www.reddit.com/r/WomensHealth/comments/thread123/example_post/"
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_ensure_subreddit_user_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result={"status": "skipped"}))
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_load_post_context", lambda *_args, **_kwargs: asyncio.sleep(0, result={"title": "Example"}))
+    monkeypatch.setattr(reddit_bot, "_ensure_thread_context", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_fill_comment_input", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(reddit_bot, "_verify_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.comment_on_post(
+            session,
+            url="https://www.reddit.com/r/WomensHealth/comments/thread123/example_post/",
+            text="supportive text",
+            subreddit="WomensHealth",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["failure_class"] == "target_unavailable"
+    assert result["error"] == "unable to create comment"
+    assert result["target_url"] == "https://www.reddit.com/r/WomensHealth/comments/thread123/example_post/"
 
 
 def test_fill_first_falls_back_to_click_and_keyboard_when_fill_is_unsupported(monkeypatch):
