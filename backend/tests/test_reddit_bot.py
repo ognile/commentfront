@@ -110,6 +110,24 @@ class _FakeFillLocator:
         return self
 
 
+class _FakeUploadLocator:
+    def __init__(self):
+        self.paths = []
+
+    async def count(self):
+        return 1
+
+    async def is_visible(self):
+        return True
+
+    async def set_input_files(self, value):
+        self.paths.append(value)
+
+    @property
+    def first(self):
+        return self
+
+
 class _FakeFillPage(_FakePage):
     def __init__(self, locator):
         super().__init__()
@@ -1060,6 +1078,26 @@ def test_create_post_uses_semantic_title_fallback_when_selector_title_is_missing
     assert result["current_url"] == "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
 
 
+def test_fill_post_field_by_semantics_accepts_local_verification_when_global_probe_misses(monkeypatch):
+    page = _FakePage()
+
+    async def fake_evaluate(_script, *_args):
+        return {
+            "kind": "title",
+            "combined": "title | innertextarea",
+            "score": 9,
+            "tag": "textarea",
+            "verified": True,
+        }
+
+    page.evaluate = fake_evaluate
+    monkeypatch.setattr(reddit_bot, "_typed_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+
+    result = asyncio.run(reddit_bot._fill_post_field_by_semantics(page, kind="title", value="hello title"))
+
+    assert result is True
+
+
 def test_create_post_uses_semantic_body_fallback_when_body_selector_is_missing(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
@@ -1105,6 +1143,81 @@ def test_create_post_uses_semantic_body_fallback_when_body_selector_is_missing(m
 
     assert result["success"] is True
     assert result["current_url"] == "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
+
+
+def test_create_post_uses_media_submit_surface_and_uploads_file(monkeypatch, tmp_path):
+    upload_locator = _FakeUploadLocator()
+    image_path = tmp_path / "proof.png"
+    image_path.write_bytes(b"png")
+
+    class _FakeMediaPage(_FakePage):
+        def locator(self, selector):
+            if selector == "body":
+                return _FakeBodyLocator(self.body_text)
+            if selector == 'input[type="file"]':
+                return upload_locator
+            raise AssertionError(f"unexpected locator: {selector}")
+
+    page = _FakeMediaPage()
+    page.url = "https://www.reddit.com/r/test/comments/example/new_post/"
+    goto_urls = []
+    selected_tabs = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, url):
+        goto_urls.append(url)
+
+    async def fake_dump(_page, _context):
+        return None
+
+    async def fake_fill_first(_page, selectors, value):
+        if tuple(selectors) == tuple(reddit_bot.POST["title_input"]):
+            assert value == "image proof title"
+            return True
+        raise AssertionError(f"unexpected selectors: {selectors}")
+
+    async def fake_select_tab(_page, *, label):
+        selected_tabs.append(label)
+        return True
+
+    async def fake_click_first(_page, selectors, timeout_ms=4000):
+        if tuple(selectors) == tuple(reddit_bot.POST["post_button"]):
+            page.url = "https://www.reddit.com/r/test/comments/example/new_post/"
+            return True
+        raise AssertionError(f"unexpected selectors: {selectors}")
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
+    monkeypatch.setattr(reddit_bot, "_select_post_compose_tab", fake_select_tab)
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_fill_first", fake_fill_first)
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
+    monkeypatch.setattr(reddit_bot, "_post_requires_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="image proof title",
+            subreddit="test",
+            image_path=str(image_path),
+        )
+    )
+
+    assert result["success"] is True
+    assert goto_urls == [
+        "https://www.reddit.com/r/test/submit",
+        "https://www.reddit.com/r/test/submit",
+    ]
+    assert selected_tabs == ["Images & Video"]
+    assert upload_locator.paths == [str(image_path.resolve())]
 
 
 def test_create_post_returns_community_restricted(monkeypatch):

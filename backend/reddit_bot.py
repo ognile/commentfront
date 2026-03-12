@@ -939,11 +939,14 @@ async def _fill_post_field_by_semantics(page, *, kind: str, value: str) -> bool:
                 } else {
                     return null;
                 }
+                const normalizedValue = normalize(value);
+                const currentValue = normalize(node.value || node.innerText || node.textContent);
                 return {
                     kind,
                     combined: target.combined,
                     score: target.score,
                     tag: target.tag,
+                    verified: Boolean(currentValue && normalizedValue && (currentValue === normalizedValue || currentValue.includes(normalizedValue.slice(0, Math.min(48, normalizedValue.length))))),
                 };
             }""",
             {"kind": normalized_kind, "value": value},
@@ -966,7 +969,64 @@ async def _fill_post_field_by_semantics(page, *, kind: str, value: str) -> bool:
         source="reddit_bot",
     )
     await page.wait_for_timeout(500)
+    if bool(result.get("verified")):
+        return True
     return bool(await _typed_text_visible(page, value))
+
+
+async def _select_post_compose_tab(page, *, label: str) -> bool:
+    normalized_label = _normalize_text(label)
+    if not normalized_label:
+        return False
+    try:
+        result = await page.evaluate(
+            """(label) => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const visible = (rect) =>
+                    rect &&
+                    rect.width >= 24 &&
+                    rect.height >= 18 &&
+                    rect.bottom >= 0 &&
+                    rect.right >= 0 &&
+                    rect.top <= (window.innerHeight || 873) &&
+                    rect.left <= (window.innerWidth || 393);
+                const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], [role="tab"]'));
+                for (const node of candidates) {
+                    const rect = node.getBoundingClientRect();
+                    if (!visible(rect)) continue;
+                    const text = normalize(node.innerText || node.textContent || node.getAttribute?.('aria-label'));
+                    if (!text) continue;
+                    if (text === label || text.includes(label)) {
+                        node.click();
+                        return {
+                            label: text,
+                            x: Math.round(rect.left + rect.width / 2),
+                            y: Math.round(rect.top + rect.height / 2),
+                        };
+                    }
+                }
+                return null;
+            }""",
+            normalized_label,
+        )
+    except Exception:
+        return False
+    if not result:
+        return False
+    queue_current_event(
+        "click",
+        {
+            "method": "post_compose_tab",
+            "action_name": "create_post",
+            "label": result.get("label"),
+            "x": result.get("x"),
+            "y": result.get("y"),
+        },
+        phase="activation",
+        source="reddit_bot",
+    )
+    await page.wait_for_timeout(700)
+    return True
 
 
 @asynccontextmanager
@@ -3393,6 +3453,7 @@ async def join_subreddit(
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
             await _goto(page, url)
+            await _dismiss_reddit_open_app_sheet(page)
             await page.evaluate("window.scrollTo(0, 0)")
             await page.wait_for_timeout(500)
             await dump_interactive_elements(page, "REDDIT JOIN SUBREDDIT")
@@ -3410,6 +3471,7 @@ async def join_subreddit(
 
             clicked = await _click_first(page, SUBREDDIT["join_button"], timeout_ms=3000)
             if not clicked:
+                await _dismiss_reddit_open_app_sheet(page)
                 clicked = await _click_visible_text_region(
                     page,
                     needle="Join",
@@ -3440,6 +3502,7 @@ async def join_subreddit(
                 raise RuntimeError("Reddit join button not found")
 
             await page.wait_for_timeout(1500)
+            await _dismiss_reddit_open_app_sheet(page)
             await page.evaluate("window.scrollTo(0, 0)")
             await page.wait_for_timeout(500)
             screenshot = await save_debug_screenshot(page, f"reddit_join_subreddit_{session.profile_name}")
@@ -3490,7 +3553,9 @@ async def create_post(
     normalized = None
     if subreddit:
         normalized = subreddit.strip().lstrip("r/").strip("/")
-        target_url = f"https://www.reddit.com/r/{quote(normalized)}/submit?type=TEXT"
+        target_url = f"https://www.reddit.com/r/{quote(normalized)}/submit"
+    if not image_path:
+        target_url = f"{target_url}?type=TEXT"
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         identity_evidence: Optional[Dict[str, Any]] = None
@@ -3510,6 +3575,9 @@ async def create_post(
             await page.evaluate("window.scrollTo(0, 0)")
             await page.wait_for_timeout(400)
             await dump_interactive_elements(page, "REDDIT CREATE POST")
+            if image_path:
+                await _select_post_compose_tab(page, label="Images & Video")
+            await _dismiss_reddit_open_app_sheet(page)
 
             title_filled = await _fill_first(page, POST["title_input"], title)
             if not title_filled:
@@ -3538,11 +3606,25 @@ async def create_post(
                     except Exception:
                         continue
                 if not uploaded:
+                    await _dismiss_reddit_open_app_sheet(page)
+                    await _select_post_compose_tab(page, label="Images & Video")
+                    for selector in POST["media_input"]:
+                        try:
+                            locator = page.locator(selector).first
+                            if await locator.count() > 0:
+                                await locator.set_input_files(upload_path)
+                                uploaded = True
+                                break
+                        except Exception:
+                            continue
+                if not uploaded:
                     raise RuntimeError("Reddit media upload input not found")
                 await page.wait_for_timeout(2500)
 
             await _raise_if_community_comment_banned(page, capture_context="REDDIT POST COMMUNITY BAN")
+            await _dismiss_reddit_open_app_sheet(page)
             if not await _click_first(page, POST["post_button"], timeout_ms=5000):
+                await _dismiss_reddit_open_app_sheet(page)
                 raise RuntimeError("Reddit Post button not found")
 
             await page.wait_for_timeout(1800)
@@ -3550,6 +3632,7 @@ async def create_post(
                 if not await _ensure_post_flair(page):
                     await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED")
                     raise RuntimeError("Reddit post flair selection failed")
+                await _dismiss_reddit_open_app_sheet(page)
                 if not await _click_first(page, POST["post_button"], timeout_ms=5000):
                     raise RuntimeError("Reddit Post button not found after flair selection")
 
