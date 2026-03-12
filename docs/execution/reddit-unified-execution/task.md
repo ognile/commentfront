@@ -25,6 +25,7 @@
 - github commit `1448195438f15a8e2172b4b22f512d134ef7357d` shipped the follow-up create-post verifier hardening, and railway deployment `7d7764dd-127e-4870-abf9-482557ee3141` is live with `status=SUCCESS`.
 - the live backend now serves `/reddit/executions/preview`, `/reddit/executions/run`, and `/reddit/executions/{run_id}` from committed github state.
 - the production proof matrix is complete for browse, open, upvote post, upvote comment, comment, reply, join, create post, and create post with attachment.
+- clickable review surface for the final production proof packets lives in `docs/execution/reddit-unified-execution/proof-review.md`.
 
 ## active todo
 - none. the requested implementation and production proof bar are complete.
