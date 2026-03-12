@@ -437,7 +437,11 @@ def test_comment_on_post_attempts_fill_before_scrolling(monkeypatch):
     monkeypatch.setattr(reddit_bot, "_scroll_until_comment_surface_visible", fake_scroll)
     monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
-    monkeypatch.setattr(reddit_bot, "_verify_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_comment_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
     result = asyncio.run(
@@ -945,7 +949,11 @@ def test_comment_on_post_passes_target_url_as_preferred_flair_entry(monkeypatch)
     monkeypatch.setattr(reddit_bot, "_fill_comment_input", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
-    monkeypatch.setattr(reddit_bot, "_verify_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_comment_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
     result = asyncio.run(
@@ -1063,6 +1071,11 @@ def test_create_post_uses_semantic_title_fallback_when_selector_title_is_missing
     monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", fake_semantic_fill)
     monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
     monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
     result = asyncio.run(
@@ -1130,6 +1143,11 @@ def test_create_post_uses_semantic_body_fallback_when_body_selector_is_missing(m
     monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", fake_semantic_fill)
     monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
     result = asyncio.run(
@@ -1200,6 +1218,11 @@ def test_create_post_uses_media_submit_surface_and_uploads_file(monkeypatch, tmp
     monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
     monkeypatch.setattr(reddit_bot, "_post_requires_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
     monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
     result = asyncio.run(
@@ -1311,8 +1334,11 @@ def test_create_post_accepts_subreddit_feed_permalink_when_post_appears_in_feed(
     async def fake_session_page(_session, _proxy_url):
         yield (None, None, page)
 
+    async def fake_goto(_page, url):
+        page.url = url
+
     monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
-    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
     monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
     monkeypatch.setattr(reddit_bot, "_fill_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
@@ -1327,6 +1353,11 @@ def test_create_post_accepts_subreddit_feed_permalink_when_post_appears_in_feed(
             0,
             result="https://www.reddit.com/r/Healthyhooha/comments/example/new_post/",
         ),
+    )
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
     )
 
     session = type(
@@ -1347,7 +1378,7 @@ def test_create_post_accepts_subreddit_feed_permalink_when_post_appears_in_feed(
     )
 
     assert result["success"] is True
-    assert result["current_url"] == "https://www.reddit.com/r/Healthyhooha/"
+    assert result["current_url"] == "https://www.reddit.com/r/Healthyhooha/comments/example/new_post/"
     assert result["target_url"] == "https://www.reddit.com/r/Healthyhooha/comments/example/new_post/"
 
 
@@ -1383,6 +1414,11 @@ def test_create_post_retries_submit_after_required_flair(monkeypatch):
     monkeypatch.setattr(reddit_bot, "_post_requires_flair", fake_requires_flair)
     monkeypatch.setattr(reddit_bot, "_ensure_post_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
     result = asyncio.run(
@@ -1611,13 +1647,23 @@ def test_reply_comment_prefers_target_comment_surface(monkeypatch):
     monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
     monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
     monkeypatch.setattr(reddit_bot, "_comment_action_row", fake_comment_row)
-    monkeypatch.setattr(reddit_bot, "_click_named_control", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
     monkeypatch.setattr(reddit_bot, "_ensure_reply_inline_box", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
-    monkeypatch.setattr(reddit_bot, "_fill_comment_input", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_fill_reply_inline_text_exact",
+        lambda *_args, **_kwargs: asyncio.sleep(
+            0,
+            result={"ok": True, "exact_before_submit": True, "cleared_before_type": True},
+        ),
+    )
     monkeypatch.setattr(reddit_bot, "_click_reply_submit", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
-    monkeypatch.setattr(reddit_bot, "_verify_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_reply_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
     result = asyncio.run(
@@ -2440,8 +2486,8 @@ def test_reply_to_comment_retries_after_dismissing_open_app_sheet(monkeypatch):
         ensure_calls.append((author, expected_title))
         return len(ensure_calls) >= 2
 
-    async def fake_fill_comment(*_args, **_kwargs):
-        return True
+    async def fake_fill_reply_exact(*_args, **_kwargs):
+        return {"ok": True, "exact_before_submit": True, "cleared_before_type": True}
 
     async def fake_click_submit(*_args, **_kwargs):
         return True
@@ -2449,8 +2495,8 @@ def test_reply_to_comment_retries_after_dismissing_open_app_sheet(monkeypatch):
     async def fake_save(_page, _label):
         return "/tmp/reply.png"
 
-    async def fake_verify(_page, _text):
-        return True
+    async def fake_proof_validation(*_args, **_kwargs):
+        return {"ok": True, "violations": []}
 
     monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
     monkeypatch.setattr(reddit_bot, "_load_target_comment_context", fake_comment_context)
@@ -2459,13 +2505,12 @@ def test_reply_to_comment_retries_after_dismissing_open_app_sheet(monkeypatch):
     monkeypatch.setattr(reddit_bot, "_current_thread_title", fake_current_title)
     monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", fake_raise_if_banned)
     monkeypatch.setattr(reddit_bot, "_comment_action_row", fake_comment_row)
-    monkeypatch.setattr(reddit_bot, "_click_named_control", fake_click_named)
     monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss_open_sheet)
     monkeypatch.setattr(reddit_bot, "_ensure_reply_inline_box", fake_ensure_reply_box)
-    monkeypatch.setattr(reddit_bot, "_fill_comment_input", fake_fill_comment)
+    monkeypatch.setattr(reddit_bot, "_fill_reply_inline_text_exact", fake_fill_reply_exact)
     monkeypatch.setattr(reddit_bot, "_click_reply_submit", fake_click_submit)
     monkeypatch.setattr(reddit_bot, "save_debug_screenshot", fake_save)
-    monkeypatch.setattr(reddit_bot, "_verify_text_visible", fake_verify)
+    monkeypatch.setattr(reddit_bot, "_build_reply_proof_validation", fake_proof_validation)
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
     result = asyncio.run(
@@ -2530,8 +2575,8 @@ def test_reply_to_comment_reports_surface_errors_without_losing_first_failure(mo
     async def fake_ensure_reply_box(_page, *, row, author, expected_title):
         return True
 
-    async def fake_fill_comment(*_args, **_kwargs):
-        return False
+    async def fake_fill_reply_exact(*_args, **_kwargs):
+        return {"ok": False, "exact_before_submit": False, "cleared_before_type": False}
 
     monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
     monkeypatch.setattr(reddit_bot, "_load_target_comment_context", fake_comment_context)
@@ -2539,11 +2584,9 @@ def test_reply_to_comment_reports_surface_errors_without_losing_first_failure(mo
     monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
     monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", fake_raise_if_banned)
     monkeypatch.setattr(reddit_bot, "_scroll_target_comment_into_view", fake_scroll_row)
-    monkeypatch.setattr(reddit_bot, "_click_reply_row_button", fake_click_row)
-    monkeypatch.setattr(reddit_bot, "_click_named_control", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
     monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", fake_dismiss)
     monkeypatch.setattr(reddit_bot, "_ensure_reply_inline_box", fake_ensure_reply_box)
-    monkeypatch.setattr(reddit_bot, "_fill_comment_input", fake_fill_comment)
+    monkeypatch.setattr(reddit_bot, "_fill_reply_inline_text_exact", fake_fill_reply_exact)
     monkeypatch.setattr(reddit_bot, "_capture_reddit_failure_state", lambda *_args, **_kwargs: asyncio.sleep(0))
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
@@ -2603,6 +2646,112 @@ def test_click_reply_submit_prefers_anchor_aware_click(monkeypatch):
         ("inline_submit",),
         ("named", ["comment"], "helpful reply text"),
     ]
+
+
+def test_reply_to_comment_uses_single_compose_path_when_inline_box_already_open(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/"
+    fill_calls = []
+    submit_calls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_context(_target_comment_url):
+        return {
+            "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/",
+            "author": "helper_user",
+            "body_snippet": "helpful reply target",
+            "title": "example post",
+        }
+
+    async def fake_scroll_row(*_args, **_kwargs):
+        return {"reply": {"x": 152, "y": 702}, "author": {"x": 120, "y": 620}}
+
+    async def fake_fill_reply(*_args, **_kwargs):
+        fill_calls.append("fill")
+        return {"ok": True, "exact_before_submit": True, "cleared_before_type": True}
+
+    async def fake_click_submit(*_args, **_kwargs):
+        submit_calls.append("submit")
+        return True
+
+    async def fail_click_reply_row(*_args, **_kwargs):
+        raise AssertionError("reply button should not be clicked directly once inline box path is active")
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_load_target_comment_context", fake_context)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_scroll_target_comment_into_view", fake_scroll_row)
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_ensure_reply_inline_box", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_click_reply_row_button", fail_click_reply_row)
+    monkeypatch.setattr(reddit_bot, "_fill_reply_inline_text_exact", fake_fill_reply)
+    monkeypatch.setattr(reddit_bot, "_click_reply_submit", fake_click_submit)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="reply-shot.png"))
+    monkeypatch.setattr(reddit_bot, "_build_reply_proof_validation", lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}))
+
+    session = type("Session", (), {"profile_name": "reddit_alpha", "get_username": lambda self: "reddit_alpha_user"})()
+    result = asyncio.run(
+        reddit_bot.reply_to_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/Healthyhooha/comments/thread123/example_post/comment/c1/",
+            text="reply text",
+        )
+    )
+
+    assert result["success"] is True
+    assert fill_calls == ["fill"]
+    assert submit_calls == ["submit"]
+
+
+def test_run_reddit_action_text_verdict_requires_alignment_and_proof(monkeypatch):
+    recorder = _FakeRecorder()
+
+    async def fake_start_forensic_attempt(**_kwargs):
+        return recorder
+
+    async def fake_attach_artifact(*_args, **_kwargs):
+        return None
+
+    async def fake_comment_on_post(*_args, **_kwargs):
+        return {
+            "success": True,
+            "action": "comment_post",
+            "profile_name": "reddit_alpha",
+            "current_url": "https://www.reddit.com/r/womenshealth/comments/thread123/example_post/",
+            "target_url": "https://www.reddit.com/r/womenshealth/comments/thread123/example_post/",
+            "proof_validation": {"ok": False, "violations": ["rendered comment text appeared more than once"]},
+        }
+
+    monkeypatch.setattr(reddit_bot, "start_forensic_attempt", fake_start_forensic_attempt)
+    monkeypatch.setattr(reddit_bot, "attach_current_json_artifact", fake_attach_artifact)
+    monkeypatch.setattr(reddit_bot, "set_current_forensic_recorder", lambda _recorder: "token")
+    monkeypatch.setattr(reddit_bot, "reset_current_forensic_recorder", lambda _token: None)
+    monkeypatch.setattr(reddit_bot, "comment_on_post", fake_comment_on_post)
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.run_reddit_action(
+            session,
+            action="comment_post",
+            url="https://www.reddit.com/r/womenshealth/comments/thread123/example_post/",
+            text="reply text",
+            forensic_context={
+                "metadata": {
+                    "alignment_validation": {"ok": True, "violations": []},
+                    "effective_action_params": {"text": "reply text"},
+                }
+            },
+        )
+    )
+
+    assert result["final_verdict"] == "failed_confirmed"
+    assert "rendered comment text appeared more than once" in result["evidence_summary"]
+    assert recorder.finalized[0]["verdict"].final_verdict == "failed_confirmed"
 
 
 def test_vote_region_is_active_detects_true():

@@ -110,6 +110,81 @@ GENERIC_CONTEXT_TERMS = {
     "work",
 }
 
+COMMUNITY_ARTICLE_TITLE_PREFIXES = (
+    "the clinical reality of",
+    "clinical observations on",
+    "observations on",
+    "analysis of",
+    "evaluating",
+    "evaluation of",
+    "the reality of",
+    "understanding",
+    "insights on",
+    "impact of",
+    "influence of",
+    "mechanisms of",
+    "an overview of",
+)
+
+COMMUNITY_FORMALITY_TOKENS = {
+    "abstract",
+    "academic",
+    "analysis",
+    "aromatic",
+    "chemical",
+    "chemistry",
+    "clinical",
+    "diagnostic",
+    "digestive",
+    "efficacy",
+    "evaluate",
+    "evaluating",
+    "evidence",
+    "framework",
+    "identified",
+    "identify",
+    "immediate",
+    "influence",
+    "intervention",
+    "interventions",
+    "metabolic",
+    "methodology",
+    "neutralized",
+    "observations",
+    "process",
+    "procedural",
+    "regarding",
+    "research",
+    "reality",
+    "scarce",
+    "significant",
+    "sparse",
+    "systemic",
+    "therapeutic",
+    "topical",
+    "environment",
+}
+
+COMMUNITY_FORMALITY_PHRASES = (
+    "according to",
+    "clinical reality",
+    "clinical evidence",
+    "chemical change",
+    "digestive process",
+    "evaluating the efficacy",
+    "evaluating the impact",
+    "dietary interventions",
+    "identified a pattern",
+    "local environment",
+    "metabolic breakdown",
+    "metabolic research",
+    "systemic aromatic changes",
+    "topical or systemic",
+    "observations on",
+    "clinical observations",
+    "immediate topical",
+)
+
 
 def _collapse_whitespace(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -427,6 +502,174 @@ def validate_generated_text(
         "distinctive_overlap_terms": distinctive_overlap_terms,
         "similarity_checks": similarity_scopes,
     }
+
+
+def _manual_action_params(
+    action_kind: str,
+    *,
+    text: Optional[str] = None,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+) -> Dict[str, str]:
+    normalized_action = str(action_kind or "").strip().lower()
+    if normalized_action in {"comment_post", "reply_comment"}:
+        value = _collapse_whitespace(text)
+        return {"text": value} if value else {}
+    if normalized_action == "create_post":
+        payload: Dict[str, str] = {}
+        cleaned_title = _collapse_whitespace(title)
+        cleaned_body = _collapse_whitespace(body)
+        if cleaned_title:
+            payload["title"] = cleaned_title
+        if cleaned_body:
+            payload["body"] = cleaned_body
+        return payload
+    return {}
+
+
+def _combined_manual_action_text(action_kind: str, params: Dict[str, Any]) -> str:
+    normalized_action = str(action_kind or "").strip().lower()
+    if normalized_action in {"comment_post", "reply_comment"}:
+        return _collapse_whitespace(params.get("text"))
+    if normalized_action == "create_post":
+        return "\n".join(
+            part
+            for part in [
+                _collapse_whitespace(params.get("title")),
+                _collapse_whitespace(params.get("body")),
+            ]
+            if part
+        ).strip()
+    return ""
+
+
+def _conversation_nearby_texts(conversation_context: List[Dict[str, Any]]) -> List[str]:
+    return [
+        "\n".join(
+            part
+            for part in [
+                sample.get("title"),
+                sample.get("excerpt"),
+                sample.get("body_excerpt"),
+                sample.get("body"),
+            ]
+            if part
+        ).strip()
+        for sample in list(conversation_context or [])
+    ]
+
+
+def _manual_context_anchors(
+    action_kind: str,
+    *,
+    keywords: List[str],
+    thread_title: Optional[str] = None,
+    thread_excerpt: Optional[str] = None,
+    target_excerpt: Optional[str] = None,
+    conversation_context: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
+    anchors: List[str] = []
+    normalized_action = str(action_kind or "").strip().lower()
+    if normalized_action == "comment_post":
+        anchors.extend([thread_title, thread_excerpt, *list(keywords or [])])
+    elif normalized_action == "reply_comment":
+        anchors.extend([target_excerpt, thread_title, thread_excerpt, *list(keywords or [])])
+    elif normalized_action == "create_post":
+        anchors.extend(list(keywords or []))
+        for sample in list(conversation_context or [])[:4]:
+            anchors.extend(
+                [
+                    sample.get("title"),
+                    sample.get("excerpt"),
+                    sample.get("body_excerpt"),
+                    sample.get("body"),
+                ]
+            )
+    return [value for value in [_collapse_whitespace(item) for item in anchors] if value]
+
+
+def _sanitize_review_effective_params(
+    action_kind: str,
+    effective_params: Any,
+    *,
+    fallback: Dict[str, str],
+) -> Dict[str, str]:
+    candidate = dict(effective_params or {})
+    normalized_action = str(action_kind or "").strip().lower()
+    if normalized_action in {"comment_post", "reply_comment"}:
+        text = _collapse_whitespace(candidate.get("text"))
+        if text:
+            return {"text": text}
+        return dict(fallback)
+    if normalized_action == "create_post":
+        title = _collapse_whitespace(candidate.get("title"))
+        body = _collapse_whitespace(candidate.get("body"))
+        payload: Dict[str, str] = {}
+        if title:
+            payload["title"] = title
+        if body:
+            payload["body"] = body
+        return payload or dict(fallback)
+    return dict(fallback)
+
+
+def _review_violation_list(value: Any) -> List[str]:
+    return [_collapse_whitespace(item) for item in list(value or []) if _collapse_whitespace(item)]
+
+
+def _merge_validation_violations(validation: Dict[str, Any], extra_violations: List[str]) -> Dict[str, Any]:
+    merged = dict(validation or {})
+    combined = list(dict.fromkeys([*list(merged.get("violations") or []), *list(extra_violations or [])]))
+    merged["violations"] = combined
+    merged["ok"] = not combined
+    return merged
+
+
+def _manual_community_fit_violations(action_kind: str, params: Dict[str, Any]) -> List[str]:
+    normalized_action = str(action_kind or "").strip().lower()
+    title = _collapse_whitespace((params or {}).get("title"))
+    body = _collapse_whitespace((params or {}).get("body"))
+    text = _collapse_whitespace((params or {}).get("text"))
+    combined = _combined_manual_action_text(normalized_action, params or {})
+    normalized = _normalize_text(combined)
+    if not normalized:
+        return []
+
+    violations: List[str] = []
+    title_normalized = _normalize_text(title)
+    if normalized_action == "create_post" and title_normalized:
+        if any(title_normalized.startswith(prefix) for prefix in COMMUNITY_ARTICLE_TITLE_PREFIXES):
+            violations.append("post title reads like an article or academic topic line")
+
+    phrase_hits = [phrase for phrase in COMMUNITY_FORMALITY_PHRASES if phrase in normalized]
+    token_hits = [token for token in COMMUNITY_FORMALITY_TOKENS if re.search(rf"\b{re.escape(token)}\b", normalized)]
+    pronoun_hits = set(re.findall(r"\b(i|i'm|i’ve|i'd|me|my|you|your|we|our|he|she|they|their|anyone|someone)\b", normalized))
+
+    if phrase_hits:
+        violations.append(
+            "reads like detached clinical or academic prose: "
+            + ", ".join(phrase_hits[:4])
+        )
+    elif len(token_hits) >= 4:
+        violations.append(
+            "reads too formal or clinical for organic reddit voice: "
+            + ", ".join(token_hits[:4])
+        )
+    elif len(token_hits) >= 3 and not pronoun_hits:
+        violations.append(
+            "reads too detached and formal for organic reddit voice: "
+            + ", ".join(token_hits[:3])
+        )
+
+    if normalized_action in {"comment_post", "reply_comment"} and len(token_hits) >= 3 and not pronoun_hits:
+        violations.append("comment/reply reads like outside commentary instead of a participant response")
+
+    if normalized_action == "create_post" and body:
+        body_normalized = _normalize_text(body)
+        if len(token_hits) >= 3 and not set(re.findall(r"\b(i|i'm|my|me|anyone|does|did|has|have)\b", body_normalized)):
+            violations.append("post body reads like a detached explainer instead of a real subreddit post")
+
+    return list(dict.fromkeys(_review_violation_list(violations)))
 
 
 def _response_text(response: Any) -> str:
@@ -748,6 +991,275 @@ return json with this exact shape:
   "reasoning": "one short sentence on why it fits the persona and thread"
 }}
 """.strip()
+
+    def _manual_draft_review_prompt(
+        self,
+        *,
+        action_kind: str,
+        subreddit: str,
+        profile_name: str,
+        draft_params: Dict[str, str],
+        keywords: List[str],
+        style_samples: List[Dict[str, Any]],
+        conversation_context: List[Dict[str, Any]],
+        recent_texts: List[str],
+        same_thread_texts: List[str],
+        same_profile_texts: List[str],
+        persona_snapshot: Dict[str, Any],
+        writing_rule_snapshot: Dict[str, Any],
+        thread_title: Optional[str] = None,
+        thread_excerpt: Optional[str] = None,
+        thread_author: Optional[str] = None,
+        target_excerpt: Optional[str] = None,
+        target_author: Optional[str] = None,
+        policy_metadata: Optional[Dict[str, Any]] = None,
+        deterministic_violations: Optional[List[str]] = None,
+    ) -> str:
+        normalized_action = str(action_kind or "").strip().lower()
+        if normalized_action == "comment_post":
+            action_label = "top-level comment"
+            context_payload: Dict[str, Any] = {
+                "thread": {
+                    "title": thread_title,
+                    "excerpt": thread_excerpt,
+                    "author": thread_author,
+                }
+            }
+            required_shape = '{"text": "comment text"}'
+        elif normalized_action == "reply_comment":
+            action_label = "reply to a comment"
+            context_payload = {
+                "thread": {
+                    "title": thread_title,
+                    "excerpt": thread_excerpt,
+                    "author": thread_author,
+                },
+                "target_comment": {
+                    "excerpt": target_excerpt,
+                    "author": target_author,
+                },
+            }
+            required_shape = '{"text": "reply text"}'
+        else:
+            action_label = "new subreddit post"
+            context_payload = {}
+            required_shape = '{"title": "post title", "body": "optional body"}'
+        return f"""
+you are reviewing a manual reddit {action_label} draft before it is allowed in production.
+
+{self._shared_prompt_block(
+    persona_snapshot=persona_snapshot,
+    writing_rule_snapshot=writing_rule_snapshot,
+    recent_texts=recent_texts,
+    same_thread_texts=same_thread_texts,
+    same_profile_texts=same_profile_texts,
+)}
+
+profile name:
+{json.dumps(profile_name, ensure_ascii=True)}
+
+target subreddit:
+{json.dumps(subreddit, ensure_ascii=True)}
+
+subreddit policy metadata:
+{json.dumps(policy_metadata or {}, ensure_ascii=True, indent=2)}
+
+topic keywords:
+{json.dumps(keywords, ensure_ascii=True)}
+
+target context:
+{json.dumps(context_payload, ensure_ascii=True, indent=2)}
+
+style samples from the subreddit:
+{json.dumps(summarize_style_samples(style_samples), ensure_ascii=True, indent=2)}
+
+local conversation context:
+{json.dumps(summarize_conversation_context(conversation_context), ensure_ascii=True, indent=2)}
+
+manual draft params:
+{json.dumps(draft_params, ensure_ascii=True, indent=2)}
+
+deterministic validator findings:
+{json.dumps(list(deterministic_violations or []), ensure_ascii=True, indent=2)}
+
+instructions:
+- reject anything that sounds like testing, automation, retries, verification, proof gathering, debugging, or operator intent
+- reject anything that feels synthetic, subreddit-misaligned, generic, or detached from the local conversation
+- reject anything that sounds like a clinician, researcher, abstract, essay, psa, or textbook instead of a normal redditor
+- for posts, the title must read like something a real redditor would post, not an article heading or academic topic line
+- for comments and replies, sound like a participant in the thread, not a detached explainer hovering above it
+- if the manual draft already fits, keep it unchanged
+- if it does not fit, repair it into a version that fits the same action and community
+- if the only repair you can produce still sounds formal, clinical, robotic, or article-like, return ok=false instead of forcing it through
+- do not add policy or moderator language
+- prefer plainspoken, concrete, community-native phrasing over polished or educational prose
+- keep the output compact and human
+
+return valid json with this exact shape:
+{{
+  "ok": true,
+  "violations": ["short reason if not ok"],
+  "repair_applied": false,
+  "effective_params": {required_shape},
+  "reasoning": "one short sentence"
+}}
+""".strip()
+
+    async def preflight_manual_content(
+        self,
+        *,
+        action_kind: str,
+        profile_name: str,
+        subreddit: str,
+        keywords: List[str],
+        style_samples: List[Dict[str, Any]],
+        conversation_context: List[Dict[str, Any]],
+        recent_texts: List[str],
+        same_thread_texts: Optional[List[str]] = None,
+        same_profile_texts: Optional[List[str]] = None,
+        text: Optional[str] = None,
+        title: Optional[str] = None,
+        body: Optional[str] = None,
+        thread_title: Optional[str] = None,
+        thread_excerpt: Optional[str] = None,
+        thread_author: Optional[str] = None,
+        target_excerpt: Optional[str] = None,
+        target_author: Optional[str] = None,
+        policy_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        normalized_action = str(action_kind or "").strip().lower()
+        original_params = _manual_action_params(
+            normalized_action,
+            text=text,
+            title=title,
+            body=body,
+        )
+        persona_snapshot = get_reddit_persona_snapshot(profile_name)
+        prompt_writing_rules = get_writing_rule_snapshot(include_contents=True)
+        validation_rules = get_writing_rule_snapshot()
+        same_thread_texts = list(same_thread_texts or [])
+        same_profile_texts = list(same_profile_texts or [])
+        nearby_texts = _conversation_nearby_texts(conversation_context)
+        context_anchor_texts = _manual_context_anchors(
+            normalized_action,
+            keywords=keywords,
+            thread_title=thread_title,
+            thread_excerpt=thread_excerpt,
+            target_excerpt=target_excerpt,
+            conversation_context=conversation_context,
+        )
+        original_combined = _combined_manual_action_text(normalized_action, original_params)
+        original_validation = validate_generated_text(
+            original_combined,
+            recent_texts=recent_texts,
+            nearby_texts=nearby_texts,
+            same_thread_texts=same_thread_texts,
+            same_profile_texts=same_profile_texts,
+            context_anchor_texts=context_anchor_texts,
+            require_context_overlap=True,
+            persona_snapshot=persona_snapshot,
+            writing_rule_snapshot=validation_rules,
+        )
+        original_validation = _merge_validation_violations(
+            original_validation,
+            _manual_community_fit_violations(normalized_action, original_params),
+        )
+
+        review_payload: Optional[Dict[str, Any]] = None
+        review_error: Optional[str] = None
+        try:
+            review_payload = _extract_json_object(
+                await self._generate_json(
+                    self._manual_draft_review_prompt(
+                        action_kind=normalized_action,
+                        subreddit=subreddit,
+                        profile_name=profile_name,
+                        draft_params=original_params,
+                        keywords=keywords,
+                        style_samples=style_samples,
+                        conversation_context=conversation_context,
+                        recent_texts=recent_texts,
+                        same_thread_texts=same_thread_texts,
+                        same_profile_texts=same_profile_texts,
+                        persona_snapshot=persona_snapshot,
+                        writing_rule_snapshot=prompt_writing_rules,
+                        thread_title=thread_title,
+                        thread_excerpt=thread_excerpt,
+                        thread_author=thread_author,
+                        target_excerpt=target_excerpt,
+                        target_author=target_author,
+                        policy_metadata=policy_metadata,
+                        deterministic_violations=list(original_validation.get("violations") or []),
+                    )
+                )
+            )
+        except Exception as exc:
+            review_error = str(exc)
+
+        review_violations = _review_violation_list((review_payload or {}).get("violations"))
+        review_ok = bool((review_payload or {}).get("ok")) if review_payload is not None else None
+        reviewed_params = _sanitize_review_effective_params(
+            normalized_action,
+            (review_payload or {}).get("effective_params"),
+            fallback=original_params,
+        )
+
+        effective_params = dict(original_params)
+        repair_applied = False
+        if original_validation["ok"] and (review_ok is None or (review_ok and reviewed_params == original_params and not review_violations)):
+            effective_params = dict(original_params)
+        elif review_payload is not None and reviewed_params:
+            effective_params = dict(reviewed_params)
+            repair_applied = effective_params != original_params or bool((review_payload or {}).get("repair_applied"))
+        elif original_validation["ok"] and not review_violations:
+            effective_params = dict(original_params)
+
+        effective_combined = _combined_manual_action_text(normalized_action, effective_params)
+        effective_validation = validate_generated_text(
+            effective_combined,
+            recent_texts=recent_texts,
+            nearby_texts=nearby_texts,
+            same_thread_texts=same_thread_texts,
+            same_profile_texts=same_profile_texts,
+            context_anchor_texts=context_anchor_texts,
+            require_context_overlap=True,
+            persona_snapshot=persona_snapshot,
+            writing_rule_snapshot=validation_rules,
+        )
+        effective_validation = _merge_validation_violations(
+            effective_validation,
+            _manual_community_fit_violations(normalized_action, effective_params),
+        )
+
+        ok = bool(effective_params) and effective_validation["ok"] and (review_ok is not False or repair_applied)
+        if original_validation["ok"] and effective_params == original_params and review_ok is None:
+            ok = True
+        if review_ok is False and effective_params == original_params:
+            ok = False
+
+        violations: List[str] = []
+        if not original_validation["ok"]:
+            violations.extend(list(original_validation.get("violations") or []))
+        violations.extend(review_violations)
+        if not ok:
+            violations.extend(list(effective_validation.get("violations") or []))
+        violations = list(dict.fromkeys(_review_violation_list(violations)))
+
+        return {
+            "ok": ok,
+            "repair_applied": bool(repair_applied),
+            "original_params": original_params,
+            "effective_params": effective_params,
+            "violations": violations,
+            "reasoning": _collapse_whitespace((review_payload or {}).get("reasoning")),
+            "original_validation": original_validation,
+            "effective_validation": effective_validation,
+            "review": review_payload,
+            "review_error": review_error,
+            "policy_metadata": dict(policy_metadata or {}),
+            "persona": persona_snapshot,
+            "writing_rules": validation_rules,
+        }
 
     def _flair_choice_prompt(
         self,

@@ -96,6 +96,35 @@ def _success_result(action, **extra):
     }
 
 
+async def _allow_manual_preflight(_program, _item, payload):
+    effective_action_params = {}
+    if payload.get("text") is not None:
+        effective_action_params["text"] = payload.get("text")
+    if payload.get("title") is not None:
+        effective_action_params["title"] = payload.get("title")
+    if payload.get("body") is not None:
+        effective_action_params["body"] = payload.get("body")
+    return {
+        **payload,
+        "content_preflight": {
+            "ok": True,
+            "repair_applied": False,
+            "violations": [],
+            "original_params": dict(effective_action_params),
+            "effective_params": dict(effective_action_params),
+        },
+        "alignment_validation": {
+            "ok": True,
+            "repair_applied": False,
+            "violations": [],
+            "original_params": dict(effective_action_params),
+            "effective_params": dict(effective_action_params),
+        },
+        "effective_action_params": effective_action_params,
+        "repair_applied": False,
+    }
+
+
 def test_discovery_stays_inside_allowed_subreddit_and_keywords(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(_spec())
@@ -153,6 +182,7 @@ def test_orchestrator_marks_completed_and_records_target_history(tmp_path, monke
 
     monkeypatch.setattr(orchestrator, "_discover_post_target", fake_discover_post_target)
     monkeypatch.setattr(orchestrator, "_discover_comment_target", fake_discover_comment_target)
+    monkeypatch.setattr(orchestrator, "_apply_manual_text_preflight", _allow_manual_preflight)
     result = asyncio.run(orchestrator.process_program(program["id"]))
     updated = store.get_program(program["id"])
 
@@ -172,6 +202,7 @@ def test_verification_contract_blocks_false_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
     orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
+    monkeypatch.setattr(orchestrator, "_apply_manual_text_preflight", _allow_manual_preflight)
     asyncio.run(orchestrator.process_program(program["id"]))
     updated = store.get_program(program["id"])
     item = updated["compiled"]["work_items"][0]
@@ -624,7 +655,7 @@ def test_build_generated_post_payload_allows_auto_user_flair_when_no_manual_flai
     assert payload["user_flair_hint"] is None
 
 
-def test_resolve_target_explicit_comment_item_inherits_subreddit_policy_metadata(tmp_path):
+def test_resolve_target_explicit_comment_item_inherits_subreddit_policy_metadata(tmp_path, monkeypatch):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
         _spec(
@@ -668,6 +699,7 @@ def test_resolve_target_explicit_comment_item_inherits_subreddit_policy_metadata
     )
     item = next(entry for entry in program["compiled"]["work_items"] if entry["action"] == "comment_post")
     orchestrator = RedditProgramOrchestrator(store=store)
+    monkeypatch.setattr(orchestrator, "_apply_manual_text_preflight", _allow_manual_preflight)
 
     payload = asyncio.run(orchestrator._resolve_target(program, item))
 
@@ -722,6 +754,7 @@ def test_process_program_rejects_overlapping_execution(tmp_path, monkeypatch):
     monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
     monkeypatch.setattr(RedditSession, "get_username", lambda self: "reddit_amy")
     orchestrator = RedditProgramOrchestrator(store=store, action_runner=slow_runner)
+    monkeypatch.setattr(orchestrator, "_apply_manual_text_preflight", _allow_manual_preflight)
 
     async def exercise():
         task = asyncio.create_task(orchestrator.process_program(program["id"]))
@@ -749,6 +782,7 @@ def test_process_program_stops_after_external_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
     monkeypatch.setattr(RedditSession, "get_username", lambda self: "reddit_amy")
     orchestrator = RedditProgramOrchestrator(store=store, action_runner=slow_runner)
+    monkeypatch.setattr(orchestrator, "_apply_manual_text_preflight", _allow_manual_preflight)
 
     async def exercise():
         task = asyncio.create_task(orchestrator.process_program(program["id"]))
@@ -852,6 +886,7 @@ def test_orchestrator_blocks_community_restricted_items(tmp_path, monkeypatch):
 
     monkeypatch.setattr(RedditSession, "load", lambda self: {"profile_name": self.profile_name})
     orchestrator = RedditProgramOrchestrator(store=store, action_runner=fake_runner)
+    monkeypatch.setattr(orchestrator, "_apply_manual_text_preflight", _allow_manual_preflight)
 
     asyncio.run(orchestrator.process_program(program["id"]))
     updated = store.get_program(program["id"])

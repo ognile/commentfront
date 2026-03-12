@@ -448,6 +448,9 @@ class RedditProgramOrchestrator:
                 failure_class="target_resolution_timeout",
                 retryable=True,
             )
+        for key in ("content_preflight", "alignment_validation", "effective_action_params", "repair_applied"):
+            if key in target_payload:
+                item[key] = target_payload.get(key)
         if target_payload.get("error"):
             return self._finalize_resolution_failure(
                 program,
@@ -471,6 +474,27 @@ class RedditProgramOrchestrator:
             item["generation_evidence"] = generation_evidence
             item["generation_feedback"] = None
             self._remember_generated_text(program, item, generation_evidence)
+        elif bool(target_payload.get("repair_applied")) and dict(target_payload.get("effective_action_params") or {}):
+            self._remember_generated_text(
+                program,
+                item,
+                {
+                    **dict(target_payload.get("effective_action_params") or {}),
+                    "combined_text": "\n".join(
+                        part
+                        for part in [
+                            dict(target_payload.get("effective_action_params") or {}).get("text"),
+                            dict(target_payload.get("effective_action_params") or {}).get("title"),
+                            dict(target_payload.get("effective_action_params") or {}).get("body"),
+                        ]
+                        if str(part or "").strip()
+                    ).strip(),
+                    "thread_url": (
+                        str(((target_payload.get("discovered_target") or {}).get("thread_url") or "")).strip()
+                        or _thread_ref_from_item(item)
+                    ),
+                },
+            )
         image_path = None
         attachment_image_id = first_attachment_image_id(execution_spec)
         if attachment_image_id:
@@ -517,6 +541,10 @@ class RedditProgramOrchestrator:
                     "local_date": item.get("local_date"),
                     "source": item.get("source"),
                     "generation_evidence": generation_evidence or None,
+                    "content_preflight": target_payload.get("content_preflight"),
+                    "alignment_validation": target_payload.get("alignment_validation"),
+                    "effective_action_params": target_payload.get("effective_action_params"),
+                    "repair_applied": bool(target_payload.get("repair_applied")),
                 },
             },
         )
@@ -585,6 +613,10 @@ class RedditProgramOrchestrator:
             "error": error,
             "failure_class": failure_class,
             "final_verdict": "needs_review",
+            "content_preflight": item.get("content_preflight"),
+            "alignment_validation": item.get("alignment_validation"),
+            "effective_action_params": item.get("effective_action_params"),
+            "repair_applied": bool(item.get("repair_applied")),
         }
         if retryable and int(item.get("attempts", 0)) < max_attempts:
             item["status"] = "pending"
@@ -873,6 +905,11 @@ class RedditProgramOrchestrator:
             "verification": result.get("verification"),
             "action": result.get("action"),
             "identity_evidence": result.get("identity_evidence"),
+            "content_preflight": result.get("content_preflight"),
+            "alignment_validation": result.get("alignment_validation"),
+            "proof_validation": result.get("proof_validation"),
+            "repair_applied": bool(result.get("repair_applied")),
+            "effective_action_params": result.get("effective_action_params"),
         }
 
     def _result_satisfies_contract(
@@ -1150,7 +1187,7 @@ class RedditProgramOrchestrator:
                 profile_name=str(item.get("profile_name") or ""),
                 action=str(item.get("action") or ""),
             )
-            return {
+            payload = {
                 "target_url": item.get("target_url"),
                 "target_comment_url": item.get("target_comment_url"),
                 "text": item.get("text"),
@@ -1162,6 +1199,7 @@ class RedditProgramOrchestrator:
                 "discovered_target": None,
                 "generation_evidence": item.get("generation_evidence"),
             }
+            return await self._apply_manual_text_preflight(program, item, payload)
 
         if item.get("target_mode") == "generate_post":
             return await self._build_generated_post_payload(program, item)
@@ -1182,7 +1220,7 @@ class RedditProgramOrchestrator:
                     return generated
                 text = generated.get("text")
                 generation_evidence = generated.get("generation_evidence")
-            return {
+            payload = {
                 "target_url": candidate.get("target_url"),
                 "target_comment_url": None,
                 "text": text,
@@ -1204,6 +1242,7 @@ class RedditProgramOrchestrator:
                 "discovered_target": candidate,
                 "generation_evidence": generation_evidence,
             }
+            return await self._apply_manual_text_preflight(program, item, payload)
 
         if item.get("target_mode") == "discover_comment":
             candidate = await self._discover_comment_target(program, item, actor_username=actor_username)
@@ -1221,7 +1260,7 @@ class RedditProgramOrchestrator:
                     return generated
                 reply_text = generated.get("text")
                 generation_evidence = generated.get("generation_evidence")
-            return {
+            payload = {
                 "target_url": candidate.get("thread_url"),
                 "target_comment_url": candidate.get("target_comment_url"),
                 "text": reply_text,
@@ -1243,6 +1282,7 @@ class RedditProgramOrchestrator:
                 "discovered_target": candidate,
                 "generation_evidence": generation_evidence,
             }
+            return await self._apply_manual_text_preflight(program, item, payload)
 
         return {
             "error": f"unsupported reddit target mode: {item.get('target_mode')}",
@@ -1559,6 +1599,218 @@ class RedditProgramOrchestrator:
                 if len(samples) >= 4:
                     break
         return samples[:4]
+
+    async def _thread_post_context(self, thread_url: Optional[str]) -> Dict[str, Any]:
+        normalized = str(thread_url or "").strip()
+        if not normalized:
+            return {}
+        try:
+            thread_payload = await self._thread_payload(normalized)
+        except Exception as exc:
+            logger.warning(f"reddit post context load failed for {normalized}: {exc}")
+            return {"thread_url": normalized}
+        children = []
+        if isinstance(thread_payload, list):
+            children = (((thread_payload[0] or {}).get("data") or {}).get("children") or [])
+        if not children:
+            return {"thread_url": normalized}
+        data = dict((children[0] or {}).get("data") or {})
+        return {
+            "thread_url": normalized,
+            "title": str(data.get("title") or "").strip(),
+            "body_excerpt": _short_text(str(data.get("selftext") or "").strip(), 280),
+            "author": str(data.get("author") or "").strip(),
+            "subreddit": normalize_subreddit_name(data.get("subreddit")) or _subreddit_from_url(normalized),
+        }
+
+    async def _explicit_comment_target_context(
+        self,
+        target_comment_url: Optional[str],
+        *,
+        subreddit_hint: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_target = str(target_comment_url or "").strip().rstrip("/")
+        if not normalized_target:
+            return {}
+        thread_url = _thread_root_from_comment_url(normalized_target)
+        post_context = await self._thread_post_context(thread_url)
+        if not thread_url:
+            return {
+                "target_comment_url": normalized_target,
+                "thread_url": None,
+                "subreddit": normalize_subreddit_name(subreddit_hint) or _subreddit_from_url(normalized_target),
+            }
+        try:
+            thread_payload = await self._thread_payload(thread_url)
+        except Exception as exc:
+            logger.warning(f"reddit explicit comment context load failed for {normalized_target}: {exc}")
+            return {
+                "target_comment_url": normalized_target,
+                "thread_url": thread_url,
+                "subreddit": post_context.get("subreddit") or normalize_subreddit_name(subreddit_hint),
+                "post_title": post_context.get("title"),
+                "post_body_excerpt": post_context.get("body_excerpt"),
+                "post_author": post_context.get("author"),
+            }
+        comments_root = []
+        if isinstance(thread_payload, list) and len(thread_payload) > 1:
+            comments_root = (((thread_payload[1] or {}).get("data") or {}).get("children") or [])
+        candidates = self._walk_comment_nodes(
+            comments_root,
+            subreddit=str(post_context.get("subreddit") or subreddit_hint or ""),
+            post_title=str(post_context.get("title") or ""),
+            post_body_excerpt=str(post_context.get("body_excerpt") or ""),
+            post_author=str(post_context.get("author") or ""),
+            keywords=[],
+        )
+        for candidate in candidates:
+            candidate_target = str(candidate.get("target_comment_url") or "").strip().rstrip("/")
+            if candidate_target == normalized_target:
+                return candidate
+        return {
+            "target_comment_url": normalized_target,
+            "thread_url": thread_url,
+            "subreddit": post_context.get("subreddit") or normalize_subreddit_name(subreddit_hint),
+            "author": None,
+            "body_excerpt": None,
+            "post_title": post_context.get("title"),
+            "post_body_excerpt": post_context.get("body_excerpt"),
+            "post_author": post_context.get("author"),
+        }
+
+    async def _apply_manual_text_preflight(
+        self,
+        program: Dict[str, Any],
+        item: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        action = str(item.get("action") or "").strip().lower()
+        if action not in {"comment_post", "reply_comment", "create_post"}:
+            return payload
+        if payload.get("generation_evidence"):
+            return payload
+
+        if action in {"comment_post", "reply_comment"} and not str(payload.get("text") or "").strip():
+            return payload
+        if action == "create_post" and not str(payload.get("title") or "").strip():
+            return payload
+
+        profile_name = str(item.get("profile_name") or "").strip()
+        subreddit = normalize_subreddit_name(
+            payload.get("subreddit")
+            or ((payload.get("discovered_target") or {}).get("subreddit"))
+            or item.get("subreddit")
+            or payload.get("target_url")
+            or payload.get("target_comment_url")
+        )
+        if not subreddit:
+            return {
+                **payload,
+                "error": "manual reddit text preflight requires a resolved subreddit",
+                "failure_class": "alignment_failed",
+                "retryable": False,
+                "consume_attempt": False,
+            }
+
+        policy_metadata = self._subreddit_policy_metadata(
+            program,
+            subreddit=subreddit,
+            profile_name=profile_name,
+            action=action,
+        )
+        keywords = self._keywords_for_subreddit(program, subreddit=subreddit)
+        style_samples = await self._style_samples_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+        recent_texts = list(program.get("generated_text_history") or [])
+        same_profile_texts = self._generated_text_scope(program, profile_name=profile_name)
+
+        thread_url = str(payload.get("target_url") or "").strip()
+        thread_title = None
+        thread_excerpt = None
+        thread_author = None
+        target_excerpt = None
+        target_author = None
+        conversation_context: List[Dict[str, Any]] = []
+        same_thread_texts: List[str] = []
+
+        if action == "comment_post":
+            post_context = await self._thread_post_context(thread_url)
+            thread_title = str(post_context.get("title") or "").strip() or None
+            thread_excerpt = str(post_context.get("body_excerpt") or "").strip() or None
+            thread_author = str(post_context.get("author") or "").strip() or None
+            conversation_context = await self._conversation_context_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+            same_thread_texts = self._generated_text_scope(program, thread_url=thread_url)
+        elif action == "reply_comment":
+            candidate = dict(payload.get("discovered_target") or {})
+            if not candidate:
+                candidate = await self._explicit_comment_target_context(
+                    payload.get("target_comment_url"),
+                    subreddit_hint=subreddit,
+                )
+            payload["discovered_target"] = candidate
+            thread_url = str(candidate.get("thread_url") or thread_url).strip()
+            thread_title = str(candidate.get("post_title") or "").strip() or None
+            thread_excerpt = str(candidate.get("post_body_excerpt") or "").strip() or None
+            thread_author = str(candidate.get("post_author") or "").strip() or None
+            target_excerpt = str(candidate.get("body_excerpt") or "").strip() or None
+            target_author = str(candidate.get("author") or "").strip() or None
+            conversation_context = await self._conversation_context_for_comment_target(candidate)
+            same_thread_texts = self._generated_text_scope(
+                program,
+                local_date=str(item.get("local_date") or ""),
+                thread_url=thread_url,
+            )
+        else:
+            conversation_context = await self._conversation_context_for_subreddit(program, subreddit=subreddit, keywords=keywords)
+
+        preflight = await self.content_generator.preflight_manual_content(
+            action_kind=action,
+            profile_name=profile_name,
+            subreddit=subreddit,
+            keywords=keywords,
+            style_samples=style_samples,
+            conversation_context=conversation_context,
+            recent_texts=recent_texts,
+            same_thread_texts=same_thread_texts,
+            same_profile_texts=same_profile_texts,
+            text=payload.get("text"),
+            title=payload.get("title"),
+            body=payload.get("body"),
+            thread_title=thread_title,
+            thread_excerpt=thread_excerpt,
+            thread_author=thread_author,
+            target_excerpt=target_excerpt,
+            target_author=target_author,
+            policy_metadata=policy_metadata,
+        )
+
+        effective_params = dict(preflight.get("effective_params") or {})
+        updated = {
+            **payload,
+            "subreddit": subreddit,
+            "content_preflight": preflight,
+            "alignment_validation": preflight,
+            "effective_action_params": effective_params,
+            "repair_applied": bool(preflight.get("repair_applied")),
+        }
+        if action in {"comment_post", "reply_comment"}:
+            updated["text"] = effective_params.get("text")
+        else:
+            updated["title"] = effective_params.get("title")
+            updated["body"] = effective_params.get("body")
+
+        if preflight.get("ok"):
+            return updated
+
+        violation_summary = "; ".join(list(preflight.get("violations") or [])[:4]) or "manual content failed alignment preflight"
+        updated.update(
+            {
+                "error": f"manual reddit text failed alignment preflight: {violation_summary}",
+                "failure_class": "alignment_failed",
+                "retryable": False,
+                "consume_attempt": False,
+            }
+        )
+        return updated
 
     def _target_already_used(self, program: Dict[str, Any], *, profile_name: str, local_date: str, target_ref: str, exclude_work_item_id: Optional[str] = None) -> bool:
         allow_reuse = bool(_execution_policy(program).get("allow_target_reuse_within_day", False))

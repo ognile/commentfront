@@ -25,6 +25,7 @@ from reddit_subreddit_policies import normalize_subreddit_name
 from forensics import (
     attach_current_json_artifact,
     build_generic_verdict,
+    build_reddit_text_action_verdict,
     get_current_forensic_recorder,
     is_infra_error_text,
     queue_current_event,
@@ -66,6 +67,13 @@ def _result(
 
 def _normalize_text(value: Optional[str]) -> str:
     return " ".join(str(value or "").strip().lower().split())
+
+
+def _short_text(value: Optional[str], limit: int = 120) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text if len(text) <= limit else text[:limit].strip()
 
 
 def _reddit_username_candidates(*values: Optional[str]) -> List[str]:
@@ -841,6 +849,82 @@ async def _active_editable_present(page) -> bool:
         )
     except Exception:
         return False
+
+
+async def _current_editable_text(page) -> str:
+    try:
+        value = await page.evaluate(
+            """() => {
+                const visible = (node) => {
+                    if (!node || !node.getBoundingClientRect) return false;
+                    const rect = node.getBoundingClientRect();
+                    return rect.width >= 8 && rect.height >= 8 && rect.bottom >= 0 && rect.right >= 0;
+                };
+                const readNode = (node) => {
+                    if (!node) return '';
+                    if (typeof node.value === 'string') return node.value;
+                    return String(node.innerText || node.textContent || '');
+                };
+                const active = document.activeElement;
+                if (active && visible(active)) {
+                    return readNode(active);
+                }
+                const nodes = Array.from(
+                    document.querySelectorAll('textarea, input, [role="textbox"], [contenteditable="true"], [contenteditable="plaintext-only"]')
+                );
+                const target = nodes.find((node) => visible(node));
+                return readNode(target);
+            }"""
+        )
+    except Exception:
+        return ""
+    return str(value or "")
+
+
+async def _clear_current_editable(page) -> bool:
+    try:
+        cleared = await page.evaluate(
+            """() => {
+                const visible = (node) => {
+                    if (!node || !node.getBoundingClientRect) return false;
+                    const rect = node.getBoundingClientRect();
+                    return rect.width >= 8 && rect.height >= 8 && rect.bottom >= 0 && rect.right >= 0;
+                };
+                const active = document.activeElement;
+                const nodes = Array.from(
+                    document.querySelectorAll('textarea, input, [role="textbox"], [contenteditable="true"], [contenteditable="plaintext-only"]')
+                );
+                const target = active && visible(active) ? active : nodes.find((node) => visible(node));
+                if (!target) return false;
+                if (typeof target.value === 'string') {
+                    target.value = '';
+                    target.dispatchEvent(new Event('input', { bubbles: true }));
+                    target.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+                if (target.isContentEditable) {
+                    target.textContent = '';
+                    target.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteContentBackward' }));
+                    target.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+                return false;
+            }"""
+        )
+    except Exception:
+        cleared = False
+    if not cleared:
+        try:
+            await page.keyboard.press("Meta+A")
+            await page.keyboard.press("Backspace")
+        except Exception:
+            try:
+                await page.keyboard.press("Control+A")
+                await page.keyboard.press("Backspace")
+            except Exception:
+                return False
+    await page.wait_for_timeout(200)
+    return not bool(_normalize_text(await _current_editable_text(page)))
 
 
 async def _fill_post_field_by_semantics(page, *, kind: str, value: str) -> bool:
@@ -3112,6 +3196,217 @@ async def _comment_submission_error(page) -> Optional[str]:
     return None
 
 
+async def _body_line_match_metrics(page, text: str) -> Dict[str, Any]:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return {"count": 0, "matches": []}
+    try:
+        result = await page.evaluate(
+            """(needle) => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const lines = String(document.body?.innerText || '')
+                    .split(/\\n+/)
+                    .map((line) => normalize(line))
+                    .filter(Boolean);
+                const matches = lines.filter((line) => line === needle || line.includes(needle));
+                return { count: matches.length, matches: matches.slice(0, 6) };
+            }""",
+            normalized,
+        )
+    except Exception:
+        return {"count": 0, "matches": []}
+    if isinstance(result, dict):
+        return {
+            "count": int(result.get("count") or 0),
+            "matches": list(result.get("matches") or []),
+        }
+    return {"count": 0, "matches": []}
+
+
+async def _same_author_text_match_count(page, *, author_username: Optional[str], text: str) -> int:
+    normalized_text = _normalize_text(text)
+    if not normalized_text or not str(author_username or "").strip():
+        return 0
+    username_needles = _reddit_username_candidates(author_username)
+    try:
+        count = await page.evaluate(
+            """({ textNeedle, usernameNeedles }) => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const visible = (node) => {
+                    if (!node || !node.getBoundingClientRect) return false;
+                    const rect = node.getBoundingClientRect();
+                    return rect.width >= 12 && rect.height >= 12 && rect.bottom >= 0 && rect.right >= 0;
+                };
+                const candidates = Array.from(document.querySelectorAll('article, shreddit-comment, faceplate-tracker, div'));
+                let matches = 0;
+                for (const node of candidates) {
+                    if (!visible(node)) continue;
+                    const combined = normalize(node.innerText || node.textContent || '');
+                    if (!combined.includes(textNeedle)) continue;
+                    if (!usernameNeedles.some((needle) => combined.includes(`u/${needle}`) || combined.includes(` ${needle} `) || combined.startsWith(needle))) {
+                        continue;
+                    }
+                    matches += 1;
+                }
+                return matches;
+            }""",
+            {"textNeedle": normalized_text, "usernameNeedles": username_needles},
+        )
+    except Exception:
+        return 0
+    return int(count or 0)
+
+
+async def _build_comment_proof_validation(page, *, text: str) -> Dict[str, Any]:
+    render_metrics = await _body_line_match_metrics(page, text)
+    composer_value = _normalize_text(await _current_editable_text(page))
+    expected = _normalize_text(text)
+    composer_residual_match = bool(expected and composer_value == expected)
+    violations: List[str] = []
+    if render_metrics["count"] != 1:
+        violations.append(
+            "rendered comment text did not appear exactly once"
+            if render_metrics["count"] == 0
+            else "rendered comment text appeared more than once"
+        )
+    if composer_residual_match:
+        violations.append("comment composer still contains the submitted draft")
+    return {
+        "ok": not violations,
+        "violations": violations,
+        "render_match_count": render_metrics["count"],
+        "render_matches": render_metrics["matches"],
+        "composer_residual_match": composer_residual_match,
+    }
+
+
+async def _build_reply_proof_validation(
+    page,
+    *,
+    text: str,
+    actor_username: Optional[str],
+    submit_attempts: int,
+    composer_exact_before_submit: bool,
+    composer_cleared_before_type: bool,
+) -> Dict[str, Any]:
+    render_metrics = await _body_line_match_metrics(page, text)
+    composer_value = _normalize_text(await _current_editable_text(page))
+    expected = _normalize_text(text)
+    same_author_match_count = await _same_author_text_match_count(page, author_username=actor_username, text=text)
+    composer_residual_match = bool(expected and composer_value == expected)
+    violations: List[str] = []
+    if not composer_exact_before_submit:
+        violations.append("reply composer value did not match the intended text before submit")
+    if not composer_cleared_before_type:
+        violations.append("reply composer could not be cleared to a clean state before typing")
+    if submit_attempts != 1:
+        violations.append(f"reply submit integrity failed ({submit_attempts} submits)")
+    if render_metrics["count"] != 1:
+        violations.append(
+            "rendered reply text did not appear exactly once"
+            if render_metrics["count"] == 0
+            else "rendered reply text appeared more than once"
+        )
+    if same_author_match_count > 1:
+        violations.append("same-author matching reply appears more than once")
+    if composer_residual_match:
+        violations.append("reply composer still contains the submitted draft")
+    return {
+        "ok": not violations,
+        "violations": violations,
+        "render_match_count": render_metrics["count"],
+        "render_matches": render_metrics["matches"],
+        "same_author_match_count": same_author_match_count,
+        "composer_residual_match": composer_residual_match,
+        "submit_attempts": submit_attempts,
+        "composer_exact_before_submit": composer_exact_before_submit,
+        "composer_cleared_before_type": composer_cleared_before_type,
+    }
+
+
+async def _build_create_post_proof_validation(
+    page,
+    *,
+    title: str,
+    body: Optional[str],
+) -> Dict[str, Any]:
+    title_metrics = await _body_line_match_metrics(page, title)
+    body_snippet = _short_text(body, 100) if str(body or "").strip() else None
+    body_metrics = await _body_line_match_metrics(page, body_snippet) if body_snippet else {"count": 0, "matches": []}
+    violations: List[str] = []
+    if title_metrics["count"] != 1:
+        violations.append(
+            "rendered post title did not appear exactly once"
+            if title_metrics["count"] == 0
+            else "rendered post title appeared more than once"
+        )
+    if body_snippet and body_metrics["count"] != 1:
+        violations.append(
+            "rendered post body did not appear exactly once"
+            if body_metrics["count"] == 0
+            else "rendered post body appeared more than once"
+        )
+    return {
+        "ok": not violations,
+        "violations": violations,
+        "title_match_count": title_metrics["count"],
+        "title_matches": title_metrics["matches"],
+        "body_match_count": body_metrics["count"],
+        "body_matches": body_metrics["matches"],
+    }
+
+
+async def _fill_reply_inline_text_exact(page, *, text: str, author: Optional[str]) -> Dict[str, Any]:
+    exact_before_submit = False
+    cleared_before_type = True
+    if await _fill_first(page, COMMENT["reply_input"], text):
+        current_value = _normalize_text(await _current_editable_text(page))
+        exact_before_submit = bool(current_value and current_value == _normalize_text(text))
+        if exact_before_submit:
+            return {
+                "ok": True,
+                "exact_before_submit": True,
+                "cleared_before_type": True,
+            }
+    if not await _active_editable_present(page):
+        if await _click_reply_inline_placeholder(page, author=author):
+            await page.wait_for_timeout(250)
+        elif await _focus_reply_inline_box(page):
+            await page.wait_for_timeout(250)
+    if not await _active_editable_present(page):
+        return {
+            "ok": False,
+            "exact_before_submit": False,
+            "cleared_before_type": False,
+        }
+
+    current_value = _normalize_text(await _current_editable_text(page))
+    expected_value = _normalize_text(text)
+    if current_value and current_value != expected_value:
+        cleared_before_type = await _clear_current_editable(page)
+        if not cleared_before_type:
+            return {
+                "ok": False,
+                "exact_before_submit": False,
+                "cleared_before_type": False,
+            }
+        current_value = _normalize_text(await _current_editable_text(page))
+    if current_value != expected_value:
+        if not await _keyboard_type_and_verify(page, text, reply=True):
+            return {
+                "ok": False,
+                "exact_before_submit": False,
+                "cleared_before_type": cleared_before_type,
+            }
+    final_value = _normalize_text(await _current_editable_text(page))
+    exact_before_submit = bool(final_value and final_value == expected_value)
+    return {
+        "ok": exact_before_submit,
+        "exact_before_submit": exact_before_submit,
+        "cleared_before_type": cleared_before_type,
+    }
+
+
 async def upvote_post(
     session: RedditSession,
     *,
@@ -3637,7 +3932,6 @@ async def create_post(
                     raise RuntimeError("Reddit Post button not found after flair selection")
 
             await page.wait_for_timeout(5000)
-            screenshot = await save_debug_screenshot(page, f"reddit_create_post_{session.profile_name}")
             current_url = page.url
             actor_username = session.get_username() if hasattr(session, "get_username") else None
             created_post_url = current_url if "/comments/" in current_url else None
@@ -3649,7 +3943,16 @@ async def create_post(
                     actor_username=actor_username,
                     profile_name=getattr(session, "profile_name", None),
                 )
-            success = bool(created_post_url)
+            if created_post_url and "/comments/" not in str(page.url or ""):
+                try:
+                    await _goto(page, created_post_url)
+                    await page.wait_for_timeout(1500)
+                    current_url = page.url
+                except Exception:
+                    current_url = page.url
+            screenshot = await save_debug_screenshot(page, f"reddit_create_post_{session.profile_name}")
+            proof_validation = await _build_create_post_proof_validation(page, title=title, body=body)
+            success = bool(created_post_url) and bool(proof_validation.get("ok"))
             if not success:
                 await _raise_if_community_comment_banned(page, capture_context="REDDIT POST COMMUNITY BAN")
                 await dump_interactive_elements(page, "REDDIT POST VERIFY FAILED")
@@ -3661,7 +3964,10 @@ async def create_post(
                 current_url=current_url,
                 target_url=created_post_url,
                 identity_evidence=identity_evidence,
-                error=None if success else "Reddit post submission verification failed",
+                proof_validation=proof_validation,
+                error=None
+                if success
+                else "; ".join(list(proof_validation.get("violations") or [])[:3]) or "Reddit post submission verification failed",
             )
         except RedditCommunityBanError as exc:
             return _result(
@@ -3770,7 +4076,8 @@ async def comment_on_post(
 
             await page.wait_for_timeout(4000)
             screenshot = await save_debug_screenshot(page, f"reddit_comment_{session.profile_name}")
-            success = await _verify_text_visible(page, text)
+            proof_validation = await _build_comment_proof_validation(page, text=text)
+            success = bool(proof_validation.get("ok"))
             submission_error = await _comment_submission_error(page) if not success else None
             return _result(
                 success=success,
@@ -3780,8 +4087,13 @@ async def comment_on_post(
                 current_url=page.url,
                 target_url=url,
                 identity_evidence=identity_evidence,
+                proof_validation=proof_validation,
                 failure_class="target_unavailable" if submission_error else None,
-                error=None if success else submission_error or "Reddit comment verification failed",
+                error=None
+                if success
+                else submission_error
+                or "; ".join(list(proof_validation.get("violations") or [])[:3])
+                or "Reddit comment verification failed",
             )
         except RedditCommunityBanError as exc:
             return _result(
@@ -3825,6 +4137,7 @@ async def reply_to_comment(
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         identity_evidence: Optional[Dict[str, Any]] = None
+        actor_username = session.get_username() if hasattr(session, "get_username") else None
         try:
             identity_evidence = await _ensure_subreddit_user_flair(
                 page,
@@ -3860,27 +4173,6 @@ async def reply_to_comment(
                         continue
                     await _capture_reddit_failure_state(page, "REDDIT REPLY TARGET MISSING")
                     raise RuntimeError(last_error)
-
-                clicked_reply = await _click_reply_row_button(page, row=row) if row else False
-                if not clicked_reply:
-                    clicked_reply = await _click_named_control(
-                        page,
-                        action_name="reply_comment",
-                        needles=["reply"],
-                        expected_title=expected_title,
-                        anchor_text=author,
-                        max_vertical_gap=220,
-                        require_below_anchor=True,
-                    )
-                if not clicked_reply:
-                    last_error = "Reddit Reply button not found"
-                    surface_errors.append(f"{surface_url}: {last_error}")
-                    if idx + 1 < len(target_surfaces):
-                        continue
-                    await _raise_if_community_comment_banned(page, capture_context="REDDIT REPLY COMMUNITY BAN")
-                    await _capture_reddit_failure_state(page, "REDDIT REPLY BUTTON MISSING")
-                    raise RuntimeError(last_error)
-                await page.wait_for_timeout(1000)
                 await _dismiss_reddit_open_app_sheet(page)
                 if not await _ensure_reply_inline_box(
                     page,
@@ -3903,14 +4195,8 @@ async def reply_to_comment(
                         await _capture_reddit_failure_state(page, "REDDIT REPLY BOX MISSING")
                         raise RuntimeError(last_error)
 
-                if not await _fill_comment_input(
-                    page,
-                    text,
-                    reply=True,
-                    expected_title=expected_title,
-                    target_author=author,
-                    allow_global_trigger=False,
-                ):
+                composer_state = await _fill_reply_inline_text_exact(page, text=text, author=author)
+                if not composer_state.get("ok"):
                     last_error = "Reddit reply input not found"
                     surface_errors.append(f"{surface_url}: {last_error}")
                     if idx + 1 < len(target_surfaces):
@@ -3918,6 +4204,7 @@ async def reply_to_comment(
                     await _capture_reddit_failure_state(page, "REDDIT REPLY INPUT MISSING")
                     raise RuntimeError(last_error)
 
+                submit_attempts = 0
                 if not await _click_reply_submit(page, text):
                     last_error = "Reddit reply submit button not found"
                     surface_errors.append(f"{surface_url}: {last_error}")
@@ -3925,10 +4212,19 @@ async def reply_to_comment(
                         continue
                     await _capture_reddit_failure_state(page, "REDDIT REPLY SUBMIT MISSING")
                     raise RuntimeError(last_error)
+                submit_attempts += 1
 
                 await page.wait_for_timeout(4000)
                 screenshot = await save_debug_screenshot(page, f"reddit_reply_{session.profile_name}")
-                success = await _verify_text_visible(page, text)
+                proof_validation = await _build_reply_proof_validation(
+                    page,
+                    text=text,
+                    actor_username=actor_username,
+                    submit_attempts=submit_attempts,
+                    composer_exact_before_submit=bool(composer_state.get("exact_before_submit")),
+                    composer_cleared_before_type=bool(composer_state.get("cleared_before_type")),
+                )
+                success = bool(proof_validation.get("ok"))
                 if success:
                     return _result(
                         success=True,
@@ -3939,8 +4235,9 @@ async def reply_to_comment(
                         target_url=thread_url or surface_url,
                         target_comment_url=target_comment_url,
                         identity_evidence=identity_evidence,
+                        proof_validation=proof_validation,
                     )
-                last_error = "Reddit reply verification failed"
+                last_error = "; ".join(list(proof_validation.get("violations") or [])[:3]) or "Reddit reply verification failed"
                 surface_errors.append(f"{surface_url}: {last_error}")
                 if idx + 1 < len(target_surfaces):
                     continue
@@ -3954,6 +4251,7 @@ async def reply_to_comment(
                     target_url=thread_url or surface_url,
                     target_comment_url=target_comment_url,
                     identity_evidence=identity_evidence,
+                    proof_validation=proof_validation,
                 )
             if surface_errors:
                 raise RuntimeError(" | ".join(dict.fromkeys(surface_errors)))
@@ -4020,6 +4318,7 @@ async def run_reddit_action(
     normalized = str(action or "").strip().lower()
     metadata = dict(((forensic_context or {}).get("metadata") or {}))
     action_timeout_seconds = max(30, int(metadata.get("action_timeout_seconds") or 120))
+    text_action_names = {"comment_post", "reply_comment", "create_post"}
     recorder = await start_forensic_attempt(
         platform="reddit",
         engine=(forensic_context or {}).get("engine", f"reddit_{normalized}"),
@@ -4049,6 +4348,13 @@ async def run_reddit_action(
                 "kind": generation_evidence.get("kind"),
                 "subreddit": generation_evidence.get("subreddit"),
             },
+        )
+    if metadata.get("content_preflight"):
+        await attach_current_json_artifact(
+            "content_preflight",
+            "content_preflight.json",
+            metadata.get("content_preflight"),
+            metadata={"action": normalized},
         )
     result: Optional[Dict[str, Any]] = None
     finalized = False
@@ -4147,12 +4453,53 @@ async def run_reddit_action(
             result["target_comment_url"] = target_comment_url
         if subreddit and not result.get("subreddit"):
             result["subreddit"] = subreddit
+        if normalized in text_action_names:
+            effective_action_params = dict(metadata.get("effective_action_params") or {})
+            if not effective_action_params:
+                if normalized in {"comment_post", "reply_comment"} and text:
+                    effective_action_params["text"] = text
+                if normalized == "create_post":
+                    if title:
+                        effective_action_params["title"] = title
+                    if body:
+                        effective_action_params["body"] = body
+            alignment_validation = dict(metadata.get("alignment_validation") or metadata.get("content_preflight") or {})
+            if not alignment_validation and generation_evidence:
+                alignment_validation = {
+                    "ok": bool((generation_evidence.get("validation") or {}).get("ok")),
+                    "violations": list((generation_evidence.get("validation") or {}).get("violations") or []),
+                    "effective_params": effective_action_params,
+                    "repair_applied": False,
+                }
+            result["content_preflight"] = metadata.get("content_preflight")
+            result["alignment_validation"] = alignment_validation
+            result["effective_action_params"] = effective_action_params
+            result["repair_applied"] = bool(metadata.get("repair_applied"))
         result["attempt_id"] = recorder.attempt_id
         result["trace_id"] = recorder.trace_id
-        verdict = build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")
+        if result.get("proof_validation"):
+            await attach_current_json_artifact(
+                "proof_validation",
+                "proof_validation.json",
+                result.get("proof_validation"),
+                metadata={"action": normalized},
+            )
+        verdict = (
+            build_reddit_text_action_verdict(result, action_name=normalized)
+            if normalized in text_action_names
+            else build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")
+        )
         result["final_verdict"] = verdict.final_verdict
         result["evidence_summary"] = verdict.summary
-        await recorder.finalize(verdict, metadata={"action": normalized})
+        await recorder.finalize(
+            verdict,
+            metadata={
+                "action": normalized,
+                "alignment_validation": result.get("alignment_validation"),
+                "proof_validation": result.get("proof_validation"),
+                "repair_applied": bool(result.get("repair_applied")),
+            },
+        )
         finalized = True
         reset_current_forensic_recorder(recorder_token)
         raise
@@ -4164,12 +4511,53 @@ async def run_reddit_action(
                 result["target_comment_url"] = target_comment_url
             if subreddit and not result.get("subreddit"):
                 result["subreddit"] = subreddit
+            if normalized in text_action_names:
+                effective_action_params = dict(metadata.get("effective_action_params") or {})
+                if not effective_action_params:
+                    if normalized in {"comment_post", "reply_comment"} and text:
+                        effective_action_params["text"] = text
+                    if normalized == "create_post":
+                        if title:
+                            effective_action_params["title"] = title
+                        if body:
+                            effective_action_params["body"] = body
+                alignment_validation = dict(metadata.get("alignment_validation") or metadata.get("content_preflight") or {})
+                if not alignment_validation and generation_evidence:
+                    alignment_validation = {
+                        "ok": bool((generation_evidence.get("validation") or {}).get("ok")),
+                        "violations": list((generation_evidence.get("validation") or {}).get("violations") or []),
+                        "effective_params": effective_action_params,
+                        "repair_applied": False,
+                    }
+                result["content_preflight"] = metadata.get("content_preflight")
+                result["alignment_validation"] = alignment_validation
+                result["effective_action_params"] = effective_action_params
+                result["repair_applied"] = bool(metadata.get("repair_applied"))
             result["attempt_id"] = recorder.attempt_id
             result["trace_id"] = recorder.trace_id
-            verdict = build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")
+            if result.get("proof_validation"):
+                await attach_current_json_artifact(
+                    "proof_validation",
+                    "proof_validation.json",
+                    result.get("proof_validation"),
+                    metadata={"action": normalized},
+                )
+            verdict = (
+                build_reddit_text_action_verdict(result, action_name=normalized)
+                if normalized in text_action_names
+                else build_generic_verdict(result, success_summary=f"reddit action '{normalized}' completed.")
+            )
             result["final_verdict"] = verdict.final_verdict
             result["evidence_summary"] = verdict.summary
-            await recorder.finalize(verdict, metadata={"action": normalized})
+            await recorder.finalize(
+                verdict,
+                metadata={
+                    "action": normalized,
+                    "alignment_validation": result.get("alignment_validation"),
+                    "proof_validation": result.get("proof_validation"),
+                    "repair_applied": bool(result.get("repair_applied")),
+                },
+            )
             finalized = True
             reset_current_forensic_recorder(recorder_token)
     return result

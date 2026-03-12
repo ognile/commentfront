@@ -1911,6 +1911,11 @@ class RedditExecutionResult(BaseModel):
     screenshot_artifact_url: Optional[str] = None
     permalink_or_target_ref: Optional[str] = None
     error: Optional[str] = None
+    content_preflight: Optional[Dict[str, Any]] = None
+    alignment_validation: Optional[Dict[str, Any]] = None
+    proof_validation: Optional[Dict[str, Any]] = None
+    repair_applied: bool = False
+    effective_action_params: Optional[Dict[str, Any]] = None
 
 
 class RedditMissionCadence(BaseModel):
@@ -6734,6 +6739,47 @@ async def _execute_reddit_action_payload(payload: Dict[str, Any], *, proxy_overr
     )
 
 
+async def _preview_reddit_execution_work_item(
+    orchestrator: RedditProgramOrchestrator,
+    program: Dict[str, Any],
+    item: Dict[str, Any],
+) -> Dict[str, Any]:
+    profile_name = str(item.get("profile_name") or "").strip()
+    actor_username = None
+    if profile_name:
+        session = RedditSession(profile_name)
+        if session.load():
+            actor_username = session.get_username()
+    try:
+        target_payload = await orchestrator._resolve_target(program, item, actor_username=actor_username)
+    except Exception as exc:
+        target_payload = {
+            "error": str(exc),
+            "failure_class": "preview_resolution_error",
+        }
+    resolved_target = {
+        "subreddit": target_payload.get("subreddit") or item.get("subreddit"),
+        "target_url": target_payload.get("target_url") or item.get("target_url"),
+        "target_comment_url": target_payload.get("target_comment_url") or item.get("target_comment_url"),
+        "discovered_target": target_payload.get("discovered_target"),
+    }
+    return {
+        "work_item_id": item.get("id"),
+        "profile_name": profile_name,
+        "runtime_action": item.get("action"),
+        "target_mode": item.get("target_mode"),
+        "scheduled_at": item.get("scheduled_at"),
+        "execution_spec": item.get("execution_spec"),
+        "resolved_target": resolved_target,
+        "resolution_error": target_payload.get("error"),
+        "failure_class": target_payload.get("failure_class"),
+        "content_preflight": target_payload.get("content_preflight"),
+        "alignment_validation": target_payload.get("alignment_validation"),
+        "repair_applied": bool(target_payload.get("repair_applied")),
+        "effective_action_params": target_payload.get("effective_action_params"),
+    }
+
+
 @app.get("/reddit/credentials", response_model=List[CredentialInfo])
 async def get_reddit_credentials(current_user: dict = Depends(get_current_user)):
     return await get_credentials(platform="reddit", current_user=current_user)
@@ -7160,34 +7206,43 @@ async def preview_reddit_execution(
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
     normalized_request = _normalize_reddit_execution_request_payload(request.model_dump())
-    preview_store = RedditProgramStore(file_path=str(Path(tempfile.gettempdir()) / f"reddit_execution_preview_{uuid.uuid4().hex[:10]}.json"))
-    preview = preview_store.preview_program(
-        _execution_program_spec(
-            normalized_request,
-            run_id=f"preview_{uuid.uuid4().hex[:8]}",
-            email_enabled=False,
-            max_attempts_per_item=1,
-        )
+    preview_path = Path(tempfile.gettempdir()) / f"reddit_execution_preview_{uuid.uuid4().hex[:10]}.json"
+    preview_store = RedditProgramStore(file_path=str(preview_path))
+    preview_orchestrator = RedditProgramOrchestrator(
+        store=preview_store,
+        proxy_resolver=lambda: _resolve_effective_proxy(),
+        broadcast_update=broadcast_update,
+        media_resolver=lambda image_id: _resolve_reddit_action_media_path(image_id),
     )
-    return {
-        "request": normalized_request,
-        "program": {
-            "status": preview.get("status"),
-            "contract_totals": preview.get("contract_totals", {}),
-            "remaining_contract": preview.get("remaining_contract", {}),
-        },
-        "work_items": [
-            {
-                "work_item_id": item.get("id"),
-                "profile_name": item.get("profile_name"),
-                "runtime_action": item.get("action"),
-                "target_mode": item.get("target_mode"),
-                "scheduled_at": item.get("scheduled_at"),
-                "execution_spec": item.get("execution_spec"),
-            }
-            for item in list(((preview.get("compiled") or {}).get("work_items") or []))
-        ],
-    }
+    try:
+        preview = preview_store.preview_program(
+            _execution_program_spec(
+                normalized_request,
+                run_id=f"preview_{uuid.uuid4().hex[:8]}",
+                email_enabled=False,
+                max_attempts_per_item=1,
+            )
+        )
+        work_items = list(((preview.get("compiled") or {}).get("work_items") or []))
+        resolved_items = [
+            await _preview_reddit_execution_work_item(preview_orchestrator, preview, item)
+            for item in work_items
+        ]
+        return {
+            "request": normalized_request,
+            "program": {
+                "status": preview.get("status"),
+                "contract_totals": preview.get("contract_totals", {}),
+                "remaining_contract": preview.get("remaining_contract", {}),
+            },
+            "work_items": resolved_items,
+        }
+    finally:
+        if preview_path.exists():
+            try:
+                preview_path.unlink()
+            except Exception:
+                pass
 
 
 @app.post("/reddit/executions/run")

@@ -255,6 +255,203 @@ def test_generate_comment_retries_with_validation_feedback(monkeypatch):
     assert "previous draft failed validation" in prompts[1]
 
 
+def test_preflight_manual_comment_passes_unchanged_when_aligned(monkeypatch):
+    generator = RedditGrowthContentGenerator(api_key="")
+
+    async def fake_generate_json(_prompt):
+        raise RuntimeError("reddit content generation is unavailable")
+
+    monkeypatch.setattr(generator, "_generate_json", fake_generate_json)
+
+    result = asyncio.run(
+        generator.preflight_manual_content(
+            action_kind="comment_post",
+            profile_name="reddit_catherine_emmar",
+            subreddit="women",
+            keywords=["relationship", "partner", "chores"],
+            style_samples=[],
+            conversation_context=[],
+            recent_texts=[],
+            same_thread_texts=[],
+            same_profile_texts=[],
+            text="This relationship turns sour fast when one partner is job hunting and the other turns chores into a scorecard.",
+            thread_title="confused if men actually like their partners at all",
+            thread_excerpt="his partner finished a masters and is job hunting while he resents doing chores.",
+            thread_author="deadtracts",
+            policy_metadata={"subreddit": "women"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["repair_applied"] is False
+    assert result["effective_params"]["text"].startswith("This relationship turns sour fast")
+
+
+def test_preflight_manual_post_repairs_operator_meta_title(monkeypatch):
+    generator = RedditGrowthContentGenerator(api_key="")
+
+    async def fake_generate_json(_prompt):
+        return """{
+          "ok": false,
+          "violations": ["operator/meta language", "community fit miss"],
+          "repair_applied": true,
+          "effective_params": {
+            "title": "Does boric acid sting more for anyone if they start it right after their period?",
+            "body": ""
+          },
+          "reasoning": "the repaired version asks a normal subreddit-fit question"
+        }"""
+
+    monkeypatch.setattr(generator, "_generate_json", fake_generate_json)
+
+    result = asyncio.run(
+        generator.preflight_manual_content(
+            action_kind="create_post",
+            profile_name="reddit_catherine_emmar",
+            subreddit="Healthyhooha",
+            keywords=["boric acid", "period"],
+            style_samples=[],
+            conversation_context=[
+                {"title": "has anyone waited a few days after their period before using boric acid again?"},
+                {"body_excerpt": "i'm trying to time it without making things worse"},
+            ],
+            recent_texts=[],
+            same_profile_texts=[],
+            title="image post api verification retry",
+            body="",
+            policy_metadata={"subreddit": "Healthyhooha"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["repair_applied"] is True
+    assert result["original_params"]["title"] == "image post api verification retry"
+    assert result["effective_params"]["title"].startswith("Does boric acid sting more")
+
+
+def test_preflight_manual_post_blocks_when_repair_stays_misaligned(monkeypatch):
+    generator = RedditGrowthContentGenerator(api_key="")
+
+    async def fake_generate_json(_prompt):
+        return """{
+          "ok": false,
+          "violations": ["still sounds like testing"],
+          "repair_applied": true,
+          "effective_params": {
+            "title": "api verification retry",
+            "body": "proof matrix rerun"
+          },
+          "reasoning": "bad repair"
+        }"""
+
+    monkeypatch.setattr(generator, "_generate_json", fake_generate_json)
+
+    result = asyncio.run(
+        generator.preflight_manual_content(
+            action_kind="create_post",
+            profile_name="reddit_amy_schaefera",
+            subreddit="Healthyhooha",
+            keywords=["boric acid", "period"],
+            style_samples=[],
+            conversation_context=[
+                {"title": "has anyone waited a few days after their period before using boric acid again?"},
+            ],
+            recent_texts=[],
+            same_profile_texts=[],
+            title="image post api verification retry",
+            body="",
+            policy_metadata={"subreddit": "Healthyhooha"},
+        )
+    )
+
+    assert result["ok"] is False
+    assert any("operator/meta" in item or "testing" in item for item in result["violations"])
+
+
+def test_preflight_manual_post_rejects_clinical_repair_that_reads_like_an_article(monkeypatch):
+    generator = RedditGrowthContentGenerator(api_key="")
+
+    async def fake_generate_json(_prompt):
+        return """{
+          "ok": true,
+          "violations": [],
+          "repair_applied": true,
+          "effective_params": {
+            "title": "Clinical observations on dietary influence and vaginal pH levels",
+            "body": "Evaluating the efficacy of dietary interventions like pineapple juice requires looking at actual metabolic breakdown. While anecdotal reports suggest a shift in acidity, clinical evidence remains sparse regarding immediate topical or systemic aromatic changes."
+          },
+          "reasoning": "bad formal repair"
+        }"""
+
+    monkeypatch.setattr(generator, "_generate_json", fake_generate_json)
+
+    result = asyncio.run(
+        generator.preflight_manual_content(
+            action_kind="create_post",
+            profile_name="reddit_catherine_emmar",
+            subreddit="Healthyhooha",
+            keywords=["pineapple", "vaginal health"],
+            style_samples=[],
+            conversation_context=[
+                {
+                    "title": "Does pineapple juice really work?",
+                    "body_excerpt": "Does pineapple really change the taste and how long would it take to work?",
+                }
+            ],
+            recent_texts=[],
+            same_profile_texts=[],
+            title="image post api verification retry",
+            body="",
+            policy_metadata={"subreddit": "Healthyhooha"},
+        )
+    )
+
+    assert result["ok"] is False
+    assert any("article" in item or "formal" in item or "clinical" in item for item in result["violations"])
+
+
+def test_preflight_manual_post_rejects_clinical_reality_repair(monkeypatch):
+    generator = RedditGrowthContentGenerator(api_key="")
+
+    async def fake_generate_json(_prompt):
+        return """{
+          "ok": true,
+          "violations": [],
+          "repair_applied": true,
+          "effective_params": {
+            "title": "The clinical reality of using pineapple to modify vaginal chemistry.",
+            "body": "I have identified a pattern where dietary enzymes are neutralized during the digestive process. According to metabolic research, this prevents the fruit from producing any significant chemical change in the local environment."
+          },
+          "reasoning": "bad formal repair"
+        }"""
+
+    monkeypatch.setattr(generator, "_generate_json", fake_generate_json)
+
+    result = asyncio.run(
+        generator.preflight_manual_content(
+            action_kind="create_post",
+            profile_name="reddit_catherine_emmar",
+            subreddit="Healthyhooha",
+            keywords=["pineapple", "hooha"],
+            style_samples=[],
+            conversation_context=[
+                {
+                    "title": "Does pineapple juice really work?",
+                    "body_excerpt": "Does pineapple really change anything and how long would it take to work?",
+                }
+            ],
+            recent_texts=[],
+            same_profile_texts=[],
+            title="image post api verification retry",
+            body="",
+            policy_metadata={"subreddit": "Healthyhooha"},
+        )
+    )
+
+    assert result["ok"] is False
+    assert any("article" in item or "clinical" in item or "formal" in item for item in result["violations"])
+
+
 def test_validate_generated_text_requires_distinctive_thread_detail_not_just_generic_overlap():
     result = validate_generated_text(
         "Stop The Calls To Your Mother And Build An Inventory Of Legal Protections For This Relationship Status. Secure Your Solo Route Now.",

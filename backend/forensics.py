@@ -338,6 +338,61 @@ def build_generic_verdict(result: Dict[str, Any], *, success_summary: str) -> Fo
     )
 
 
+def build_reddit_text_action_verdict(result: Dict[str, Any], *, action_name: str) -> ForensicVerdict:
+    success = bool(result.get("success"))
+    error = str(result.get("error") or "")
+    alignment_validation = dict(result.get("alignment_validation") or {})
+    proof_validation = dict(result.get("proof_validation") or {})
+    alignment_ok = bool(alignment_validation.get("ok"))
+    proof_ok = bool(proof_validation.get("ok"))
+    alignment_violations = list(alignment_validation.get("violations") or [])
+    proof_violations = list(proof_validation.get("violations") or [])
+    summary_payload = {
+        "result": _redact_payload(result),
+        "alignment_validation": _redact_payload(alignment_validation),
+        "proof_validation": _redact_payload(proof_validation),
+    }
+
+    if success and alignment_ok and proof_ok:
+        return ForensicVerdict(
+            final_verdict="success_confirmed",
+            status="completed",
+            failure_class=None,
+            confidence=0.95,
+            winning_evidence=["action_trace_evidence", "screenshot_evidence", "model_evidence"],
+            rejected_hypotheses=[{"hypothesis": "failed_confirmed", "reason": "alignment and proof gates passed"}],
+            summary=f"reddit text action '{action_name}' completed with alignment and render proof.",
+            summary_payload=summary_payload,
+        )
+
+    if is_infra_error_text(error):
+        return ForensicVerdict(
+            final_verdict="infra_failure",
+            status="failed",
+            failure_class="infrastructure",
+            confidence=0.9,
+            winning_evidence=["network_evidence"],
+            rejected_hypotheses=[],
+            summary=f"reddit text action '{action_name}' failed due to infrastructure evidence: {_brief_text(error, 180)}",
+            summary_payload=summary_payload,
+        )
+
+    failure_reasons = [reason for reason in [*alignment_violations, *proof_violations, error] if str(reason).strip()]
+    summary = "; ".join(dict.fromkeys(_brief_text(reason, 180) for reason in failure_reasons[:4]))
+    if not summary:
+        summary = f"reddit text action '{action_name}' failed proof validation"
+    return ForensicVerdict(
+        final_verdict="failed_confirmed",
+        status="failed",
+        failure_class=str(result.get("failure_class") or "workflow") or "workflow",
+        confidence=0.9,
+        winning_evidence=["action_trace_evidence", "screenshot_evidence"],
+        rejected_hypotheses=[{"hypothesis": "success_confirmed", "reason": "alignment or render proof did not pass"}],
+        summary=summary,
+        summary_payload=summary_payload,
+    )
+
+
 class SupabaseForensicsStore:
     def __init__(self):
         self.base_url = SUPABASE_URL

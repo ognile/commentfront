@@ -452,4 +452,9 @@ def build_execution_result(
         "screenshot_artifact_url": screenshot_artifact_url,
         "permalink_or_target_ref": target_ref,
         "error": item.get("error") or result.get("error"),
+        "content_preflight": result.get("content_preflight") or item.get("content_preflight"),
+        "alignment_validation": result.get("alignment_validation") or item.get("alignment_validation"),
+        "proof_validation": result.get("proof_validation"),
+        "repair_applied": bool(result.get("repair_applied") or item.get("repair_applied")),
+        "effective_action_params": result.get("effective_action_params") or item.get("effective_action_params"),
     }
