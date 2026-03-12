@@ -1004,6 +1004,7 @@ async def _goto(page, url: str):
     await _goto_with_retry(page, url, profile_name="reddit_action")
     await page.wait_for_timeout(2500)
     await _dismiss_cookie_banner(page)
+    await _dismiss_reddit_mature_content_gate(page)
     await page.wait_for_timeout(500)
 
 
@@ -1070,6 +1071,54 @@ async def _dismiss_reddit_open_app_sheet(page) -> bool:
             source="reddit_bot",
         )
         await page.wait_for_timeout(700)
+    return dismissed
+
+
+async def _dismiss_reddit_mature_content_gate(page) -> bool:
+    try:
+        dismissal_payload = await page.evaluate(
+            """() => {
+                const viewportHeight = window.innerHeight || 873;
+                const viewportWidth = window.innerWidth || 393;
+                const visible = (rect) =>
+                    rect &&
+                    rect.width >= 24 &&
+                    rect.height >= 18 &&
+                    rect.bottom >= 0 &&
+                    rect.right >= 0 &&
+                    rect.top <= viewportHeight &&
+                    rect.left <= viewportWidth;
+                const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'));
+                const confirm = buttons.find((node) => {
+                    const rect = node.getBoundingClientRect();
+                    if (!visible(rect)) return false;
+                    const text = normalize(node.innerText || node.textContent || node.getAttribute?.('aria-label'));
+                    return text === "yes, i'm over 18" || text === "yes, i’m over 18" || text === "yes im over 18";
+                });
+                if (!confirm) return { dismissed: false };
+                confirm.click();
+                return {
+                    dismissed: true,
+                    label: normalize(confirm.innerText || confirm.textContent || confirm.getAttribute?.('aria-label')),
+                };
+            }"""
+        )
+    except Exception:
+        dismissal_payload = {"dismissed": False}
+    dismissed = bool(dismissal_payload if isinstance(dismissal_payload, bool) else (dismissal_payload or {}).get("dismissed"))
+    if dismissed:
+        queue_current_event(
+            "click",
+            {
+                "method": "mature_content_gate",
+                "action_name": "reddit_mature_content_confirm",
+                "matched": (dismissal_payload or {}).get("label"),
+            },
+            phase="activation",
+            source="reddit_bot",
+        )
+        await page.wait_for_timeout(1200)
     return dismissed
 
 

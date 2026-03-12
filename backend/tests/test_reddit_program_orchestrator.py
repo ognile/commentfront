@@ -230,6 +230,8 @@ def test_target_reuse_checks_recent_other_program_history(tmp_path):
             "profile_name": "reddit_amy",
             "local_date": "2026-03-10",
             "target_ref": "https://www.reddit.com/r/womenshealth/comments/post/comment/c9/",
+            "success": True,
+            "final_verdict": "success_confirmed",
         }
     ]
     store.save_program(first_program)
@@ -237,6 +239,31 @@ def test_target_reuse_checks_recent_other_program_history(tmp_path):
     orchestrator = RedditProgramOrchestrator(store=store)
 
     assert orchestrator._target_already_used(
+        second_program,
+        profile_name="reddit_beta",
+        local_date="2026-03-12",
+        target_ref="https://www.reddit.com/r/womenshealth/comments/post/comment/c9/",
+    )
+
+
+def test_target_reuse_ignores_failed_recent_other_program_history(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    first_program = store.create_program(_spec())
+    first_program["target_history"] = [
+        {
+            "timestamp": "2026-03-10T08:00:00Z",
+            "profile_name": "reddit_amy",
+            "local_date": "2026-03-10",
+            "target_ref": "https://www.reddit.com/r/womenshealth/comments/post/comment/c9/",
+            "success": False,
+            "final_verdict": "failed_confirmed",
+        }
+    ]
+    store.save_program(first_program)
+    second_program = store.create_program(_spec())
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    assert not orchestrator._target_already_used(
         second_program,
         profile_name="reddit_beta",
         local_date="2026-03-12",

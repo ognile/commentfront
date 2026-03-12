@@ -661,6 +661,9 @@ class RedditProgramOrchestrator:
                 continue
             other_created_at = _parse_iso(other_program.get("created_at"))
             for entry in list(other_program.get("target_history") or []):
+                entry_success = bool(entry.get("success")) or str(entry.get("final_verdict") or "") == "success_confirmed"
+                if not entry_success:
+                    continue
                 timestamp = _parse_iso(entry.get("timestamp")) or other_created_at
                 if timestamp and timestamp < cutoff:
                     continue

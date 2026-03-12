@@ -662,6 +662,48 @@ def test_dismiss_reddit_open_app_sheet_returns_false_without_confirmed_sheet():
     assert page.waits == []
 
 
+def test_dismiss_reddit_mature_content_gate_clicks_confirmation():
+    page = _FakePage()
+    page.evaluate_result = {"dismissed": True, "label": "yes, i'm over 18"}
+
+    dismissed = asyncio.run(reddit_bot._dismiss_reddit_mature_content_gate(page))
+
+    assert dismissed is True
+    assert page.waits == [1200]
+
+
+def test_goto_dismisses_reddit_mature_content_gate(monkeypatch):
+    page = _FakePage()
+    calls = []
+
+    async def fake_goto_with_retry(target_page, url, profile_name):
+        assert target_page is page
+        calls.append(("goto_with_retry", url, profile_name))
+
+    async def fake_dismiss_cookie_banner(target_page):
+        assert target_page is page
+        calls.append(("cookie",))
+        return False
+
+    async def fake_dismiss_mature(target_page):
+        assert target_page is page
+        calls.append(("mature",))
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_goto_with_retry", fake_goto_with_retry)
+    monkeypatch.setattr(reddit_bot, "_dismiss_cookie_banner", fake_dismiss_cookie_banner)
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_mature_content_gate", fake_dismiss_mature)
+
+    asyncio.run(reddit_bot._goto(page, "https://www.reddit.com/r/Healthyhooha/comments/1rrgwi2/jumpscare_while_doing_the_deed/"))
+
+    assert calls == [
+        ("goto_with_retry", "https://www.reddit.com/r/Healthyhooha/comments/1rrgwi2/jumpscare_while_doing_the_deed/", "reddit_action"),
+        ("cookie",),
+        ("mature",),
+    ]
+    assert page.waits == [2500, 500]
+
+
 def test_comment_on_post_returns_community_restricted(monkeypatch):
     page = _FakePage()
     page.body_text = "you’re currently banned from this community and can’t comment on posts."
