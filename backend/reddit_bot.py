@@ -2266,9 +2266,6 @@ async def _comment_action_row(
                         });
                     }
                 }
-                replies.sort((a, b) => a.top - b.top || a.left - b.left);
-                const reply = replies[0];
-
                 let authorRect = null;
                 const authors = [];
                 for (const root of scopedRoots) {
@@ -2284,17 +2281,11 @@ async def _comment_action_row(
                         } else if (!aria.includes("profile") && !text) {
                             continue;
                         }
-                        if (reply) {
-                            if (rect.top > reply.top) continue;
-                        } else if (commentFocusRect) {
+                        if (commentFocusRect) {
                             if (rect.top > commentFocusRect.top + 24) continue;
                         }
-                        const verticalGap = reply
-                            ? reply.top - rect.bottom
-                            : Math.abs(rect.bottom - ((commentFocusRect && commentFocusRect.top) || rect.bottom));
-                        if (reply) {
-                            if (verticalGap < 0 || verticalGap > 220) continue;
-                        } else if (verticalGap > 220) {
+                        const verticalGap = Math.abs(rect.bottom - ((commentFocusRect && commentFocusRect.top) || rect.bottom));
+                        if (verticalGap > 220) {
                             continue;
                         }
                         authors.push({
@@ -2340,6 +2331,32 @@ async def _comment_action_row(
                     bodyRect = bodyCandidates[0] || null;
                 }
                 const actionAnchor = bodyRect || authorRect || commentFocusRect;
+                let reply = null;
+                if (replies.length) {
+                    if (actionAnchor) {
+                        const anchorBottom = typeof actionAnchor.bottom === 'number' ? actionAnchor.bottom : actionAnchor.top;
+                        const anchorLeft = typeof actionAnchor.left === 'number' ? actionAnchor.left : 0;
+                        const targeted = replies
+                            .map((candidate) => ({
+                                ...candidate,
+                                verticalGap: candidate.top - anchorBottom,
+                                lateralGap: Math.abs(candidate.left - anchorLeft),
+                            }))
+                            .filter((candidate) => candidate.verticalGap >= -16 && candidate.verticalGap <= 260)
+                            .sort(
+                                (a, b) =>
+                                    Math.abs(a.verticalGap) - Math.abs(b.verticalGap) ||
+                                    a.lateralGap - b.lateralGap ||
+                                    a.top - b.top ||
+                                    a.left - b.left
+                            );
+                        reply = targeted[0] || null;
+                    }
+                    if (!reply) {
+                        replies.sort((a, b) => a.top - b.top || a.left - b.left);
+                        reply = replies[0] || null;
+                    }
+                }
                 if (!reply && !actionAnchor) return null;
                 const voteY = reply
                     ? reply.y
@@ -4239,8 +4256,6 @@ async def reply_to_comment(
                     )
                 last_error = "; ".join(list(proof_validation.get("violations") or [])[:3]) or "Reddit reply verification failed"
                 surface_errors.append(f"{surface_url}: {last_error}")
-                if idx + 1 < len(target_surfaces):
-                    continue
                 return _result(
                     success=False,
                     action="reply_comment",

@@ -2708,6 +2708,67 @@ def test_reply_to_comment_uses_single_compose_path_when_inline_box_already_open(
     assert submit_calls == ["submit"]
 
 
+def test_reply_to_comment_stops_after_submit_when_proof_validation_fails(monkeypatch):
+    page = _FakePage()
+    goto_calls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_context(_target_comment_url):
+        return {
+            "thread_url": "https://www.reddit.com/r/tea/comments/thread123/example_post/",
+            "author": "tea_user",
+            "body_snippet": "oolong time",
+            "title": "example post",
+        }
+
+    async def fake_goto(_page, url):
+        goto_calls.append(url)
+        page.url = url
+        return None
+
+    async def fake_scroll_row(*_args, **_kwargs):
+        return {"reply": {"x": 152, "y": 702}, "author": {"x": 120, "y": 620}}
+
+    async def fake_fill_reply(*_args, **_kwargs):
+        return {"ok": True, "exact_before_submit": True, "cleared_before_type": True}
+
+    async def fake_click_submit(*_args, **_kwargs):
+        return True
+
+    async def fake_proof_validation(*_args, **_kwargs):
+        return {"ok": False, "violations": ["rendered reply text did not appear exactly once"]}
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_load_target_comment_context", fake_context)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_scroll_target_comment_into_view", fake_scroll_row)
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_ensure_reply_inline_box", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_reply_inline_text_exact", fake_fill_reply)
+    monkeypatch.setattr(reddit_bot, "_click_reply_submit", fake_click_submit)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="reply-shot.png"))
+    monkeypatch.setattr(reddit_bot, "_build_reply_proof_validation", fake_proof_validation)
+
+    session = type("Session", (), {"profile_name": "reddit_alpha", "get_username": lambda self: "reddit_alpha_user"})()
+    result = asyncio.run(
+        reddit_bot.reply_to_comment(
+            session,
+            target_comment_url="https://www.reddit.com/r/tea/comments/thread123/example_post/comment/c1/",
+            text="reply text",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["proof_validation"]["violations"] == ["rendered reply text did not appear exactly once"]
+    assert result["error"] == "rendered reply text did not appear exactly once"
+    assert goto_calls == ["https://www.reddit.com/r/tea/comments/thread123/example_post/comment/c1/"]
+
+
 def test_run_reddit_action_text_verdict_requires_alignment_and_proof(monkeypatch):
     recorder = _FakeRecorder()
 
