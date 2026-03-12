@@ -2145,11 +2145,11 @@ async def _comment_surface_visible(page) -> bool:
     return False
 
 
-async def _scroll_until_comment_surface_visible(page, *, max_scrolls: int = 6) -> bool:
+async def _scroll_until_comment_surface_visible(page, *, max_scrolls: int = 8, step_px: int = 180) -> bool:
     for _ in range(max(1, max_scrolls)):
         if await _comment_surface_visible(page):
             return True
-        await page.mouse.wheel(0, 520)
+        await page.mouse.wheel(0, max(80, int(step_px)))
         await page.wait_for_timeout(900)
     return await _comment_surface_visible(page)
 
@@ -3425,7 +3425,7 @@ async def comment_on_post(
 
             filled = await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url)
             if not filled:
-                await _scroll_until_comment_surface_visible(page, max_scrolls=6)
+                await _scroll_until_comment_surface_visible(page, max_scrolls=10, step_px=180)
                 filled = await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url)
             if not filled:
                 try:

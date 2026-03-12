@@ -273,7 +273,7 @@ def test_scroll_until_comment_surface_visible_scrolls_until_search_input_appears
     ok = asyncio.run(reddit_bot._scroll_until_comment_surface_visible(page, max_scrolls=4))
 
     assert ok is True
-    assert page.mouse.wheels == [(0, 520), (0, 520)]
+    assert page.mouse.wheels == [(0, 180), (0, 180)]
     assert page.waits == [900, 900]
 
 
