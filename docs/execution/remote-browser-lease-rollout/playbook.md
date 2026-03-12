@@ -17,6 +17,7 @@
 - save command outputs under `docs/execution/<task>/artifacts/` rather than relying on terminal scrollback.
 - separate code-level proof from environment proof: green tests/builds prove correctness, while local/prod smoke proves runtime prerequisites and operator-visible behavior.
 - after a remote modal closes, expect the lease to remain alive at `viewer_count=0` until idle timeout or explicit stop; production verifiers should assert that detached state rather than assuming immediate lease deletion.
+- when a saved session proxy has an env fallback, give the saved proxy a shorter startup navigation budget and compare both `browser_ready` and first-frame timings across deployments; otherwise dead proxies can consume most of the operator-visible wait before fallback starts.
 
 ## promotion rules
 - promote only evidence-backed reusable lessons

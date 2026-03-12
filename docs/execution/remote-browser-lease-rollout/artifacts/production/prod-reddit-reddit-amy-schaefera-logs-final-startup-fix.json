@@ -1,0 +1,76 @@
+[
+  {
+    "timestamp": "2026-03-12T18:04:47.228683Z",
+    "action": "browser_start",
+    "details": {
+      "reason": "attach"
+    },
+    "lease_id": "41280e339a8d",
+    "platform": "reddit",
+    "session_id": "reddit_amy_schaefera",
+    "controller_user": "claude_api_key",
+    "url": null
+  },
+  {
+    "timestamp": "2026-03-12T18:04:47.229377Z",
+    "action": "browser_proxy_attempt",
+    "details": {
+      "reason": "attach",
+      "proxy_source": "session",
+      "proxy_attempt": 1
+    },
+    "lease_id": "41280e339a8d",
+    "platform": "reddit",
+    "session_id": "reddit_amy_schaefera",
+    "controller_user": "claude_api_key",
+    "url": null
+  },
+  {
+    "timestamp": "2026-03-12T18:04:50.874959Z",
+    "action": "browser_ready",
+    "details": {
+      "reason": "attach",
+      "start_url": "https://www.reddit.com/user/Amy_Schaefera/",
+      "start_attempt": 1,
+      "proxy_source": "session",
+      "proxy_attempt": 1,
+      "page_health": {
+        "readyState": "interactive",
+        "visibilityState": "visible",
+        "bodyTextLength": 1852,
+        "htmlLength": 514961,
+        "title": "amy11112 (u/Amy_Schaefera) - Reddit",
+        "url": "https://www.reddit.com/user/Amy_Schaefera/"
+      }
+    },
+    "lease_id": "41280e339a8d",
+    "platform": "reddit",
+    "session_id": "reddit_amy_schaefera",
+    "controller_user": "claude_api_key",
+    "url": "https://www.reddit.com/user/Amy_Schaefera/"
+  },
+  {
+    "timestamp": "2026-03-12T18:04:50.879542Z",
+    "action": "frame_stream_start",
+    "details": {
+      "viewer_count": 1
+    },
+    "lease_id": "41280e339a8d",
+    "platform": "reddit",
+    "session_id": "reddit_amy_schaefera",
+    "controller_user": "claude_api_key",
+    "url": "https://www.reddit.com/user/Amy_Schaefera/"
+  },
+  {
+    "timestamp": "2026-03-12T18:04:57.513017Z",
+    "action": "lease_close",
+    "details": {
+      "reason": "manual_stop"
+    },
+    "lease_id": "41280e339a8d",
+    "platform": "reddit",
+    "session_id": "reddit_amy_schaefera",
+    "controller_user": "claude_api_key",
+    "url": "https://www.reddit.com/user/Amy_Schaefera/"
+  }
+]

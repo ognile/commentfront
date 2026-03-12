@@ -21,10 +21,9 @@
 - do not modify the user's existing change in `.claude/CLAUDE.md`.
 
 ## current state
-- the lease service remains the only remote runtime; the current hotfix targeted the remaining production defects instead of reintroducing any singleton or shim code.
-- the hotfix is implemented in commit `f65b8159909dd8a8b1f56b94d8a104ff0c58c25a`, locally verified, pushed to github, and verified live in production through facebook and reddit control sessions.
-- vercel published the `f65b815` frontend build successfully and the production ui now serves bundle `index-BB8jDaND.js`.
-- railway deployment list lagged on commit reporting during the final proof window, but the live backend behavior proves the new code is active: vanessa only becomes `browser_ready` after the stronger renderability gate and the startup-reload flow now logs `manual_stop` plus `browser_start_cancelled`.
+- the lease service remains the only remote runtime; the final startup-latency fix is deployed in github commit `9385d1f` and railway deployment `81db6510-5f11-4375-92c6-23d9c0006828`.
+- vercel is green on `9385d1f`; the frontend bundle remains `index-BB8jDaND.js` because the final iterations were backend-only.
+- production now proves the reported vanessa hang is resolved at the actual websocket attach layer: `browser_ready` improved from `9.257s` to `4.778s`, first frame improved from `9.705s` to `5.599s`, and the dead saved proxy is cut off after one short startup attempt before env fallback.
 - the only pre-existing worktree change outside this task remains `.claude/CLAUDE.md`.
 
 ## active todo
@@ -34,9 +33,11 @@
 - the main correctness bug is architectural, not cosmetic: one global browser slot plus direct websocket-to-page mutation creates unavoidable interference and poor input fidelity.
 - a non-breaking rollout requires preserving the current remote routes while swapping their internals first, then upgrading the frontend, then removing compatibility code.
 - remote leases must own reservation state, browser lifecycle, proof logs, and upload state.
-- the current production failures are now narrower and concrete:
-- the frontend close path closes the websocket before the modal-open refs are cleared, so `onclose` can still schedule an automatic reconnect against a session the user thought they closed.
-- the backend cdp frame path can report a healthy lease while the delivered first frame is a blank white jpeg; both `Vanessa Hines` and `Wanda Lobb` reproduced that on production.
+- the final startup-latency problem was not the renderability gate alone. production timing proved the real operator-visible floor came from dead saved session proxies spending too long in startup before env fallback began.
+- the durable fix has three layers:
+  - reject blank shells as non-renderable
+  - abort a proxy once the startup page health is a proven dead shell
+  - apply a shorter startup navigation budget only to saved session proxies that already have an env fallback available
 
 ## proven wins
 - the adaptive execution tracker is initialized and baseline production health/remote artifacts are saved.
@@ -56,9 +57,17 @@
   evidence: `artifacts/production/prod-vanessa-logs-ready-after-renderable-gate.json`, `artifacts/production/prod-remote-status-after-pagehide-stop-fix.json`, `artifacts/production/prod-vanessa-logs-after-pagehide-stop-fix.json`
 - production reddit control is still healthy after the hotfix: `reddit_amy_schaefera` reaches `browser_ready` on the first session-proxy attempt with a live frame and closes cleanly back to zero active leases. evidence: `artifacts/production/prod-reddit-amy-logs-after-fix.json`, `artifacts/production/prod-remote-status-after-reddit-close-fix.json`
 - the refreshed production frontend no longer emitted the earlier passive wheel errors during verification, matching the non-passive wheel listener change in the hook.
+- the backend startup-latency iterations are fully proven:
+  - commit `e23f914` introduced dead-shell proxy aborts and kept the local gate green.
+  - commit `943bf01` proved the render-wait early exit was live in production but also proved the next bottleneck was session-proxy navigation time.
+  - commit `9385d1f` successfully deployed the shorter saved-proxy startup timeout and cut vanessa from `9.257s` ready / `9.705s` first frame to `4.778s` ready / `5.599s` first frame.
+  evidence: `artifacts/production/prod-remote-startup-regression-summary-e23f914.json`, `artifacts/production/prod-remote-startup-regression-summary-943bf01.json`, `artifacts/production/prod-remote-startup-regression-summary-9385d1f.json`
+- the final live vanessa logs show the dead session proxy was abandoned after about `2.8s` instead of the earlier `6.7s+`, then env fallback reached `browser_ready` about `1.6s` later. evidence: `artifacts/production/prod-facebook-vanessa-hines-logs-final-startup-fix.json`
+- the final live reddit regression probe stayed healthy on the same deployment: `reddit_amy_schaefera` reached `browser_ready` in `3.96s` on the session proxy and closed cleanly. evidence: `artifacts/production/prod-reddit-reddit-amy-schaefera-logs-final-startup-fix.json`
+- railway deployment `81db6510-5f11-4375-92c6-23d9c0006828` and github commit status for `9385d1f` are both green. evidence: `artifacts/production/prod-railway-deployments-9385d1f.txt`, `artifacts/production/prod-github-status-9385d1f.json`
 
 ## open risks
-- none in scope for this hotfix. residual uncertainty is operational only: railway cli commit reporting lagged during the final proof window, so the live behavior artifacts are the primary backend deployment proof.
+- none in scope for this task. the only operational wrinkle was one transient railway deployment miss on `1aabc9c`; the next github-state deploy `9385d1f` succeeded and is the authoritative production proof point.
 
 ## final pass/fail matrix
 - `[pass]` two different profiles can hold active leases concurrently. evidence: `artifacts/production/prod-capacity-and-reservation-after-cleanup.json`
@@ -74,3 +83,6 @@
 - `[pass]` closing the facebook remote modal releases the slot immediately and leaves production at zero active leases. evidence: `artifacts/production/prod-remote-status-after-closing-verifier-ui.json`, `artifacts/production/prod-remote-status-after-pagehide-stop-fix.json`
 - `[pass]` reloading the page during facebook startup triggers `manual_stop` and `browser_start_cancelled` instead of leaving a zombie `starting` lease behind. evidence: `artifacts/production/prod-vanessa-logs-after-pagehide-stop-fix.json`, `artifacts/production/prod-remote-status-after-pagehide-stop-fix.json`
 - `[pass]` reddit remote control still reaches a live browser frame and closes cleanly after the lifecycle hotfix. evidence: `artifacts/production/prod-reddit-amy-logs-after-fix.json`, `artifacts/production/prod-remote-status-after-reddit-close-fix.json`
+- `[pass]` the reported vanessa startup wait is materially reduced in production. evidence: `artifacts/production/prod-remote-startup-regression-summary-e23f914.json`, `artifacts/production/prod-remote-startup-regression-summary-9385d1f.json`
+- `[pass]` the final production backend deploy for the startup-latency fix is green on github and railway. evidence: `artifacts/production/prod-github-status-9385d1f.json`, `artifacts/production/prod-railway-deployments-9385d1f.txt`
+- `[pass]` after the final production probes, remote status returns to zero active leases. evidence: `artifacts/production/prod-remote-status-after-final-startup-fix.json`
