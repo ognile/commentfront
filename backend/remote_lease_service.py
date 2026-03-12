@@ -48,6 +48,7 @@ REMOTE_FRAME_SEND_STALE_SECONDS = float(os.getenv("REMOTE_FRAME_SEND_STALE_SECON
 REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS", "10"))
 REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS", "8"))
 REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS", "6"))
+REMOTE_STARTUP_DEAD_SHELL_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_DEAD_SHELL_TIMEOUT_SECONDS", "2"))
 REMOTE_RENDERABLE_MIN_HTML_LENGTH = int(os.getenv("REMOTE_RENDERABLE_MIN_HTML_LENGTH", "2048"))
 
 
@@ -585,6 +586,7 @@ class RemoteLease:
     ) -> Dict[str, Any]:
         deadline = time.monotonic() + max(0.5, timeout_seconds)
         last_health: Dict[str, Any] = {}
+        dead_shell_since: Optional[float] = None
         while time.monotonic() < deadline:
             if self.closed_at:
                 return last_health
@@ -593,6 +595,13 @@ class RemoteLease:
             last_health = await self._page_health_snapshot()
             if self._page_has_renderable_document(last_health):
                 return last_health
+            if self._page_is_dead_shell(last_health):
+                if dead_shell_since is None:
+                    dead_shell_since = time.monotonic()
+                elif (time.monotonic() - dead_shell_since) >= max(0.5, REMOTE_STARTUP_DEAD_SHELL_TIMEOUT_SECONDS):
+                    return last_health
+            else:
+                dead_shell_since = None
             await asyncio.sleep(0.5)
         return last_health
 

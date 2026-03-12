@@ -2,7 +2,7 @@
 platform darwin -- Python 3.12.9, pytest-9.0.2, pluggy-1.5.0
 rootdir: /Users/nikitalienov/Documents/commentfront/backend
 plugins: anyio-4.12.1
-collected 349 items
+collected 351 items
 
 tests/test_adaptive_agent_matching.py ....                               [  1%]
 tests/test_adaptive_agent_reply_fallback.py ....                         [  2%]
@@ -17,16 +17,16 @@ tests/test_health_deep_reliability.py ..                                 [ 15%]
 tests/test_job_validation.py ...                                         [ 16%]
 tests/test_premium_actions.py ..................                         [ 21%]
 tests/test_premium_content.py ....                                       [ 22%]
-tests/test_premium_models.py ....                                        [ 24%]
+tests/test_premium_models.py ....                                        [ 23%]
 tests/test_premium_orchestrator.py ................                      [ 28%]
 tests/test_premium_rules.py ..                                           [ 29%]
 tests/test_premium_safety.py ........                                    [ 31%]
-tests/test_premium_scheduler.py ..                                       [ 32%]
-tests/test_premium_store_runs.py .......                                 [ 34%]
+tests/test_premium_scheduler.py ..                                       [ 31%]
+tests/test_premium_store_runs.py .......                                 [ 33%]
 tests/test_premium_verify.py ...                                         [ 34%]
-tests/test_queue_drafts_recovery.py ...........                          [ 38%]
+tests/test_queue_drafts_recovery.py ...........                          [ 37%]
 tests/test_reddit_bot.py ............................................... [ 51%]
-.............................                                            [ 59%]
+..............................                                           [ 59%]
 tests/test_reddit_convergence.py ..                                      [ 60%]
 tests/test_reddit_execution.py ....                                      [ 61%]
 tests/test_reddit_growth_generation.py .......................           [ 68%]
@@ -36,12 +36,12 @@ tests/test_reddit_login_learning.py .....                                [ 73%]
 tests/test_reddit_mission_store.py ..                                    [ 74%]
 tests/test_reddit_program_api.py ......                                  [ 75%]
 tests/test_reddit_program_notifications.py ..                            [ 76%]
-tests/test_reddit_program_orchestrator.py .............................. [ 85%]
+tests/test_reddit_program_orchestrator.py .............................. [ 84%]
 ...                                                                      [ 85%]
 tests/test_reddit_program_store.py ........                              [ 88%]
 tests/test_reddit_rollout.py ....                                        [ 89%]
-tests/test_reddit_session.py ......                                      [ 91%]
-tests/test_remote_lease_service.py .............                         [ 94%]
+tests/test_reddit_session.py ......                                      [ 90%]
+tests/test_remote_lease_service.py ..............                        [ 94%]
 tests/test_remote_reservation_regressions.py .........                   [ 97%]
 tests/test_reply_submission_evidence.py ....                             [ 98%]
 tests/test_restriction_recovery_reliability.py .....                     [100%]
@@ -435,4 +435,4 @@ tests/test_restriction_recovery_reliability.py::test_scheduler_keeps_followup_pr
     self.state["next_run_at"] = (datetime.utcnow() + timedelta(hours=interval)).isoformat()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-====================== 349 passed, 473 warnings in 33.26s ======================
+====================== 351 passed, 473 warnings in 25.55s ======================

@@ -264,6 +264,59 @@ def test_page_renderable_document_rejects_loading_shell():
     _run(_exercise())
 
 
+def test_wait_for_renderable_document_exits_early_on_persistent_dead_shell(monkeypatch):
+    async def _exercise():
+        service = remote_lease_service.RemoteLeaseService()
+        lease = remote_lease_service.RemoteLease(
+            service=service,
+            lease_id="lease-wait-dead-shell",
+            session_id="alpha",
+            platform="facebook",
+            controller_user="alice",
+        )
+        lease._action_worker_task.cancel()
+        try:
+            await lease._action_worker_task
+        except asyncio.CancelledError:
+            pass
+
+        calls = {"count": 0}
+        last_time = {"value": 0.0}
+        timeline = iter([0.0, 0.1, 0.2, 0.8, 0.9])
+
+        def _fake_monotonic():
+            try:
+                last_time["value"] = next(timeline)
+            except StopIteration:
+                pass
+            return last_time["value"]
+
+        async def _dead_shell_snapshot():
+            calls["count"] += 1
+            return {
+                "readyState": "loading",
+                "visibilityState": "visible",
+                "bodyTextLength": 0,
+                "htmlLength": 0,
+                "title": "",
+                "url": "https://m.facebook.com/me/?v=timeline",
+            }
+
+        monkeypatch.setattr(remote_lease_service.time, "monotonic", _fake_monotonic)
+        monkeypatch.setattr(remote_lease_service.asyncio, "sleep", _async_noop)
+        monkeypatch.setattr(lease, "_refresh_page_state", lambda: None)
+        monkeypatch.setattr(lease, "refresh_title", _async_noop)
+        monkeypatch.setattr(lease, "_page_health_snapshot", _dead_shell_snapshot)
+        monkeypatch.setattr(remote_lease_service, "REMOTE_STARTUP_DEAD_SHELL_TIMEOUT_SECONDS", 0.5)
+
+        health = await lease._wait_for_renderable_document(timeout_seconds=10)
+
+        assert health["htmlLength"] == 0
+        assert calls["count"] == 2
+
+    _run(_exercise())
+
+
 def test_navigate_initial_page_fast_fails_dead_shell_proxy(monkeypatch):
     async def _exercise():
         service = remote_lease_service.RemoteLeaseService()
