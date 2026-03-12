@@ -1799,6 +1799,41 @@ def test_same_author_text_match_count_uses_unique_comment_roots():
     assert count == 1
 
 
+def test_build_create_post_proof_validation_dedupes_reddit_page_title_echo(monkeypatch):
+    async def fake_body_line_match_metrics(_page, text):
+        if text == "Did anyone else feel unusually dry for a few days after finishing BV treatment?":
+            return {
+                "count": 2,
+                "matches": [
+                    "did anyone else feel unusually dry for a few days after finishing bv treatment? : r/healthyhooha",
+                    "did anyone else feel unusually dry for a few days after finishing bv treatment?",
+                ],
+            }
+        return {
+            "count": 1,
+            "matches": [
+                "I am not looking for a diagnosis, just patterns. If you had lingering dryness or irritation after treatment, how long did it take before things felt normal again, and did anything gentle actually help?"
+            ],
+        }
+
+    monkeypatch.setattr(reddit_bot, "_body_line_match_metrics", fake_body_line_match_metrics)
+
+    result = asyncio.run(
+        reddit_bot._build_create_post_proof_validation(
+            object(),
+            title="Did anyone else feel unusually dry for a few days after finishing BV treatment?",
+            body="I am not looking for a diagnosis, just patterns. If you had lingering dryness or irritation after treatment, how long did it take before things felt normal again, and did anything gentle actually help?",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["title_match_count"] == 1
+    assert result["raw_title_match_count"] == 2
+    assert result["title_matches"] == [
+        "Did anyone else feel unusually dry for a few days after finishing BV treatment?"
+    ]
+
+
 def test_click_comment_upvote_region_tries_fallback_candidates(monkeypatch):
     page = _FakePage()
     active_points = []

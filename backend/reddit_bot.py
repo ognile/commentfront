@@ -3365,14 +3365,26 @@ async def _build_create_post_proof_validation(
     title: str,
     body: Optional[str],
 ) -> Dict[str, Any]:
-    title_metrics = await _body_line_match_metrics(page, title)
+    raw_title_metrics = await _body_line_match_metrics(page, title)
     body_snippet = _short_text(body, 100) if str(body or "").strip() else None
     body_metrics = await _body_line_match_metrics(page, body_snippet) if body_snippet else {"count": 0, "matches": []}
+    expected_title = _normalize_text(title)
+    canonical_title_matches: List[str] = []
+    seen_title_matches = set()
+    for raw_match in list(raw_title_metrics.get("matches") or []):
+        normalized_match = _normalize_text(raw_match)
+        canonical_match = re.sub(r"\s*:\s*r/[a-z0-9_]+\s*$", "", normalized_match, flags=re.IGNORECASE)
+        key = expected_title if canonical_match == expected_title else normalized_match
+        if not key or key in seen_title_matches:
+            continue
+        seen_title_matches.add(key)
+        canonical_title_matches.append(title if key == expected_title else raw_match)
+    title_match_count = len(canonical_title_matches) or int(raw_title_metrics.get("count") or 0)
     violations: List[str] = []
-    if title_metrics["count"] != 1:
+    if title_match_count != 1:
         violations.append(
             "rendered post title did not appear exactly once"
-            if title_metrics["count"] == 0
+            if title_match_count == 0
             else "rendered post title appeared more than once"
         )
     if body_snippet and body_metrics["count"] != 1:
@@ -3384,8 +3396,10 @@ async def _build_create_post_proof_validation(
     return {
         "ok": not violations,
         "violations": violations,
-        "title_match_count": title_metrics["count"],
-        "title_matches": title_metrics["matches"],
+        "title_match_count": title_match_count,
+        "title_matches": canonical_title_matches,
+        "raw_title_match_count": int(raw_title_metrics.get("count") or 0),
+        "raw_title_matches": list(raw_title_metrics.get("matches") or []),
         "body_match_count": body_metrics["count"],
         "body_matches": body_metrics["matches"],
     }
