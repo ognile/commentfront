@@ -1326,7 +1326,6 @@ class RedditProgramOrchestrator:
             recent_texts=recent_texts,
             same_thread_texts=same_thread_texts,
             same_profile_texts=same_profile_texts,
-            retry_feedback=retry_feedback,
         )
         if not generated.success:
             return {
