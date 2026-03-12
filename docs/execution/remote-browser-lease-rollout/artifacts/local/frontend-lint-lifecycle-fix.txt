@@ -1,0 +1,3 @@
+2026-03-12 local verification on commit f65b8159909dd8a8b1f56b94d8a104ff0c58c25a
+command: cd frontend && npm run lint
+result: 0 errors; 7 pre-existing react-hooks/exhaustive-deps warnings in frontend/src/App.tsx only

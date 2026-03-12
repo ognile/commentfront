@@ -1,0 +1,27 @@
+{
+  "success": true,
+  "lease_id": "3e27be768744",
+  "session_id": "Vanessa Hines",
+  "platform": "facebook",
+  "controller_user": "claude_api",
+  "viewer_count": 0,
+  "status": "ready",
+  "created_at": "2026-03-12T15:02:42.262951Z",
+  "updated_at": "2026-03-12T15:03:28.071049Z",
+  "closed_at": null,
+  "url": "https://m.facebook.com/me/?v=timeline",
+  "title": "Facebook",
+  "last_frame_at": null,
+  "last_action_at": null,
+  "browser_started_at": "2026-03-12T15:03:28.067338Z",
+  "browser_restart_count": 1,
+  "last_error": "failed to load a renderable facebook start page health={\"readyState\": \"loading\", \"visibilityState\": \"visible\", \"bodyTextLength\": 0, \"htmlLength\": 0, \"title\": \"\", \"url\": \"https://www.facebook.com/profile.php?id=61571384288937\"}",
+  "viewport": {
+    "width": 393,
+    "height": 873
+  },
+  "frame_stream_state": "stopped",
+  "reservation_source": "remote_lease",
+  "reservation_owner": "3e27be768744",
+  "active": true
+}

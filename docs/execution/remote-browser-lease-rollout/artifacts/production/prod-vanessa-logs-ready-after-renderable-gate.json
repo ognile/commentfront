@@ -1,0 +1,235 @@
+[
+  {
+    "timestamp": "2026-03-12T15:02:42.263405Z",
+    "action": "browser_start",
+    "details": {
+      "reason": "start"
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": null
+  },
+  {
+    "timestamp": "2026-03-12T15:02:42.264071Z",
+    "action": "browser_proxy_attempt",
+    "details": {
+      "reason": "start",
+      "proxy_source": "session",
+      "proxy_attempt": 1
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": null
+  },
+  {
+    "timestamp": "2026-03-12T15:02:49.014055Z",
+    "action": "browser_start_url_empty",
+    "details": {
+      "reason": "start",
+      "url": "https://m.facebook.com/me/?v=timeline",
+      "attempt": 1,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 0,
+        "title": "",
+        "url": "https://m.facebook.com/me/?v=timeline"
+      }
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://m.facebook.com/me/?v=timeline"
+  },
+  {
+    "timestamp": "2026-03-12T15:02:55.203697Z",
+    "action": "browser_start_url_empty",
+    "details": {
+      "reason": "start",
+      "url": "https://m.facebook.com/me/",
+      "attempt": 2,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 0,
+        "title": "",
+        "url": "https://m.facebook.com/me/"
+      }
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://m.facebook.com/me/"
+  },
+  {
+    "timestamp": "2026-03-12T15:03:01.409800Z",
+    "action": "browser_start_url_empty",
+    "details": {
+      "reason": "start",
+      "url": "https://www.facebook.com/",
+      "attempt": 3,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 0,
+        "title": "",
+        "url": "https://www.facebook.com/"
+      }
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://www.facebook.com/"
+  },
+  {
+    "timestamp": "2026-03-12T15:03:07.616422Z",
+    "action": "browser_start_url_empty",
+    "details": {
+      "reason": "start",
+      "url": "https://m.facebook.com/",
+      "attempt": 4,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 0,
+        "title": "",
+        "url": "https://m.facebook.com/"
+      }
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://m.facebook.com/"
+  },
+  {
+    "timestamp": "2026-03-12T15:03:13.828872Z",
+    "action": "browser_start_url_empty",
+    "details": {
+      "reason": "start",
+      "url": "https://m.facebook.com/profile.php?id=61571384288937&v=timeline",
+      "attempt": 5,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 0,
+        "title": "",
+        "url": "https://m.facebook.com/profile.php?id=61571384288937&v=timeline"
+      }
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://m.facebook.com/profile.php?id=61571384288937&v=timeline"
+  },
+  {
+    "timestamp": "2026-03-12T15:03:20.036716Z",
+    "action": "browser_start_url_empty",
+    "details": {
+      "reason": "start",
+      "url": "https://m.facebook.com/profile.php?id=61571384288937",
+      "attempt": 6,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 0,
+        "title": "",
+        "url": "https://m.facebook.com/profile.php?id=61571384288937"
+      }
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://m.facebook.com/profile.php?id=61571384288937"
+  },
+  {
+    "timestamp": "2026-03-12T15:03:26.630473Z",
+    "action": "browser_start_url_empty",
+    "details": {
+      "reason": "start",
+      "url": "https://www.facebook.com/profile.php?id=61571384288937",
+      "attempt": 7,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 0,
+        "title": "",
+        "url": "https://www.facebook.com/profile.php?id=61571384288937"
+      }
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://www.facebook.com/profile.php?id=61571384288937"
+  },
+  {
+    "timestamp": "2026-03-12T15:03:26.631365Z",
+    "action": "browser_proxy_failed",
+    "details": {
+      "reason": "start",
+      "proxy_source": "session",
+      "proxy_attempt": 1,
+      "error": "failed to load a renderable facebook start page health={\"readyState\": \"loading\", \"visibilityState\": \"visible\", \"bodyTextLength\": 0, \"htmlLength\": 0, \"title\": \"\", \"url\": \"https://www.facebook.com/profile.php?id=61571384288937\"}"
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://www.facebook.com/profile.php?id=61571384288937"
+  },
+  {
+    "timestamp": "2026-03-12T15:03:26.688889Z",
+    "action": "browser_proxy_attempt",
+    "details": {
+      "reason": "start",
+      "proxy_source": "env",
+      "proxy_attempt": 2
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": null
+  },
+  {
+    "timestamp": "2026-03-12T15:03:28.071049Z",
+    "action": "browser_ready",
+    "details": {
+      "reason": "start",
+      "start_url": "https://m.facebook.com/me/?v=timeline",
+      "start_attempt": 1,
+      "proxy_source": "env",
+      "proxy_attempt": 2,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 23287,
+        "title": "Facebook",
+        "url": "https://m.facebook.com/me/?v=timeline"
+      }
+    },
+    "lease_id": "3e27be768744",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "claude_api",
+    "url": "https://m.facebook.com/me/?v=timeline"
+  }
+]

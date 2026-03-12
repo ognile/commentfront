@@ -1,0 +1,74 @@
+[
+  {
+    "timestamp": "2026-03-12T15:00:17.042623Z",
+    "action": "browser_start",
+    "details": {
+      "reason": "attach"
+    },
+    "lease_id": "6218d4ad7ae0",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "codex_remote_verify",
+    "url": null
+  },
+  {
+    "timestamp": "2026-03-12T15:00:17.043309Z",
+    "action": "browser_proxy_attempt",
+    "details": {
+      "reason": "attach",
+      "proxy_source": "session",
+      "proxy_attempt": 1
+    },
+    "lease_id": "6218d4ad7ae0",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "codex_remote_verify",
+    "url": null
+  },
+  {
+    "timestamp": "2026-03-12T15:00:23.901847Z",
+    "action": "browser_start_url_empty",
+    "details": {
+      "reason": "attach",
+      "url": "https://m.facebook.com/me/?v=timeline",
+      "attempt": 1,
+      "page_health": {
+        "readyState": "loading",
+        "visibilityState": "visible",
+        "bodyTextLength": 0,
+        "htmlLength": 0,
+        "title": "",
+        "url": "https://m.facebook.com/me/?v=timeline"
+      }
+    },
+    "lease_id": "6218d4ad7ae0",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "codex_remote_verify",
+    "url": "https://m.facebook.com/me/?v=timeline"
+  },
+  {
+    "timestamp": "2026-03-12T15:00:23.997088Z",
+    "action": "lease_close",
+    "details": {
+      "reason": "manual_stop"
+    },
+    "lease_id": "6218d4ad7ae0",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "codex_remote_verify",
+    "url": "https://m.facebook.com/me/"
+  },
+  {
+    "timestamp": "2026-03-12T15:00:23.997815Z",
+    "action": "browser_start_cancelled",
+    "details": {
+      "reason": "attach"
+    },
+    "lease_id": "6218d4ad7ae0",
+    "platform": "facebook",
+    "session_id": "Vanessa Hines",
+    "controller_user": "codex_remote_verify",
+    "url": "https://m.facebook.com/me/"
+  }
+]

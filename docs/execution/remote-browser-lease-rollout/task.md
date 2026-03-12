@@ -21,17 +21,14 @@
 - do not modify the user's existing change in `.claude/CLAUDE.md`.
 
 ## current state
-- the remote singleton is still removed and production still runs on the lease service only.
-- the earlier "done" verdict was wrong. fresh production proof now shows two live defects: modal close can still lead to a reopen path, and fresh facebook remote attaches can deliver blank white frames.
-- new production evidence is saved under `artifacts/production/`, including blank-frame probes and the earlier stop/reconnect log window.
+- the lease service remains the only remote runtime; the current hotfix targeted the remaining production defects instead of reintroducing any singleton or shim code.
+- the hotfix is implemented in commit `f65b8159909dd8a8b1f56b94d8a104ff0c58c25a`, locally verified, pushed to github, and verified live in production through facebook and reddit control sessions.
+- vercel published the `f65b815` frontend build successfully and the production ui now serves bundle `index-BB8jDaND.js`.
+- railway deployment list lagged on commit reporting during the final proof window, but the live backend behavior proves the new code is active: vanessa only becomes `browser_ready` after the stronger renderability gate and the startup-reload flow now logs `manual_stop` plus `browser_start_cancelled`.
 - the only pre-existing worktree change outside this task remains `.claude/CLAUDE.md`.
 
 ## active todo
-1. patch the frontend close lifecycle so an intentional modal close cannot trigger reconnect and sole-controller close releases capacity immediately.
-2. replace the blank cdp pixel path with a screenshot-based per-lease frame pump and add better remote diagnostics.
-3. run targeted local verification for the frontend hook/modal and backend remote lease tests.
-4. push the hotfix through github, wait for production deploys, and re-run facebook plus reddit remote smokes on production.
-5. update proof artifacts, tracker synthesis, and the final pass/fail matrix from the hotfix results.
+- none.
 
 ## current understanding
 - the main correctness bug is architectural, not cosmetic: one global browser slot plus direct websocket-to-page mutation creates unavoidable interference and poor input fidelity.
@@ -51,9 +48,17 @@
 - railway serves commit `8a6f8f31e2205917d860c4d04f0350329e92628d` and vercel serves deployment `dpl_CvTB2NLLifm4iiAX19JLfLPr2Ee3` on `commentfront.vercel.app`.
 - production capacity, reservation, takeover, disconnect, health, and frontend-ui smokes are all confirmed with saved artifacts.
 - fresh production probes now prove the remaining defect shape instead of leaving it anecdotal: the saved facebook probe images are blank white frames, and the earlier stop window shows a new browser start after a user-initiated stop path.
+- the final hotfix is locally green on the current commit: backend `336 passed`; frontend `14 passed`; frontend build passed; lint stayed at the same 7 pre-existing `App.tsx` warnings with no new warnings in remote-control code. evidence: `artifacts/local/backend-pytest-lifecycle-fix.txt`, `artifacts/local/frontend-test-lifecycle-fix.txt`, `artifacts/local/frontend-build-lifecycle-fix.txt`, `artifacts/local/frontend-lint-lifecycle-fix.txt`
+- production facebook control is fixed for the reported failure path:
+  - vanessa now stays in `starting` through the dead session proxy, then falls back to env proxy and only declares `browser_ready` once page health has a real title and `htmlLength=23287`, instead of promoting the earlier blank shell.
+  - explicit modal close returns production remote status to zero active leases with no reconnect.
+  - page reload during startup now issues `manual_stop`, cancels `browser_start`, and returns status to zero active leases instead of leaking a `starting` lease.
+  evidence: `artifacts/production/prod-vanessa-logs-ready-after-renderable-gate.json`, `artifacts/production/prod-remote-status-after-pagehide-stop-fix.json`, `artifacts/production/prod-vanessa-logs-after-pagehide-stop-fix.json`
+- production reddit control is still healthy after the hotfix: `reddit_amy_schaefera` reaches `browser_ready` on the first session-proxy attempt with a live frame and closes cleanly back to zero active leases. evidence: `artifacts/production/prod-reddit-amy-logs-after-fix.json`, `artifacts/production/prod-remote-status-after-reddit-close-fix.json`
+- the refreshed production frontend no longer emitted the earlier passive wheel errors during verification, matching the non-passive wheel listener change in the hook.
 
 ## open risks
-- until the hotfix ships, facebook remote can still show blank frames and the ui can still leave capacity pinned after an intended close.
+- none in scope for this hotfix. residual uncertainty is operational only: railway cli commit reporting lagged during the final proof window, so the live behavior artifacts are the primary backend deployment proof.
 
 ## final pass/fail matrix
 - `[pass]` two different profiles can hold active leases concurrently. evidence: `artifacts/production/prod-capacity-and-reservation-after-cleanup.json`
@@ -65,3 +70,7 @@
 - `[pass]` production backend health is healthy and remote status is zero-active after cleanup verification. evidence: `artifacts/production/backend-health-after-cleanup.json`, `artifacts/production/prod-remote-status-after-cleanup.json`
 - `[pass]` recent railway logs contain zero matches for the previous closed-websocket spam signatures. evidence: `artifacts/production/prod-remote-log-check-after-cleanup.json`
 - `[pass]` the shipped frontend sessions UI opens a live facebook remote modal and renders a connected browser frame against the cleaned-up backend. evidence: `artifacts/production/prod-frontend-ui-smoke.md`
+- `[pass]` vanessa no longer promotes a blank facebook shell to `browser_ready`; the live backend now waits until env-proxy fallback returns a page with `title=Facebook` and `htmlLength=23287`. evidence: `artifacts/production/prod-vanessa-detached-ready-after-renderable-gate.json`, `artifacts/production/prod-vanessa-logs-ready-after-renderable-gate.json`
+- `[pass]` closing the facebook remote modal releases the slot immediately and leaves production at zero active leases. evidence: `artifacts/production/prod-remote-status-after-closing-verifier-ui.json`, `artifacts/production/prod-remote-status-after-pagehide-stop-fix.json`
+- `[pass]` reloading the page during facebook startup triggers `manual_stop` and `browser_start_cancelled` instead of leaving a zombie `starting` lease behind. evidence: `artifacts/production/prod-vanessa-logs-after-pagehide-stop-fix.json`, `artifacts/production/prod-remote-status-after-pagehide-stop-fix.json`
+- `[pass]` reddit remote control still reaches a live browser frame and closes cleanly after the lifecycle hotfix. evidence: `artifacts/production/prod-reddit-amy-logs-after-fix.json`, `artifacts/production/prod-remote-status-after-reddit-close-fix.json`
