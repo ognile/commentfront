@@ -1,0 +1,126 @@
+{
+  "github_commit": "e23f9147539c7c64d673d8c0de0c041e68e2fafe",
+  "started_at": "2026-03-12T17:53:46Z",
+  "status_before": {
+    "active": false,
+    "active_leases": [],
+    "count": 0,
+    "session_id": null,
+    "platform": null,
+    "url": null,
+    "title": null,
+    "capacity_limit": 2,
+    "streaming_active": false
+  },
+  "facebook": {
+    "session_id": "Vanessa Hines",
+    "platform": "facebook",
+    "browser_ready_seconds": 9.257,
+    "first_frame_seconds": 9.705,
+    "events": [
+      {
+        "type": "lease_role",
+        "seconds_since_connect": 9.257,
+        "role": "controller"
+      },
+      {
+        "type": "state",
+        "seconds_since_connect": 9.257,
+        "status": "ready",
+        "url": "https://m.facebook.com/me/?v=timeline",
+        "viewer_count": 1
+      },
+      {
+        "type": "state",
+        "seconds_since_connect": 9.257,
+        "status": "ready",
+        "url": "https://m.facebook.com/me/?v=timeline",
+        "viewer_count": 1
+      },
+      {
+        "type": "browser_ready",
+        "seconds_since_connect": 9.257,
+        "status": "ready"
+      },
+      {
+        "type": "frame",
+        "seconds_since_connect": 9.705,
+        "bootstrap": true,
+        "format": "jpeg",
+        "image_chars": 7260
+      }
+    ],
+    "stop_response": {
+      "success": true,
+      "session_id": "Vanessa Hines",
+      "platform": "facebook"
+    },
+    "status_after_stop": {
+      "active": false,
+      "active_leases": [],
+      "count": 0,
+      "session_id": null,
+      "platform": null,
+      "url": null,
+      "title": null,
+      "capacity_limit": 2,
+      "streaming_active": false
+    }
+  },
+  "reddit": {
+    "session_id": "reddit_amy_schaefera",
+    "platform": "reddit",
+    "browser_ready_seconds": 4.373,
+    "first_frame_seconds": 10.718,
+    "events": [
+      {
+        "type": "lease_role",
+        "seconds_since_connect": 4.373,
+        "role": "controller"
+      },
+      {
+        "type": "state",
+        "seconds_since_connect": 4.373,
+        "status": "ready",
+        "url": "https://www.reddit.com/user/Amy_Schaefera/",
+        "viewer_count": 1
+      },
+      {
+        "type": "state",
+        "seconds_since_connect": 4.373,
+        "status": "ready",
+        "url": "https://www.reddit.com/user/Amy_Schaefera/",
+        "viewer_count": 1
+      },
+      {
+        "type": "browser_ready",
+        "seconds_since_connect": 4.373,
+        "status": "ready"
+      },
+      {
+        "type": "frame",
+        "seconds_since_connect": 10.718,
+        "bootstrap": true,
+        "format": "jpeg",
+        "image_chars": 47588
+      }
+    ],
+    "stop_response": {
+      "success": true,
+      "session_id": "reddit_amy_schaefera",
+      "platform": "reddit"
+    },
+    "status_after_stop": {
+      "active": false,
+      "active_leases": [],
+      "count": 0,
+      "session_id": null,
+      "platform": null,
+      "url": null,
+      "title": null,
+      "capacity_limit": 2,
+      "streaming_active": false
+    }
+  },
+  "finished_at": "2026-03-12T17:54:09Z"
+}

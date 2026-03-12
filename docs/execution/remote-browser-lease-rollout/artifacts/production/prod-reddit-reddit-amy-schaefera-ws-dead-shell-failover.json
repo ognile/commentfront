@@ -1,0 +1,55 @@
+{
+  "session_id": "reddit_amy_schaefera",
+  "platform": "reddit",
+  "browser_ready_seconds": 4.373,
+  "first_frame_seconds": 10.718,
+  "events": [
+    {
+      "type": "lease_role",
+      "seconds_since_connect": 4.373,
+      "role": "controller"
+    },
+    {
+      "type": "state",
+      "seconds_since_connect": 4.373,
+      "status": "ready",
+      "url": "https://www.reddit.com/user/Amy_Schaefera/",
+      "viewer_count": 1
+    },
+    {
+      "type": "state",
+      "seconds_since_connect": 4.373,
+      "status": "ready",
+      "url": "https://www.reddit.com/user/Amy_Schaefera/",
+      "viewer_count": 1
+    },
+    {
+      "type": "browser_ready",
+      "seconds_since_connect": 4.373,
+      "status": "ready"
+    },
+    {
+      "type": "frame",
+      "seconds_since_connect": 10.718,
+      "bootstrap": true,
+      "format": "jpeg",
+      "image_chars": 47588
+    }
+  ],
+  "stop_response": {
+    "success": true,
+    "session_id": "reddit_amy_schaefera",
+    "platform": "reddit"
+  },
+  "status_after_stop": {
+    "active": false,
+    "active_leases": [],
+    "count": 0,
+    "session_id": null,
+    "platform": null,
+    "url": null,
+    "title": null,
+    "capacity_limit": 2,
+    "streaming_active": false
+  }
+}
