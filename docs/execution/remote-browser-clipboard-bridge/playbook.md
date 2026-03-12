@@ -12,6 +12,7 @@
 
 ## verification patterns
 - add proof rules here
+- if production `main` moves while a proof run is in flight, rerun the user-facing proof on the final deployed commit after railway marks that commit successful; do not claim success from a flow that straddled deployment cutover.
 
 ## promotion rules
 - promote only evidence-backed reusable lessons

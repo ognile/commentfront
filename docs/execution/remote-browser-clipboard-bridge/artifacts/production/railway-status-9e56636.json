@@ -1,0 +1,136 @@
+{
+  "id": "2ce4704c-80d0-4690-b790-d56efbc7edcc",
+  "name": "CommentBot",
+  "deletedAt": null,
+  "workspace": {
+    "name": "ognile's Projects"
+  },
+  "environments": {
+    "edges": [
+      {
+        "node": {
+          "id": "f3fe8c23-5f2b-4617-82cb-09b0b5000e01",
+          "name": "production",
+          "canAccess": true,
+          "deletedAt": null,
+          "serviceInstances": {
+            "edges": [
+              {
+                "node": {
+                  "id": "8de4266b-e8f8-4e9c-9907-2ef8ade60e60",
+                  "serviceId": "97a66595-7be1-4484-923d-1b9e21ec8412",
+                  "serviceName": "CommentBot",
+                  "environmentId": "f3fe8c23-5f2b-4617-82cb-09b0b5000e01",
+                  "latestDeployment": {
+                    "canRedeploy": false,
+                    "id": "3dd85802-6597-4a21-89c1-56f9e49e08f6",
+                    "meta": {
+                      "branch": "main",
+                      "commitAuthor": "ognile",
+                      "commitHash": "9e566369c898225856390211cea9293b9a98ade2",
+                      "commitMessage": "fix remote controller clipboard bridge",
+                      "configErrors": [
+                        "Failed to snapshot repository. Please try again in a few minutes."
+                      ],
+                      "logsV2": true,
+                      "plan": "pro",
+                      "reason": "deploy",
+                      "repo": "ognile/commentfront",
+                      "runtime": "V2",
+                      "serviceManifest": {
+                        "build": {
+                          "buildCommand": null,
+                          "buildEnvironment": "V3",
+                          "builder": "RAILPACK",
+                          "dockerfilePath": null,
+                          "nixpacksConfigPath": null,
+                          "nixpacksPlan": null,
+                          "watchPatterns": []
+                        },
+                        "deploy": {
+                          "cronSchedule": null,
+                          "drainingSeconds": null,
+                          "healthcheckPath": null,
+                          "healthcheckTimeout": null,
+                          "ipv6EgressEnabled": false,
+                          "limitOverride": null,
+                          "multiRegionConfig": {
+                            "us-east4-eqdc4a": {
+                              "numReplicas": 1
+                            }
+                          },
+                          "numReplicas": 1,
+                          "overlapSeconds": null,
+                          "preDeployCommand": null,
+                          "region": null,
+                          "registryCredentials": null,
+                          "requiredMountPath": null,
+                          "restartPolicyMaxRetries": 10,
+                          "restartPolicyType": "ON_FAILURE",
+                          "runtime": "V2",
+                          "sleepApplication": false,
+                          "startCommand": null,
+                          "useLegacyStacker": false
+                        }
+                      },
+                      "volumeMounts": [
+                        "/data"
+                      ]
+                    },
+                    "status": "FAILED",
+                    "createdAt": "2026-03-12T19:26:20.194Z",
+                    "deploymentStopped": true
+                  },
+                  "source": {
+                    "repo": "ognile/commentfront",
+                    "image": null
+                  },
+                  "domains": {
+                    "serviceDomains": [
+                      {
+                        "id": "a05a5f89-7b47-4cc1-8282-d5683ef61081",
+                        "domain": "commentbot-production.up.railway.app",
+                        "targetPort": null
+                      }
+                    ],
+                    "customDomains": []
+                  },
+                  "cronSchedule": null,
+                  "nextCronRunAt": null,
+                  "startCommand": null
+                }
+              }
+            ]
+          },
+          "volumeInstances": {
+            "edges": [
+              {
+                "node": {
+                  "serviceId": "97a66595-7be1-4484-923d-1b9e21ec8412",
+                  "mountPath": "/data",
+                  "environmentId": "f3fe8c23-5f2b-4617-82cb-09b0b5000e01",
+                  "currentSizeMB": 287.096832,
+                  "sizeMB": 5000,
+                  "volume": {
+                    "name": "commentbot-volume",
+                    "id": "7e212cc0-a666-4216-8930-9fce242fef4f"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "services": {
+    "edges": [
+      {
+        "node": {
+          "id": "97a66595-7be1-4484-923d-1b9e21ec8412",
+          "name": "CommentBot"
+        }
+      }
+    ]
+  }
+}

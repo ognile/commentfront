@@ -1,0 +1,14 @@
+{
+  "status": 200,
+  "json": {
+    "active": false,
+    "active_leases": [],
+    "count": 0,
+    "session_id": null,
+    "platform": null,
+    "url": null,
+    "title": null,
+    "capacity_limit": 2,
+    "streaming_active": false
+  }
+}

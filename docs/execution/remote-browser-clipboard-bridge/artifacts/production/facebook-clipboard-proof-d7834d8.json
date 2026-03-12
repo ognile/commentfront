@@ -1,0 +1,81 @@
+{
+  "deployed_commit": "d7834d84e9e52c30efe47c9c6d497862e49b04e6",
+  "verified_at_utc": "2026-03-12T19:45:39.228081Z",
+  "platform": "facebook",
+  "session_id": "Vanessa Hines",
+  "controller_user": "codex_clipboard_verify",
+  "story_url": "https://m.facebook.com/story.php?story_fbid=10238368706869471&id=1621612422",
+  "clipboard_roundtrip": {
+    "copied_probe": "proof-d783",
+    "sentinel_after_paste": "sentinel-d783-20260312",
+    "sentinel_after_cut": "sentinel-d783-20260312"
+  },
+  "browser_startup": {
+    "lease_id": "18b6f3211df9",
+    "browser_ready_at": "2026-03-12T19:42:25.032172Z",
+    "proxy_fallback": {
+      "session_proxy_dead_shell_at": "2026-03-12T19:42:23.527743Z",
+      "env_proxy_attempt_at": "2026-03-12T19:42:23.578547Z"
+    }
+  },
+  "proof_events": [
+    {
+      "timestamp": "2026-03-12T19:44:48.534416Z",
+      "action": "select_all",
+      "selection_kind": "textarea",
+      "selection_length": 10,
+      "focus_snapshot": {
+        "tag_name": "textarea",
+        "role": "combobox",
+        "placeholder": "Write a comment…",
+        "is_content_editable": false
+      }
+    },
+    {
+      "timestamp": "2026-03-12T19:44:48.835962Z",
+      "action": "copy_selection",
+      "selection_kind": "textarea",
+      "selection_length": 10,
+      "can_delete": true
+    },
+    {
+      "timestamp": "2026-03-12T19:44:50.116759Z",
+      "action": "paste_text",
+      "length": 22,
+      "focus_snapshot": {
+        "tag_name": "textarea",
+        "role": "combobox",
+        "placeholder": "Write a comment…",
+        "is_content_editable": false
+      }
+    },
+    {
+      "timestamp": "2026-03-12T19:44:51.403194Z",
+      "action": "delete_selection",
+      "selection_kind": "textarea",
+      "selection_length": 22
+    },
+    {
+      "timestamp": "2026-03-12T19:45:07.222384Z",
+      "action": "paste_text",
+      "length": 22,
+      "focus_snapshot": {
+        "tag_name": "textarea",
+        "role": "combobox",
+        "placeholder": "Write a comment…",
+        "is_content_editable": false
+      }
+    },
+    {
+      "timestamp": "2026-03-12T19:45:39.228081Z",
+      "action": "lease_close",
+      "reason": "manual_stop"
+    }
+  ],
+  "artifacts": {
+    "composer_visible": "docs/execution/remote-browser-clipboard-bridge/artifacts/production/facebook-composer-visible-d7834d8.png",
+    "pasted_sentinel_visible": "docs/execution/remote-browser-clipboard-bridge/artifacts/production/facebook-paste-proof-d7834d8.png",
+    "remote_status_after_close": "docs/execution/remote-browser-clipboard-bridge/artifacts/production/remote-status-after-close-d7834d8.json",
+    "deployment_status": "docs/execution/remote-browser-clipboard-bridge/artifacts/production/github-status-d7834d8.json"
+  }
+}

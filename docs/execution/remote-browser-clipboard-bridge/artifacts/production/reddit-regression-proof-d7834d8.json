@@ -1,0 +1,18 @@
+{
+  "deployed_commit": "d7834d84e9e52c30efe47c9c6d497862e49b04e6",
+  "platform": "reddit",
+  "session_id": "reddit_amy_schaefera",
+  "controller_user": "codex_clipboard_verify",
+  "lease_id": "593d18f7c794",
+  "browser_ready_at": "2026-03-12T19:40:10.879626Z",
+  "proof": {
+    "tap_search_at": "2026-03-12T19:40:44.999623Z",
+    "typed_text": "reddit-regression-0312",
+    "typed_character_events": 22,
+    "lease_close_at": "2026-03-12T19:41:03.828197Z"
+  },
+  "artifacts": {
+    "screenshot": "docs/execution/remote-browser-clipboard-bridge/artifacts/production/reddit-typing-proof-d7834d8.png",
+    "remote_status_after_close": "docs/execution/remote-browser-clipboard-bridge/artifacts/production/remote-status-after-close-d7834d8.json"
+  }
+}
