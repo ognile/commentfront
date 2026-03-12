@@ -68,6 +68,7 @@ from queue_manager import (
     LOOKBACK_DAYS_DEFAULT,
     NEAR_DUPLICATE_THRESHOLD,
 )
+from safe_io import atomic_write_json, safe_read_json
 from login_bot import create_session_from_credentials, refresh_session_profile_name, refresh_session_picture, fetch_profile_data_from_cookies
 from remote_lease_service import (
     RemoteLeaseError,
@@ -256,16 +257,30 @@ reddit_bulk_rollout_tasks: Dict[str, asyncio.Task] = {}
 reddit_convergence_tasks: Dict[str, asyncio.Task] = {}
 
 # =========================================================================
-# Media Store (ephemeral file-backed storage for queue jobs)
+# Media Store (durable file-backed storage for queue jobs)
 # =========================================================================
 
-MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/tmp/commentbot_media"))
+
+def _default_media_dir() -> Path:
+    configured = os.getenv("MEDIA_DIR")
+    if configured:
+        return Path(configured)
+    data_dir = os.getenv("DATA_DIR")
+    if data_dir:
+        return Path(data_dir) / "commentbot_media"
+    if Path("/data").exists():
+        return Path("/data/commentbot_media")
+    return Path("/tmp/commentbot_media")
+
+
+MEDIA_DIR = _default_media_dir()
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+MEDIA_INDEX_PATH = Path(os.getenv("MEDIA_INDEX_PATH", str(MEDIA_DIR / "media_index.json")))
 MEDIA_TTL_HOURS = int(os.getenv("MEDIA_TTL_HOURS", "24"))
 MEDIA_MAX_SIZE = 10 * 1024 * 1024  # 10MB
 MEDIA_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
-# In-memory metadata index for uploaded media
+# In-memory metadata index for uploaded media. Rehydrated from disk on demand.
 media_index: Dict[str, Dict] = {}
 
 # Idempotency cache for /queue submissions
@@ -1455,7 +1470,7 @@ def _ensure_full_url(value: str) -> bool:
 
 
 def _cleanup_expired_media() -> None:
-    """Evict expired media files from in-memory index and disk."""
+    """Evict expired media files from the metadata index and disk."""
     now = datetime.utcnow()
     expired_ids = []
     for image_id, item in media_index.items():
@@ -1469,15 +1484,62 @@ def _cleanup_expired_media() -> None:
         except Exception:
             expired_ids.append(image_id)
 
+    changed = False
     for image_id in expired_ids:
         item = media_index.pop(image_id, None)
         if not item:
             continue
+        changed = True
         try:
             path = Path(item["path"])
             path.unlink(missing_ok=True)
         except Exception as cleanup_err:
             logger.warning(f"Failed to cleanup media {image_id}: {cleanup_err}")
+    if changed:
+        _persist_media_index()
+
+
+def _load_media_index() -> Dict[str, Dict]:
+    raw = safe_read_json(str(MEDIA_INDEX_PATH), default={})
+    if not isinstance(raw, dict):
+        return {}
+    loaded: Dict[str, Dict] = {}
+    changed = False
+    now = datetime.utcnow()
+    for image_id, item in raw.items():
+        if not isinstance(item, dict):
+            changed = True
+            continue
+        path = Path(str(item.get("path") or ""))
+        expires_at = item.get("expires_at")
+        expiry: Optional[datetime] = None
+        if expires_at:
+            try:
+                expiry = datetime.fromisoformat(str(expires_at))
+            except Exception:
+                changed = True
+                expiry = None
+        if expiry and now >= expiry:
+            changed = True
+            path.unlink(missing_ok=True)
+            continue
+        if not path.exists():
+            changed = True
+            continue
+        loaded[str(image_id)] = dict(item)
+    if changed:
+        atomic_write_json(str(MEDIA_INDEX_PATH), loaded)
+    return loaded
+
+
+def _persist_media_index() -> None:
+    if not atomic_write_json(str(MEDIA_INDEX_PATH), media_index):
+        logger.warning(f"Failed to persist media index to {MEDIA_INDEX_PATH}")
+
+
+def _refresh_media_index_from_disk() -> None:
+    media_index.clear()
+    media_index.update(_load_media_index())
 
 
 def _get_media_or_none(image_id: str) -> Optional[Dict]:
@@ -1485,11 +1547,18 @@ def _get_media_or_none(image_id: str) -> Optional[Dict]:
     _cleanup_expired_media()
     item = media_index.get(image_id)
     if not item:
+        _refresh_media_index_from_disk()
+        item = media_index.get(image_id)
+    if not item:
         return None
     if not Path(item["path"]).exists():
         media_index.pop(image_id, None)
+        _persist_media_index()
         return None
     return item
+
+
+_refresh_media_index_from_disk()
 
 
 def _build_queue_jobs(
@@ -4452,6 +4521,7 @@ async def upload_media(
         "expires_at": expires_at.isoformat(),
         "uploaded_by": current_user.get("username"),
     }
+    _persist_media_index()
 
     return MediaUploadResponse(
         success=True,
