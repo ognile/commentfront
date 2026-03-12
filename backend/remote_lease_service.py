@@ -103,6 +103,7 @@ class RemoteSessionSpec:
     proxy_source: Literal["session", "env"]
     start_url: str
     wait_until: str = "domcontentloaded"
+    fallback_start_urls: List[str] = field(default_factory=list)
     storage_state: Optional[Dict[str, Any]] = None
     apply_context: Optional[Callable[[BrowserContext], Awaitable[bool]]] = None
     is_mobile: Optional[bool] = None
@@ -161,6 +162,19 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
             raise RuntimeError("no proxy available. configure PROXY_URL or persist a session proxy.")
 
         fingerprint = session.get_device_fingerprint()
+        user_id = session.get_user_id()
+        start_url = f"https://m.facebook.com/profile.php?id={user_id}" if user_id else "https://m.facebook.com/"
+        fallback_start_urls: List[str] = []
+        if user_id:
+            fallback_start_urls.extend(
+                [
+                    f"https://www.facebook.com/profile.php?id={user_id}",
+                    "https://www.facebook.com/",
+                    "https://m.facebook.com/",
+                ]
+            )
+        else:
+            fallback_start_urls.append("https://www.facebook.com/")
 
         async def _apply_facebook(context: BrowserContext) -> bool:
             return await apply_session_to_context(context, session)
@@ -174,8 +188,9 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
             locale=fingerprint["locale"],
             proxy_url=proxy_url,
             proxy_source="session" if stored_proxy else "env",
-            start_url="https://m.facebook.com/",
-            wait_until="commit",
+            start_url=start_url,
+            wait_until="domcontentloaded",
+            fallback_start_urls=fallback_start_urls,
             apply_context=_apply_facebook,
         )
 
@@ -503,6 +518,65 @@ class RemoteLease:
         self._last_page_health = health
         return health
 
+    def _page_has_renderable_document(self, health: Dict[str, Any]) -> bool:
+        html_length = int(health.get("htmlLength") or 0)
+        body_text_length = int(health.get("bodyTextLength") or 0)
+        title = str(health.get("title") or "").strip()
+        ready_state = str(health.get("readyState") or "")
+        return html_length > 0 or body_text_length > 0 or bool(title) or ready_state in {"interactive", "complete"}
+
+    async def _wait_for_renderable_document(self, *, timeout_seconds: float = 8.0) -> Dict[str, Any]:
+        deadline = time.monotonic() + max(0.5, timeout_seconds)
+        last_health: Dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            self._refresh_page_state()
+            await self.refresh_title()
+            last_health = await self._page_health_snapshot()
+            if self._page_has_renderable_document(last_health):
+                return last_health
+            await asyncio.sleep(0.5)
+        return last_health
+
+    async def _navigate_initial_page(self, session_spec: RemoteSessionSpec, *, reason: str) -> Dict[str, Any]:
+        assert self._page is not None
+        candidates: List[str] = []
+        seen: set[str] = set()
+        for url in [session_spec.start_url, *session_spec.fallback_start_urls]:
+            normalized = str(url or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            candidates.append(normalized)
+
+        last_error = ""
+        last_health: Dict[str, Any] = {}
+        for index, candidate in enumerate(candidates, start=1):
+            try:
+                await self._page.goto(candidate, wait_until=session_spec.wait_until, timeout=30000)
+            except Exception as exc:
+                last_error = str(exc)
+                self._log_event(
+                    "browser_start_url_failed",
+                    {"reason": reason, "url": candidate, "attempt": index, "error": str(exc)},
+                )
+                continue
+
+            health = await self._wait_for_renderable_document()
+            if self._page_has_renderable_document(health):
+                return {"url": candidate, "attempt": index, "page_health": health}
+
+            last_health = health
+            self._log_event(
+                "browser_start_url_empty",
+                {"reason": reason, "url": candidate, "attempt": index, "page_health": health},
+            )
+
+        raise RuntimeError(
+            f"failed to load a renderable {self.platform} start page"
+            + (f": {last_error}" if last_error else "")
+            + (f" health={json.dumps(last_health, ensure_ascii=True)}" if last_health else "")
+        )
+
     async def _capture_frame_bytes(self) -> Optional[bytes]:
         if not self._page or self._page.is_closed():
             return None
@@ -767,7 +841,7 @@ class RemoteLease:
         self._page.on("filechooser", lambda chooser: asyncio.create_task(self._handle_file_chooser(chooser)))
         self._page.on("close", lambda: asyncio.create_task(self._handle_page_closed("page_closed")))
         self._page.on("crash", lambda: asyncio.create_task(self._handle_page_closed("page_crashed")))
-        await self._page.goto(session_spec.start_url, wait_until=session_spec.wait_until, timeout=30000)
+        navigation_result = await self._navigate_initial_page(session_spec, reason=reason)
 
         self._cdp = await self._context.new_cdp_session(self._page)
         await self._cdp.send("Page.enable")
@@ -776,7 +850,7 @@ class RemoteLease:
         self.status = "ready"
         self._refresh_page_state()
         await self.refresh_title()
-        page_health = await self._page_health_snapshot()
+        page_health = navigation_result.get("page_health") or await self._page_health_snapshot()
         self._persist_meta()
         if self.has_viewers:
             await self._start_frame_stream()
@@ -784,7 +858,8 @@ class RemoteLease:
             "browser_ready",
             {
                 "reason": reason,
-                "start_url": session_spec.start_url,
+                "start_url": navigation_result.get("url") or session_spec.start_url,
+                "start_attempt": navigation_result.get("attempt"),
                 "proxy_source": session_spec.proxy_source,
                 "page_health": page_health,
             },
@@ -1004,7 +1079,7 @@ class RemoteLease:
             await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             self._refresh_page_state()
             await self.refresh_title()
-            self._log_event("navigate", {"url": url, "user": viewer.username, "page_health": await self._page_health_snapshot()})
+            self._log_event("navigate", {"url": url, "user": viewer.username, "page_health": await self._wait_for_renderable_document()})
             await self._broadcast_state()
             return {"success": True, "action": "navigate", "url": self.current_url}
 

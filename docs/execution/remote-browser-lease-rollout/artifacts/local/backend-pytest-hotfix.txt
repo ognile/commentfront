@@ -435,4 +435,4 @@ backend/tests/test_restriction_recovery_reliability.py::test_scheduler_keeps_fol
     self.state["next_run_at"] = (datetime.utcnow() + timedelta(hours=interval)).isoformat()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-====================== 333 passed, 472 warnings in 30.56s ======================
+====================== 333 passed, 472 warnings in 30.73s ======================

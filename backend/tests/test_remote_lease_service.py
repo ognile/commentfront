@@ -33,6 +33,9 @@ class _FakeFacebookSession:
     def get_viewport(self):
         return {"width": 393, "height": 873}
 
+    def get_user_id(self):
+        return "12345"
+
 
 class _FakeRedditSession:
     def __init__(self, profile_name: str):
@@ -135,7 +138,12 @@ def test_resolve_remote_session_spec_prefers_saved_facebook_proxy(monkeypatch):
     assert spec.platform == "facebook"
     assert spec.proxy_url == "http://session-proxy:8080"
     assert spec.proxy_source == "session"
-    assert spec.start_url == "https://m.facebook.com/"
+    assert spec.start_url == "https://m.facebook.com/profile.php?id=12345"
+    assert spec.fallback_start_urls == [
+        "https://www.facebook.com/profile.php?id=12345",
+        "https://www.facebook.com/",
+        "https://m.facebook.com/",
+    ]
     assert spec.user_agent == "facebook-agent"
 
 

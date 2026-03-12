@@ -1,0 +1,1562 @@
+[
+  {
+    "id": "4b0f4f4e-8d20-46fa-8c6f-86f2d37e1b92",
+    "status": "DEPLOYING",
+    "createdAt": "2026-03-12T14:12:47.967Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "3b58cb883250c309b436a2647f8f46b55f370226",
+      "commitMessage": "fix remote close and frame streaming",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "25209e20-7996-4fd0-8134-35bec15bd722",
+    "status": "SUCCESS",
+    "createdAt": "2026-03-12T13:48:38.671Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "278eaea1196ffd68085f3a151b09f0be3036ffdc",
+      "commitMessage": "record remote lease rollout proof",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:036f8383df51a326ab1fd125b113bdccefe81adb2a196b7fbc714111fd5bfed9",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "d34231dd-4ff0-47a5-9dc4-29515e15a45f",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T13:36:42.166Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "8a6f8f31e2205917d860c4d04f0350329e92628d",
+      "commitMessage": "finalize remote lease cleanup",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:036f8383df51a326ab1fd125b113bdccefe81adb2a196b7fbc714111fd5bfed9",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "2321aea4-7ad7-458b-90cc-09fd4bec1ff1",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T13:20:31.040Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "af256307caf58c08caea79836dcb709d92fb4fff",
+      "commitMessage": "update remote control ui for lease sessions",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:55da83422c1ed2ddb3080cd88f801f5409c6d76bb091c44db771834c295d3b8f",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "1e2f264a-134b-437e-93d3-3ba1b5c8aaf6",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T13:14:35.476Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "0c5b03ce4b03cbdaae0ac71136b8773dc1e8cc79",
+      "commitMessage": "replace remote singleton with lease service",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:55da83422c1ed2ddb3080cd88f801f5409c6d76bb091c44db771834c295d3b8f",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "8b6f55d5-db17-406f-90ee-c90e5daf01dd",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T12:37:28.481Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "faa7f926ebe4158029b17507573faffdc405f0bd",
+      "commitMessage": "add reddit proof review links",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:a69d542346f14e278b4472a3698181c65caabd4369b7292a57fdcc232f97c92b",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "5c881321-db6f-4016-b013-f50773f351ff",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T12:22:51.834Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "951d741a78b014b476f62ad2e1b54d787d48e3e0",
+      "commitMessage": "record reddit unified execution proof",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:b0efc302c44869032698f45f83860ead3fb175bfbb044154027713ff172376ad",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "7d7764dd-127e-4870-abf9-482557ee3141",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T12:13:28.123Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "1448195438f15a8e2172b4b22f512d134ef7357d",
+      "commitMessage": "harden reddit create post verification",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:b0efc302c44869032698f45f83860ead3fb175bfbb044154027713ff172376ad",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "a4aea04e-c615-4461-ab14-0f9105d9790d",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T11:48:46.259Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "e78ff2f8151f97dba867302516750cfa276698b5",
+      "commitMessage": "add reddit unified execution contract",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:c74144261ee72f62416a700ceb3e7dcd5e6ed3e969a6244bfa1afb32c7b1f394",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "621e6261-9ac8-4f46-af15-b35a65665d6f",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T09:45:51.064Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "11af2ee23c59f19f1770e1a35e3203b699876a6f",
+      "commitMessage": "document reddit profile proof closure",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:5947263e4b933c35ecd65e685a131c64982e34bf1d019a34c5d9ade1d91084f9",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "caf58aa2-b883-4887-84b5-a331207b2ce5",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T09:27:35.075Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "40302fb6dae878abac12f4b0b29432bc7cd2bcf4",
+      "commitMessage": "install playwright headless shell in docker",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:5947263e4b933c35ecd65e685a131c64982e34bf1d019a34c5d9ade1d91084f9",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "f72035f2-733d-4ae7-819c-de17faad3bf2",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T09:22:07.005Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "07333be53a2e2fd7ab5ab4a55ee5bd3afbe36909",
+      "commitMessage": "fix reddit infra classification regression",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:d0b2e20a2349dd9fa5b491b75c4d15c5079cacf3a8eae937f5cd54bee6db0de8",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "54aa3e06-2cf1-4b70-b452-f6ec55b8a8a4",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T09:14:12.651Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "96a72e311243df0575b713f5777d1d1b1a11acf9",
+      "commitMessage": "fix reddit target reuse and mature gate",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:7b297f271e7b2c34af55d95c1300a2217dfa2f54d11572fa3a3fde459083b388",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "c89265ba-03f7-4144-8279-182ef5c00a40",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T02:44:53.206Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "1395a2b896016fed659c7df691f579418277ddf6",
+      "commitMessage": "tighten reddit comment grounding validation",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:0e66e6193514ef6f5eb3c91197133c0217faa16eed52fd064a40733b82019805",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "68e34934-c51f-40fb-a9e3-ba81b2ff3149",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T02:34:55.698Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "6b5e82a156fcea9f6474b427eac6c7a62bf78f99",
+      "commitMessage": "fix reddit thread context detection",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:cf88e493c26ef9fd6c24f41b1d061ef4747203a27281b2ab2e8937bfc7c77998",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "51458252-bbeb-499b-9748-096c4609b475",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T02:26:18.683Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "f2c9883f650706fa73b4cd6f517b222877cb75d0",
+      "commitMessage": "fix reddit comment generation retry prompt",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:458bf6f5be289ee37ff4e166bf2c20e3aa7ae302b7f8ea955399cbb4b462d251",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "4da6c378-8ab1-4b8a-a3d1-8ffa030a0e14",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T02:20:08.135Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "21fdac6385ddf13de5a9024a5f16b45e8ef33ad7",
+      "commitMessage": "stabilize reddit generator retry deploy",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:5d9219f68bf2cbbc5aa06d44990cbbc5c5dfe2cb3dcc6838380914198451016d",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "3c56fc1a-507e-46c5-b598-28460d9fddfa",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T02:17:53.884Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "38168fe7741b53083f0951c96840d58eb33f88fe",
+      "commitMessage": "adapt reddit comment retry loop",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "ignoreWatchPatterns": true,
+      "imageDigest": "sha256:57f12be4b0cd7ddbe1dc484236fce9ae555085452c7463c105cabc62a2c3379a",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "redeploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "4afb8be3-00aa-46a1-9a10-8e68749d58f6",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T02:10:27.140Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "38168fe7741b53083f0951c96840d58eb33f88fe",
+      "commitMessage": "adapt reddit comment retry loop",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:57f12be4b0cd7ddbe1dc484236fce9ae555085452c7463c105cabc62a2c3379a",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  },
+  {
+    "id": "f05b5abf-7084-4808-9049-dab16bb06677",
+    "status": "REMOVED",
+    "createdAt": "2026-03-12T01:54:57.886Z",
+    "meta": {
+      "branch": "main",
+      "buildOnly": false,
+      "commitAuthor": "ognile",
+      "commitHash": "908af4203a9a2287db2d5ce8ad90d97d87112d25",
+      "commitMessage": "open reddit community settings via view community",
+      "configFile": "/backend/railway.json",
+      "fileServiceManifest": {
+        "build": {
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+        }
+      },
+      "imageDigest": "sha256:2f0ab40990518a3292f1a957768c4e8b8639cdd10e1a7a3afe902996697947e4",
+      "logsV2": true,
+      "nixpacksProviders": [],
+      "plan": "pro",
+      "propertyFileMapping": {
+        "build.builder": "$.build.builder",
+        "build.dockerfilePath": "$.build.dockerfilePath",
+        "deploy.restartPolicyMaxRetries": "$.deploy.restartPolicyMaxRetries",
+        "deploy.restartPolicyType": "$.deploy.restartPolicyType",
+        "deploy.startCommand": "$.deploy.startCommand"
+      },
+      "reason": "deploy",
+      "repo": "ognile/commentfront",
+      "rootDirectory": "/backend",
+      "runtime": "V2",
+      "serviceManifest": {
+        "build": {
+          "buildCommand": null,
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "nixpacksConfigPath": null,
+          "nixpacksPlan": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "ipv6EgressEnabled": false,
+          "limitOverride": null,
+          "multiRegionConfig": {
+            "us-east4-eqdc4a": {
+              "numReplicas": 1
+            }
+          },
+          "numReplicas": 1,
+          "overlapSeconds": null,
+          "preDeployCommand": null,
+          "region": null,
+          "registryCredentials": null,
+          "requiredMountPath": null,
+          "restartPolicyMaxRetries": 10,
+          "restartPolicyType": "ON_FAILURE",
+          "runtime": "V2",
+          "sleepApplication": false,
+          "startCommand": "sh -c \"uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\"",
+          "useLegacyStacker": false
+        }
+      },
+      "volumeMounts": [
+        "/data"
+      ]
+    }
+  }
+]
