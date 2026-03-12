@@ -97,6 +97,46 @@ def _reddit_username_candidates(*values: Optional[str]) -> List[str]:
     return candidates
 
 
+def _extract_reddit_username_from_profile_url(profile_url: Optional[str]) -> Optional[str]:
+    raw_value = str(profile_url or "").strip()
+    if not raw_value:
+        return None
+    candidate_url = raw_value if "://" in raw_value else f"https://www.reddit.com/{raw_value.lstrip('/')}"
+    try:
+        parsed = urlsplit(candidate_url)
+    except Exception:
+        return None
+    segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    if len(segments) < 2:
+        return None
+    if segments[0].lower() not in {"user", "u"}:
+        return None
+    return segments[1]
+
+
+def _reddit_profile_recovery_urls(
+    *,
+    actor_username: Optional[str],
+    profile_url: Optional[str],
+) -> List[str]:
+    candidate_urls: List[str] = []
+    seen = set()
+    explicit_username = _extract_reddit_username_from_profile_url(profile_url)
+    raw_usernames: List[str] = []
+    for value in (explicit_username, actor_username):
+        raw_value = str(value or "").strip()
+        if raw_value:
+            raw_usernames.append(raw_value)
+    for username in raw_usernames + _reddit_username_candidates(explicit_username, actor_username):
+        base_url = f"https://www.reddit.com/user/{quote(username)}/"
+        for candidate_url in (f"{base_url}submitted/", base_url):
+            if candidate_url in seen:
+                continue
+            seen.add(candidate_url)
+            candidate_urls.append(candidate_url)
+    return candidate_urls
+
+
 async def _find_created_post_permalink_on_feed(
     page,
     *,
@@ -175,13 +215,26 @@ async def _reddit_page_has_server_error(page) -> bool:
     return "server error" in body_text and "please try again later" in body_text
 
 
+async def _reddit_page_has_unknown_username(page) -> bool:
+    try:
+        body_text = _normalize_text(await page.locator("body").inner_text())
+    except Exception:
+        return False
+    if not body_text:
+        return False
+    return (
+        "sorry, nobody on reddit goes by that name" in body_text
+        or "this account may have been banned or the username is incorrect" in body_text
+    )
+
+
 async def _recover_created_post_permalink_after_submit(
     page,
     *,
     title: str,
     body: Optional[str],
     actor_username: Optional[str],
-    profile_name: Optional[str],
+    profile_url: Optional[str],
     subreddit: Optional[str],
 ) -> Optional[str]:
     normalized_subreddit = normalize_subreddit_name(subreddit)
@@ -194,27 +247,33 @@ async def _recover_created_post_permalink_after_submit(
                 f"https://www.reddit.com/r/{encoded_subreddit}/",
             ]
         )
-    for username in _reddit_username_candidates(actor_username, profile_name):
-        candidate_urls.append(f"https://www.reddit.com/user/{quote(username)}/submitted/")
-    seen = set()
-    current_url = str(page.url or "")
-    for candidate_url in candidate_urls:
-        if not candidate_url or candidate_url in seen or candidate_url == current_url:
-            continue
-        seen.add(candidate_url)
-        try:
-            await _goto(page, candidate_url)
-        except Exception:
-            continue
-        permalink = await _find_created_post_permalink_on_feed(
-            page,
-            title=title,
-            body=body,
+    candidate_urls.extend(
+        _reddit_profile_recovery_urls(
             actor_username=actor_username,
-            profile_name=profile_name,
+            profile_url=profile_url,
         )
-        if permalink:
-            return permalink
+    )
+    if not candidate_urls:
+        return None
+    for attempt_index in range(3):
+        for candidate_url in candidate_urls:
+            try:
+                await _goto(page, candidate_url)
+            except Exception:
+                continue
+            if await _reddit_page_has_unknown_username(page):
+                continue
+            permalink = await _find_created_post_permalink_on_feed(
+                page,
+                title=title,
+                body=body,
+                actor_username=actor_username,
+                profile_name=None,
+            )
+            if permalink:
+                return permalink
+        if attempt_index < 2:
+            await page.wait_for_timeout(4000)
     return None
 
 
@@ -3769,6 +3828,13 @@ async def _build_create_post_proof_validation(
         canonical_title_matches.append(title if key == expected_title else raw_match)
     title_match_count = len(canonical_title_matches) or int(raw_title_metrics.get("count") or 0)
     violations: List[str] = []
+    current_url = str(getattr(page, "url", "") or "")
+    if await _reddit_page_has_server_error(page):
+        violations.append("reddit showed a server error before rendered post verification")
+    if await _reddit_page_has_unknown_username(page):
+        violations.append("recovery navigated to an invalid reddit user page")
+    if "/submit" in current_url:
+        violations.append("post remained on compose surface after submit")
     if title_match_count != 1:
         violations.append(
             "rendered post title did not appear exactly once"
@@ -4385,6 +4451,7 @@ async def create_post(
                 await page.wait_for_timeout(5000)
                 current_url = page.url
             actor_username = session.get_username() if hasattr(session, "get_username") else None
+            actor_profile_url = session.get_profile_url() if hasattr(session, "get_profile_url") else None
             created_post_url = current_url if "/comments/" in current_url else None
             if not created_post_url:
                 created_post_url = await _find_created_post_permalink_on_feed(
@@ -4392,7 +4459,7 @@ async def create_post(
                     title=title,
                     body=body,
                     actor_username=actor_username,
-                    profile_name=getattr(session, "profile_name", None),
+                    profile_name=None,
                 )
             if not created_post_url and (
                 "/submit" in str(current_url or "") or await _reddit_page_has_server_error(page)
@@ -4402,7 +4469,7 @@ async def create_post(
                     title=title,
                     body=body,
                     actor_username=actor_username,
-                    profile_name=getattr(session, "profile_name", None),
+                    profile_url=actor_profile_url,
                     subreddit=normalized,
                 )
             if created_post_url and "/comments/" not in str(page.url or ""):

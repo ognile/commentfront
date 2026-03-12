@@ -1441,6 +1441,90 @@ def test_create_post_recovers_created_post_from_subreddit_new_feed_after_submit_
     assert upload_locator.paths == [str(image_path.resolve())]
 
 
+def test_create_post_recovery_uses_authoritative_profile_url_not_internal_profile_name(monkeypatch, tmp_path):
+    upload_locator = _FakeUploadLocator()
+    image_path = tmp_path / "proof.png"
+    image_path.write_bytes(b"png")
+
+    class _FakeMediaPage(_FakePage):
+        def locator(self, selector):
+            if selector == "body":
+                return _FakeBodyLocator(self.body_text)
+            if selector == 'input[type="file"]':
+                return upload_locator
+            raise AssertionError(f"unexpected locator: {selector}")
+
+    page = _FakeMediaPage()
+    page.url = "https://www.reddit.com/r/ATBGE/submit?type=IMAGE"
+    page.body_text = "server error we have encountered an error. please try again later."
+    goto_urls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, url):
+        goto_urls.append(url)
+        page.url = url
+        if "/submit" in url:
+            page.body_text = "server error we have encountered an error. please try again later."
+        elif "/user/" in url:
+            page.body_text = "recent posts from amy"
+        else:
+            page.body_text = ""
+
+    async def fake_find_created_permalink(_page, *, title, body, actor_username, profile_name):
+        assert title == "image proof title"
+        assert actor_username is None
+        assert profile_name is None
+        if page.url == "https://www.reddit.com/user/Amy_Schaefera/submitted/":
+            return "https://www.reddit.com/r/ATBGE/comments/example/profile_recovered_post/"
+        return None
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_select_post_compose_tab", lambda *_args, label: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_ensure_subreddit_user_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(reddit_bot, "_fill_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_post_requires_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_find_created_post_permalink_on_feed", fake_find_created_permalink)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
+
+    session = type(
+        "Session",
+        (),
+        {
+            "profile_name": "reddit_amy_schaefera",
+            "get_username": lambda self: None,
+            "get_profile_url": lambda self: "https://www.reddit.com/user/Amy_Schaefera/",
+        },
+    )()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="image proof title",
+            subreddit="ATBGE",
+            image_path=str(image_path),
+        )
+    )
+
+    assert result["success"] is True
+    assert result["target_url"] == "https://www.reddit.com/r/ATBGE/comments/example/profile_recovered_post/"
+    assert "https://www.reddit.com/user/Amy_Schaefera/submitted/" in goto_urls
+    assert "https://www.reddit.com/user/reddit_amy_schaefera/submitted/" not in goto_urls
+    assert upload_locator.paths == [str(image_path.resolve())]
+
+
 def test_create_post_returns_community_restricted(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/WomensHealth/submit?type=TEXT"
@@ -2161,6 +2245,30 @@ def test_build_create_post_proof_validation_dedupes_reddit_page_title_echo(monke
     assert result["title_matches"] == [
         "Did anyone else feel unusually dry for a few days after finishing BV treatment?"
     ]
+
+
+def test_build_create_post_proof_validation_flags_server_error_submit_surface(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/ATBGE/submit/?type=IMAGE"
+    page.body_text = "server error. we have encountered an error. please try again later."
+
+    async def fake_body_line_match_metrics(_page, _text):
+        return {"count": 0, "matches": []}
+
+    monkeypatch.setattr(reddit_bot, "_body_line_match_metrics", fake_body_line_match_metrics)
+
+    result = asyncio.run(
+        reddit_bot._build_create_post_proof_validation(
+            page,
+            title="worse than brickell. this church-car grille is trash.",
+            body=None,
+        )
+    )
+
+    assert result["ok"] is False
+    assert "reddit showed a server error before rendered post verification" in result["violations"]
+    assert "post remained on compose surface after submit" in result["violations"]
+    assert "rendered post title did not appear exactly once" in result["violations"]
 
 
 def test_click_comment_upvote_region_tries_fallback_candidates(monkeypatch):
