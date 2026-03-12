@@ -11,9 +11,12 @@ Replaces the singleton browser session model with per-profile leases that:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -38,6 +41,11 @@ RemoteRole = Literal["controller", "observer"]
 
 IDLE_CLOSE_SECONDS = int(os.getenv("REMOTE_IDLE_CLOSE_SECONDS", "300"))
 MAX_ACTIVE_LEASES = int(os.getenv("REMOTE_MAX_ACTIVE_LEASES", "2"))
+REMOTE_FRAME_IDLE_INTERVAL_SECONDS = float(os.getenv("REMOTE_FRAME_IDLE_INTERVAL_SECONDS", "0.10"))
+REMOTE_FRAME_ACTIVE_INTERVAL_SECONDS = float(os.getenv("REMOTE_FRAME_ACTIVE_INTERVAL_SECONDS", "0.033"))
+REMOTE_FRAME_ACTIVE_BURST_SECONDS = float(os.getenv("REMOTE_FRAME_ACTIVE_BURST_SECONDS", "0.5"))
+REMOTE_FRAME_SEND_STALE_SECONDS = float(os.getenv("REMOTE_FRAME_SEND_STALE_SECONDS", "2.5"))
+REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS", "10"))
 
 
 class RemoteLeaseError(RuntimeError):
@@ -108,6 +116,7 @@ class RemoteViewer:
     role: RemoteRole
     attached_at: str = field(default_factory=_iso_now)
     last_frame_at: Optional[str] = None
+    last_frame_at_ts: float = 0.0
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def send_json(self, payload: Dict[str, Any]) -> bool:
@@ -239,7 +248,7 @@ class RemoteLease:
         self.browser_started_at: Optional[str] = None
         self.browser_restart_count = 0
         self.pending_upload: Optional[Dict[str, Any]] = None
-        self.latest_frame: Optional[str] = None
+        self.latest_frame: Optional[bytes] = None
         self.latest_frame_format = "jpeg"
         self.latest_frame_bootstrap = False
         self.latest_state_revision = 0
@@ -253,8 +262,9 @@ class RemoteLease:
         self._page: Optional[Page] = None
         self._cdp: Any = None
         self._expected_page_close = False
-        self._screencast_started = False
-        self._screencast_listener_registered = False
+        self._frame_stream_task: Optional[asyncio.Task] = None
+        self._frame_stream_state = "stopped"
+        self._last_frame_hash: Optional[str] = None
         self._startup_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
         self._viewers: Dict[WebSocket, RemoteViewer] = {}
@@ -262,6 +272,8 @@ class RemoteLease:
         self._action_worker_task = asyncio.create_task(self._action_worker())
         self._idle_close_task: Optional[asyncio.Task] = None
         self._last_action_at: Optional[str] = None
+        self._last_action_at_ts = 0.0
+        self._last_page_health: Dict[str, Any] = {}
         self._meta_file = REMOTE_LEASES_DIR / self.lease_id / "meta.json"
         self._events_file = REMOTE_LEASES_DIR / self.lease_id / "events.jsonl"
         self._events: List[Dict[str, Any]] = []
@@ -302,6 +314,7 @@ class RemoteLease:
             "browser_restart_count": self.browser_restart_count,
             "last_error": self.last_error,
             "viewport": self.viewport,
+            "frame_stream_state": self._frame_stream_state,
             "reservation_source": "remote_lease",
             "reservation_owner": self.lease_id,
             "active": self.active,
@@ -469,23 +482,73 @@ class RemoteLease:
             except Exception:
                 pass
 
-    async def _broadcast_frame(self, image_base64: str, *, bootstrap: bool) -> None:
-        width = self.viewport["width"]
-        height = self.viewport["height"]
-        disconnected: List[RemoteViewer] = []
-        payload = json.dumps(
+    async def _page_health_snapshot(self) -> Dict[str, Any]:
+        if not self._page or self._page.is_closed():
+            return {}
+        try:
+            health = await self._page.evaluate(
+                """() => ({
+                    readyState: document.readyState,
+                    visibilityState: document.visibilityState,
+                    bodyTextLength: (document.body?.innerText || '').trim().length,
+                    htmlLength: document.documentElement?.outerHTML?.length || 0,
+                })"""
+            )
+        except Exception as exc:
+            health = {"error": str(exc)}
+        if not isinstance(health, dict):
+            health = {}
+        health["title"] = self.current_title or ""
+        health["url"] = self.current_url or ""
+        self._last_page_health = health
+        return health
+
+    async def _capture_frame_bytes(self) -> Optional[bytes]:
+        if not self._page or self._page.is_closed():
+            return None
+        try:
+            frame = await asyncio.wait_for(
+                self._page.screenshot(
+                    type=self.latest_frame_format,
+                    quality=70,
+                    scale="css",
+                ),
+                timeout=REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning(f"remote lease {self.lease_id}: frame capture failed: {exc}")
+            return None
+        self.latest_frame = frame
+        self.latest_frame_bootstrap = False
+        self.last_frame_at = _iso_now()
+        return frame
+
+    def _build_frame_message(self, frame: bytes, *, bootstrap: bool) -> str:
+        return json.dumps(
             {
                 "type": "frame",
                 "data": {
-                    "image": image_base64,
-                    "width": width,
-                    "height": height,
+                    "image": base64.b64encode(frame).decode("utf-8"),
+                    "width": self.viewport["width"],
+                    "height": self.viewport["height"],
                     "format": self.latest_frame_format,
                     "bootstrap": bootstrap,
                     "timestamp": _iso_now(),
                 },
             }
         )
+
+    def _viewer_missing_recent_frame(self, viewer: RemoteViewer, *, within_seconds: float) -> bool:
+        if not viewer.last_frame_at_ts:
+            return True
+        return (time.time() - float(viewer.last_frame_at_ts)) > float(within_seconds)
+
+    def _any_viewer_missing_recent_frame(self, *, within_seconds: float) -> bool:
+        return any(self._viewer_missing_recent_frame(viewer, within_seconds=within_seconds) for viewer in self._viewers.values())
+
+    async def _broadcast_frame(self, frame: bytes, *, bootstrap: bool) -> None:
+        disconnected: List[RemoteViewer] = []
+        payload = self._build_frame_message(frame, bootstrap=bootstrap)
         for viewer in list(self._viewers.values()):
             ok = await self._send_text_to_viewer(
                 viewer,
@@ -493,84 +556,87 @@ class RemoteLease:
                 detach_on_failure=False,
             )
             if ok:
-                viewer.last_frame_at = _iso_now()
+                viewer.last_frame_at = self.last_frame_at
+                viewer.last_frame_at_ts = time.time()
             else:
                 disconnected.append(viewer)
         for viewer in disconnected:
             await self.detach_viewer(viewer.websocket)
 
-    async def _capture_bootstrap_frame(self) -> Optional[str]:
-        if not self._cdp:
+    async def _capture_bootstrap_frame(self) -> Optional[bytes]:
+        if not self._page or self._page.is_closed():
             return None
-        try:
-            result = await self._cdp.send(
-                "Page.captureScreenshot",
-                {
-                    "format": self.latest_frame_format,
-                    "quality": 65,
-                    "fromSurface": True,
-                },
-            )
-        except Exception as exc:
-            logger.warning(f"remote lease {self.lease_id}: bootstrap capture failed: {exc}")
+        frame = await self._capture_frame_bytes()
+        if frame is None:
             return None
-        data = str(result.get("data") or "")
-        if not data:
-            return None
-        self.latest_frame = data
+        self.latest_frame = frame
         self.latest_frame_bootstrap = True
-        self.last_frame_at = _iso_now()
-        return data
+        return frame
 
-    async def _start_screencast(self) -> None:
-        if not self._cdp or self._screencast_started or not self.has_viewers:
+    async def _start_frame_stream(self) -> None:
+        if not self.has_viewers:
             return
-        if not self._screencast_listener_registered:
-            self._cdp.on("Page.screencastFrame", lambda params: asyncio.create_task(self._handle_screencast_frame(params)))
-            self._screencast_listener_registered = True
+        task = self._frame_stream_task
+        if task and not task.done():
+            return
+        self._frame_stream_state = "starting"
+        self._frame_stream_task = asyncio.create_task(self._frame_stream_loop())
+        self._log_event("frame_stream_start", {"viewer_count": len(self._viewers)})
+
+    async def _stop_frame_stream(self) -> None:
+        task = self._frame_stream_task
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._frame_stream_task = None
+        if self._frame_stream_state != "stopped":
+            self._log_event("frame_stream_stop", {"viewer_count": len(self._viewers)})
+        self._frame_stream_state = "stopped"
+
+    async def _frame_stream_loop(self) -> None:
+        self._frame_stream_state = "running"
+        consecutive_errors = 0
         try:
-            await self._cdp.send(
-                "Page.startScreencast",
-                {
-                    "format": self.latest_frame_format,
-                    "quality": 65,
-                    "maxWidth": self.viewport["width"],
-                    "maxHeight": self.viewport["height"],
-                    "everyNthFrame": 1,
-                },
-            )
-            self._screencast_started = True
-            self._log_event("screencast_start", {"viewer_count": len(self._viewers)})
-        except Exception as exc:
-            self.last_error = str(exc)
-            self._log_event("screencast_start_failed", {"error": str(exc)})
+            while self.has_viewers and self.active:
+                try:
+                    interval = REMOTE_FRAME_IDLE_INTERVAL_SECONDS
+                    if time.time() - self._last_action_at_ts < REMOTE_FRAME_ACTIVE_BURST_SECONDS:
+                        interval = REMOTE_FRAME_ACTIVE_INTERVAL_SECONDS
+
+                    frame = await self._capture_frame_bytes()
+                    if frame is None:
+                        raise RuntimeError("frame capture returned empty result")
+
+                    consecutive_errors = 0
+                    frame_hash = hashlib.md5(frame).hexdigest()[:8]
+                    should_send = frame_hash != self._last_frame_hash
+                    if should_send or self._any_viewer_missing_recent_frame(within_seconds=REMOTE_FRAME_SEND_STALE_SECONDS):
+                        self._last_frame_hash = frame_hash
+                        await self._broadcast_frame(frame, bootstrap=False)
+                    await asyncio.sleep(interval)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    consecutive_errors += 1
+                    self.last_error = str(exc)
+                    self._log_event(
+                        "frame_stream_capture_failed",
+                        {"error": str(exc), "consecutive_errors": consecutive_errors},
+                    )
+                    if consecutive_errors >= 5:
+                        self._frame_stream_state = "failed"
+                        break
+                    await asyncio.sleep(min(1.5, 0.25 * consecutive_errors))
+        except asyncio.CancelledError:
+            self._frame_stream_state = "stopped"
             raise
-
-    async def _stop_screencast(self) -> None:
-        if not self._cdp or not self._screencast_started:
-            return
-        try:
-            await self._cdp.send("Page.stopScreencast")
-        except Exception as exc:
-            logger.warning(f"remote lease {self.lease_id}: stop screencast failed: {exc}")
-        self._screencast_started = False
-        self._log_event("screencast_stop", {"viewer_count": len(self._viewers)})
-
-    async def _handle_screencast_frame(self, params: Dict[str, Any]) -> None:
-        if not self._cdp:
-            return
-        session_id = params.get("sessionId")
-        try:
-            await self._cdp.send("Page.screencastFrameAck", {"sessionId": session_id})
-        except Exception:
-            pass
-        data = str(params.get("data") or "")
-        if not data:
-            return
-        self.latest_frame = data
-        self.latest_frame_bootstrap = False
-        self.last_frame_at = _iso_now()
-        await self._broadcast_frame(data, bootstrap=False)
+        finally:
+            if self._frame_stream_state != "failed":
+                self._frame_stream_state = "stopped"
+            self._frame_stream_task = None
 
     async def add_viewer(self, websocket: WebSocket, username: str) -> RemoteViewer:
         role = self.get_role_for(username)
@@ -586,23 +652,11 @@ class RemoteLease:
                 details={"lease_id": self.lease_id, "session_id": self.session_id},
             )
         await self._broadcast_state()
-        await self._start_screencast()
+        await self._start_frame_stream()
         if self.latest_frame:
             sent = await self._send_text_to_viewer(
                 viewer,
-                json.dumps(
-                    {
-                        "type": "frame",
-                        "data": {
-                            "image": self.latest_frame,
-                            "width": self.viewport["width"],
-                            "height": self.viewport["height"],
-                            "format": self.latest_frame_format,
-                            "bootstrap": True,
-                            "timestamp": _iso_now(),
-                        },
-                    }
-                ),
+                self._build_frame_message(self.latest_frame, bootstrap=True),
                 detach_on_failure=True,
             )
             if not sent:
@@ -620,7 +674,7 @@ class RemoteLease:
             return
         self.viewer_count = len(self._viewers)
         if not self._viewers:
-            await self._stop_screencast()
+            await self._stop_frame_stream()
             self._schedule_idle_close()
         await self._broadcast_state()
 
@@ -659,8 +713,8 @@ class RemoteLease:
             if self.active:
                 self._refresh_page_state()
                 await self.refresh_title()
-                if self.has_viewers and not self._screencast_started:
-                    await self._start_screencast()
+                if self.has_viewers and (self._frame_stream_task is None or self._frame_stream_task.done()):
+                    await self._start_frame_stream()
                 return
             await self._start_browser(reason=reason)
 
@@ -722,15 +776,17 @@ class RemoteLease:
         self.status = "ready"
         self._refresh_page_state()
         await self.refresh_title()
+        page_health = await self._page_health_snapshot()
         self._persist_meta()
         if self.has_viewers:
-            await self._start_screencast()
+            await self._start_frame_stream()
         self._log_event(
             "browser_ready",
             {
                 "reason": reason,
                 "start_url": session_spec.start_url,
                 "proxy_source": session_spec.proxy_source,
+                "page_health": page_health,
             },
         )
 
@@ -866,6 +922,7 @@ class RemoteLease:
             return {"success": False, "error": "observer cannot control active lease"}
         await self.ensure_browser_ready(reason=f"action:{action_type}")
         self._last_action_at = _iso_now()
+        self._last_action_at_ts = time.time()
 
         if action_type == "tap":
             x = int(action_data.get("x", self.pointer_x))
@@ -947,7 +1004,7 @@ class RemoteLease:
             await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             self._refresh_page_state()
             await self.refresh_title()
-            self._log_event("navigate", {"url": url, "user": viewer.username})
+            self._log_event("navigate", {"url": url, "user": viewer.username, "page_health": await self._page_health_snapshot()})
             await self._broadcast_state()
             return {"success": True, "action": "navigate", "url": self.current_url}
 
@@ -1053,7 +1110,7 @@ class RemoteLease:
     async def _teardown_browser(self, *, persist: bool) -> None:
         self._expected_page_close = True
         try:
-            await self._stop_screencast()
+            await self._stop_frame_stream()
         except Exception:
             pass
         if persist:
@@ -1077,9 +1134,11 @@ class RemoteLease:
                 logger.warning(f"remote lease {self.lease_id}: playwright stop failed: {exc}")
         self._playwright = None
         self._expected_page_close = False
-        self._screencast_started = False
+        self._frame_stream_state = "stopped"
+        self._last_frame_hash = None
         self.latest_frame = None
         self.last_frame_at = None
+        self._last_page_health = {}
         self._refresh_page_state()
 
     async def persist_session_state(self) -> None:
@@ -1388,7 +1447,7 @@ class RemoteLeaseService:
             "url": primary.get("url"),
             "title": primary.get("title"),
             "capacity_limit": MAX_ACTIVE_LEASES,
-            "streaming_active": any(bool(lease.has_viewers and lease._screencast_started) for lease in self.active_leases()),
+            "streaming_active": any(bool(lease.has_viewers and lease._frame_stream_state == "running") for lease in self.active_leases()),
         }
 
     def _read_events_from_dir(self, lease_dir: Path, limit: int) -> List[Dict[str, Any]]:

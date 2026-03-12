@@ -1,0 +1,62 @@
+{
+  "active": true,
+  "active_leases": [
+    {
+      "lease_id": "0015888aed5b",
+      "session_id": "Vanessa Hines",
+      "platform": "facebook",
+      "controller_user": "claude_api_key",
+      "viewer_count": 0,
+      "status": "ready",
+      "created_at": "2026-03-12T13:58:55.625406Z",
+      "updated_at": "2026-03-12T14:00:04.944142Z",
+      "closed_at": null,
+      "url": "https://m.facebook.com/",
+      "title": "",
+      "last_frame_at": "2026-03-12T13:58:56.188710Z",
+      "last_action_at": null,
+      "browser_started_at": "2026-03-12T13:58:56.169197Z",
+      "browser_restart_count": 1,
+      "last_error": null,
+      "viewport": {
+        "width": 393,
+        "height": 873
+      },
+      "reservation_source": "remote_lease",
+      "reservation_owner": "0015888aed5b",
+      "active": true
+    },
+    {
+      "lease_id": "5d84966db282",
+      "session_id": "Wanda Lobb",
+      "platform": "facebook",
+      "controller_user": "claude_api_key",
+      "viewer_count": 1,
+      "status": "ready",
+      "created_at": "2026-03-12T13:59:54.765395Z",
+      "updated_at": "2026-03-12T13:59:55.340396Z",
+      "closed_at": null,
+      "url": "https://m.facebook.com/",
+      "title": "",
+      "last_frame_at": "2026-03-12T13:59:55.347503Z",
+      "last_action_at": null,
+      "browser_started_at": "2026-03-12T13:59:55.329610Z",
+      "browser_restart_count": 1,
+      "last_error": null,
+      "viewport": {
+        "width": 393,
+        "height": 873
+      },
+      "reservation_source": "remote_lease",
+      "reservation_owner": "5d84966db282",
+      "active": true
+    }
+  ],
+  "count": 2,
+  "session_id": "Vanessa Hines",
+  "platform": "facebook",
+  "url": "https://m.facebook.com/",
+  "title": "",
+  "capacity_limit": 2,
+  "streaming_active": true
+}

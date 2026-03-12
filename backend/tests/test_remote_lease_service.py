@@ -167,8 +167,8 @@ def test_attach_reuses_same_profile_as_observer_and_persists_logs(isolated_remot
     pm, _leases_dir = isolated_remote_environment
     monkeypatch.setattr(remote_lease_service.RemoteLease, "ensure_browser_ready", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "refresh_title", _async_noop)
-    monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_screencast", _async_noop)
-    monkeypatch.setattr(remote_lease_service.RemoteLease, "_stop_screencast", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_frame_stream", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_stop_frame_stream", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "_capture_bootstrap_frame", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "_teardown_browser", _async_noop)
 
@@ -261,8 +261,8 @@ def test_prepare_upload_excludes_temp_path(isolated_remote_environment, monkeypa
 def test_action_result_prunes_disconnected_viewer(isolated_remote_environment, monkeypatch):
     monkeypatch.setattr(remote_lease_service.RemoteLease, "ensure_browser_ready", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "refresh_title", _async_noop)
-    monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_screencast", _async_noop)
-    monkeypatch.setattr(remote_lease_service.RemoteLease, "_stop_screencast", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_frame_stream", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_stop_frame_stream", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "_capture_bootstrap_frame", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "_schedule_idle_close", lambda self: None)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "_teardown_browser", _async_noop)
@@ -297,8 +297,8 @@ def test_action_result_prunes_disconnected_viewer(isolated_remote_environment, m
 def test_takeover_prunes_dead_observer_and_keeps_live_controller(isolated_remote_environment, monkeypatch):
     monkeypatch.setattr(remote_lease_service.RemoteLease, "ensure_browser_ready", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "refresh_title", _async_noop)
-    monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_screencast", _async_noop)
-    monkeypatch.setattr(remote_lease_service.RemoteLease, "_stop_screencast", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_frame_stream", _async_noop)
+    monkeypatch.setattr(remote_lease_service.RemoteLease, "_stop_frame_stream", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "_capture_bootstrap_frame", _async_noop)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "_schedule_idle_close", lambda self: None)
     monkeypatch.setattr(remote_lease_service.RemoteLease, "_teardown_browser", _async_noop)

@@ -1,0 +1,143 @@
+[
+  {
+    "session": "Vanessa Hines",
+    "events": [
+      {
+        "type": "lease_role",
+        "data": {
+          "lease_id": "0015888aed5b",
+          "role": "controller",
+          "controller_user": "claude_api_key",
+          "can_control": true,
+          "timestamp": "2026-03-12T14:03:44.050675Z"
+        }
+      },
+      {
+        "type": "state",
+        "data": {
+          "lease_id": "0015888aed5b",
+          "session_id": "Vanessa Hines",
+          "platform": "facebook",
+          "controller_user": "claude_api_key",
+          "viewer_count": 1,
+          "status": "ready",
+          "created_at": "2026-03-12T13:58:55.625406Z",
+          "updated_at": "2026-03-12T14:00:04.944142Z",
+          "closed_at": null,
+          "url": "https://m.facebook.com/",
+          "title": "",
+          "last_frame_at": "2026-03-12T13:58:56.188710Z",
+          "last_action_at": null,
+          "browser_started_at": "2026-03-12T13:58:56.169197Z",
+          "browser_restart_count": 1,
+          "last_error": null,
+          "viewport": {
+            "width": 393,
+            "height": 873
+          },
+          "reservation_source": "remote_lease",
+          "reservation_owner": "0015888aed5b",
+          "active": true,
+          "role": "controller",
+          "can_control": true,
+          "timestamp": "2026-03-12T14:03:44.050894Z"
+        }
+      },
+      {
+        "type": "frame",
+        "bootstrap": true,
+        "image_length": 3128,
+        "width": 393,
+        "height": 873,
+        "image_path": "docs/execution/remote-browser-lease-rollout/artifacts/production/vanessa_hines_blank_probe.jpeg"
+      }
+    ],
+    "image_path": "docs/execution/remote-browser-lease-rollout/artifacts/production/vanessa_hines_blank_probe.jpeg"
+  },
+  {
+    "session": "Wanda Lobb",
+    "events": [
+      {
+        "type": "lease_role",
+        "data": {
+          "lease_id": "5d84966db282",
+          "role": "controller",
+          "controller_user": "claude_api_key",
+          "can_control": true,
+          "timestamp": "2026-03-12T14:03:44.464918Z"
+        }
+      },
+      {
+        "type": "state",
+        "data": {
+          "lease_id": "5d84966db282",
+          "session_id": "Wanda Lobb",
+          "platform": "facebook",
+          "controller_user": "claude_api_key",
+          "viewer_count": 2,
+          "status": "ready",
+          "created_at": "2026-03-12T13:59:54.765395Z",
+          "updated_at": "2026-03-12T13:59:55.340396Z",
+          "closed_at": null,
+          "url": "https://m.facebook.com/",
+          "title": "",
+          "last_frame_at": "2026-03-12T13:59:55.347503Z",
+          "last_action_at": null,
+          "browser_started_at": "2026-03-12T13:59:55.329610Z",
+          "browser_restart_count": 1,
+          "last_error": null,
+          "viewport": {
+            "width": 393,
+            "height": 873
+          },
+          "reservation_source": "remote_lease",
+          "reservation_owner": "5d84966db282",
+          "active": true,
+          "role": "controller",
+          "can_control": true,
+          "timestamp": "2026-03-12T14:03:44.465131Z"
+        }
+      },
+      {
+        "type": "state",
+        "data": {
+          "lease_id": "5d84966db282",
+          "session_id": "Wanda Lobb",
+          "platform": "facebook",
+          "controller_user": "claude_api_key",
+          "viewer_count": 1,
+          "status": "ready",
+          "created_at": "2026-03-12T13:59:54.765395Z",
+          "updated_at": "2026-03-12T13:59:55.340396Z",
+          "closed_at": null,
+          "url": "https://m.facebook.com/",
+          "title": "",
+          "last_frame_at": "2026-03-12T13:59:55.347503Z",
+          "last_action_at": null,
+          "browser_started_at": "2026-03-12T13:59:55.329610Z",
+          "browser_restart_count": 1,
+          "last_error": null,
+          "viewport": {
+            "width": 393,
+            "height": 873
+          },
+          "reservation_source": "remote_lease",
+          "reservation_owner": "5d84966db282",
+          "active": true,
+          "role": "controller",
+          "can_control": true,
+          "timestamp": "2026-03-12T14:03:44.465217Z"
+        }
+      },
+      {
+        "type": "frame",
+        "bootstrap": true,
+        "image_length": 3128,
+        "width": 393,
+        "height": 873,
+        "image_path": "docs/execution/remote-browser-lease-rollout/artifacts/production/wanda_lobb_blank_probe.jpeg"
+      }
+    ],
+    "image_path": "docs/execution/remote-browser-lease-rollout/artifacts/production/wanda_lobb_blank_probe.jpeg"
+  }
+]

@@ -26,6 +26,14 @@ function getRemoteRestartPath(session: RemoteSessionTarget): string {
   return `${API_BASE}/sessions/${encodedProfile}/remote/restart`
 }
 
+function getRemoteStopPath(session: RemoteSessionTarget): string {
+  const encodedProfile = encodeURIComponent(session.profileName)
+  if (session.platform === 'reddit') {
+    return `${API_BASE}/reddit/sessions/${encodedProfile}/remote/stop`
+  }
+  return `${API_BASE}/sessions/${encodedProfile}/remote/stop`
+}
+
 function getUploadPath(session: RemoteSessionTarget): string {
   return `${API_BASE}/sessions/${encodeURIComponent(session.profileName)}/upload-image`
 }
@@ -91,6 +99,7 @@ export function useRemoteControl() {
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const remoteModalOpenRef = useRef(remoteModalOpen)
   const remoteSessionRef = useRef<RemoteSessionTarget | null>(remoteSession)
+  const reconnectEnabledRef = useRef(false)
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null)
   const activeKeysRef = useRef<Set<string>>(new Set())
 
@@ -148,6 +157,7 @@ export function useRemoteControl() {
       heartbeatIntervalRef.current = null
     }
     if (remoteWsRef.current) {
+      remoteWsRef.current.onclose = null
       remoteWsRef.current.close()
       remoteWsRef.current = null
     }
@@ -158,7 +168,9 @@ export function useRemoteControl() {
 
   const connectRemoteWebSocket = useCallback((session: RemoteSessionTarget) => {
     if (remoteWsRef.current) {
+      remoteWsRef.current.onclose = null
       remoteWsRef.current.close()
+      remoteWsRef.current = null
     }
 
     setRemoteConnecting(true)
@@ -236,6 +248,9 @@ export function useRemoteControl() {
       }
 
       ws.onclose = () => {
+        if (remoteWsRef.current === ws) {
+          remoteWsRef.current = null
+        }
         setRemoteConnected(false)
         setRemoteConnecting(false)
         setKeyboardCaptureEnabled(false)
@@ -245,7 +260,13 @@ export function useRemoteControl() {
           heartbeatIntervalRef.current = null
         }
 
-        if (remoteModalOpenRef.current && reconnectAttemptRef.current < 5) {
+        if (
+          reconnectEnabledRef.current &&
+          remoteModalOpenRef.current &&
+          remoteSessionRef.current &&
+          reconnectAttemptRef.current < 5 &&
+          remoteWsRef.current === null
+        ) {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 10000)
           toast.loading('reconnecting...', { id: 'remote-reconnect' })
           reconnectTimeoutRef.current = setTimeout(() => {
@@ -298,6 +319,9 @@ export function useRemoteControl() {
   }, [])
 
   const openRemoteModal = useCallback((session: RemoteSessionTarget) => {
+    remoteSessionRef.current = session
+    remoteModalOpenRef.current = true
+    reconnectEnabledRef.current = true
     setRemoteSession(session)
     setRemoteModalOpen(true)
     setRemoteFrame(null)
@@ -309,7 +333,17 @@ export function useRemoteControl() {
     connectRemoteWebSocket(session)
   }, [connectRemoteWebSocket, resetRemoteLeaseState])
 
-  const closeRemoteModal = useCallback(() => {
+  const closeRemoteModal = useCallback(async () => {
+    const session = remoteSessionRef.current
+    const shouldStopLease = Boolean(
+      session &&
+      remoteRole !== 'observer' &&
+      remoteViewerCount <= 1,
+    )
+
+    reconnectEnabledRef.current = false
+    remoteModalOpenRef.current = false
+    remoteSessionRef.current = null
     disconnectRemoteWebSocket()
     setRemoteModalOpen(false)
     setRemoteSession(null)
@@ -319,7 +353,26 @@ export function useRemoteControl() {
     setActionLog([])
     setPendingUpload(null)
     setUploadReady(false)
-  }, [disconnectRemoteWebSocket])
+    if (!session || !shouldStopLease) {
+      return
+    }
+
+    try {
+      const response = await fetch(getRemoteStopPath(session), {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      })
+      if (response.status === 404) {
+        return
+      }
+      const result = await response.json()
+      if (!response.ok || result.success === false) {
+        throw new Error(result.error || result.detail?.message || result.detail || 'failed to stop remote browser')
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'failed to stop remote browser')
+    }
+  }, [disconnectRemoteWebSocket, getAuthHeaders, remoteRole, remoteViewerCount])
 
   const handleRemotePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!remoteConnected || !remoteCanControl) return

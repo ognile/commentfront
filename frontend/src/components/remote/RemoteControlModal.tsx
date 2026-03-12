@@ -99,7 +99,7 @@ export function RemoteControlModal({ remote }: RemoteControlModalProps) {
                   take over
                 </Button>
               ) : null}
-              <Button variant="ghost" size="sm" onClick={closeRemoteModal}>
+              <Button variant="ghost" size="sm" onClick={() => void closeRemoteModal()}>
                 <X className="h-5 w-5" />
               </Button>
             </div>

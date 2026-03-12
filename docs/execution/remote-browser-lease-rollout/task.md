@@ -21,21 +21,25 @@
 - do not modify the user's existing change in `.claude/CLAUDE.md`.
 
 ## current state
-- the remote singleton has been fully removed and production now runs on the lease service only.
-- production baseline artifacts and final production proof artifacts are both saved under `artifacts/`.
+- the remote singleton is still removed and production still runs on the lease service only.
+- the earlier "done" verdict was wrong. fresh production proof now shows two live defects: modal close can still lead to a reopen path, and fresh facebook remote attaches can deliver blank white frames.
+- new production evidence is saved under `artifacts/production/`, including blank-frame probes and the earlier stop/reconnect log window.
 - the only pre-existing worktree change outside this task remains `.claude/CLAUDE.md`.
 
 ## active todo
-1. stage the final proof artifacts and tracker updates.
-2. cut the final documentation/proof commit without touching `.claude/CLAUDE.md`.
-3. push the proof commit and re-verify production health on the no-code redeploy.
-4. finish with a zero-untracked worktree.
+1. patch the frontend close lifecycle so an intentional modal close cannot trigger reconnect and sole-controller close releases capacity immediately.
+2. replace the blank cdp pixel path with a screenshot-based per-lease frame pump and add better remote diagnostics.
+3. run targeted local verification for the frontend hook/modal and backend remote lease tests.
+4. push the hotfix through github, wait for production deploys, and re-run facebook plus reddit remote smokes on production.
+5. update proof artifacts, tracker synthesis, and the final pass/fail matrix from the hotfix results.
 
 ## current understanding
 - the main correctness bug is architectural, not cosmetic: one global browser slot plus direct websocket-to-page mutation creates unavoidable interference and poor input fidelity.
 - a non-breaking rollout requires preserving the current remote routes while swapping their internals first, then upgrading the frontend, then removing compatibility code.
 - remote leases must own reservation state, browser lifecycle, proof logs, and upload state.
-- the last production regression was a dead-websocket handling bug: closed sockets were not pruned consistently and the websocket loop treated some closed-socket runtime errors as generic failures, which could spin logs and obscure the actual lease state.
+- the current production failures are now narrower and concrete:
+- the frontend close path closes the websocket before the modal-open refs are cleared, so `onclose` can still schedule an automatic reconnect against a session the user thought they closed.
+- the backend cdp frame path can report a healthy lease while the delivered first frame is a blank white jpeg; both `Vanessa Hines` and `Wanda Lobb` reproduced that on production.
 
 ## proven wins
 - the adaptive execution tracker is initialized and baseline production health/remote artifacts are saved.
@@ -46,9 +50,10 @@
 - the final cleanup is implemented locally: `backend/browser_manager.py` is deleted, `backend/main.py` only accepts canonical remote actions, dead websocket sends prune viewers, and the full backend suite now passes at `333 passed`.
 - railway serves commit `8a6f8f31e2205917d860c4d04f0350329e92628d` and vercel serves deployment `dpl_CvTB2NLLifm4iiAX19JLfLPr2Ee3` on `commentfront.vercel.app`.
 - production capacity, reservation, takeover, disconnect, health, and frontend-ui smokes are all confirmed with saved artifacts.
+- fresh production probes now prove the remaining defect shape instead of leaving it anecdotal: the saved facebook probe images are blank white frames, and the earlier stop window shows a new browser start after a user-initiated stop path.
 
 ## open risks
-- none for the remote lease rollout itself; remaining warnings in local verification are pre-existing deprecation/lint warnings outside this task scope.
+- until the hotfix ships, facebook remote can still show blank frames and the ui can still leave capacity pinned after an intended close.
 
 ## final pass/fail matrix
 - `[pass]` two different profiles can hold active leases concurrently. evidence: `artifacts/production/prod-capacity-and-reservation-after-cleanup.json`

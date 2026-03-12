@@ -18,7 +18,7 @@ type MockSocket = {
 
 type RemotePointerDownEvent = Parameters<ReturnType<typeof useRemoteControl>['handleRemotePointerDown']>[0]
 
-const { mockedToast, socketRegistry } = vi.hoisted(() => ({
+const { mockedToast, socketRegistry, fetchMock } = vi.hoisted(() => ({
   mockedToast: {
     success: vi.fn(),
     error: vi.fn(),
@@ -27,6 +27,11 @@ const { mockedToast, socketRegistry } = vi.hoisted(() => ({
   socketRegistry: {
     instances: [] as MockSocket[],
   },
+  fetchMock: vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ success: true }),
+  })),
 }))
 
 vi.mock('sonner', () => ({ toast: mockedToast }))
@@ -70,9 +75,11 @@ describe('useRemoteControl', () => {
     mockedToast.success.mockReset()
     mockedToast.error.mockReset()
     mockedToast.loading.mockReset()
+    fetchMock.mockClear()
     vi.stubGlobal('crypto', {
       randomUUID: vi.fn(() => `action-${++actionCounter}`),
     })
+    vi.stubGlobal('fetch', fetchMock)
   })
 
   afterEach(() => {
@@ -191,5 +198,82 @@ describe('useRemoteControl', () => {
       data: { text: 'hello world' },
       action_id: 'action-1',
     })
+  })
+
+  it('stops a sole-controller lease on modal close without reconnecting', async () => {
+    const { result } = renderHook(() => useRemoteControl())
+
+    act(() => {
+      result.current.openRemoteModal({
+        platform: 'facebook',
+        profileName: 'alpha',
+        displayName: 'Alpha',
+        valid: true,
+      })
+    })
+
+    const socket = socketRegistry.instances[0]
+    act(() => {
+      socket.emitOpen()
+      socket.emitMessage({
+        type: 'state',
+        data: {
+          url: 'https://m.facebook.com/',
+          role: 'controller',
+          can_control: true,
+          controller_user: 'tester',
+          viewer_count: 1,
+          lease_id: 'lease-alpha',
+        },
+      })
+    })
+
+    await act(async () => {
+      await result.current.closeRemoteModal()
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8000/sessions/alpha/remote/stop', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    })
+    expect(socketRegistry.instances).toHaveLength(1)
+    expect(result.current.remoteModalOpen).toBe(false)
+  })
+
+  it('does not stop the lease when an observer closes the modal', async () => {
+    const { result } = renderHook(() => useRemoteControl())
+
+    act(() => {
+      result.current.openRemoteModal({
+        platform: 'facebook',
+        profileName: 'alpha',
+        displayName: 'Alpha',
+        valid: true,
+      })
+    })
+
+    const socket = socketRegistry.instances[0]
+    act(() => {
+      socket.emitOpen()
+      socket.emitMessage({
+        type: 'state',
+        data: {
+          url: 'https://m.facebook.com/',
+          role: 'observer',
+          can_control: false,
+          controller_user: 'alice',
+          viewer_count: 2,
+          lease_id: 'lease-alpha',
+        },
+      })
+    })
+
+    await act(async () => {
+      await result.current.closeRemoteModal()
+    })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(socketRegistry.instances).toHaveLength(1)
+    expect(result.current.remoteModalOpen).toBe(false)
   })
 })
