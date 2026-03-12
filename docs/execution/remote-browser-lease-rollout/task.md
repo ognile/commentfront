@@ -21,8 +21,8 @@
 - do not modify the user's existing change in `.claude/CLAUDE.md`.
 
 ## current state
-- the lease service remains the only remote runtime; the final startup-latency fix is deployed in github commit `9385d1f` and railway deployment `81db6510-5f11-4375-92c6-23d9c0006828`.
-- vercel is green on `9385d1f`; the frontend bundle remains `index-BB8jDaND.js` because the final iterations were backend-only.
+- the lease service remains the only remote runtime; the final backend fix is live on head commit `5036486`, with railway deployment `7fe5e1d9-0e65-4ce8-921f-bfaeed8a563d`. the backend code path itself was last changed in `9385d1f`.
+- vercel is green on `5036486`; the frontend bundle remains `index-BB8jDaND.js` because the final iterations were backend-only and the head commit only updated proof artifacts.
 - production now proves the reported vanessa hang is resolved at the actual websocket attach layer: `browser_ready` improved from `9.257s` to `4.778s`, first frame improved from `9.705s` to `5.599s`, and the dead saved proxy is cut off after one short startup attempt before env fallback.
 - the only pre-existing worktree change outside this task remains `.claude/CLAUDE.md`.
 
@@ -65,6 +65,7 @@
 - the final live vanessa logs show the dead session proxy was abandoned after about `2.8s` instead of the earlier `6.7s+`, then env fallback reached `browser_ready` about `1.6s` later. evidence: `artifacts/production/prod-facebook-vanessa-hines-logs-final-startup-fix.json`
 - the final live reddit regression probe stayed healthy on the same deployment: `reddit_amy_schaefera` reached `browser_ready` in `3.96s` on the session proxy and closed cleanly. evidence: `artifacts/production/prod-reddit-reddit-amy-schaefera-logs-final-startup-fix.json`
 - railway deployment `81db6510-5f11-4375-92c6-23d9c0006828` and github commit status for `9385d1f` are both green. evidence: `artifacts/production/prod-railway-deployments-9385d1f.txt`, `artifacts/production/prod-github-status-9385d1f.json`
+- the final head commit `5036486` is also green on github and railway, and a live vanessa sanity probe on that head kept the improved timing range: `4.654s` to `browser_ready`, `5.348s` to first frame, zero active leases after stop. evidence: `artifacts/production/prod-github-status-5036486.json`, `artifacts/production/prod-railway-deployments-5036486.txt`, `artifacts/production/prod-vanessa-head-sanity-5036486.json`
 
 ## open risks
 - none in scope for this task. the only operational wrinkle was one transient railway deployment miss on `1aabc9c`; the next github-state deploy `9385d1f` succeeded and is the authoritative production proof point.
@@ -86,3 +87,4 @@
 - `[pass]` the reported vanessa startup wait is materially reduced in production. evidence: `artifacts/production/prod-remote-startup-regression-summary-e23f914.json`, `artifacts/production/prod-remote-startup-regression-summary-9385d1f.json`
 - `[pass]` the final production backend deploy for the startup-latency fix is green on github and railway. evidence: `artifacts/production/prod-github-status-9385d1f.json`, `artifacts/production/prod-railway-deployments-9385d1f.txt`
 - `[pass]` after the final production probes, remote status returns to zero active leases. evidence: `artifacts/production/prod-remote-status-after-final-startup-fix.json`
+- `[pass]` the final head commit keeps the same improved vanessa startup path after the tracker-only redeploy. evidence: `artifacts/production/prod-github-status-5036486.json`, `artifacts/production/prod-railway-deployments-5036486.txt`, `artifacts/production/prod-vanessa-head-sanity-5036486.json`
