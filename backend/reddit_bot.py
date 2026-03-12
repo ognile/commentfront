@@ -1484,6 +1484,22 @@ async def _post_requires_flair(page) -> bool:
     )
 
 
+async def _post_flair_ui_visible(page) -> bool:
+    if await _has_visible_selector_match(page, POST["flair_button"]):
+        return True
+    return bool(
+        await _find_visible_text_region(
+            page,
+            needle="Add flair",
+            min_top=120,
+            max_top=760,
+            max_text_length=32,
+            max_height=80,
+            max_width=260,
+        )
+    )
+
+
 _POST_FLAIR_EXPAND_PATTERNS = (
     "view all flair",
     "view all flairs",
@@ -4472,12 +4488,14 @@ async def create_post(
             current_url = page.url
             if "/submit" in str(current_url or ""):
                 delayed_flair_required = await _post_requires_flair(page)
-                if delayed_flair_required:
+                delayed_flair_visible = await _post_flair_ui_visible(page)
+                if delayed_flair_required or delayed_flair_visible:
                     if not await _ensure_post_flair(page, force=True):
                         await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED DELAYED")
                         raise RuntimeError("Reddit post flair selection failed")
                     await _dismiss_reddit_open_app_sheet(page)
                     if not await _click_post_submit(page, action_name="create_post_submit_after_delayed_flair"):
+                        await _capture_post_flair_sheet_state(page, "REDDIT POST FLAIR SUBMIT MISSING AFTER DELAYED FLAIR")
                         raise RuntimeError("Reddit Post button not found after delayed flair selection")
                 elif not await _click_post_submit(page, action_name="create_post_submit_retry"):
                     await _capture_post_flair_sheet_state(page, "REDDIT POST SUBMIT STILL MISSING")

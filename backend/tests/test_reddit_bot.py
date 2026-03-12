@@ -1465,6 +1465,76 @@ def test_create_post_recovers_created_post_from_subreddit_new_feed_after_submit_
     assert upload_locator.paths == [str(image_path.resolve())]
 
 
+def test_create_post_uses_visible_flair_ui_when_detector_misses_requirement(monkeypatch, tmp_path):
+    upload_locator = _FakeUploadLocator()
+    image_path = tmp_path / "proof.png"
+    image_path.write_bytes(b"png")
+
+    class _FakeMediaPage(_FakePage):
+        def locator(self, selector):
+            if selector == "body":
+                return _FakeBodyLocator(self.body_text)
+            if selector == 'input[type="file"]':
+                return upload_locator
+            raise AssertionError(f"unexpected locator: {selector}")
+
+    page = _FakeMediaPage()
+    page.url = "https://www.reddit.com/r/WeirdWheels/submit?type=IMAGE"
+    page.body_text = ""
+    submit_actions = []
+    ensure_flair_forces = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_click_post_submit(_page, *, action_name):
+        submit_actions.append(action_name)
+        if action_name == "create_post_submit_after_delayed_flair":
+            page.url = "https://www.reddit.com/r/WeirdWheels/comments/example/new_post/"
+        return True
+
+    async def fake_ensure_post_flair(_page, *, force=False):
+        ensure_flair_forces.append(force)
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_select_post_compose_tab", lambda *_args, label: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_ensure_subreddit_user_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(reddit_bot, "_fill_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_click_post_submit", fake_click_post_submit)
+    monkeypatch.setattr(reddit_bot, "_post_requires_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_post_flair_ui_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_ensure_post_flair", fake_ensure_post_flair)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
+
+    session = type("Session", (), {"profile_name": "reddit_victor_saunders"})()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="image proof title",
+            subreddit="WeirdWheels",
+            image_path=str(image_path),
+        )
+    )
+
+    assert result["success"] is True
+    assert result["target_url"] == "https://www.reddit.com/r/WeirdWheels/comments/example/new_post/"
+    assert submit_actions == ["create_post_submit_initial", "create_post_submit_after_delayed_flair"]
+    assert ensure_flair_forces == [True]
+    assert upload_locator.paths == [str(image_path.resolve())]
+
+
 def test_create_post_recovery_uses_authoritative_profile_url_not_internal_profile_name(monkeypatch, tmp_path):
     upload_locator = _FakeUploadLocator()
     image_path = tmp_path / "proof.png"
