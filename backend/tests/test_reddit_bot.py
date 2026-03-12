@@ -195,19 +195,36 @@ def test_post_requires_flair_detects_required_flair_label_from_dom_text():
     assert asyncio.run(reddit_bot._post_requires_flair(page)) is True
 
 
-def test_click_first_post_flair_option_expands_view_all_before_selecting_option(monkeypatch):
-    page = _FakePage()
-    targets = iter(
+def test_pick_post_flair_candidate_skips_media_controls():
+    candidate = reddit_bot._pick_post_flair_candidate(
         [
-            {"x": 108, "y": 445, "text": "view all flairs", "expand": True},
-            {"x": 214, "y": 514, "text": "discussion", "expand": False},
+            {"text": "add add images", "aria": "", "role": "", "tag": "BUTTON", "width": 96, "height": 32, "top": 427, "x": 58, "y": 427},
+            {"text": "discussion", "aria": "", "role": "option", "tag": "DIV", "width": 132, "height": 36, "top": 512, "x": 214, "y": 514},
         ]
     )
 
-    async def fake_evaluate(_script, *_args):
-        return next(targets, None)
+    assert candidate is not None
+    assert candidate["matched"] == "discussion"
 
-    page.evaluate = fake_evaluate
+
+def test_click_first_post_flair_option_expands_view_all_before_selecting_option(monkeypatch):
+    page = _FakePage()
+    candidate_sets = iter(
+        [
+            [
+                {"text": "view all flairs", "aria": "", "role": "button", "tag": "BUTTON", "width": 132, "height": 36, "top": 445, "x": 108, "y": 445},
+                {"text": "add add images", "aria": "", "role": "", "tag": "BUTTON", "width": 96, "height": 32, "top": 427, "x": 58, "y": 427},
+            ],
+            [
+                {"text": "discussion", "aria": "", "role": "option", "tag": "DIV", "width": 132, "height": 36, "top": 514, "x": 214, "y": 514},
+            ],
+        ]
+    )
+
+    async def fake_collect(_page):
+        return next(candidate_sets, [])
+
+    monkeypatch.setattr(reddit_bot, "_collect_post_flair_candidates", fake_collect)
     monkeypatch.setattr(reddit_bot, "queue_current_event", lambda *_args, **_kwargs: None)
 
     ok = asyncio.run(reddit_bot._click_first_post_flair_option(page))

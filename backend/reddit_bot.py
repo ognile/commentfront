@@ -1339,122 +1339,190 @@ async def _post_requires_flair(page) -> bool:
     )
 
 
-async def _click_first_post_flair_option(page) -> bool:
-    for _attempt in range(3):
-        try:
-            target = await page.evaluate(
-                """() => {
-                    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-                    const viewportWidth = window.innerWidth || 393;
-                    const viewportHeight = window.innerHeight || 873;
-                    const visible = (rect) =>
-                        rect &&
-                        rect.width >= 18 &&
-                        rect.height >= 18 &&
-                        rect.bottom >= 0 &&
-                        rect.right >= 0 &&
-                        rect.top <= viewportHeight &&
-                        rect.left <= viewportWidth;
-                    const expandLabels = [
-                        'view all flair',
-                        'view all flairs',
-                        'see all flair',
-                        'see all flairs',
-                        'all flairs',
-                    ];
-                    const banned = new Set([
-                        'title',
-                        'title*',
-                        'body text',
-                        'body text optional',
-                        'body text (optional)',
-                        'add',
-                        'add flair and tags',
-                        'add flair',
-                        'apply',
-                        'save',
-                        'save draft',
-                        'done',
-                        'cancel',
-                        'close',
-                        'back',
-                        'post',
-                        'create post',
-                        'drafts',
-                        'text',
-                        'images & video',
-                        'link',
-                        'ama',
-                        'nsfw',
-                        'spoiler',
-                        'schedule',
-                        'save draft',
-                    ]);
-                    const roots = [];
-                    const visitRoot = (root) => {
-                        if (!root || roots.includes(root)) return;
-                        roots.push(root);
-                        if (!root.querySelectorAll) return;
-                        for (const el of Array.from(root.querySelectorAll('*'))) {
-                            if (el.shadowRoot) visitRoot(el.shadowRoot);
-                        }
-                    };
-                    visitRoot(document);
-                    const candidates = [];
-                    for (const root of roots) {
-                        const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, [role="button"], [role="option"], label, a, div, span')) : [];
-                        for (const node of nodes) {
-                            const rect = node.getBoundingClientRect();
-                            if (!visible(rect)) continue;
-                            const text = normalize(node.innerText || node.textContent);
-                            const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
-                            const combined = text || aria;
-                            if (!combined || banned.has(combined)) continue;
-                            if (combined.includes('add flair') || combined.includes('create post') || combined.includes('save draft')) continue;
-                            if (combined.includes('body text') || combined.includes('title')) continue;
-                            if (rect.top < 320) continue;
-                            const expand = expandLabels.some((label) => combined.includes(label));
-                            let score = 0;
-                            if (node.getAttribute && node.getAttribute('role') === 'option') score += 8;
-                            if (node.tagName === 'BUTTON') score += 5;
-                            if (rect.width >= 90 && rect.height >= 28) score += 3;
-                            if (combined.length <= 40) score += 2;
-                            if (combined.includes('advice') || combined.includes('question') || combined.includes('discussion')) score += 2;
-                            if (expand) score -= 6;
-                            candidates.push({
-                                x: Math.round(rect.left + rect.width / 2),
-                                y: Math.round(rect.top + rect.height / 2),
-                                text: combined,
-                                score,
-                                top: rect.top,
-                                expand,
-                            });
-                        }
+_POST_FLAIR_EXPAND_PATTERNS = (
+    "view all flair",
+    "view all flairs",
+    "see all flair",
+    "see all flairs",
+    "all flairs",
+)
+
+_POST_FLAIR_EXACT_BANNED = {
+    "title",
+    "title*",
+    "body text",
+    "body text optional",
+    "body text (optional)",
+    "add",
+    "add flair and tags",
+    "add flair",
+    "apply",
+    "save",
+    "save draft",
+    "done",
+    "cancel",
+    "close",
+    "back",
+    "post",
+    "create post",
+    "drafts",
+    "text",
+    "images & video",
+    "link",
+    "ama",
+    "nsfw",
+    "spoiler",
+    "schedule",
+}
+
+_POST_FLAIR_SUBSTRING_BANNED = (
+    "add flair",
+    "create post",
+    "save draft",
+    "body text",
+    "title",
+    "add image",
+    "add images",
+    "upload image",
+    "upload images",
+    "upload video",
+    "images & video",
+    "image & video",
+    "add video",
+)
+
+
+async def _collect_post_flair_candidates(page) -> List[Dict[str, Any]]:
+    try:
+        result = await page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                const viewportWidth = window.innerWidth || 393;
+                const viewportHeight = window.innerHeight || 873;
+                const visible = (rect) =>
+                    rect &&
+                    rect.width >= 18 &&
+                    rect.height >= 18 &&
+                    rect.bottom >= 0 &&
+                    rect.right >= 0 &&
+                    rect.top <= viewportHeight &&
+                    rect.left <= viewportWidth;
+                const roots = [];
+                const visitRoot = (root) => {
+                    if (!root || roots.includes(root)) return;
+                    roots.push(root);
+                    if (!root.querySelectorAll) return;
+                    for (const el of Array.from(root.querySelectorAll('*'))) {
+                        if (el.shadowRoot) visitRoot(el.shadowRoot);
                     }
-                    candidates.sort((a, b) => Number(a.expand) - Number(b.expand) || b.score - a.score || a.top - b.top);
-                    return candidates[0] || null;
-                }"""
-            )
-        except Exception:
+                };
+                visitRoot(document);
+                const candidates = [];
+                for (const root of roots) {
+                    const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('button, [role="button"], [role="option"], label, a, div, span')) : [];
+                    for (const node of nodes) {
+                        const rect = node.getBoundingClientRect();
+                        if (!visible(rect) || rect.top < 320) continue;
+                        const text = normalize(node.innerText || node.textContent);
+                        const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        const role = normalize(node.getAttribute && node.getAttribute('role'));
+                        candidates.push({
+                            x: Math.round(rect.left + rect.width / 2),
+                            y: Math.round(rect.top + rect.height / 2),
+                            left: rect.left,
+                            top: rect.top,
+                            width: rect.width,
+                            height: rect.height,
+                            text,
+                            aria,
+                            role,
+                            tag: String(node.tagName || '').toUpperCase(),
+                        });
+                    }
+                }
+                return candidates;
+            }"""
+        )
+    except Exception:
+        return []
+    return list(result or [])
+
+
+def _pick_post_flair_candidate(candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    ranked: List[Dict[str, Any]] = []
+    for candidate in list(candidates or []):
+        text = _normalize_text(candidate.get("text"))
+        aria = _normalize_text(candidate.get("aria"))
+        combined = text or aria
+        if not combined or combined in _POST_FLAIR_EXACT_BANNED:
+            continue
+        if any(pattern in combined for pattern in _POST_FLAIR_SUBSTRING_BANNED):
+            continue
+        expand = any(pattern in combined for pattern in _POST_FLAIR_EXPAND_PATTERNS)
+        score = 0
+        if _normalize_text(candidate.get("role")) == "option":
+            score += 8
+        if str(candidate.get("tag") or "").upper() == "BUTTON":
+            score += 5
+        if float(candidate.get("width") or 0.0) >= 90 and float(candidate.get("height") or 0.0) >= 28:
+            score += 3
+        if len(combined) <= 40:
+            score += 2
+        if any(term in combined for term in ("advice", "question", "discussion")):
+            score += 2
+        if expand:
+            score -= 6
+        ranked.append(
+            {
+                **candidate,
+                "matched": combined,
+                "score": score,
+                "expand": expand,
+            }
+        )
+    ranked.sort(key=lambda candidate: (int(bool(candidate.get("expand"))), -float(candidate.get("score") or 0.0), float(candidate.get("top") or 0.0)))
+    return ranked[0] if ranked else None
+
+
+async def _click_post_flair_expansion(page) -> bool:
+    for needle in ("View all flairs", "View all flair", "See all flairs", "See all flair"):
+        if await _click_visible_text_region(
+            page,
+            needle=needle,
+            action_name="create_post_flair_expand",
+            min_top=320,
+            max_text_length=24,
+        ):
+            await page.wait_for_timeout(900)
+            return True
+    return False
+
+
+async def _click_first_post_flair_option(page) -> bool:
+    expanded_once = False
+    for _attempt in range(3):
+        candidate = _pick_post_flair_candidate(await _collect_post_flair_candidates(page))
+        if not candidate:
             return False
-        if not target:
-            return False
-        await page.mouse.click(float(target["x"]), float(target["y"]))
+        await page.mouse.click(float(candidate["x"]), float(candidate["y"]))
         queue_current_event(
             "click",
             {
                 "method": "flair_option_geometry",
                 "action_name": "create_post_flair_option",
-                "x": target.get("x"),
-                "y": target.get("y"),
-                "matched": target.get("text"),
+                "x": candidate.get("x"),
+                "y": candidate.get("y"),
+                "matched": candidate.get("matched"),
             },
             phase="activation",
             source="reddit_bot",
         )
         await page.wait_for_timeout(700)
-        if not target.get("expand"):
+        if not candidate.get("expand"):
             return True
+        if expanded_once:
+            return False
+        expanded_once = True
         await page.wait_for_timeout(900)
     return False
 
@@ -1473,6 +1541,7 @@ async def _ensure_post_flair(page, *, force: bool = False) -> bool:
     if not opened:
         return False
     await page.wait_for_timeout(900)
+    await _click_post_flair_expansion(page)
     selected = await _click_first_post_flair_option(page)
     if not selected:
         return False
