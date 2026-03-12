@@ -329,6 +329,47 @@ def test_preflight_manual_post_repairs_operator_meta_title(monkeypatch):
     assert result["effective_params"]["title"].startswith("Does boric acid sting more")
 
 
+def test_preflight_manual_comment_ignores_unsolicited_review_rewrite(monkeypatch):
+    generator = RedditGrowthContentGenerator(api_key="")
+
+    async def fake_generate_json(_prompt):
+        return """{
+          "ok": true,
+          "violations": [],
+          "repair_applied": true,
+          "effective_params": {
+            "text": "This whole system is broken when an endocrinologist gets to act disgusted by your symptoms while pretending the condition is fake."
+          },
+          "reasoning": "unnecessary rewrite"
+        }"""
+
+    monkeypatch.setattr(generator, "_generate_json", fake_generate_json)
+
+    original_text = "This relationship turns sour fast when one partner is job hunting and the other turns chores into a scorecard."
+    result = asyncio.run(
+        generator.preflight_manual_content(
+            action_kind="comment_post",
+            profile_name="reddit_catherine_emmar",
+            subreddit="women",
+            keywords=["relationship", "partner", "chores"],
+            style_samples=[],
+            conversation_context=[],
+            recent_texts=[],
+            same_thread_texts=[],
+            same_profile_texts=[],
+            text=original_text,
+            thread_title="confused if men actually like their partners at all",
+            thread_excerpt="his partner finished a masters and is job hunting while he resents doing chores.",
+            thread_author="deadtracts",
+            policy_metadata={"subreddit": "women"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["repair_applied"] is False
+    assert result["effective_params"]["text"] == original_text
+
+
 def test_preflight_manual_post_blocks_when_repair_stays_misaligned(monkeypatch):
     generator = RedditGrowthContentGenerator(api_key="")
 

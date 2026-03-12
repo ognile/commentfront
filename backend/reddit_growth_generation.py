@@ -1204,15 +1204,15 @@ return valid json with this exact shape:
             fallback=original_params,
         )
 
+        review_requires_repair = bool(review_violations) or review_ok is False
+
         effective_params = dict(original_params)
         repair_applied = False
-        if original_validation["ok"] and (review_ok is None or (review_ok and reviewed_params == original_params and not review_violations)):
+        if original_validation["ok"] and not review_requires_repair:
             effective_params = dict(original_params)
         elif review_payload is not None and reviewed_params:
             effective_params = dict(reviewed_params)
             repair_applied = effective_params != original_params or bool((review_payload or {}).get("repair_applied"))
-        elif original_validation["ok"] and not review_violations:
-            effective_params = dict(original_params)
 
         effective_combined = _combined_manual_action_text(normalized_action, effective_params)
         effective_validation = validate_generated_text(
@@ -1231,11 +1231,11 @@ return valid json with this exact shape:
             _manual_community_fit_violations(normalized_action, effective_params),
         )
 
-        ok = bool(effective_params) and effective_validation["ok"] and (review_ok is not False or repair_applied)
-        if original_validation["ok"] and effective_params == original_params and review_ok is None:
+        ok = False
+        if original_validation["ok"] and not review_requires_repair:
             ok = True
-        if review_ok is False and effective_params == original_params:
-            ok = False
+        elif repair_applied:
+            ok = bool(effective_params) and effective_validation["ok"]
 
         violations: List[str] = []
         if not original_validation["ok"]:
