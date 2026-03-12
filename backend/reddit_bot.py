@@ -1168,13 +1168,29 @@ async def _fill_post_field_by_semantics(page, *, kind: str, value: str) -> bool:
         return False
     if not result:
         return False
+    score = float(result.get("score") or 0.0)
+    if normalized_kind == "title" and score <= 0:
+        queue_current_event(
+            "type",
+            {
+                "method": "semantic_editable_fill_rejected",
+                "target": normalized_kind,
+                "matched": result.get("combined"),
+                "score": score,
+                "tag": result.get("tag"),
+                "reason": "no_title_signal",
+            },
+            phase="typing",
+            source="reddit_bot",
+        )
+        return False
     queue_current_event(
         "type",
         {
             "method": "semantic_editable_fill",
             "target": normalized_kind,
             "matched": result.get("combined"),
-            "score": result.get("score"),
+            "score": score,
             "tag": result.get("tag"),
             "length": len(value or ""),
         },

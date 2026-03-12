@@ -69,6 +69,7 @@ POST = {
         'textarea[placeholder*="Title" i]',
         'input[placeholder*="Title" i]',
         'input[name="title"]',
+        'textarea[name="title"]',
         'input[aria-label*="title" i]',
         'textarea[aria-label*="title" i]',
         '[role="textbox"][aria-label*="title" i]',

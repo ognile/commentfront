@@ -1226,6 +1226,26 @@ def test_fill_post_field_by_semantics_accepts_local_verification_when_global_pro
     assert result is True
 
 
+def test_fill_post_field_by_semantics_rejects_title_candidate_without_title_signal(monkeypatch):
+    page = _FakePage()
+
+    async def fake_evaluate(_script, *_args):
+        return {
+            "kind": "title",
+            "combined": "optional body text field | body",
+            "score": -6,
+            "tag": "div",
+            "verified": True,
+        }
+
+    page.evaluate = fake_evaluate
+    monkeypatch.setattr(reddit_bot, "_typed_text_visible", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+
+    result = asyncio.run(reddit_bot._fill_post_field_by_semantics(page, kind="title", value="hello title"))
+
+    assert result is False
+
+
 def test_create_post_uses_semantic_body_fallback_when_body_selector_is_missing(monkeypatch):
     page = _FakePage()
     page.url = "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
@@ -1276,6 +1296,10 @@ def test_create_post_uses_semantic_body_fallback_when_body_selector_is_missing(m
 
     assert result["success"] is True
     assert result["current_url"] == "https://www.reddit.com/r/WomensHealth/comments/example/new_post/"
+
+
+def test_post_title_selectors_include_shadow_textarea_name_title():
+    assert 'textarea[name="title"]' in reddit_bot.POST["title_input"]
 
 
 def test_create_post_uses_media_submit_surface_and_uploads_file(monkeypatch, tmp_path):
