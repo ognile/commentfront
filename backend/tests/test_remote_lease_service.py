@@ -138,6 +138,8 @@ def test_resolve_remote_session_spec_prefers_saved_facebook_proxy(monkeypatch):
     assert spec.platform == "facebook"
     assert spec.proxy_url == "http://session-proxy:8080"
     assert spec.proxy_source == "session"
+    assert spec.fallback_proxy_url == "http://env-proxy:9090"
+    assert spec.fallback_proxy_source == "env"
     assert spec.start_url == "https://m.facebook.com/me/?v=timeline"
     assert spec.fallback_start_urls == [
         "https://m.facebook.com/me/",
@@ -151,6 +153,19 @@ def test_resolve_remote_session_spec_prefers_saved_facebook_proxy(monkeypatch):
     assert spec.user_agent == "facebook-agent"
 
 
+def test_resolve_remote_proxy_plan_falls_back_to_env(monkeypatch):
+    monkeypatch.setattr(remote_lease_service, "get_system_proxy", lambda: "http://env-proxy:9090")
+
+    primary_url, primary_source, fallback_url, fallback_source = remote_lease_service._resolve_remote_proxy_plan(
+        "http://session-proxy:8080"
+    )
+
+    assert primary_url == "http://session-proxy:8080"
+    assert primary_source == "session"
+    assert fallback_url == "http://env-proxy:9090"
+    assert fallback_source == "env"
+
+
 def test_resolve_remote_session_spec_uses_reddit_identity_and_env_proxy(monkeypatch):
     monkeypatch.setattr(remote_lease_service, "RedditSession", _FakeRedditSession)
     monkeypatch.setattr(remote_lease_service, "get_system_proxy", lambda: "http://env-proxy:9090")
@@ -160,6 +175,8 @@ def test_resolve_remote_session_spec_uses_reddit_identity_and_env_proxy(monkeypa
     assert spec.platform == "reddit"
     assert spec.proxy_url == "http://env-proxy:9090"
     assert spec.proxy_source == "env"
+    assert spec.fallback_proxy_url is None
+    assert spec.fallback_proxy_source is None
     assert spec.start_url == "https://www.reddit.com/user/Neera_Allvere/"
     assert spec.storage_state is not None
     assert spec.user_agent == REDDIT_MOBILE_USER_AGENT

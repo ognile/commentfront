@@ -104,6 +104,8 @@ class RemoteSessionSpec:
     proxy_url: str
     proxy_source: Literal["session", "env"]
     start_url: str
+    fallback_proxy_url: Optional[str] = None
+    fallback_proxy_source: Optional[Literal["session", "env"]] = None
     wait_until: str = "domcontentloaded"
     fallback_start_urls: List[str] = field(default_factory=list)
     storage_state: Optional[Dict[str, Any]] = None
@@ -150,6 +152,22 @@ def _pick_remote_proxy(stored_proxy: Optional[str]) -> Optional[str]:
     return stored_proxy or get_system_proxy()
 
 
+def _resolve_remote_proxy_plan(
+    stored_proxy: Optional[str],
+) -> Tuple[str, Literal["session", "env"], Optional[str], Optional[Literal["session", "env"]]]:
+    session_proxy = str(stored_proxy or "").strip()
+    env_proxy = str(get_system_proxy() or "").strip()
+
+    if session_proxy:
+        fallback_proxy = env_proxy if env_proxy and env_proxy != session_proxy else None
+        return session_proxy, "session", fallback_proxy, ("env" if fallback_proxy else None)
+
+    if env_proxy:
+        return env_proxy, "env", None, None
+
+    return "", "env", None, None
+
+
 def _facebook_remote_start_urls(session: FacebookSession) -> Tuple[str, List[str]]:
     candidates: List[str] = []
     seen: set[str] = set()
@@ -186,7 +204,7 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
             raise RuntimeError("session has invalid cookies")
 
         stored_proxy = session.get_proxy()
-        proxy_url = _pick_remote_proxy(stored_proxy)
+        proxy_url, proxy_source, fallback_proxy_url, fallback_proxy_source = _resolve_remote_proxy_plan(stored_proxy)
         if not proxy_url:
             raise RuntimeError("no proxy available. configure PROXY_URL or persist a session proxy.")
 
@@ -204,7 +222,9 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
             timezone_id=fingerprint["timezone"],
             locale=fingerprint["locale"],
             proxy_url=proxy_url,
-            proxy_source="session" if stored_proxy else "env",
+            proxy_source=proxy_source,
+            fallback_proxy_url=fallback_proxy_url,
+            fallback_proxy_source=fallback_proxy_source,
             start_url=start_url,
             wait_until="commit",
             fallback_start_urls=fallback_start_urls,
@@ -218,7 +238,7 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
         raise RuntimeError("reddit session has no persisted auth state")
 
     stored_proxy = session.get_proxy()
-    proxy_url = _pick_remote_proxy(stored_proxy)
+    proxy_url, proxy_source, fallback_proxy_url, fallback_proxy_source = _resolve_remote_proxy_plan(stored_proxy)
     if not proxy_url:
         raise RuntimeError("no proxy available. configure PROXY_URL or persist a session proxy.")
 
@@ -243,7 +263,9 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
         timezone_id=fingerprint["timezone"],
         locale=fingerprint["locale"],
         proxy_url=proxy_url,
-        proxy_source="session" if stored_proxy else "env",
+        proxy_source=proxy_source,
+        fallback_proxy_url=fallback_proxy_url,
+        fallback_proxy_source=fallback_proxy_source,
         start_url=session.get_profile_url() or "https://www.reddit.com/",
         wait_until="domcontentloaded",
         storage_state=storage_state,
@@ -287,6 +309,7 @@ class RemoteLease:
         self.pointer_x = MOBILE_VIEWPORT["width"] // 2
         self.pointer_y = MOBILE_VIEWPORT["height"] // 2
         self.viewer_count = 0
+        self.active_proxy_source: Optional[str] = None
 
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
@@ -855,58 +878,88 @@ class RemoteLease:
         self._log_event("browser_start", {"reason": reason})
 
         session_spec = _resolve_remote_session_spec(self.session_id, self.platform)
+        proxy_attempts: List[Tuple[str, Literal["session", "env"]]] = [(session_spec.proxy_url, session_spec.proxy_source)]
+        if session_spec.fallback_proxy_url and session_spec.fallback_proxy_source:
+            proxy_attempts.append((session_spec.fallback_proxy_url, session_spec.fallback_proxy_source))
 
-        self._playwright = await async_playwright().start()
-        self._browser, self._context = await create_browser_context(
-            self._playwright,
-            user_agent=session_spec.user_agent,
-            viewport=session_spec.viewport,
-            proxy_url=session_spec.proxy_url,
-            timezone_id=session_spec.timezone_id,
-            locale=session_spec.locale,
-            headless=True,
-            storage_state=session_spec.storage_state,
-            is_mobile=session_spec.is_mobile,
-            has_touch=session_spec.has_touch,
-        )
-        if session_spec.apply_context:
-            applied = await session_spec.apply_context(self._context)
-            if not applied:
-                raise RuntimeError(f"failed to apply {self.platform} session state")
+        last_error = ""
+        for proxy_attempt_index, (proxy_url, proxy_source) in enumerate(proxy_attempts, start=1):
+            self.active_proxy_source = proxy_source
+            self._log_event(
+                "browser_proxy_attempt",
+                {"reason": reason, "proxy_source": proxy_source, "proxy_attempt": proxy_attempt_index},
+            )
+            try:
+                self._playwright = await async_playwright().start()
+                self._browser, self._context = await create_browser_context(
+                    self._playwright,
+                    user_agent=session_spec.user_agent,
+                    viewport=session_spec.viewport,
+                    proxy_url=proxy_url,
+                    timezone_id=session_spec.timezone_id,
+                    locale=session_spec.locale,
+                    headless=True,
+                    storage_state=session_spec.storage_state,
+                    is_mobile=session_spec.is_mobile,
+                    has_touch=session_spec.has_touch,
+                )
+                if session_spec.apply_context:
+                    applied = await session_spec.apply_context(self._context)
+                    if not applied:
+                        raise RuntimeError(f"failed to apply {self.platform} session state")
 
-        self._page = await self._context.new_page()
-        await apply_page_identity_overrides(
-            self._context,
-            self._page,
-            user_agent=session_spec.user_agent,
-            locale=session_spec.locale,
-        )
-        self._page.on("filechooser", lambda chooser: asyncio.create_task(self._handle_file_chooser(chooser)))
-        self._page.on("close", lambda: asyncio.create_task(self._handle_page_closed("page_closed")))
-        self._page.on("crash", lambda: asyncio.create_task(self._handle_page_closed("page_crashed")))
-        navigation_result = await self._navigate_initial_page(session_spec, reason=reason)
+                self._page = await self._context.new_page()
+                await apply_page_identity_overrides(
+                    self._context,
+                    self._page,
+                    user_agent=session_spec.user_agent,
+                    locale=session_spec.locale,
+                )
+                self._page.on("filechooser", lambda chooser: asyncio.create_task(self._handle_file_chooser(chooser)))
+                self._page.on("close", lambda: asyncio.create_task(self._handle_page_closed("page_closed")))
+                self._page.on("crash", lambda: asyncio.create_task(self._handle_page_closed("page_crashed")))
+                navigation_result = await self._navigate_initial_page(session_spec, reason=reason)
 
-        self._cdp = await self._context.new_cdp_session(self._page)
-        await self._cdp.send("Page.enable")
-        self.browser_started_at = _iso_now()
-        self.browser_restart_count += 1
-        self.status = "ready"
-        self._refresh_page_state()
-        await self.refresh_title()
-        page_health = navigation_result.get("page_health") or await self._page_health_snapshot()
-        self._persist_meta()
-        if self.has_viewers:
-            await self._start_frame_stream()
-        self._log_event(
-            "browser_ready",
-            {
-                "reason": reason,
-                "start_url": navigation_result.get("url") or session_spec.start_url,
-                "start_attempt": navigation_result.get("attempt"),
-                "proxy_source": session_spec.proxy_source,
-                "page_health": page_health,
-            },
-        )
+                self._cdp = await self._context.new_cdp_session(self._page)
+                await self._cdp.send("Page.enable")
+                self.browser_started_at = _iso_now()
+                self.browser_restart_count += 1
+                self.status = "ready"
+                self._refresh_page_state()
+                await self.refresh_title()
+                page_health = navigation_result.get("page_health") or await self._page_health_snapshot()
+                self._persist_meta()
+                if self.has_viewers:
+                    await self._start_frame_stream()
+                self._log_event(
+                    "browser_ready",
+                    {
+                        "reason": reason,
+                        "start_url": navigation_result.get("url") or session_spec.start_url,
+                        "start_attempt": navigation_result.get("attempt"),
+                        "proxy_source": proxy_source,
+                        "proxy_attempt": proxy_attempt_index,
+                        "page_health": page_health,
+                    },
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = str(exc)
+                self.last_error = str(exc)
+                self._log_event(
+                    "browser_proxy_failed",
+                    {
+                        "reason": reason,
+                        "proxy_source": proxy_source,
+                        "proxy_attempt": proxy_attempt_index,
+                        "error": str(exc),
+                    },
+                )
+                await self._teardown_browser(persist=False)
+
+        raise RuntimeError(last_error or f"failed to start {self.platform} remote browser")
 
     async def _handle_page_closed(self, reason: str) -> None:
         if self._expected_page_close or self.closed_at:
