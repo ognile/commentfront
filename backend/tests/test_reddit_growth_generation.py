@@ -205,3 +205,40 @@ def test_choose_user_flair_keeps_current_flair_when_it_still_matches():
     )
 
     assert result["choice"] == "Divorced"
+
+
+def test_generate_comment_retries_with_validation_feedback(monkeypatch):
+    generator = RedditGrowthContentGenerator(api_key="")
+    prompts = []
+    responses = iter(
+        [
+            '{"text":"This sounds painful.","reasoning":"first pass"}',
+            '{"text":"This relationship turns sour fast when one partner is job hunting and the other turns chores into a scorecard.","reasoning":"second pass"}',
+        ]
+    )
+
+    async def fake_generate_json(prompt):
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(generator, "_generate_json", fake_generate_json)
+
+    result = asyncio.run(
+        generator.generate_comment(
+            profile_name="reddit_catherine_emmar",
+            subreddit="women",
+            thread_title="confused if men actually like their partners at all",
+            thread_excerpt="his partner finished a masters and is job hunting while he resents doing chores.",
+            thread_author="deadtracts",
+            keywords=["relationship", "partner", "chores"],
+            style_samples=[],
+            conversation_context=[],
+            recent_texts=[],
+            same_thread_texts=[],
+            same_profile_texts=[],
+        )
+    )
+
+    assert result.success is True
+    assert len(prompts) == 2
+    assert "previous draft failed validation" in prompts[1]

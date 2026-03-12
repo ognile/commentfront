@@ -875,7 +875,6 @@ return json with this exact shape:
                     same_profile_texts=same_profile_texts,
                     persona_snapshot=persona_snapshot,
                     writing_rule_snapshot=writing_rule_snapshot,
-                    retry_feedback=retry_feedback,
                     validation_feedback=validation_feedback,
                 )
             )
