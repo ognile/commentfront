@@ -255,6 +255,20 @@ def _reddit_json_url(url: str) -> str:
     return f"{clean}/.json?raw_json=1&limit=20"
 
 
+def _infer_post_title_from_url(url: str) -> Optional[str]:
+    parts = [segment for segment in urlsplit(str(url or "").split("?", 1)[0].strip().rstrip("/")).path.split("/") if segment]
+    if "comments" not in parts:
+        return None
+    idx = parts.index("comments")
+    if idx + 2 >= len(parts):
+        return None
+    slug = str(parts[idx + 2] or "").strip()
+    if not slug:
+        return None
+    inferred = re.sub(r"[_-]+", " ", slug).strip()
+    return inferred or None
+
+
 def _find_comment_record(children: List[Dict[str, Any]], comment_id: str) -> Optional[Dict[str, Any]]:
     for child in list(children or []):
         if child.get("kind") != "t1":
@@ -317,6 +331,7 @@ async def _load_target_comment_context(target_comment_url: str) -> Optional[Dict
 
 
 async def _load_post_context(target_url: str) -> Optional[Dict[str, Any]]:
+    fallback_title = _infer_post_title_from_url(target_url)
     try:
         async with httpx.AsyncClient(
             headers=REDDIT_HTTP_HEADERS,
@@ -328,7 +343,7 @@ async def _load_post_context(target_url: str) -> Optional[Dict[str, Any]]:
         payload = response.json()
     except Exception as exc:
         logger.warning(f"failed to fetch reddit post context for {target_url}: {exc}")
-        return {"thread_url": target_url, "title": None}
+        return {"thread_url": target_url, "title": fallback_title}
 
     try:
         post = payload[0]["data"]["children"][0]["data"]
@@ -338,7 +353,7 @@ async def _load_post_context(target_url: str) -> Optional[Dict[str, Any]]:
     permalink = str(post.get("permalink") or "").strip()
     return {
         "thread_url": f"https://www.reddit.com{permalink}" if permalink else target_url,
-        "title": str(post.get("title") or "").strip() or None,
+        "title": str(post.get("title") or "").strip() or fallback_title,
     }
 
 
@@ -1271,31 +1286,97 @@ async def _visible_selector_exists(page, selectors) -> bool:
 
 
 async def _current_thread_title(page) -> Optional[str]:
-    for selector in ("h1", "main h1", "article h1"):
+    for selector in ("h1", "main h1", "article h1", "shreddit-title", '[slot="title"]'):
         try:
             locator = page.locator(selector).first
             if await locator.count() > 0 and await locator.is_visible():
                 text = (await locator.inner_text()).strip()
                 if text:
                     return text
+                for attr in ("title", "aria-label", "content"):
+                    value = (await locator.get_attribute(attr) or "").strip()
+                    if value:
+                        return value
         except Exception:
             continue
     return None
 
 
+async def _feed_post_card_count(page) -> int:
+    try:
+        return int(
+            await page.evaluate(
+                """() => {
+                    const visible = (rect) =>
+                        rect &&
+                        rect.width >= 24 &&
+                        rect.height >= 18 &&
+                        rect.bottom >= 0 &&
+                        rect.right >= 0 &&
+                        rect.top <= (window.innerHeight || 873) &&
+                        rect.left <= (window.innerWidth || 393);
+                    const seen = new Set();
+                    let count = 0;
+                    for (const node of Array.from(document.querySelectorAll('h3,[aria-label]'))) {
+                        const rect = node.getBoundingClientRect();
+                        if (!visible(rect)) continue;
+                        const aria = String(node.getAttribute?.('aria-label') || '').toLowerCase();
+                        if (!aria.includes('list item post -')) continue;
+                        const text = String(node.innerText || node.textContent || '').trim().toLowerCase();
+                        const key = `${aria}|${text}`;
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        count += 1;
+                    }
+                    return count;
+                }"""
+            )
+        )
+    except Exception:
+        return 0
+
+
+async def _scroll_page_to_top(page) -> None:
+    try:
+        await page.evaluate(
+            """() => {
+                window.scrollTo(0, 0);
+                if (document.documentElement) document.documentElement.scrollTop = 0;
+                if (document.body) document.body.scrollTop = 0;
+                const candidates = Array.from(document.querySelectorAll('*'));
+                for (const node of candidates) {
+                    if (!(node instanceof HTMLElement)) continue;
+                    if (node.scrollTop <= 0) continue;
+                    const style = window.getComputedStyle(node);
+                    const overflowY = String(style.overflowY || '').toLowerCase();
+                    if (!overflowY.includes('auto') && !overflowY.includes('scroll')) continue;
+                    node.scrollTop = 0;
+                }
+            }"""
+        )
+        await page.wait_for_timeout(400)
+    except Exception:
+        return
+
+
 async def _thread_context_present(page, expected_title: Optional[str]) -> bool:
     normalized_title = _normalize_text(expected_title)
     if not normalized_title:
-        return True
+        current_title = _normalize_text(await _current_thread_title(page))
+        if not current_title:
+            return False
+        return await _feed_post_card_count(page) < 2
     current_title = _normalize_text(await _current_thread_title(page))
-    return bool(
-        current_title
-        and (
-            current_title == normalized_title
-            or current_title in normalized_title
-            or normalized_title in current_title
-        )
+    if not current_title:
+        return False
+    matches = bool(
+        current_title == normalized_title
+        or current_title in normalized_title
+        or normalized_title in current_title
     )
+    if not matches:
+        return False
+    return await _feed_post_card_count(page) < 2
 
 
 async def _ensure_thread_context(page, *, url: str, expected_title: Optional[str]) -> bool:
@@ -1306,6 +1387,7 @@ async def _ensure_thread_context(page, *, url: str, expected_title: Optional[str
             await _goto(page, url)
         except Exception:
             continue
+        await _scroll_page_to_top(page)
         if await _thread_context_present(page, expected_title):
             return True
     return False
@@ -3463,13 +3545,10 @@ async def comment_on_post(
                 await _scroll_until_comment_surface_visible(page, max_scrolls=10, step_px=180)
                 filled = await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url)
             if not filled:
-                try:
-                    await page.evaluate("window.scrollTo(0, 0)")
-                    await page.wait_for_timeout(400)
-                except Exception:
-                    pass
+                await _scroll_page_to_top(page)
                 if not await _thread_context_present(page, expected_title):
                     await _ensure_thread_context(page, url=url, expected_title=expected_title)
+                await _scroll_until_comment_surface_visible(page, max_scrolls=6, step_px=140)
                 filled = await _fill_comment_input(page, text, expected_title=expected_title, thread_url=url)
             if not filled:
                 await _raise_if_community_comment_banned(page, capture_context="REDDIT COMMENT COMMUNITY BAN")

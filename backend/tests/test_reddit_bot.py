@@ -16,6 +16,7 @@ class _FakePage:
         self.mouse = _FakeMouse()
         self.body_text = ""
         self.url = "https://www.reddit.com/"
+        self.locator_text = {}
 
     async def wait_for_timeout(self, timeout_ms):
         self.waits.append(timeout_ms)
@@ -26,6 +27,8 @@ class _FakePage:
     def locator(self, selector):
         if selector == "body":
             return _FakeBodyLocator(self.body_text)
+        if selector in self.locator_text:
+            return _FakeTextLocator(self.locator_text[selector])
         raise AssertionError(f"unexpected locator: {selector}")
 
 
@@ -59,6 +62,27 @@ class _FakeBodyLocator:
 
     async def inner_text(self):
         return self._text
+
+
+class _FakeTextLocator:
+    def __init__(self, text):
+        self._text = text
+
+    async def count(self):
+        return 1
+
+    async def is_visible(self):
+        return True
+
+    async def inner_text(self):
+        return self._text
+
+    async def get_attribute(self, _name):
+        return None
+
+    @property
+    def first(self):
+        return self
 
 
 class _FakeFillLocator:
@@ -226,6 +250,54 @@ def test_fill_comment_input_recovers_thread_context_before_retrying_composer(mon
         ("fill", tuple(reddit_bot.COMMENT["composer_input"]), "hello world"),
     ]
     assert page.waits == [400]
+
+
+def test_load_post_context_falls_back_to_url_slug_when_fetch_fails(monkeypatch):
+    class _BrokenClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, _url):
+            raise RuntimeError("blocked")
+
+    monkeypatch.setattr(reddit_bot.httpx, "AsyncClient", lambda **_kwargs: _BrokenClient())
+
+    result = asyncio.run(
+        reddit_bot._load_post_context(
+            "https://www.reddit.com/r/AskWomenOver40/comments/1rqrc38/how_do_you_call_out_weaponized_incompetence/"
+        )
+    )
+
+    assert result == {
+        "thread_url": "https://www.reddit.com/r/AskWomenOver40/comments/1rqrc38/how_do_you_call_out_weaponized_incompetence/",
+        "title": "how do you call out weaponized incompetence",
+    }
+
+
+def test_thread_context_present_rejects_feed_surface_without_visible_thread_title(monkeypatch):
+    page = _FakePage()
+
+    async def fake_feed_count(_page):
+        return 4
+
+    monkeypatch.setattr(reddit_bot, "_feed_post_card_count", fake_feed_count)
+
+    assert asyncio.run(reddit_bot._thread_context_present(page, "When you realise He is just a man")) is False
+
+
+def test_thread_context_present_accepts_matching_visible_thread_title(monkeypatch):
+    page = _FakePage()
+    page.locator_text["h1"] = "How do you call out weaponized incompetence?"
+
+    async def fake_feed_count(_page):
+        return 0
+
+    monkeypatch.setattr(reddit_bot, "_feed_post_card_count", fake_feed_count)
+
+    assert asyncio.run(reddit_bot._thread_context_present(page, "How do you call out weaponized incompetence")) is True
 
 
 def test_fill_comment_input_uses_reply_selectors_for_reply_flow(monkeypatch):
@@ -560,6 +632,11 @@ def test_comment_on_post_returns_community_restricted(monkeypatch):
     monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
     monkeypatch.setattr(reddit_bot, "dump_interactive_elements", fake_dump)
     monkeypatch.setattr(reddit_bot, "_current_thread_title", fake_title)
+    monkeypatch.setattr(
+        reddit_bot,
+        "_load_post_context",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"title": "Endometrial biopsy"}),
+    )
     monkeypatch.setattr(reddit_bot, "_capture_reddit_failure_state", lambda *_args, **_kwargs: asyncio.sleep(0))
 
     session = type("Session", (), {"profile_name": "reddit_alpha"})()
