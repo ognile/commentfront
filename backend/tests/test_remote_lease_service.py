@@ -138,12 +138,16 @@ def test_resolve_remote_session_spec_prefers_saved_facebook_proxy(monkeypatch):
     assert spec.platform == "facebook"
     assert spec.proxy_url == "http://session-proxy:8080"
     assert spec.proxy_source == "session"
-    assert spec.start_url == "https://m.facebook.com/profile.php?id=12345"
+    assert spec.start_url == "https://m.facebook.com/me/?v=timeline"
     assert spec.fallback_start_urls == [
-        "https://www.facebook.com/profile.php?id=12345",
+        "https://m.facebook.com/me/",
         "https://www.facebook.com/",
         "https://m.facebook.com/",
+        "https://m.facebook.com/profile.php?id=12345&v=timeline",
+        "https://m.facebook.com/profile.php?id=12345",
+        "https://www.facebook.com/profile.php?id=12345",
     ]
+    assert spec.wait_until == "commit"
     assert spec.user_agent == "facebook-agent"
 
 
@@ -343,3 +347,39 @@ def test_takeover_prunes_dead_observer_and_keeps_live_controller(isolated_remote
     assert live_viewer.role == "observer"
 
     _run(service.close_lease(lease, reason="test_done"))
+
+
+def test_close_cancels_inflight_startup(isolated_remote_environment, monkeypatch):
+    pm, _leases_dir = isolated_remote_environment
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _exercise():
+        async def _slow_start(self, *, reason):
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        monkeypatch.setattr(remote_lease_service.RemoteLease, "_start_browser", _slow_start)
+        monkeypatch.setattr(remote_lease_service.RemoteLease, "_teardown_browser", _async_noop)
+
+        service = remote_lease_service.RemoteLeaseService()
+        lease = await service._get_or_create_lease(session_id="alpha", platform="facebook", username="alice")
+
+        startup_task = asyncio.create_task(lease.ensure_browser_ready(reason="attach"))
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        await service.close_lease(lease, reason="manual_stop")
+
+        assert cancelled.is_set()
+        assert lease.closed_at is not None
+        assert lease.status == "closed"
+        assert pm.get_reservation("alpha") is None
+
+        with pytest.raises(asyncio.CancelledError):
+            await startup_task
+
+    _run(_exercise())

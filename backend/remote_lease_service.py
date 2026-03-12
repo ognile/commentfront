@@ -46,6 +46,8 @@ REMOTE_FRAME_ACTIVE_INTERVAL_SECONDS = float(os.getenv("REMOTE_FRAME_ACTIVE_INTE
 REMOTE_FRAME_ACTIVE_BURST_SECONDS = float(os.getenv("REMOTE_FRAME_ACTIVE_BURST_SECONDS", "0.5"))
 REMOTE_FRAME_SEND_STALE_SECONDS = float(os.getenv("REMOTE_FRAME_SEND_STALE_SECONDS", "2.5"))
 REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS = float(os.getenv("REMOTE_FRAME_CAPTURE_TIMEOUT_SECONDS", "10"))
+REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS", "8"))
+REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS = float(os.getenv("REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS", "6"))
 
 
 class RemoteLeaseError(RuntimeError):
@@ -148,6 +150,33 @@ def _pick_remote_proxy(stored_proxy: Optional[str]) -> Optional[str]:
     return stored_proxy or get_system_proxy()
 
 
+def _facebook_remote_start_urls(session: FacebookSession) -> Tuple[str, List[str]]:
+    candidates: List[str] = []
+    seen: set[str] = set()
+    user_id = session.get_user_id()
+
+    def _add(url: str) -> None:
+        value = str(url or "").strip()
+        if not value or value in seen:
+            return
+        seen.add(value)
+        candidates.append(value)
+
+    _add("https://m.facebook.com/me/?v=timeline")
+    _add("https://m.facebook.com/me/")
+    _add("https://www.facebook.com/")
+    _add("https://m.facebook.com/")
+    if user_id:
+        _add(f"https://m.facebook.com/profile.php?id={user_id}&v=timeline")
+        _add(f"https://m.facebook.com/profile.php?id={user_id}")
+        _add(f"https://www.facebook.com/profile.php?id={user_id}")
+
+    if not candidates:
+        candidates.append("https://m.facebook.com/")
+
+    return candidates[0], candidates[1:]
+
+
 def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> RemoteSessionSpec:
     if platform == "facebook":
         session = FacebookSession(session_id)
@@ -162,19 +191,7 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
             raise RuntimeError("no proxy available. configure PROXY_URL or persist a session proxy.")
 
         fingerprint = session.get_device_fingerprint()
-        user_id = session.get_user_id()
-        start_url = f"https://m.facebook.com/profile.php?id={user_id}" if user_id else "https://m.facebook.com/"
-        fallback_start_urls: List[str] = []
-        if user_id:
-            fallback_start_urls.extend(
-                [
-                    f"https://www.facebook.com/profile.php?id={user_id}",
-                    "https://www.facebook.com/",
-                    "https://m.facebook.com/",
-                ]
-            )
-        else:
-            fallback_start_urls.append("https://www.facebook.com/")
+        start_url, fallback_start_urls = _facebook_remote_start_urls(session)
 
         async def _apply_facebook(context: BrowserContext) -> bool:
             return await apply_session_to_context(context, session)
@@ -189,7 +206,7 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
             proxy_url=proxy_url,
             proxy_source="session" if stored_proxy else "env",
             start_url=start_url,
-            wait_until="domcontentloaded",
+            wait_until="commit",
             fallback_start_urls=fallback_start_urls,
             apply_context=_apply_facebook,
         )
@@ -280,6 +297,7 @@ class RemoteLease:
         self._frame_stream_task: Optional[asyncio.Task] = None
         self._frame_stream_state = "stopped"
         self._last_frame_hash: Optional[str] = None
+        self._startup_task: Optional[asyncio.Task] = None
         self._startup_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
         self._viewers: Dict[WebSocket, RemoteViewer] = {}
@@ -525,10 +543,16 @@ class RemoteLease:
         ready_state = str(health.get("readyState") or "")
         return html_length > 0 or body_text_length > 0 or bool(title) or ready_state in {"interactive", "complete"}
 
-    async def _wait_for_renderable_document(self, *, timeout_seconds: float = 8.0) -> Dict[str, Any]:
+    async def _wait_for_renderable_document(
+        self,
+        *,
+        timeout_seconds: float = REMOTE_STARTUP_RENDER_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
         deadline = time.monotonic() + max(0.5, timeout_seconds)
         last_health: Dict[str, Any] = {}
         while time.monotonic() < deadline:
+            if self.closed_at:
+                return last_health
             self._refresh_page_state()
             await self.refresh_title()
             last_health = await self._page_health_snapshot()
@@ -550,9 +574,12 @@ class RemoteLease:
 
         last_error = ""
         last_health: Dict[str, Any] = {}
+        nav_timeout_ms = max(3000, int(REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS * 1000))
         for index, candidate in enumerate(candidates, start=1):
+            if self.closed_at:
+                raise asyncio.CancelledError()
             try:
-                await self._page.goto(candidate, wait_until=session_spec.wait_until, timeout=30000)
+                await self._page.goto(candidate, wait_until=session_spec.wait_until, timeout=nav_timeout_ms)
             except Exception as exc:
                 last_error = str(exc)
                 self._log_event(
@@ -784,13 +811,29 @@ class RemoteLease:
 
     async def ensure_browser_ready(self, *, reason: str) -> None:
         async with self._startup_lock:
+            if self.closed_at:
+                raise RemoteLeaseError(
+                    "interactive session closed",
+                    status_code=410,
+                    code="remote_session_closed",
+                    details={"lease_id": self.lease_id, "session_id": self.session_id, "platform": self.platform},
+                )
             if self.active:
                 self._refresh_page_state()
                 await self.refresh_title()
                 if self.has_viewers and (self._frame_stream_task is None or self._frame_stream_task.done()):
                     await self._start_frame_stream()
                 return
-            await self._start_browser(reason=reason)
+            current_task = asyncio.current_task()
+            self._startup_task = current_task
+            try:
+                await self._start_browser(reason=reason)
+            except asyncio.CancelledError:
+                self._log_event("browser_start_cancelled", {"reason": reason})
+                raise
+            finally:
+                if self._startup_task is current_task:
+                    self._startup_task = None
 
     async def restart_browser(self, *, reason: str) -> None:
         async with self._startup_lock:
@@ -1262,7 +1305,17 @@ class RemoteLease:
             self.status = "closed"
             self._cancel_idle_close()
             self._log_event("lease_close", {"reason": reason})
+            startup_task = self._startup_task
+            if startup_task and startup_task is not asyncio.current_task() and not startup_task.done():
+                startup_task.cancel()
             await self._notify_and_close_viewers(reason=reason)
+            if startup_task and startup_task is not asyncio.current_task() and not startup_task.done():
+                try:
+                    await startup_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    self._log_event("browser_start_cancel_wait_failed", {"reason": reason, "error": str(exc)})
             await self._teardown_browser(persist=True)
             self.clear_upload()
             if self._action_worker_task:
@@ -1313,6 +1366,13 @@ class RemoteLeaseService:
                 if frame:
                     await lease._broadcast_frame(frame, bootstrap=True)
             return lease, viewer
+        except asyncio.CancelledError as exc:
+            raise RemoteLeaseError(
+                "interactive session closed",
+                status_code=410,
+                code="remote_session_closed",
+                details={"lease_id": lease.lease_id, "session_id": session_id, "platform": platform},
+            ) from exc
         except Exception:
             if not lease.has_viewers:
                 await self.close_lease(lease, reason="attach_failed")
