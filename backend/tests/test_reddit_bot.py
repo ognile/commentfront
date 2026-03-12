@@ -1351,10 +1351,93 @@ def test_create_post_uses_media_submit_surface_and_uploads_file(monkeypatch, tmp
 
     assert result["success"] is True
     assert goto_urls == [
-        "https://www.reddit.com/r/test/submit",
-        "https://www.reddit.com/r/test/submit",
+        "https://www.reddit.com/r/test/submit?type=IMAGE",
+        "https://www.reddit.com/r/test/submit?type=IMAGE",
     ]
     assert selected_tabs == ["Images & Video"]
+    assert upload_locator.paths == [str(image_path.resolve())]
+
+
+def test_create_post_recovers_created_post_from_subreddit_new_feed_after_submit_error(monkeypatch, tmp_path):
+    upload_locator = _FakeUploadLocator()
+    image_path = tmp_path / "proof.png"
+    image_path.write_bytes(b"png")
+
+    class _FakeMediaPage(_FakePage):
+        def locator(self, selector):
+            if selector == "body":
+                return _FakeBodyLocator(self.body_text)
+            if selector == 'input[type="file"]':
+                return upload_locator
+            raise AssertionError(f"unexpected locator: {selector}")
+
+    page = _FakeMediaPage()
+    page.url = "https://www.reddit.com/r/ATBGE/submit?type=IMAGE"
+    page.body_text = "server error we have encountered an error. please try again later."
+    goto_urls = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_goto(_page, url):
+        goto_urls.append(url)
+        page.url = url
+        if "/submit" in url:
+            page.body_text = "server error we have encountered an error. please try again later."
+        else:
+            page.body_text = ""
+
+    async def fake_find_created_permalink(_page, *, title, body, actor_username, profile_name):
+        assert title == "image proof title"
+        if page.url == "https://www.reddit.com/r/ATBGE/new/":
+            return "https://www.reddit.com/r/ATBGE/comments/example/new_post/"
+        return None
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_select_post_compose_tab", lambda *_args, label: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_ensure_subreddit_user_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(reddit_bot, "_fill_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_click_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_post_requires_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_find_created_post_permalink_on_feed", fake_find_created_permalink)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
+
+    session = type(
+        "Session",
+        (),
+        {
+            "profile_name": "reddit_victor_saunders",
+            "get_username": lambda self: "Victor_Saunders",
+        },
+    )()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="image proof title",
+            subreddit="ATBGE",
+            image_path=str(image_path),
+        )
+    )
+
+    assert result["success"] is True
+    assert result["target_url"] == "https://www.reddit.com/r/ATBGE/comments/example/new_post/"
+    assert goto_urls == [
+        "https://www.reddit.com/r/ATBGE/submit?type=IMAGE",
+        "https://www.reddit.com/r/ATBGE/submit?type=IMAGE",
+        "https://www.reddit.com/r/ATBGE/new/",
+        "https://www.reddit.com/r/ATBGE/comments/example/new_post/",
+    ]
     assert upload_locator.paths == [str(image_path.resolve())]
 
 

@@ -165,6 +165,59 @@ async def _find_created_post_permalink_on_feed(
         return None
 
 
+async def _reddit_page_has_server_error(page) -> bool:
+    try:
+        body_text = _normalize_text(await page.locator("body").inner_text())
+    except Exception:
+        return False
+    if not body_text:
+        return False
+    return "server error" in body_text and "please try again later" in body_text
+
+
+async def _recover_created_post_permalink_after_submit(
+    page,
+    *,
+    title: str,
+    body: Optional[str],
+    actor_username: Optional[str],
+    profile_name: Optional[str],
+    subreddit: Optional[str],
+) -> Optional[str]:
+    normalized_subreddit = normalize_subreddit_name(subreddit)
+    candidate_urls: List[str] = []
+    if normalized_subreddit:
+        encoded_subreddit = quote(normalized_subreddit)
+        candidate_urls.extend(
+            [
+                f"https://www.reddit.com/r/{encoded_subreddit}/new/",
+                f"https://www.reddit.com/r/{encoded_subreddit}/",
+            ]
+        )
+    for username in _reddit_username_candidates(actor_username, profile_name):
+        candidate_urls.append(f"https://www.reddit.com/user/{quote(username)}/submitted/")
+    seen = set()
+    current_url = str(page.url or "")
+    for candidate_url in candidate_urls:
+        if not candidate_url or candidate_url in seen or candidate_url == current_url:
+            continue
+        seen.add(candidate_url)
+        try:
+            await _goto(page, candidate_url)
+        except Exception:
+            continue
+        permalink = await _find_created_post_permalink_on_feed(
+            page,
+            title=title,
+            body=body,
+            actor_username=actor_username,
+            profile_name=profile_name,
+        )
+        if permalink:
+            return permalink
+    return None
+
+
 async def _detect_community_comment_ban(page) -> Optional[str]:
     try:
         body_text = _normalize_text(await page.locator("body").inner_text())
@@ -4233,8 +4286,7 @@ async def create_post(
     if subreddit:
         normalized = subreddit.strip().lstrip("r/").strip("/")
         target_url = f"https://www.reddit.com/r/{quote(normalized)}/submit"
-    if not image_path:
-        target_url = f"{target_url}?type=TEXT"
+    target_url = f"{target_url}?type={'IMAGE' if image_path else 'TEXT'}"
 
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         identity_evidence: Optional[Dict[str, Any]] = None
@@ -4341,6 +4393,17 @@ async def create_post(
                     body=body,
                     actor_username=actor_username,
                     profile_name=getattr(session, "profile_name", None),
+                )
+            if not created_post_url and (
+                "/submit" in str(current_url or "") or await _reddit_page_has_server_error(page)
+            ):
+                created_post_url = await _recover_created_post_permalink_after_submit(
+                    page,
+                    title=title,
+                    body=body,
+                    actor_username=actor_username,
+                    profile_name=getattr(session, "profile_name", None),
+                    subreddit=normalized,
                 )
             if created_post_url and "/comments/" not in str(page.url or ""):
                 try:
