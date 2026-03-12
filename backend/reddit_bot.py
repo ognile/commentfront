@@ -1389,6 +1389,15 @@ _POST_FLAIR_SUBSTRING_BANNED = (
     "images & video",
     "image & video",
     "add video",
+    "remove media",
+    "remove image",
+    "remove images",
+    "remove video",
+    "replace image",
+    "replace video",
+    "change image",
+    "change video",
+    "media",
 )
 
 
@@ -1425,7 +1434,47 @@ async def _collect_post_flair_candidates(page) -> List[Dict[str, Any]]:
                         if (!visible(rect) || rect.top < 320) continue;
                         const text = normalize(node.innerText || node.textContent);
                         const aria = normalize(node.getAttribute && node.getAttribute('aria-label'));
+                        const title = normalize(node.getAttribute && node.getAttribute('title'));
+                        const placeholder = normalize(node.getAttribute && node.getAttribute('placeholder'));
                         const role = normalize(node.getAttribute && node.getAttribute('role'));
+                        const className = normalize(node.className || '');
+                        const nodeId = normalize(node.id || '');
+                        const selected =
+                            normalize(node.getAttribute && node.getAttribute('aria-selected')) === 'true' ||
+                            normalize(node.getAttribute && node.getAttribute('aria-checked')) === 'true';
+                        const ancestorRoles = [];
+                        const ancestorTags = [];
+                        const ancestorLabels = [];
+                        let inModalSurface = false;
+                        let current = node.parentElement;
+                        let depth = 0;
+                        while (current && current !== document.body && depth < 8) {
+                            const currentRole = normalize(current.getAttribute && current.getAttribute('role'));
+                            const currentTag = normalize(current.tagName);
+                            const currentAria = normalize(current.getAttribute && current.getAttribute('aria-label'));
+                            const currentClass = normalize(current.className || '');
+                            const currentText = normalize(current.innerText || current.textContent);
+                            if (currentRole) ancestorRoles.push(currentRole);
+                            if (currentTag) ancestorTags.push(currentTag);
+                            if (currentAria) ancestorLabels.push(currentAria);
+                            else if (currentText && currentText.length <= 160) ancestorLabels.push(currentText);
+                            if (
+                                currentRole === 'dialog' ||
+                                currentRole === 'listbox' ||
+                                currentRole === 'menu' ||
+                                normalize(current.getAttribute && current.getAttribute('aria-modal')) === 'true' ||
+                                currentTag.includes('dialog') ||
+                                currentTag.includes('modal') ||
+                                currentTag.includes('sheet') ||
+                                currentClass.includes('dialog') ||
+                                currentClass.includes('modal') ||
+                                currentClass.includes('sheet')
+                            ) {
+                                inModalSurface = true;
+                            }
+                            current = current.parentElement;
+                            depth += 1;
+                        }
                         candidates.push({
                             x: Math.round(rect.left + rect.width / 2),
                             y: Math.round(rect.top + rect.height / 2),
@@ -1435,8 +1484,17 @@ async def _collect_post_flair_candidates(page) -> List[Dict[str, Any]]:
                             height: rect.height,
                             text,
                             aria,
+                            title,
+                            placeholder,
                             role,
                             tag: String(node.tagName || '').toUpperCase(),
+                            className,
+                            id: nodeId,
+                            selected,
+                            inModalSurface,
+                            ancestorRoles,
+                            ancestorTags,
+                            ancestorLabels,
                         });
                     }
                 }
@@ -1448,27 +1506,69 @@ async def _collect_post_flair_candidates(page) -> List[Dict[str, Any]]:
     return list(result or [])
 
 
-def _pick_post_flair_candidate(candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _post_flair_candidate_label(candidate: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in ("text", "aria", "title", "placeholder"):
+        value = _normalize_text(candidate.get(key))
+        if value and value not in parts:
+            parts.append(value)
+    return " | ".join(parts)
+
+
+def _post_flair_candidate_meta(candidate: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in ("className", "id"):
+        value = _normalize_text(candidate.get(key))
+        if value and value not in parts:
+            parts.append(value)
+    for value in list(candidate.get("ancestorRoles") or []) + list(candidate.get("ancestorTags") or []) + list(candidate.get("ancestorLabels") or []):
+        normalized = _normalize_text(value)
+        if normalized and normalized not in parts:
+            parts.append(normalized)
+    return " | ".join(parts)
+
+
+def _pick_post_flair_candidate(
+    candidates: List[Dict[str, Any]],
+    *,
+    prefer_modal_surface: bool = False,
+) -> Optional[Dict[str, Any]]:
     ranked: List[Dict[str, Any]] = []
     for candidate in list(candidates or []):
-        text = _normalize_text(candidate.get("text"))
-        aria = _normalize_text(candidate.get("aria"))
-        combined = text or aria
+        combined = _post_flair_candidate_label(candidate)
+        metadata = _post_flair_candidate_meta(candidate)
         if not combined or combined in _POST_FLAIR_EXACT_BANNED:
             continue
-        if any(pattern in combined for pattern in _POST_FLAIR_SUBSTRING_BANNED):
+        searchable = " | ".join(part for part in (combined, metadata) if part)
+        if any(pattern in searchable for pattern in _POST_FLAIR_SUBSTRING_BANNED):
             continue
         expand = any(pattern in combined for pattern in _POST_FLAIR_EXPAND_PATTERNS)
+        in_modal_surface = bool(candidate.get("inModalSurface"))
+        role = _normalize_text(candidate.get("role"))
+        text = _normalize_text(candidate.get("text"))
+        aria = _normalize_text(candidate.get("aria"))
         score = 0
-        if _normalize_text(candidate.get("role")) == "option":
-            score += 8
+        if role == "option":
+            score += 12
+        if in_modal_surface:
+            score += 10
+        if bool(candidate.get("selected")):
+            score += 3
         if str(candidate.get("tag") or "").upper() == "BUTTON":
             score += 5
         if float(candidate.get("width") or 0.0) >= 90 and float(candidate.get("height") or 0.0) >= 28:
             score += 3
         if len(combined) <= 40:
             score += 2
+        if text:
+            score += 2
         if any(term in combined for term in ("advice", "question", "discussion")):
+            score += 2
+        if prefer_modal_surface and not in_modal_surface and not expand:
+            score -= 18
+        if not text and aria and float(candidate.get("width") or 0.0) <= 72 and float(candidate.get("height") or 0.0) <= 72:
+            score -= 8
+        if float(candidate.get("top") or 0.0) >= 460:
             score += 2
         if expand:
             score -= 6
@@ -1478,9 +1578,17 @@ def _pick_post_flair_candidate(candidates: List[Dict[str, Any]]) -> Optional[Dic
                 "matched": combined,
                 "score": score,
                 "expand": expand,
+                "inModalSurface": in_modal_surface,
             }
         )
-    ranked.sort(key=lambda candidate: (int(bool(candidate.get("expand"))), -float(candidate.get("score") or 0.0), float(candidate.get("top") or 0.0)))
+    ranked.sort(
+        key=lambda candidate: (
+            int(bool(candidate.get("expand"))),
+            0 if (not prefer_modal_surface or candidate.get("inModalSurface")) else 1,
+            -float(candidate.get("score") or 0.0),
+            float(candidate.get("top") or 0.0),
+        )
+    )
     return ranked[0] if ranked else None
 
 
@@ -1498,10 +1606,78 @@ async def _click_post_flair_expansion(page) -> bool:
     return False
 
 
-async def _click_first_post_flair_option(page) -> bool:
+async def _post_submit_surface_ready(page) -> bool:
+    if await _has_visible_selector_match(page, POST["post_button"]):
+        return True
+    return bool(
+        await _find_visible_text_region(
+            page,
+            needle="Post",
+            min_top=0,
+            max_top=140,
+            max_text_length=6,
+            max_height=56,
+            max_width=140,
+        )
+    )
+
+
+async def _click_post_submit(page, *, action_name: str) -> bool:
+    if await _click_first(page, POST["post_button"], timeout_ms=5000):
+        queue_current_event(
+            "click",
+            {"method": "selector", "target": "post_button", "action_name": action_name},
+            phase="submit",
+            source="reddit_bot",
+        )
+        return True
+    try:
+        await page.evaluate("window.scrollTo(0, 0)")
+    except Exception:
+        pass
+    return await _click_visible_text_region(
+        page,
+        needle="Post",
+        action_name=action_name,
+        min_top=0,
+        max_top=140,
+        max_text_length=6,
+        max_height=56,
+        max_width=140,
+    )
+
+
+async def _capture_post_flair_sheet_state(page, label: str) -> None:
+    try:
+        body_text = str(await page.locator("body").inner_text() or "")
+    except Exception:
+        body_text = ""
+    candidates = await _collect_post_flair_candidates(page)
+    await attach_current_json_artifact(
+        "post_flair_sheet",
+        f"{label.lower().replace(' ', '_').replace('/', '_')[:80] or 'post_flair_sheet'}.json",
+        {
+            "context": label,
+            "page_url": page.url,
+            "requires_flair": await _post_requires_flair(page),
+            "flair_button_visible": await _has_visible_selector_match(page, POST["flair_button"]),
+            "flair_apply_button_visible": await _has_visible_selector_match(page, POST["flair_apply_button"]),
+            "post_submit_ready": await _post_submit_surface_ready(page),
+            "body_excerpt": body_text[:2000],
+            "candidate_count": len(candidates),
+            "candidates": candidates[:120],
+        },
+        metadata={"context": label, "candidate_count": len(candidates)},
+    )
+
+
+async def _click_first_post_flair_option(page, *, prefer_modal_surface: bool = False) -> bool:
     expanded_once = False
     for _attempt in range(3):
-        candidate = _pick_post_flair_candidate(await _collect_post_flair_candidates(page))
+        candidate = _pick_post_flair_candidate(
+            await _collect_post_flair_candidates(page),
+            prefer_modal_surface=prefer_modal_surface or expanded_once,
+        )
         if not candidate:
             return False
         await page.mouse.click(float(candidate["x"]), float(candidate["y"]))
@@ -1541,9 +1717,12 @@ async def _ensure_post_flair(page, *, force: bool = False) -> bool:
     if not opened:
         return False
     await page.wait_for_timeout(900)
-    await _click_post_flair_expansion(page)
-    selected = await _click_first_post_flair_option(page)
+    expanded = await _click_post_flair_expansion(page)
+    if expanded:
+        await _capture_post_flair_sheet_state(page, "REDDIT POST FLAIR SHEET EXPANDED")
+    selected = await _click_first_post_flair_option(page, prefer_modal_surface=expanded)
     if not selected:
+        await _capture_post_flair_sheet_state(page, "REDDIT POST FLAIR SHEET UNRESOLVED")
         return False
     applied = await _click_first(page, POST["flair_apply_button"], timeout_ms=3000)
     if not applied:
@@ -1563,7 +1742,12 @@ async def _ensure_post_flair(page, *, force: bool = False) -> bool:
             max_width=140,
         )
     await page.wait_for_timeout(1200)
-    return not await _post_requires_flair(page)
+    unresolved = await _post_requires_flair(page)
+    submit_ready = await _post_submit_surface_ready(page)
+    if unresolved or not submit_ready:
+        await _capture_post_flair_sheet_state(page, "REDDIT POST FLAIR SHEET UNRESOLVED")
+        return False
+    return True
 
 
 def _box_in_viewport(page, box: Optional[Dict[str, float]]) -> bool:
@@ -4118,7 +4302,7 @@ async def create_post(
 
             await _raise_if_community_comment_banned(page, capture_context="REDDIT POST COMMUNITY BAN")
             await _dismiss_reddit_open_app_sheet(page)
-            if not await _click_first(page, POST["post_button"], timeout_ms=5000):
+            if not await _click_post_submit(page, action_name="create_post_submit_initial"):
                 await _dismiss_reddit_open_app_sheet(page)
                 raise RuntimeError("Reddit Post button not found")
 
@@ -4128,20 +4312,24 @@ async def create_post(
                     await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED")
                     raise RuntimeError("Reddit post flair selection failed")
                 await _dismiss_reddit_open_app_sheet(page)
-                if not await _click_first(page, POST["post_button"], timeout_ms=5000):
+                if not await _click_post_submit(page, action_name="create_post_submit_after_flair"):
                     raise RuntimeError("Reddit Post button not found after flair selection")
 
             await page.wait_for_timeout(5000)
             current_url = page.url
-            if "/submit" in str(current_url or "") and (
-                await _post_requires_flair(page) or await _has_visible_selector_match(page, POST["flair_button"])
-            ):
-                if not await _ensure_post_flair(page, force=True):
+            if "/submit" in str(current_url or ""):
+                delayed_flair_required = await _post_requires_flair(page)
+                if delayed_flair_required:
+                    if not await _ensure_post_flair(page, force=True):
+                        await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED DELAYED")
+                        raise RuntimeError("Reddit post flair selection failed")
+                    await _dismiss_reddit_open_app_sheet(page)
+                    if not await _click_post_submit(page, action_name="create_post_submit_after_delayed_flair"):
+                        raise RuntimeError("Reddit Post button not found after delayed flair selection")
+                elif not await _click_post_submit(page, action_name="create_post_submit_retry"):
+                    await _capture_post_flair_sheet_state(page, "REDDIT POST SUBMIT STILL MISSING")
                     await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED DELAYED")
-                    raise RuntimeError("Reddit post flair selection failed")
-                await _dismiss_reddit_open_app_sheet(page)
-                if not await _click_first(page, POST["post_button"], timeout_ms=5000):
-                    raise RuntimeError("Reddit Post button not found after delayed flair selection")
+                    raise RuntimeError("Reddit Post button not found after delayed submit retry")
                 await page.wait_for_timeout(5000)
                 current_url = page.url
             actor_username = session.get_username() if hasattr(session, "get_username") else None

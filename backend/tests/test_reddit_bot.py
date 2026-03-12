@@ -207,6 +207,74 @@ def test_pick_post_flair_candidate_skips_media_controls():
     assert candidate["matched"] == "discussion"
 
 
+def test_pick_post_flair_candidate_skips_remove_media_control():
+    candidate = reddit_bot._pick_post_flair_candidate(
+        [
+            {
+                "text": "",
+                "aria": "remove media",
+                "role": "button",
+                "tag": "BUTTON",
+                "width": 40,
+                "height": 40,
+                "top": 427,
+                "x": 354,
+                "y": 427,
+            },
+            {
+                "text": "discussion",
+                "aria": "",
+                "role": "option",
+                "tag": "DIV",
+                "width": 132,
+                "height": 36,
+                "top": 514,
+                "x": 214,
+                "y": 514,
+                "inModalSurface": True,
+            },
+        ]
+    )
+
+    assert candidate is not None
+    assert candidate["matched"] == "discussion"
+
+
+def test_pick_post_flair_candidate_prefers_modal_surface_after_expansion():
+    candidate = reddit_bot._pick_post_flair_candidate(
+        [
+            {
+                "text": "question",
+                "aria": "",
+                "role": "button",
+                "tag": "BUTTON",
+                "width": 112,
+                "height": 36,
+                "top": 430,
+                "x": 108,
+                "y": 430,
+                "inModalSurface": False,
+            },
+            {
+                "text": "discussion",
+                "aria": "",
+                "role": "option",
+                "tag": "DIV",
+                "width": 132,
+                "height": 36,
+                "top": 514,
+                "x": 214,
+                "y": 514,
+                "inModalSurface": True,
+            },
+        ],
+        prefer_modal_surface=True,
+    )
+
+    assert candidate is not None
+    assert candidate["matched"] == "discussion"
+
+
 def test_click_first_post_flair_option_expands_view_all_before_selecting_option(monkeypatch):
     page = _FakePage()
     candidate_sets = iter(
@@ -1557,6 +1625,60 @@ def test_create_post_retries_submit_when_flair_requirement_appears_after_first_c
     assert ensured_flair == ["ensured"]
     assert selected_tabs == ["Images & Video"]
     assert upload_locator.paths == [str(image_path.resolve())]
+
+
+def test_create_post_retries_submit_without_forcing_flair_when_submit_page_lingers(monkeypatch):
+    page = _FakePage()
+    page.url = "https://www.reddit.com/r/ATBGE/submit?type=TEXT"
+    post_clicks = []
+    ensured_flair = []
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield (None, None, page)
+
+    async def fake_click_first(_page, selectors, timeout_ms=4000):
+        if tuple(selectors) == tuple(reddit_bot.POST["post_button"]):
+            post_clicks.append("post")
+            if len(post_clicks) >= 2:
+                page.url = "https://www.reddit.com/r/ATBGE/comments/example/new_post/"
+            return True
+        raise AssertionError(f"unexpected selectors: {selectors}")
+
+    async def fake_ensure_post_flair(_page, *, force=False):
+        ensured_flair.append(force)
+        return True
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "dump_interactive_elements", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_dismiss_reddit_open_app_sheet", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_fill_first", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(reddit_bot, "_fill_post_field_by_semantics", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_raise_if_community_comment_banned", lambda *_args, **_kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(reddit_bot, "_click_first", fake_click_first)
+    monkeypatch.setattr(reddit_bot, "_post_requires_flair", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(reddit_bot, "_ensure_post_flair", fake_ensure_post_flair)
+    monkeypatch.setattr(reddit_bot, "save_debug_screenshot", lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"))
+    monkeypatch.setattr(
+        reddit_bot,
+        "_build_create_post_proof_validation",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result={"ok": True, "violations": []}),
+    )
+
+    session = type("Session", (), {"profile_name": "reddit_alpha"})()
+    result = asyncio.run(
+        reddit_bot.create_post(
+            session,
+            title="hello title",
+            subreddit="ATBGE",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["current_url"] == "https://www.reddit.com/r/ATBGE/comments/example/new_post/"
+    assert post_clicks == ["post", "post"]
+    assert ensured_flair == []
 
 
 def test_create_post_returns_error_when_required_flair_cannot_be_selected(monkeypatch):
