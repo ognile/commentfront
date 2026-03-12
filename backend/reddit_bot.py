@@ -1285,6 +1285,17 @@ async def _fill_first(page, selectors, value: str) -> bool:
     return False
 
 
+async def _has_visible_selector_match(page, selectors) -> bool:
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() > 0 and await locator.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _post_requires_flair(page) -> bool:
     text_samples: List[str] = []
     try:
@@ -1414,8 +1425,8 @@ async def _click_first_post_flair_option(page) -> bool:
     return True
 
 
-async def _ensure_post_flair(page) -> bool:
-    if not await _post_requires_flair(page):
+async def _ensure_post_flair(page, *, force: bool = False) -> bool:
+    if not force and not await _post_requires_flair(page):
         return True
     opened = await _click_first(page, POST["flair_button"], timeout_ms=4000)
     if not opened:
@@ -4017,8 +4028,10 @@ async def create_post(
 
             await page.wait_for_timeout(5000)
             current_url = page.url
-            if "/submit" in str(current_url or "") and await _post_requires_flair(page):
-                if not await _ensure_post_flair(page):
+            if "/submit" in str(current_url or "") and (
+                await _post_requires_flair(page) or await _has_visible_selector_match(page, POST["flair_button"])
+            ):
+                if not await _ensure_post_flair(page, force=True):
                     await _capture_reddit_failure_state(page, "REDDIT POST FLAIR REQUIRED DELAYED")
                     raise RuntimeError("Reddit post flair selection failed")
                 await _dismiss_reddit_open_app_sheet(page)

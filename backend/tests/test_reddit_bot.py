@@ -1479,7 +1479,8 @@ def test_create_post_retries_submit_when_flair_requirement_appears_after_first_c
     async def fake_requires_flair(_page):
         return next(flair_checks)
 
-    async def fake_ensure_post_flair(_page):
+    async def fake_ensure_post_flair(_page, *, force=False):
+        assert force is True
         ensured_flair.append("ensured")
         return True
 
