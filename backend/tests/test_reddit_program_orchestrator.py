@@ -221,6 +221,29 @@ def test_target_reuse_checks_pending_reserved_items(tmp_path):
     )
 
 
+def test_target_reuse_checks_recent_other_program_history(tmp_path):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    first_program = store.create_program(_spec())
+    first_program["target_history"] = [
+        {
+            "timestamp": "2026-03-10T08:00:00Z",
+            "profile_name": "reddit_amy",
+            "local_date": "2026-03-10",
+            "target_ref": "https://www.reddit.com/r/womenshealth/comments/post/comment/c9/",
+        }
+    ]
+    store.save_program(first_program)
+    second_program = store.create_program(_spec())
+    orchestrator = RedditProgramOrchestrator(store=store)
+
+    assert orchestrator._target_already_used(
+        second_program,
+        profile_name="reddit_beta",
+        local_date="2026-03-12",
+        target_ref="https://www.reddit.com/r/womenshealth/comments/post/comment/c9/",
+    )
+
+
 def test_available_subreddits_respect_policy_action_and_profile_flair(tmp_path):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     program = store.create_program(
@@ -452,6 +475,77 @@ def test_discover_post_target_generates_comment_text_for_comment_post(tmp_path, 
     assert payload["text"] == "i would ask what their pain-control plan is if they need to go back in there."
     assert payload["generation_evidence"]["kind"] == "comment_post"
     assert payload["target_url"] == "https://www.reddit.com/r/WomensHealth/comments/thread123/endometrial_biopsy/"
+
+
+def test_discover_comment_target_respects_item_subreddit_scope(tmp_path, monkeypatch):
+    store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
+    program = store.create_program(
+        _spec(
+            profile_selection={"profile_names": ["reddit_amy"]},
+            content_assignments={"items": []},
+            engagement_quotas={
+                "posts_min_per_day": 0,
+                "posts_max_per_day": 0,
+                "upvotes_min_per_day": 0,
+                "upvotes_max_per_day": 0,
+                "comment_upvote_min_per_day": 0,
+                "comment_upvote_max_per_day": 0,
+                "reply_min_per_day": 0,
+                "reply_max_per_day": 0,
+                "random_reply_templates": [],
+                "random_upvote_action": "upvote_post",
+            },
+            topic_constraints={
+                "subreddits": ["AskWomenOver40", "WomensHealth"],
+                "keywords": ["gyno"],
+                "proof_matrix": [{"mode": "per_profile_per_subreddit", "action": "reply_comment", "day_offset": 0}],
+            },
+        )
+    )
+    item = next(
+        entry
+        for entry in program["compiled"]["work_items"]
+        if entry["source"] == "proof_matrix" and entry["subreddit"] == "AskWomenOver40"
+    )
+    orchestrator = RedditProgramOrchestrator(store=store)
+    seen_subreddits: list[str] = []
+
+    async def fake_discover_posts_for_subreddit(*, subreddit, keywords, max_posts):
+        seen_subreddits.append(subreddit)
+        return [
+            {
+                "target_url": f"https://www.reddit.com/r/{subreddit}/comments/thread123/example/",
+                "subreddit": subreddit,
+                "title": "example",
+                "body_excerpt": "excerpt",
+                "author": "op_user",
+                "score": 10,
+                "comment_count": 5,
+            }
+        ]
+
+    async def fake_thread_comment_candidates(*, post, subreddit, keywords):
+        return [
+            {
+                "target_comment_url": f"https://www.reddit.com/r/{subreddit}/comments/thread123/example/comment1/",
+                "thread_url": post["target_url"],
+                "subreddit": subreddit,
+                "author": "commenter",
+                "body_excerpt": "gyno appointment nerves",
+                "post_title": post["title"],
+                "post_body_excerpt": post["body_excerpt"],
+                "post_author": post["author"],
+                "score": 7,
+            }
+        ]
+
+    monkeypatch.setattr(orchestrator, "_discover_posts_for_subreddit", fake_discover_posts_for_subreddit)
+    monkeypatch.setattr(orchestrator, "_thread_comment_candidates", fake_thread_comment_candidates)
+
+    candidate = asyncio.run(orchestrator._discover_comment_target(program, item))
+
+    assert seen_subreddits == ["AskWomenOver40"]
+    assert candidate["subreddit"] == "AskWomenOver40"
 
 
 def test_build_generated_post_payload_allows_auto_user_flair_when_no_manual_flair_is_configured(tmp_path, monkeypatch):

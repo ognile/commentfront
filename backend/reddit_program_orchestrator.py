@@ -205,6 +205,7 @@ class RedditProgramOrchestrator:
         self._subreddit_post_cache: Dict[tuple[str, tuple[str, ...], int], List[Dict[str, Any]]] = {}
         self._thread_payload_cache: Dict[str, Any] = {}
         self._thread_comment_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._cross_program_target_ref_cache: Dict[tuple[str, int], set[str]] = {}
 
     def _program_lock(self, program_id: str) -> asyncio.Lock:
         existing = self._program_locks.get(program_id)
@@ -218,6 +219,7 @@ class RedditProgramOrchestrator:
         self._subreddit_post_cache.clear()
         self._thread_payload_cache.clear()
         self._thread_comment_cache.clear()
+        self._cross_program_target_ref_cache.clear()
 
     async def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
         if not self.broadcast_update:
@@ -614,6 +616,49 @@ class RedditProgramOrchestrator:
                 reserved.add(normalized)
         return reserved
 
+    def _cross_program_reserved_target_refs(self, program: Dict[str, Any]) -> set[str]:
+        lookback_days = max(0, int(_execution_policy(program).get("cross_program_target_lookback_days", 30) or 0))
+        if lookback_days <= 0:
+            return set()
+        program_id = str(program.get("id") or "")
+        cache_key = (program_id, lookback_days)
+        cached = self._cross_program_target_ref_cache.get(cache_key)
+        if cached is not None:
+            return set(cached)
+
+        cutoff = _utc_now() - timedelta(days=lookback_days)
+        reserved: set[str] = set()
+        for other_program in self.store.list_programs():
+            other_program_id = str(other_program.get("id") or "")
+            if not other_program_id or other_program_id == program_id:
+                continue
+            other_created_at = _parse_iso(other_program.get("created_at"))
+            for entry in list(other_program.get("target_history") or []):
+                timestamp = _parse_iso(entry.get("timestamp")) or other_created_at
+                if timestamp and timestamp < cutoff:
+                    continue
+                normalized = _normalized_target_ref(entry.get("target_ref"))
+                if normalized:
+                    reserved.add(normalized)
+            if str(other_program.get("status") or "") != "active":
+                continue
+            for work_item in ((other_program.get("compiled") or {}).get("work_items") or []):
+                if str(work_item.get("status") or "") == "cancelled":
+                    continue
+                normalized = _normalized_target_ref(_target_ref(work_item))
+                if not normalized:
+                    continue
+                freshness = (
+                    _parse_iso(work_item.get("last_attempt_at"))
+                    or _parse_iso(work_item.get("scheduled_at"))
+                    or other_created_at
+                )
+                if freshness and freshness < cutoff:
+                    continue
+                reserved.add(normalized)
+        self._cross_program_target_ref_cache[cache_key] = set(reserved)
+        return reserved
+
     def _thread_usage_stats(
         self,
         program: Dict[str, Any],
@@ -700,6 +745,20 @@ class RedditProgramOrchestrator:
             if _normalized_target_ref(_thread_ref_from_item(work_item)) == normalized_thread:
                 return True
         return False
+
+    def _candidate_subreddits_for_item(
+        self,
+        program: Dict[str, Any],
+        *,
+        item: Dict[str, Any],
+        profile_name: str,
+        action: str,
+    ) -> List[str]:
+        available = self._available_subreddits_for_profile(program, profile_name=profile_name, action=action)
+        explicit_subreddit = normalize_subreddit_name(item.get("subreddit"))
+        if explicit_subreddit:
+            return [explicit_subreddit] if explicit_subreddit in available else []
+        return available
 
     def _candidate_violates_realism(
         self,
@@ -1386,7 +1445,9 @@ class RedditProgramOrchestrator:
         normalized = _normalized_target_ref(target_ref)
         if not normalized:
             return False
-        return normalized in self._reserved_target_refs(program, exclude_work_item_id=exclude_work_item_id)
+        if normalized in self._reserved_target_refs(program, exclude_work_item_id=exclude_work_item_id):
+            return True
+        return normalized in self._cross_program_reserved_target_refs(program)
 
     def _blocked_subreddits_for_profile(self, program: Dict[str, Any], *, profile_name: str) -> set[str]:
         matrix = dict(program.get("community_block_matrix") or {})
@@ -1623,7 +1684,12 @@ class RedditProgramOrchestrator:
         constraints = _program_filters(program)
         profile_name = str(item.get("profile_name") or "")
         local_date = str(item.get("local_date") or "")
-        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name, action=str(item.get("action") or ""))
+        subreddits = self._candidate_subreddits_for_item(
+            program,
+            item=item,
+            profile_name=profile_name,
+            action=str(item.get("action") or ""),
+        )
 
         explicit_targets = [str(value).strip() for value in list(constraints.get("explicit_post_targets") or []) if str(value).strip()]
         for target_url in explicit_targets:
@@ -1636,6 +1702,7 @@ class RedditProgramOrchestrator:
             }
 
         max_posts = max(1, int(_execution_policy(program).get("max_discovery_posts_per_subreddit", 6)))
+        viable_candidates: List[Dict[str, Any]] = []
         for subreddit in subreddits:
             keywords = self._keywords_for_subreddit(program, subreddit=subreddit)
             ranked = await self._discover_posts_for_subreddit(
@@ -1643,7 +1710,6 @@ class RedditProgramOrchestrator:
                 keywords=keywords,
                 max_posts=max_posts,
             )
-            viable: List[Dict[str, Any]] = []
             for candidate in ranked:
                 target_url = str(candidate.get("target_url") or "")
                 if self._target_already_used(program, profile_name=profile_name, local_date=local_date, target_ref=target_url, exclude_work_item_id=str(item.get("id") or "")):
@@ -1652,11 +1718,16 @@ class RedditProgramOrchestrator:
                 if realism_error:
                     continue
                 candidate["ranking_score"] = self._candidate_rank_score(program, item=item, candidate=candidate)
-                viable.append(candidate)
-            if viable:
-                viable.sort(key=lambda value: (int(value.get("ranking_score") or 0), int(value.get("comment_count") or 0), int(value.get("score") or 0)), reverse=True)
-                return viable[0]
-        return None
+                viable_candidates.append(candidate)
+        viable_candidates.sort(
+            key=lambda value: (
+                int(value.get("ranking_score") or 0),
+                int(value.get("comment_count") or 0),
+                int(value.get("score") or 0),
+            ),
+            reverse=True,
+        )
+        return viable_candidates[0] if viable_candidates else None
 
     def _walk_comment_nodes(
         self,
@@ -1743,9 +1814,15 @@ class RedditProgramOrchestrator:
                 "source": "explicit_pool",
             }
 
-        subreddits = self._available_subreddits_for_profile(program, profile_name=profile_name, action=str(item.get("action") or ""))
+        subreddits = self._candidate_subreddits_for_item(
+            program,
+            item=item,
+            profile_name=profile_name,
+            action=str(item.get("action") or ""),
+        )
         max_posts = max(1, int(_execution_policy(program).get("max_discovery_posts_per_subreddit", 6)))
         max_comments = max(1, int(_execution_policy(program).get("max_comment_candidates_per_post", 8)))
+        viable_candidates: List[Dict[str, Any]] = []
 
         for subreddit in subreddits:
             keywords = self._keywords_for_subreddit(program, subreddit=subreddit)
@@ -1781,9 +1858,15 @@ class RedditProgramOrchestrator:
                     ),
                     reverse=True,
                 )
-                if filtered:
-                    return filtered[0]
-        return None
+                viable_candidates.extend(filtered)
+        viable_candidates.sort(
+            key=lambda value: (
+                int(value.get("ranking_score") or 0),
+                int(value.get("score") or 0),
+            ),
+            reverse=True,
+        )
+        return viable_candidates[0] if viable_candidates else None
 
 
 class RedditProgramScheduler:

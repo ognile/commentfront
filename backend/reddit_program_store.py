@@ -635,6 +635,7 @@ def compile_reddit_program_state(
             "execution_policy": {
                 "strict_quotas": bool(execution_policy.get("strict_quotas", True)),
                 "allow_target_reuse_within_day": bool(execution_policy.get("allow_target_reuse_within_day", False)),
+                "cross_program_target_lookback_days": max(0, int(execution_policy.get("cross_program_target_lookback_days", 30))),
                 "cooldown_minutes": max(0, int(execution_policy.get("cooldown_minutes", 15))),
                 "max_actions_per_tick": max(1, int(execution_policy.get("max_actions_per_tick", 3))),
                 "max_discovery_posts_per_subreddit": max(1, int(execution_policy.get("max_discovery_posts_per_subreddit", 6))),

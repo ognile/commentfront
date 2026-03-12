@@ -101,6 +101,11 @@ def _top_context_terms(texts: List[str], limit: int = 10) -> List[str]:
     return [term for term, _count in sorted(frequencies.items(), key=lambda item: (-item[1], item[0]))[:limit]]
 
 
+def _context_anchor_terms(texts: List[str], limit: int = 16) -> List[str]:
+    frequencies = _term_frequencies(texts)
+    return [term for term, _count in sorted(frequencies.items(), key=lambda item: (-item[1], item[0]))[:limit]]
+
+
 def _token_overlap(left: str, right: str) -> float:
     left_tokens = set(_meaningful_tokens(left))
     right_tokens = set(_meaningful_tokens(right))
@@ -248,6 +253,7 @@ def validate_generated_text(
     nearby_texts: Optional[List[str]] = None,
     same_thread_texts: Optional[List[str]] = None,
     same_profile_texts: Optional[List[str]] = None,
+    context_anchor_texts: Optional[List[str]] = None,
     require_context_overlap: bool = False,
     persona_snapshot: Optional[Dict[str, Any]] = None,
     writing_rule_snapshot: Optional[Dict[str, Any]] = None,
@@ -260,6 +266,7 @@ def validate_generated_text(
     same_thread_texts = [str(item or "").strip() for item in list(same_thread_texts or []) if str(item or "").strip()]
     same_profile_texts = [str(item or "").strip() for item in list(same_profile_texts or []) if str(item or "").strip()]
     recent_texts = [str(item or "").strip() for item in list(recent_texts or []) if str(item or "").strip()]
+    context_anchor_texts = [str(item or "").strip() for item in list(context_anchor_texts or []) if str(item or "").strip()]
 
     if not normalized:
         violations.append("text is empty")
@@ -311,9 +318,11 @@ def validate_generated_text(
             violations.append(violation)
 
     context_overlap_terms: List[str] = []
-    if require_context_overlap and nearby_texts:
+    context_anchor_terms: List[str] = []
+    if require_context_overlap and (nearby_texts or context_anchor_texts):
         context_terms = set(_top_context_terms(nearby_texts, limit=12))
-        overlap = sorted(set(_meaningful_tokens(text)) & context_terms)
+        context_anchor_terms = _context_anchor_terms(context_anchor_texts, limit=18)
+        overlap = sorted(set(_meaningful_tokens(text)) & (context_terms | set(context_anchor_terms)))
         context_overlap_terms = overlap
         if not overlap:
             violations.append("does not reference the local conversation strongly enough")
@@ -325,6 +334,7 @@ def validate_generated_text(
         "word_count": word_count,
         "nearby_duplicate": bool(similarity_scopes["nearby_context"]["exact_duplicate"]),
         "context_overlap_terms": context_overlap_terms,
+        "context_anchor_terms": context_anchor_terms,
         "similarity_checks": similarity_scopes,
     }
 
@@ -515,6 +525,10 @@ style samples from the subreddit:
 local thread context:
 {json.dumps(summarize_conversation_context(conversation_context), ensure_ascii=True, indent=2)}
 
+reply requirements:
+- respond to at least one concrete detail from the target comment or local thread context
+- do not float above the conversation as generic support
+
 return json with this exact shape:
 {{
   "text": "the reply text",
@@ -611,6 +625,7 @@ comment requirements:
 - this is a top-level comment on the post, not a reply to another commenter
 - it should sound organic for this persona and community
 - it must address the thread directly, not float as generic empathy
+- it must latch onto at least one concrete detail from the thread title or body
 - avoid repeating the thread title language too literally
 
 return json with this exact shape:
@@ -753,6 +768,7 @@ return json with this exact shape:
                 nearby_texts=nearby_texts,
                 same_thread_texts=same_thread_texts,
                 same_profile_texts=same_profile_texts,
+                context_anchor_texts=[target_excerpt, *keywords],
                 require_context_overlap=True,
                 persona_snapshot=persona_snapshot,
                 writing_rule_snapshot=writing_rule_snapshot,
@@ -847,6 +863,7 @@ return json with this exact shape:
                 nearby_texts=nearby_texts,
                 same_thread_texts=same_thread_texts,
                 same_profile_texts=same_profile_texts,
+                context_anchor_texts=[thread_title, thread_excerpt, *keywords],
                 require_context_overlap=True,
                 persona_snapshot=persona_snapshot,
                 writing_rule_snapshot=writing_rule_snapshot,
@@ -934,6 +951,7 @@ return json with this exact shape:
                 nearby_texts=nearby_texts,
                 same_thread_texts=[],
                 same_profile_texts=same_profile_texts,
+                context_anchor_texts=list(keywords),
                 require_context_overlap=True,
                 persona_snapshot=persona_snapshot,
                 writing_rule_snapshot=writing_rule_snapshot,

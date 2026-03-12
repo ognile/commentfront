@@ -1996,6 +1996,7 @@ class RedditProgramVerificationContract(BaseModel):
 class RedditProgramExecutionPolicy(BaseModel):
     strict_quotas: bool = True
     allow_target_reuse_within_day: bool = False
+    cross_program_target_lookback_days: int = 30
     cooldown_minutes: int = 15
     max_actions_per_tick: int = 3
     max_discovery_posts_per_subreddit: int = 6

@@ -76,6 +76,26 @@ def test_validate_generated_text_flags_missing_context_overlap():
     assert any("local conversation" in item for item in result["violations"])
 
 
+def test_validate_generated_text_allows_anchor_context_overlap_when_nearby_top_terms_do_not_match():
+    result = validate_generated_text(
+        "Tell the nurse ahead of time that pelvic floor guarding is a concern so they slow down before the speculum part.",
+        nearby_texts=[
+            "how do you pick a gyn you can trust when you have been putting it off for years?",
+            "i finally booked but i am already tense about the whole exam.",
+        ],
+        context_anchor_texts=[
+            "pelvic floor tension makes exams harder",
+            "they may need to slow down before the speculum part",
+        ],
+        require_context_overlap=True,
+        persona_snapshot=get_reddit_persona_snapshot("reddit_catherine_emmar"),
+        writing_rule_snapshot=get_writing_rule_snapshot(),
+    )
+
+    assert result["ok"] is True
+    assert "pelvic" in result["context_overlap_terms"]
+
+
 def test_validate_generated_text_allows_mixed_case_for_proper_case_persona():
     result = validate_generated_text(
         "Open fissures after fluconazole would make me stop assuming uncomplicated yeast.",
