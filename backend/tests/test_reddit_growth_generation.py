@@ -131,6 +131,17 @@ def test_validate_generated_text_allows_mixed_case_for_proper_case_persona():
     assert result["word_count"] >= 10
 
 
+def test_validate_generated_text_rejects_headline_title_case_for_sentence_comment():
+    result = validate_generated_text(
+        "Stop The Calls To Your Mother And Build An Inventory Of Legal Protections For This Relationship Status.",
+        persona_snapshot=get_reddit_persona_snapshot("reddit_connor_esla"),
+        writing_rule_snapshot=get_writing_rule_snapshot(),
+    )
+
+    assert result["ok"] is False
+    assert any("title case" in item for item in result["violations"])
+
+
 def test_validate_generated_text_rejects_wrong_case_style_for_lowercase_persona():
     result = validate_generated_text(
         "This should stay lowercase for Amy.",
@@ -242,3 +253,25 @@ def test_generate_comment_retries_with_validation_feedback(monkeypatch):
     assert result.success is True
     assert len(prompts) == 2
     assert "previous draft failed validation" in prompts[1]
+
+
+def test_validate_generated_text_requires_distinctive_thread_detail_not_just_generic_overlap():
+    result = validate_generated_text(
+        "Stop The Calls To Your Mother And Build An Inventory Of Legal Protections For This Relationship Status. Secure Your Solo Route Now.",
+        context_anchor_texts=[
+            "Is there anyone here who has remained voluntarily celibate all your life?",
+            "I'm 20. I'm not interested in the opposite (or any) gender, or being in a relationship at all. My mom calls me childish for that, but I can't change how I feel; I don't feel attracted to anyone.",
+            "advice",
+            "relationship",
+            "family",
+            "work",
+        ],
+        require_context_overlap=True,
+        persona_snapshot=get_reddit_persona_snapshot("reddit_connor_esla"),
+        writing_rule_snapshot=get_writing_rule_snapshot(),
+    )
+
+    assert result["ok"] is False
+    assert any("concrete thread detail" in item for item in result["violations"])
+    assert "celibate" in result["distinctive_anchor_terms"]
+    assert result["distinctive_overlap_terms"] == []

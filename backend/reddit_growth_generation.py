@@ -64,6 +64,52 @@ STOPWORDS = {
     "your",
 }
 
+GENERIC_CONTEXT_TERMS = {
+    "actually",
+    "advice",
+    "after",
+    "all",
+    "any",
+    "anyone",
+    "around",
+    "being",
+    "call",
+    "calls",
+    "doctor",
+    "family",
+    "feel",
+    "feels",
+    "feeling",
+    "health",
+    "issue",
+    "issues",
+    "life",
+    "partner",
+    "partners",
+    "pain",
+    "people",
+    "person",
+    "problem",
+    "problems",
+    "relationship",
+    "relationships",
+    "said",
+    "says",
+    "someone",
+    "something",
+    "status",
+    "still",
+    "symptoms",
+    "thing",
+    "things",
+    "time",
+    "want",
+    "wanted",
+    "women",
+    "woman",
+    "work",
+}
+
 
 def _collapse_whitespace(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -104,6 +150,24 @@ def _top_context_terms(texts: List[str], limit: int = 10) -> List[str]:
 def _context_anchor_terms(texts: List[str], limit: int = 16) -> List[str]:
     frequencies = _term_frequencies(texts)
     return [term for term, _count in sorted(frequencies.items(), key=lambda item: (-item[1], item[0]))[:limit]]
+
+
+def _distinctive_context_anchor_terms(texts: List[str], limit: int = 12) -> List[str]:
+    seen = []
+    seen_set = set()
+    for text in texts:
+        for token in _meaningful_tokens(text):
+            if len(token) < 5:
+                continue
+            if token in GENERIC_CONTEXT_TERMS:
+                continue
+            if token in seen_set:
+                continue
+            seen.append(token)
+            seen_set.add(token)
+            if len(seen) >= limit:
+                return seen
+    return seen
 
 
 def _token_overlap(left: str, right: str) -> float:
@@ -177,6 +241,21 @@ def _case_style_violation(text: str, case_style: str) -> Optional[str]:
         alpha = [char for char in str(text or "") if char.isalpha()]
         if alpha and not any(char.isupper() for char in alpha):
             return "text does not match proper_case persona case style"
+    return None
+
+
+def _headline_case_violation(text: str, case_style: str) -> Optional[str]:
+    if case_style != "proper_case":
+        return None
+    tokens = re.findall(r"\b[A-Za-z][A-Za-z']*\b", str(text or ""))
+    if len(tokens) < 5:
+        return None
+    title_case_tokens = [
+        token for token in tokens
+        if token[:1].isupper() and token[1:] == token[1:].lower()
+    ]
+    if len(title_case_tokens) / max(1, len(tokens)) >= 0.75:
+        return "reads like headline title case instead of natural sentence case"
     return None
 
 
@@ -296,6 +375,9 @@ def validate_generated_text(
     case_violation = _case_style_violation(text, str(persona_snapshot.get("case_style") or "").strip())
     if case_violation:
         violations.append(case_violation)
+    headline_case_violation = _headline_case_violation(text, str(persona_snapshot.get("case_style") or "").strip())
+    if headline_case_violation:
+        violations.append(headline_case_violation)
 
     word_count = _word_count(text)
     length_band = dict(persona_snapshot.get("length_band") or {})
@@ -319,13 +401,19 @@ def validate_generated_text(
 
     context_overlap_terms: List[str] = []
     context_anchor_terms: List[str] = []
+    distinctive_anchor_terms: List[str] = []
+    distinctive_overlap_terms: List[str] = []
     if require_context_overlap and (nearby_texts or context_anchor_texts):
         context_terms = set(_top_context_terms(nearby_texts, limit=12))
         context_anchor_terms = _context_anchor_terms(context_anchor_texts, limit=18)
+        distinctive_anchor_terms = _distinctive_context_anchor_terms(context_anchor_texts, limit=14)
         overlap = sorted(set(_meaningful_tokens(text)) & (context_terms | set(context_anchor_terms)))
         context_overlap_terms = overlap
+        distinctive_overlap_terms = sorted(set(_meaningful_tokens(text)) & set(distinctive_anchor_terms))
         if not overlap:
             violations.append("does not reference the local conversation strongly enough")
+        elif distinctive_anchor_terms and not distinctive_overlap_terms:
+            violations.append("does not reference a concrete thread detail strongly enough")
 
     return {
         "ok": not violations,
@@ -335,6 +423,8 @@ def validate_generated_text(
         "nearby_duplicate": bool(similarity_scopes["nearby_context"]["exact_duplicate"]),
         "context_overlap_terms": context_overlap_terms,
         "context_anchor_terms": context_anchor_terms,
+        "distinctive_anchor_terms": distinctive_anchor_terms,
+        "distinctive_overlap_terms": distinctive_overlap_terms,
         "similarity_checks": similarity_scopes,
     }
 
