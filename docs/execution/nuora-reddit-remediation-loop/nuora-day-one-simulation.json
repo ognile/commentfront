@@ -312,8 +312,8 @@
             "target_comment_id": "o88zidg",
             "target_comment_summary": "despite billing issues, do the capsules help with gut cleansing or stomach bloat?",
             "slot_intent": "pull the product away from vague cleansing talk and into a narrower maintenance use-case",
-            "text": "i wouldnt buy these for gut cleansing or bloat tbh. where they were fine for me was after antibiotics when i was trying not to get knocked sideways again. stomach wise i didnt notice much. vaginally i did feel steadier.",
-            "rationale": "continues the practical lane from day 1, but narrows the use-case harder so the product stops sounding like a fix-all.",
+            "text": "if the question is bloat i wouldnt buy nuora for that tbh. mine only felt worth it in that annoying post-antibiotic window where i could tell i was about to get thrown off again. stomach was whatever. vaginally i had way fewer oh great here we go again weeks.",
+            "rationale": "keeps the tradeoff but gives the product one much more specific job, with category-native frustration language instead of generic evaluation.",
             "pattern_anchors": [
               "uro practical reassurance",
               "nuora condition-match lane"
@@ -329,8 +329,8 @@
             "target_comment_id": "o98mwng",
             "target_comment_summary": "i'm gonna try it, but i will use a prepaid card",
             "slot_intent": "normalize the cautious-buying behavior while keeping the product read more grounded than dramatic",
-            "text": "I did the prepaid card thing on my first bottle too because the cart page felt weird to me. Dramatic maybe, but whatever. The capsules ended up being fine. Mine lived in the same bucket as boric acid where I kept it around because my body gets touchy after my period and after sex.",
-            "rationale": "keeps the checkout distrust visible but makes the thread feel less binary by adding an ordinary, slightly embarrassing coping detail.",
+            "text": "I did the prepaid card thing on my first bottle because you never know lol. Mine was actually decent around peri and after sex, which is usually when my whole situation gets touchy again. I kept reordering mostly because this one didnt make my stomach weird and I could keep it in the same boring routine as boric acid without overthinking it.",
+            "rationale": "drops the empty 'it was fine' language and replaces it with a reason-to-keep-using-it pattern: specific trigger windows, routine fit, and one slightly messy everyday detail.",
             "pattern_anchors": [
               "nuora visible branch map",
               "love wellness ecosystem support"
@@ -346,8 +346,8 @@
             "target_comment_id": "o1whqz8",
             "target_comment_summary": "one-time purchase complaint that turned into a bank dispute",
             "slot_intent": "separate checkout distrust from product fit without slipping into corporate cleanup language",
-            "text": "I would separate the billing mess from the use case. For me it only made sense after treatment, once things were calmer and I was trying to stay there. I would not buy it expecting one product to clean up an active flare.",
-            "rationale": "keeps the thread from collapsing into one totalizing scam frame while staying narrow and credibility-first.",
+            "text": "the checkout stuff would make me use a privacy card too, but use-case wise i only liked it in the boring maintenance phase after treatment. if things were already on fire i wouldnt waste the bottle there.",
+            "rationale": "keeps the trust concern visible while sounding like an actual person making a practical call, not a cleanup statement.",
             "pattern_anchors": [
               "nuora billing pile-on",
               "nuora condition-match lane"
@@ -371,8 +371,8 @@
             "target_comment_id": "o88zidg",
             "target_comment_summary": "gut cleansing / bloat question with checkout caution",
             "slot_intent": "leave one more human-use detail on the product-fit branch so the thread feels lived with, not debated at a distance",
-            "text": "same, the auto-ship drama was what i noticed first too. mine was decent around peri when everything felt touchier and i kept getting that low-level 'something is off again' feeling after my period. not magic, just less backslide.",
-            "rationale": "uses peri as collateral vocabulary and keeps the benefit in the small, annoying daily range instead of making it sound dramatic.",
+            "text": "same, autoship was the sketchiest part to me too. i still kept rebuying bc around peri i get that low-key 'im about to be irritated again' feeling and this one was decent there. not life changing, just less of the reset button.",
+            "rationale": "keeps the peri detail but gives a clearer why-i-kept-buying-it hook, which reads more native than generic 'decent' talk.",
             "pattern_anchors": [
               "love wellness ecosystem support",
               "happy v bounded enthusiasm"
