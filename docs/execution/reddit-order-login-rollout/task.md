@@ -30,19 +30,18 @@
 - keep the rollout report contract stable unless a proven blocker requires an internal-only hardening change.
 
 ## current state
-- local repo already contains dirty backend changes for 4-field reddit import, source-tag defaults, rollout wiring, audit classification, and email challenge resolution.
-- local repo already contains targeted backend tests for the new behavior.
-- tracker files existed but were still placeholder-only before this update.
+- backend hardening for 4-field reddit import, source-tag defaults, rollout wiring, audit classification, outlook email challenge recovery, existing-session reuse, and transient-navigation retry shipped on github commit `d84895f24bc21fe37ad96d9eb82c93f0b946a987`.
+- targeted backend tests for the new behavior passed locally before production deployment.
 - production health endpoint returned healthy on 2026-03-19.
-- production has an effective system proxy at `209.145.57.39:44416`.
-- production currently has 10 valid reddit fixture sessions, but none of the 10 order usernames exist there yet.
+- railway deployed commit `d84895f24bc21fe37ad96d9eb82c93f0b946a987` successfully on 2026-03-19.
+- production uses the existing system proxy at `209.145.57.39:44416`.
+- production now has 10 additional non-fixture reddit credentials and 10 valid reddit sessions for the exact order usernames.
 - the order file is `/Users/nikitalienov/Downloads/3-Business/Orders/business-order-transaction-details.txt`.
 - the order file contains 10 reddit credentials in 4-field format:
 - `username:password:email:email_password`
 
 ## active todo
-1. ship the backend hardening changes, verify the production deploy commit, and run the exact 10-account production rollout.
-2. confirm whether `Lashawnda_Gallion` is a true external blocker in production or only a local exhaustion artifact.
+- none.
 
 ## current understanding
 - the execution-critical gaps were importer field-count widening and outlook-backed reddit email challenge handling.
@@ -79,8 +78,24 @@
 - `failure_bucket=user_interaction_failed`
 - `attempt_id=20260319T154523Z_standalone_reddit_identity_lashawnda_gallion_reddit_lashawnda_gallion_d5d45f7f`
 - `audit_json_url=/screenshots/reddit_login_audit/20260319T154523Z_standalone_reddit_identity_lashawnda_gallion_reddit_lashawnda_gallion_d5d45f7f/audit.json`
+- production deploy verification:
+- `railway deployment list --json --limit 1` returned `status=SUCCESS` for deployment `4ca4ccb7-11d5-4cef-afbd-d64ef1bac3b4` on commit `d84895f24bc21fe37ad96d9eb82c93f0b946a987`.
+- production single-account accidental dispatch:
+- run `20260319T155343Z_489c61d2` was unintentionally sent with `line_count=1` for `Dalila_Danzy`.
+- it still completed successfully and proved `Dalila_Danzy` can converge in production under the deployed ladder.
+- production full rollout:
+- run `20260319T160302Z_fa2af8da` completed on 2026-03-19 with:
+- `total_accounts=10`
+- `imported_accounts=10`
+- `create_success_count=10`
+- `test_success_count=10`
+- `action_success_count=10`
+- `active_sessions_count=10`
+- `blocked_accounts_count=0`
+- production endpoint verification after the completed run showed all 10 order usernames present under `/reddit/credentials` with `fixture=false`, `session_connected=true`, `session_valid=true`.
+- production endpoint verification after the completed run showed all 10 order usernames present under `/reddit/sessions` with `valid=true` and `proxy_source=session`.
+- `Lashawnda_Gallion` was not a true production blocker; it ultimately converged and produced `reddit_lashawnda_gallion`.
 
 ## open risks
-- `Lashawnda_Gallion` may be a real external reddit-side blocker rather than a remaining backend gap; the local evidence is repeated `401 user-interaction-failed` across baseline, `settle_home`, `email_identifier_dwell`, `email_identifier_fast_otp`, `otp_retry_fresh_cycle`, and `acquire_form_reload`, plus both deterministic reference bootstraps.
-- production may still diverge from local because the final proof target is first-pass production behavior, not only local convergence.
-- if any account blocks, the next action must come from rollout report evidence, audit checkpoints, screenshots, and logs rather than guesses.
+- no open rollout risks remain for this order.
+- reusable caution remains: do not overfit a local full-ladder blocker into a production impossibility without production evidence; `Lashawnda_Gallion` disproved that assumption.
