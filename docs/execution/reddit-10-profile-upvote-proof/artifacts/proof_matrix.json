@@ -1,0 +1,313 @@
+{
+  "reddit_jewel_resendes": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/VaginalMicrobiome/comments/1ro6ddg/please_help_me_im_desperate/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/jewel_probe_after.png",
+      "diff_mean": 43.6705641025641,
+      "method": "local_prod_session_probe"
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/PCOS/comments/1rmzwml/endocrinologist_says_pcos_doesnt_exist/o93isf5/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/jewel_comment_probe_thread_after.png",
+      "diff_mean": 13.06944,
+      "method": "local_prod_session_probe"
+    }
+  },
+  "reddit_dalila_danzy": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/PCOS/comments/1rmzwml/endocrinologist_says_pcos_doesnt_exist/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_dalila_danzy_post_after.png",
+      "diff_mean": 62.13615384615385,
+      "click_x": 45,
+      "click_y": 296,
+      "crop_box": [
+        5,
+        271,
+        135,
+        321
+      ]
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/PCOS/comments/1rmzwml/endocrinologist_says_pcos_doesnt_exist/o93isf5/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_dalila_danzy_comment_after.png",
+      "diff_mean": 13.06944,
+      "row_vote": {
+        "x": 56,
+        "y": 810
+      },
+      "crop_box": [
+        21,
+        785,
+        146,
+        835
+      ]
+    }
+  },
+  "reddit_luana_cutting": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/PCOS/comments/1rr2we3/daily_rantsravesprogress_thread_for_march_11_2026/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_luana_cutting_post_after.png",
+      "diff_mean": 56.03726098191214,
+      "click_x": 39,
+      "click_y": 280,
+      "crop_box": [
+        0,
+        255,
+        129,
+        305
+      ]
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/AskWomenOver40/comments/1rqf3lu/what_systems_do_you_use_to_keep_track_of_medical/o9rw958/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_luana_cutting_comment_after.png",
+      "diff_mean": 35.54826666666667,
+      "row_vote": {
+        "x": 64,
+        "y": 67
+      },
+      "crop_box": [
+        29,
+        42,
+        154,
+        92
+      ],
+      "rerun": true
+    }
+  },
+  "reddit_darci_hardgrove": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/Menopause/comments/1rhrlxb/monthly_weight_discussion_march_2026/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_darci_hardgrove_post_after.png",
+      "diff_mean": 51.3976923076923,
+      "click_x": 47,
+      "click_y": 584,
+      "crop_box": [
+        7,
+        559,
+        137,
+        609
+      ]
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/PCOS/comments/1rcxg3c/transvaginal_ultrasound_for_pcos_diagnosis/o71lux0/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_darci_hardgrove_comment_after.png",
+      "diff_mean": 39.23525333333333,
+      "row_vote": {
+        "x": 64,
+        "y": 67
+      },
+      "crop_box": [
+        29,
+        42,
+        154,
+        92
+      ]
+    }
+  },
+  "reddit_kattie_nicklas": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/PCOS/comments/1rmzwml/endocrinologist_says_pcos_doesnt_exist/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_kattie_nicklas_post_after.png",
+      "diff_mean": 62.13615384615385,
+      "click_x": 45,
+      "click_y": 296,
+      "crop_box": [
+        5,
+        271,
+        135,
+        321
+      ],
+      "rerun": true
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/AskWomenOver40/comments/1rqf3lu/what_systems_do_you_use_to_keep_track_of_medical/o9rw958/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_kattie_nicklas_comment_after.png",
+      "diff_mean": 35.42010666666667,
+      "row_vote": {
+        "x": 64,
+        "y": 67
+      },
+      "crop_box": [
+        29,
+        42,
+        154,
+        92
+      ]
+    }
+  },
+  "reddit_odette_linke": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/VaginalMicrobiome/comments/1rqf0gh/iners_irritation/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_odette_linke_post_after.png",
+      "diff_mean": 45.44733333333334,
+      "click_x": 44,
+      "click_y": 192,
+      "crop_box": [
+        4,
+        167,
+        134,
+        217
+      ],
+      "rerun": true
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/AskWomenOver40/comments/1rr5vq1/life_advice_about_being_sedentary_and/o9x6ubk/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_odette_linke_comment_after.png",
+      "diff_mean": 36.259413333333335,
+      "row_vote": {
+        "x": 64,
+        "y": 67
+      },
+      "crop_box": [
+        29,
+        42,
+        154,
+        92
+      ]
+    }
+  },
+  "reddit_fredericka_worsley": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/PCOS/comments/1rr2we3/daily_rantsravesprogress_thread_for_march_11_2026/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_fredericka_worsley_post_after.png",
+      "diff_mean": 56.03726098191214,
+      "click_x": 39,
+      "click_y": 280,
+      "crop_box": [
+        0,
+        255,
+        129,
+        305
+      ],
+      "rerun": true
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/PCOS/comments/1rcxg3c/transvaginal_ultrasound_for_pcos_diagnosis/o71lux0/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_fredericka_worsley_comment_after.png",
+      "diff_mean": 39.23525333333333,
+      "row_vote": {
+        "x": 64,
+        "y": 67
+      },
+      "crop_box": [
+        29,
+        42,
+        154,
+        92
+      ],
+      "rerun": true
+    }
+  },
+  "reddit_denyse_cowans": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/Menopause/comments/1rhrlxb/monthly_weight_discussion_march_2026/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_denyse_cowans_post_after.png",
+      "diff_mean": 51.3976923076923,
+      "click_x": 47,
+      "click_y": 584,
+      "crop_box": [
+        7,
+        559,
+        137,
+        609
+      ],
+      "rerun": true
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/AskWomenOver40/comments/1rgsuwq/im_47f_stuck_in_my_mothers_66f_house/o7tr238/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_denyse_cowans_comment_after.png",
+      "diff_mean": 38.16922666666667,
+      "row_vote": {
+        "x": 64,
+        "y": 67
+      },
+      "crop_box": [
+        29,
+        42,
+        154,
+        92
+      ]
+    }
+  },
+  "reddit_fairy_rodgers": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/VaginalMicrobiome/comments/1rqf0gh/iners_irritation/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_fairy_rodgers_post_after.png",
+      "diff_mean": 45.44733333333334,
+      "click_x": 44,
+      "click_y": 192,
+      "crop_box": [
+        4,
+        167,
+        134,
+        217
+      ]
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/AskWomenOver40/comments/1rfemz5/seeking_advice_from_women_who_have_been_in_a/o7mhe60/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_fairy_rodgers_comment_after.png",
+      "diff_mean": 34.198613333333334,
+      "row_vote": {
+        "x": 64,
+        "y": 67
+      },
+      "crop_box": [
+        29,
+        42,
+        154,
+        92
+      ]
+    }
+  },
+  "reddit_lashawnda_gallion": {
+    "post": {
+      "success": true,
+      "target_url": "https://www.reddit.com/r/VaginalMicrobiome/comments/1ro6ddg/please_help_me_im_desperate/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_lashawnda_gallion_post_after.png",
+      "diff_mean": 43.67071794871794,
+      "click_x": 47,
+      "click_y": 712,
+      "crop_box": [
+        7,
+        687,
+        137,
+        737
+      ],
+      "rerun": true
+    },
+    "comment": {
+      "success": true,
+      "target_comment_url": "https://www.reddit.com/r/AskWomenOver40/comments/1rqd9lc/i_scheduled_my_first_gyno_appointment_how_am_i/o9reb1k/",
+      "screenshot_path": "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-10-profile-upvote-proof/artifacts/reddit_lashawnda_gallion_comment_after.png",
+      "diff_mean": 21.886560000000003,
+      "row_vote": {
+        "x": 38,
+        "y": 786
+      },
+      "crop_box": [
+        3,
+        761,
+        128,
+        811
+      ]
+    }
+  }
+}

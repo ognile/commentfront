@@ -1,0 +1,14 @@
+{
+  "success": false,
+  "platform": "reddit",
+  "action": "upvote_post",
+  "profile_name": "reddit_dalila_danzy",
+  "error": "Reddit post upvote verification failed",
+  "screenshot": "/Users/nikitalienov/Documents/commentfront/backend/debug/reddit_upvote_post_reddit_dalila_danzy.png",
+  "current_url": "https://www.reddit.com/r/PCOS/comments/1rmzwml/endocrinologist_says_pcos_doesnt_exist/",
+  "target_url": "https://www.reddit.com/r/PCOS/comments/1rmzwml/endocrinologist_says_pcos_doesnt_exist/",
+  "attempt_id": "77d495ad-cdbc-47f7-b8c3-f835f63e9413",
+  "trace_id": "77d495ad-cdbc-47f7-b8c3-f835f63e9413",
+  "final_verdict": "failed_confirmed",
+  "evidence_summary": "action failed: Reddit post upvote verification failed"
+}
