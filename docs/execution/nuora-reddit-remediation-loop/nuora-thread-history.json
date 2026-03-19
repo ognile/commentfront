@@ -1,0 +1,158 @@
+{
+  "artifact_name": "nuora-thread-history",
+  "updated_at": "2026-03-19T20:10:00+01:00",
+  "review_mode": "approval_first",
+  "cron_mode_after_approval": "approved_plans_plus_new_discovery",
+  "threads": [
+    {
+      "thread_key": "healthyhooha_1ohxknt",
+      "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1ohxknt/has_anyone_tried_nuora_trying_to_find_something/",
+      "thread_status": "same_thread_arc_in_review",
+      "review_status": "day_2_pending_review",
+      "last_evidence_refresh_at": "2026-03-19T20:10:00+01:00",
+      "latest_approved_copy_day": "day_1",
+      "next_planned_action": {
+        "type": "review_simulation_day",
+        "day_key": "day_2",
+        "artifact_json": "/Users/nikitalienov/Documents/commentfront/docs/execution/nuora-reddit-remediation-loop/nuora-day-one-simulation.json",
+        "artifact_html": "/Users/nikitalienov/Documents/commentfront/docs/execution/nuora-reddit-remediation-loop/nuora-day-one-simulation.html"
+      },
+      "approved_days": {
+        "day_1": "accepted_direction",
+        "day_2": "pending_review",
+        "day_3": "draft_pending_after_day_2"
+      },
+      "planned_days": {
+        "day_1": {
+          "review_status": "accepted_direction",
+          "simulated_actions": [
+            {
+              "profile_name": "reddit_cloudia_merra",
+              "timestamp_iso": "2026-03-20T09:12:00+01:00",
+              "target_comment_id": "nlt7klc",
+              "role": "resonate",
+              "text": "yeah if things were already calm i wouldnt be messing with anything either. i used nuora after back to back bv and yeast nonsense and it felt more like i stayed steady between periods instead of getting thrown off every single time. took maybe a month-ish for me, so not fast, but i did notice the difference."
+            },
+            {
+              "profile_name": "reddit_connor_esla",
+              "timestamp_iso": "2026-03-20T11:04:00+01:00",
+              "target_comment_id": "norii1x",
+              "role": "fixer",
+              "text": "yeah i've seen the autoship box too before ordering, but the capsules themselves were still decent for me as maintenance after antibiotics. i left autoship on bc it came out cheaper and i was already reordering probiotics all the time anyway, so for me this part was more annoying than scammy."
+            },
+            {
+              "profile_name": "reddit_lauren_stewrt",
+              "timestamp_iso": "2026-03-20T14:26:00+01:00",
+              "target_comment_id": "o4uad3c",
+              "role": "story_help",
+              "text": "I ended up trying Nuora after wasting money bouncing between three different probiotic brands and a bathroom drawer full of boric acid. Mine was not some crazy overnight turnaround. It was more like sex, antibiotics, and my period stopped knocking me out of balance every other week. I still keep backup stuff around, but I am not spiraling the same way."
+            },
+            {
+              "profile_name": "reddit_catherine_emmar",
+              "timestamp_iso": "2026-03-20T18:17:00+01:00",
+              "target_comment_id": "o8dnxws",
+              "role": "authority",
+              "text": "for biofilm i would not expect much from it. where it made more sense for me was after treatment, once things were calmer and i was mostly trying not to slide backwards again."
+            }
+          ]
+        },
+        "day_2": {
+          "review_status": "pending_review",
+          "simulated_actions": [
+            {
+              "profile_name": "reddit_connor_esla",
+              "timestamp_iso": "2026-03-21T09:36:00+01:00",
+              "target_comment_id": "o88zidg",
+              "role": "fixer",
+              "text": "i wouldnt buy these for gut cleansing or bloat tbh. where they were fine for me was after antibiotics when i was trying not to get knocked sideways again. stomach wise i didnt notice much. vaginally i did feel steadier."
+            },
+            {
+              "profile_name": "reddit_lauren_stewrt",
+              "timestamp_iso": "2026-03-21T13:11:00+01:00",
+              "target_comment_id": "o98mwng",
+              "role": "story_help",
+              "text": "I did the prepaid card thing on my first bottle too because the cart page felt weird to me. Dramatic maybe, but whatever. The capsules ended up being fine. Mine lived in the same bucket as boric acid where I kept it around because my body gets touchy after my period and after sex."
+            },
+            {
+              "profile_name": "reddit_catherine_emmar",
+              "timestamp_iso": "2026-03-21T18:02:00+01:00",
+              "target_comment_id": "o1whqz8",
+              "role": "authority",
+              "text": "I would separate the billing mess from the use case. For me it only made sense after treatment, once things were calmer and I was trying to stay there. I would not buy it expecting one product to clean up an active flare."
+            }
+          ]
+        },
+        "day_3": {
+          "review_status": "draft_pending_after_day_2",
+          "simulated_actions": [
+            {
+              "profile_name": "reddit_cloudia_merra",
+              "timestamp_iso": "2026-03-22T10:08:00+01:00",
+              "target_comment_id": "o88zidg",
+              "role": "resonate",
+              "text": "same, the auto-ship drama was what i noticed first too. mine was decent around peri when everything felt touchier and i kept getting that low-level 'something is off again' feeling after my period. not magic, just less backslide."
+            },
+            {
+              "profile_name": "reddit_connor_esla",
+              "timestamp_iso": "2026-03-22T16:24:00+01:00",
+              "target_comment_id": "o4uad3c",
+              "role": "fixer",
+              "text": "her florastor is fine too. i wouldnt treat this like there is one perfect winner here. nuora just happened to be the one i kept reordering because it was easier for me to stay on and i noticed fewer bad resets after antibiotics."
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "discovery_candidates": [
+    {
+      "thread_key": "cytolyticvaginosis_1qjxncl",
+      "thread_url": "https://www.reddit.com/r/CytolyticVaginosis/comments/1qjxncl/has_anyone_used_these_nuora_probiotics_yet/",
+      "priority": "high",
+      "status": "candidate",
+      "reason": "high-visibility billing pile-on once the same-thread arc is approved"
+    },
+    {
+      "thread_key": "vaginalmicrobiome_1rhnxj5",
+      "thread_url": "https://www.reddit.com/r/VaginalMicrobiome/comments/1rhnxj5/nuora_has_anyone_tried/",
+      "priority": "high",
+      "status": "candidate",
+      "reason": "good narrow-fit thread where product positioning can move faster than scam debate"
+    },
+    {
+      "thread_key": "vaginalprobiotics_1qjxtng",
+      "thread_url": "https://www.reddit.com/r/VaginalProbiotics/comments/1qjxtng/has_anyone_used_these_nuora_probiotics_yet/",
+      "priority": "medium",
+      "status": "candidate",
+      "reason": "thin but visible bot-review suspicion lane"
+    },
+    {
+      "thread_key": "twoxchromosomes_1pxse4b",
+      "thread_url": "https://www.reddit.com/r/TwoXChromosomes/comments/1pxse4b/supplement_questions/",
+      "priority": "medium",
+      "status": "candidate",
+      "reason": "generic supplement lane where Nuora can enter as one option among many"
+    }
+  ],
+  "week_one_queue_preview": {
+    "status": "blocked_on_day_2_day_3_review",
+    "execution_mode": "approved_plans_plus_new_discovery",
+    "approved_queue": [
+      {
+        "thread_key": "healthyhooha_1ohxknt",
+        "planned_days": [
+          "day_1",
+          "day_2",
+          "day_3"
+        ],
+        "eligible_after": "full same-thread arc approval"
+      }
+    ],
+    "discovery_queue": [
+      "cytolyticvaginosis_1qjxncl",
+      "vaginalmicrobiome_1rhnxj5",
+      "vaginalprobiotics_1qjxtng",
+      "twoxchromosomes_1pxse4b"
+    ]
+  }
+}

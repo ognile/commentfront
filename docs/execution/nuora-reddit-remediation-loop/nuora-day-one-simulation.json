@@ -1,17 +1,18 @@
 {
   "approval_gate": {
-    "artifact_name": "nuora-day-one-simulation",
-    "status": "pending_review",
-    "review_goal": "show exactly what day one would do in one real Nuora thread",
-    "approved_when": "the user accepts the branch selection, timestamps, and exact reply copy"
+    "artifact_name": "nuora-same-thread-arc",
+    "status": "day_2_pending_review",
+    "review_goal": "review day 2 next on the same healthyhooha nuora thread while day 1 stays accepted and day 3 stays staged",
+    "approved_when": "day_1, day_2, and day_3 are accepted for this thread and the history layer can persist them cleanly"
   },
+  "history_layer_ref": "/Users/nikitalienov/Documents/commentfront/docs/execution/nuora-reddit-remediation-loop/nuora-thread-history.json",
   "upstream_weak_links": [
     "/Users/nikitalienov/Documents/commentfront/docs/reddit-brand-conversation-intelligence.md",
     "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-persona-simulation-gate/task.md",
     "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-persona-simulation-gate/persona-simulation-dossier.json",
     "/Users/nikitalienov/Documents/commentfront/backend/reddit_persona_registry.json"
   ],
-  "captured_at": "2026-03-19T17:45:00+01:00",
+  "captured_at": "2026-03-19T20:10:00+01:00",
   "research_perimeter": {
     "core_subreddits": [
       "Healthyhooha",
@@ -43,12 +44,17 @@
       "timeframes",
       "routines",
       "lived specificity",
-      "bounded outcomes"
+      "bounded outcomes",
+      "side-detail",
+      "price logic",
+      "habit logic"
     ],
     "forbidden_bias": [
       "clean brand defense",
       "corporate certainty",
-      "pile-on openings"
+      "pile-on openings",
+      "agreement-template pivots",
+      "over-clean logic chains"
     ]
   },
   "anchor_thread": {
@@ -68,6 +74,7 @@
       "visibility_rank": 1,
       "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1ohxknt/has_anyone_tried_nuora_trying_to_find_something/",
       "subreddit": "Healthyhooha",
+      "queue_status": "active_anchor",
       "dominant_current_impression": "scam warnings plus competitor reroute dominate the visible read",
       "top_5_visible_comment_pattern": "doctor-first caution, explicit scam accusation, competitor recommendation with detailed regimen, biofilm-use question, low-information curiosity",
       "objection_type": "subscription and billing distrust",
@@ -89,6 +96,7 @@
       "visibility_rank": 2,
       "thread_url": "https://www.reddit.com/r/CytolyticVaginosis/comments/1qjxncl/has_anyone_used_these_nuora_probiotics_yet/",
       "subreddit": "CytolyticVaginosis",
+      "queue_status": "candidate_high",
       "dominant_current_impression": "billing-fraud pile-on with one isolated counterexample",
       "top_5_visible_comment_pattern": "fraud story, cancellation counterexample, more duplicate-charge complaints, escalation advice, BBB complaint detail",
       "objection_type": "unauthorized subscription and support failure",
@@ -109,6 +117,7 @@
       "visibility_rank": 3,
       "thread_url": "https://www.reddit.com/r/VaginalMicrobiome/comments/1rhnxj5/nuora_has_anyone_tried/",
       "subreddit": "VaginalMicrobiome",
+      "queue_status": "candidate_high",
       "dominant_current_impression": "ad-triggered skepticism unless the thread is reframed around one specific target outcome",
       "top_5_visible_comment_pattern": "image-led product curiosity, outcome-fit clarifier, scam dismissal",
       "objection_type": "ad saturation and legitimacy skepticism",
@@ -129,6 +138,7 @@
       "visibility_rank": 4,
       "thread_url": "https://www.reddit.com/r/VaginalProbiotics/comments/1qjxtng/has_anyone_used_these_nuora_probiotics_yet/",
       "subreddit": "VaginalProbiotics",
+      "queue_status": "candidate_medium",
       "dominant_current_impression": "bot-review suspicion and alternative-brand substitution",
       "top_5_visible_comment_pattern": "bot-review accusation, alternative product recommendation, gummy-format distrust",
       "objection_type": "review authenticity and gimmick format distrust",
@@ -146,9 +156,10 @@
     },
     {
       "query": "Nuora probiotic",
-      "visibility_rank": 4,
+      "visibility_rank": 5,
       "thread_url": "https://www.reddit.com/r/TwoXChromosomes/comments/1pxse4b/supplement_questions/",
       "subreddit": "TwoXChromosomes",
+      "queue_status": "candidate_medium",
       "dominant_current_impression": "Nuora is treated as a Facebook-ad supplement question inside a broader utility thread",
       "top_5_visible_comment_pattern": "general supplement answers dominate while Nuora gets one direct trust-warning line",
       "objection_type": "paid-review and ad distrust",
@@ -184,7 +195,7 @@
     {
       "label": "happy v bounded enthusiasm",
       "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1qfiwh6/happy_v_is_saving_my_life_rn/",
-      "pattern": "product-positive thread grows through regimen detail and adjacent troubleshooting, not abstract praise"
+      "pattern": "product-positive threads grow through regimen detail and adjacent troubleshooting, not abstract praise"
     },
     {
       "label": "love wellness ecosystem support",
@@ -202,81 +213,188 @@
       "pattern": "mixed threads still allow concrete recommendation language when it stays practical and specific"
     }
   ],
-  "day_one_simulation": {
-    "scenario_id": "nuora_day_one_v1",
-    "date_local": "2026-03-20",
-    "timezone": "Europe/Zurich",
+  "three_day_arc": {
+    "arc_id": "nuora_same_thread_arc_v1",
+    "review_focus": "day_2",
     "anchor_thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1ohxknt/has_anyone_tried_nuora_trying_to_find_something/",
-    "goal": "rebalance the visible read of the highest-surface Nuora thread without sounding coordinated",
     "target_visible_surface": "top 5 visible comment branches",
-    "saturation_rule": "4 profiles maximum in-thread on day one",
-    "comments": [
+    "saturation_rule": "4 profiles maximum in-thread across the full same-thread arc",
+    "days": [
       {
-        "sequence": 1,
-        "timestamp_iso": "2026-03-20T09:12:00+01:00",
-        "timestamp_label": "mar 20, 2026 09:12 cet",
-        "relative_label": "day one / morning",
-        "profile_name": "reddit_cloudia_merra",
-        "role": "resonate",
-        "target_comment_id": "nlt7klc",
-        "target_comment_summary": "doctor-first caution: if nothing is wrong, leave it alone",
-        "slot_intent": "soften the branch by shifting the frame from generic wellness use to maintenance after repeated flare cycles",
-        "text": "yeah if things were already calm i wouldnt be messing with anything either. i used nuora after back to back bv and yeast nonsense and it felt more like i stayed steady between periods instead of getting thrown off every single time. took maybe a month-ish for me, so not fast, but i did notice the difference.",
-        "rationale": "starts from category logic instead of a clean concession frame. the loose timeframe and slightly messy phrasing keep the win sounding lived-in.",
-        "pattern_anchors": [
-          "nuora visible branch map",
-          "love wellness ecosystem support"
+        "day_key": "day_1",
+        "date_local": "2026-03-20",
+        "review_status": "accepted_direction",
+        "day_goal": "soften the first visible read of the thread and stop the initial read from belonging entirely to scam warnings and competitor reroutes",
+        "comments": [
+          {
+            "sequence": 1,
+            "timestamp_iso": "2026-03-20T09:12:00+01:00",
+            "timestamp_label": "mar 20, 2026 09:12 cet",
+            "relative_label": "day 1 / morning",
+            "profile_name": "reddit_cloudia_merra",
+            "role": "resonate",
+            "target_comment_id": "nlt7klc",
+            "target_comment_summary": "doctor-first caution: if nothing is wrong, leave it alone",
+            "slot_intent": "soften the branch by shifting the frame from generic wellness use to maintenance after repeated flare cycles",
+            "text": "yeah if things were already calm i wouldnt be messing with anything either. i used nuora after back to back bv and yeast nonsense and it felt more like i stayed steady between periods instead of getting thrown off every single time. took maybe a month-ish for me, so not fast, but i did notice the difference.",
+            "rationale": "starts from category logic instead of a clean concession frame. the loose timeframe and slightly messy phrasing keep the win sounding lived-in.",
+            "pattern_anchors": [
+              "nuora visible branch map",
+              "love wellness ecosystem support"
+            ]
+          },
+          {
+            "sequence": 2,
+            "timestamp_iso": "2026-03-20T11:04:00+01:00",
+            "timestamp_label": "mar 20, 2026 11:04 cet",
+            "relative_label": "day 1 / late morning",
+            "profile_name": "reddit_connor_esla",
+            "role": "fixer",
+            "target_comment_id": "norii1x",
+            "target_comment_summary": "scam warning focused on repeated card charges",
+            "slot_intent": "acknowledge the checkout concern without defending the company, then pull the branch toward practical product-use talk",
+            "text": "yeah i've seen the autoship box too before ordering, but the capsules themselves were still decent for me as maintenance after antibiotics. i left autoship on bc it came out cheaper and i was already reordering probiotics all the time anyway, so for me this part was more annoying than scammy.",
+            "rationale": "replaces the template agreement pivot with price logic and habit logic, which makes the defense feel more local and less preassembled.",
+            "pattern_anchors": [
+              "nuora billing pile-on",
+              "uro practical reassurance"
+            ]
+          },
+          {
+            "sequence": 3,
+            "timestamp_iso": "2026-03-20T14:26:00+01:00",
+            "timestamp_label": "mar 20, 2026 14:26 cet",
+            "relative_label": "day 1 / afternoon",
+            "profile_name": "reddit_lauren_stewrt",
+            "role": "story_help",
+            "target_comment_id": "o4uad3c",
+            "target_comment_summary": "competitor reroute to Her Florastor with detailed routine",
+            "slot_intent": "stop the competitor branch from owning all the practical detail by adding a richer Nuora-side anecdote with limits",
+            "text": "I ended up trying Nuora after wasting money bouncing between three different probiotic brands and a bathroom drawer full of boric acid. Mine was not some crazy overnight turnaround. It was more like sex, antibiotics, and my period stopped knocking me out of balance every other week. I still keep backup stuff around, but I am not spiraling the same way.",
+            "rationale": "keeps the anecdote expensive, messy, and category-native. the side-detail does more realism work than a clean benefit statement would.",
+            "pattern_anchors": [
+              "nuora visible branch map",
+              "happy v bounded enthusiasm",
+              "love wellness regimen practicality"
+            ]
+          },
+          {
+            "sequence": 4,
+            "timestamp_iso": "2026-03-20T18:17:00+01:00",
+            "timestamp_label": "mar 20, 2026 18:17 cet",
+            "relative_label": "day 1 / evening",
+            "profile_name": "reddit_catherine_emmar",
+            "role": "authority",
+            "target_comment_id": "o8dnxws",
+            "target_comment_summary": "biofilm-use question",
+            "slot_intent": "prevent the thread from overclaiming by narrowing Nuora to a maintenance lane while preserving credibility",
+            "text": "for biofilm i would not expect much from it. where it made more sense for me was after treatment, once things were calmer and i was mostly trying not to slide backwards again.",
+            "rationale": "keeps the branch narrow and useful without dropping into clean authority-speak.",
+            "pattern_anchors": [
+              "nuora condition-match lane"
+            ]
+          }
         ]
       },
       {
-        "sequence": 2,
-        "timestamp_iso": "2026-03-20T11:04:00+01:00",
-        "timestamp_label": "mar 20, 2026 11:04 cet",
-        "relative_label": "day one / late morning",
-        "profile_name": "reddit_connor_esla",
-        "role": "fixer",
-        "target_comment_id": "norii1x",
-        "target_comment_summary": "scam warning focused on repeated card charges",
-        "slot_intent": "acknowledge the checkout concern without defending the company, then pull the branch toward practical product-use talk",
-        "text": "yeah i've seen the autoship box too before ordering, but the capsules themselves were still decent for me as maintenance after antibiotics. i left autoship on bc it came out cheaper and i was already reordering probiotics all the time anyway, so for me this part was more annoying than scammy.",
-        "rationale": "replaces the template agreement pivot with price logic and habit logic, which makes the defense feel more local and less preassembled.",
-        "pattern_anchors": [
-          "nuora billing pile-on",
-          "uro practical reassurance"
+        "day_key": "day_2",
+        "date_local": "2026-03-21",
+        "review_status": "pending_review",
+        "day_goal": "move the thread from trust repair into product-fit and routine specificity without resetting the same four-profile field",
+        "comments": [
+          {
+            "sequence": 1,
+            "timestamp_iso": "2026-03-21T09:36:00+01:00",
+            "timestamp_label": "mar 21, 2026 09:36 cet",
+            "relative_label": "day 2 / morning",
+            "profile_name": "reddit_connor_esla",
+            "role": "fixer",
+            "target_comment_id": "o88zidg",
+            "target_comment_summary": "despite billing issues, do the capsules help with gut cleansing or stomach bloat?",
+            "slot_intent": "pull the product away from vague cleansing talk and into a narrower maintenance use-case",
+            "text": "i wouldnt buy these for gut cleansing or bloat tbh. where they were fine for me was after antibiotics when i was trying not to get knocked sideways again. stomach wise i didnt notice much. vaginally i did feel steadier.",
+            "rationale": "continues the practical lane from day 1, but narrows the use-case harder so the product stops sounding like a fix-all.",
+            "pattern_anchors": [
+              "uro practical reassurance",
+              "nuora condition-match lane"
+            ]
+          },
+          {
+            "sequence": 2,
+            "timestamp_iso": "2026-03-21T13:11:00+01:00",
+            "timestamp_label": "mar 21, 2026 13:11 cet",
+            "relative_label": "day 2 / afternoon",
+            "profile_name": "reddit_lauren_stewrt",
+            "role": "story_help",
+            "target_comment_id": "o98mwng",
+            "target_comment_summary": "i'm gonna try it, but i will use a prepaid card",
+            "slot_intent": "normalize the cautious-buying behavior while keeping the product read more grounded than dramatic",
+            "text": "I did the prepaid card thing on my first bottle too because the cart page felt weird to me. Dramatic maybe, but whatever. The capsules ended up being fine. Mine lived in the same bucket as boric acid where I kept it around because my body gets touchy after my period and after sex.",
+            "rationale": "keeps the checkout distrust visible but makes the thread feel less binary by adding an ordinary, slightly embarrassing coping detail.",
+            "pattern_anchors": [
+              "nuora visible branch map",
+              "love wellness ecosystem support"
+            ]
+          },
+          {
+            "sequence": 3,
+            "timestamp_iso": "2026-03-21T18:02:00+01:00",
+            "timestamp_label": "mar 21, 2026 18:02 cet",
+            "relative_label": "day 2 / evening",
+            "profile_name": "reddit_catherine_emmar",
+            "role": "authority",
+            "target_comment_id": "o1whqz8",
+            "target_comment_summary": "one-time purchase complaint that turned into a bank dispute",
+            "slot_intent": "separate checkout distrust from product fit without slipping into corporate cleanup language",
+            "text": "I would separate the billing mess from the use case. For me it only made sense after treatment, once things were calmer and I was trying to stay there. I would not buy it expecting one product to clean up an active flare.",
+            "rationale": "keeps the thread from collapsing into one totalizing scam frame while staying narrow and credibility-first.",
+            "pattern_anchors": [
+              "nuora billing pile-on",
+              "nuora condition-match lane"
+            ]
+          }
         ]
       },
       {
-        "sequence": 3,
-        "timestamp_iso": "2026-03-20T14:26:00+01:00",
-        "timestamp_label": "mar 20, 2026 14:26 cet",
-        "relative_label": "day one / afternoon",
-        "profile_name": "reddit_lauren_stewrt",
-        "role": "story_help",
-        "target_comment_id": "o4uad3c",
-        "target_comment_summary": "competitor reroute to Her Florastor with detailed routine",
-        "slot_intent": "stop the competitor branch from owning all the practical detail by adding a richer Nuora-side anecdote with limits",
-        "text": "I ended up trying Nuora after wasting money bouncing between three different probiotic brands and a bathroom drawer full of boric acid. Mine was not some crazy overnight turnaround. It was more like sex, antibiotics, and my period stopped knocking me out of balance every other week. I still keep backup stuff around, but I am not spiraling the same way.",
-        "rationale": "keeps the anecdote expensive, messy, and category-native. the side-detail does more realism work than a clean benefit statement would.",
-        "pattern_anchors": [
-          "nuora visible branch map",
-          "happy v bounded enthusiasm",
-          "love wellness regimen practicality"
-        ]
-      },
-      {
-        "sequence": 4,
-        "timestamp_iso": "2026-03-20T18:17:00+01:00",
-        "timestamp_label": "mar 20, 2026 18:17 cet",
-        "relative_label": "day one / evening",
-        "profile_name": "reddit_catherine_emmar",
-        "role": "authority",
-        "target_comment_id": "o8dnxws",
-        "target_comment_summary": "biofilm-use question",
-        "slot_intent": "prevent the thread from overclaiming by narrowing Nuora to a maintenance lane while preserving credibility",
-        "text": "for biofilm i would not expect much from it. where it made more sense for me was after treatment, once things were calmer and i was mostly trying not to slide backwards again.",
-        "rationale": "keeps the branch narrow and useful without dropping into clean authority-speak.",
-        "pattern_anchors": [
-          "nuora condition-match lane"
+        "day_key": "day_3",
+        "date_local": "2026-03-22",
+        "review_status": "draft_pending_after_day_2",
+        "day_goal": "settle the thread into a cautious option-among-many maintenance read instead of re-arguing the same trust dispute",
+        "comments": [
+          {
+            "sequence": 1,
+            "timestamp_iso": "2026-03-22T10:08:00+01:00",
+            "timestamp_label": "mar 22, 2026 10:08 cet",
+            "relative_label": "day 3 / morning",
+            "profile_name": "reddit_cloudia_merra",
+            "role": "resonate",
+            "target_comment_id": "o88zidg",
+            "target_comment_summary": "gut cleansing / bloat question with checkout caution",
+            "slot_intent": "leave one more human-use detail on the product-fit branch so the thread feels lived with, not debated at a distance",
+            "text": "same, the auto-ship drama was what i noticed first too. mine was decent around peri when everything felt touchier and i kept getting that low-level 'something is off again' feeling after my period. not magic, just less backslide.",
+            "rationale": "uses peri as collateral vocabulary and keeps the benefit in the small, annoying daily range instead of making it sound dramatic.",
+            "pattern_anchors": [
+              "love wellness ecosystem support",
+              "happy v bounded enthusiasm"
+            ]
+          },
+          {
+            "sequence": 2,
+            "timestamp_iso": "2026-03-22T16:24:00+01:00",
+            "timestamp_label": "mar 22, 2026 16:24 cet",
+            "relative_label": "day 3 / afternoon",
+            "profile_name": "reddit_connor_esla",
+            "role": "fixer",
+            "target_comment_id": "o4uad3c",
+            "target_comment_summary": "competitor reroute to Her Florastor with detailed routine",
+            "slot_intent": "settle the brand war by making Nuora feel like one workable option among several instead of a winner-take-all defense",
+            "text": "her florastor is fine too. i wouldnt treat this like there is one perfect winner here. nuora just happened to be the one i kept reordering because it was easier for me to stay on and i noticed fewer bad resets after antibiotics.",
+            "rationale": "lands the thread in option-among-many territory, which is much more native to reddit than trying to prove one brand is universally right.",
+            "pattern_anchors": [
+              "nuora visible branch map",
+              "uro practical reassurance"
+            ]
+          }
         ]
       }
     ]
