@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nuora Day-One Simulation</title>
+  <style>
+    :root {
+      --bg: #f6f1e8;
+      --paper: #fffaf3;
+      --ink: #201a16;
+      --muted: #6d6158;
+      --line: rgba(53, 41, 28, 0.14);
+      --accent: #b55b3a;
+      --accent-soft: rgba(181, 91, 58, 0.12);
+      --olive: #50604d;
+      --olive-soft: rgba(80, 96, 77, 0.12);
+      --gold: #bc9340;
+      --shadow: 0 18px 52px rgba(57, 41, 29, 0.12);
+      --font-display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      --font-body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      --font-mono: "SF Mono", "Menlo", "Consolas", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: var(--font-body);
+      line-height: 1.5;
+      background:
+        radial-gradient(circle at top right, rgba(188, 147, 64, 0.18), transparent 20%),
+        radial-gradient(circle at left 20%, rgba(80, 96, 77, 0.12), transparent 26%),
+        linear-gradient(180deg, #fbf7f0 0%, #f1e9dc 100%);
+    }
+
+    .shell {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 28px 24px 48px;
+    }
+
+    .hero,
+    .panel,
+    .timeline-card,
+    .matrix-card,
+    .rule-card {
+      background: rgba(255, 250, 243, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .hero {
+      padding: 28px;
+      margin-bottom: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 220px;
+      height: 220px;
+      right: -56px;
+      bottom: -82px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(181, 91, 58, 0.2), transparent 70%);
+    }
+
+    .eyebrow,
+    .chip,
+    .small,
+    .meta,
+    .pill {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 11px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.05;
+      font-family: var(--font-display);
+      font-weight: 600;
+    }
+
+    h1 { font-size: clamp(2.2rem, 5vw, 3.6rem); max-width: 12ch; }
+    h2 { font-size: clamp(1.3rem, 2.6vw, 2rem); }
+    h3 { font-size: 1.06rem; }
+
+    p { margin: 0; color: var(--muted); }
+
+    .hero-copy {
+      margin-top: 14px;
+      max-width: 68ch;
+      font-size: 15px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.55);
+      border-radius: 16px;
+      padding: 11px 12px;
+      color: var(--muted);
+    }
+
+    .chip strong {
+      display: block;
+      margin-top: 6px;
+      color: var(--ink);
+      font-size: 15px;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 600;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 420px);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel,
+    .rule-card {
+      padding: 22px 24px;
+    }
+
+    .link {
+      color: var(--accent);
+      text-decoration: none;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      word-break: break-all;
+    }
+
+    .rule-list,
+    .matrix-list,
+    .timeline {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .rule-list {
+      list-style: none;
+      padding: 0;
+    }
+
+    .rule-list li,
+    .matrix-card,
+    .timeline-card {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.64);
+      border-radius: 18px;
+    }
+
+    .rule-list li {
+      padding: 12px 14px;
+    }
+
+    .matrix-card,
+    .timeline-card {
+      padding: 16px 18px;
+    }
+
+    .matrix-meta,
+    .timeline-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .pill {
+      border-radius: 999px;
+      padding: 6px 9px;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      background: rgba(181, 91, 58, 0.08);
+    }
+
+    .matrix-card p + p,
+    .timeline-card p + p {
+      margin-top: 8px;
+    }
+
+    .quote {
+      margin-top: 12px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(181, 91, 58, 0.08), rgba(255,255,255,0.8));
+      color: var(--ink);
+      font-size: 15px;
+      white-space: pre-wrap;
+    }
+
+    .timeline-card .quote {
+      font-size: 16px;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 4px;
+    }
+
+    .foot {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px dashed rgba(80, 96, 77, 0.3);
+      background: rgba(80, 96, 77, 0.07);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 1024px) {
+      .hero-grid,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell { padding: 18px 14px 32px; }
+      .hero, .panel, .rule-card { padding: 18px; }
+      .matrix-card, .timeline-card { padding: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="eyebrow">approval-first simulation</div>
+      <h1>nuora day-one thread plan</h1>
+      <p class="hero-copy">
+        one real thread. four profiles max. exact day-one replies only. the goal is to rebalance the visible read of the highest-surface nuora thread without sounding coordinated or corporate.
+      </p>
+      <div class="hero-grid">
+        <div class="chip">
+          anchor thread
+          <strong id="hero-thread">loading</strong>
+        </div>
+        <div class="chip">
+          surface target
+          <strong id="hero-target">loading</strong>
+        </div>
+        <div class="chip">
+          in-thread ceiling
+          <strong id="hero-ceiling">loading</strong>
+        </div>
+        <div class="chip">
+          posture
+          <strong id="hero-posture">loading</strong>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <div class="stack">
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">day one</div>
+              <h2>exact replies and timing</h2>
+            </div>
+          </div>
+          <div class="timeline" id="timeline"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">surface map</div>
+              <h2>nuora remediation matrix</h2>
+            </div>
+          </div>
+          <div class="matrix-list" id="matrix"></div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="rule-card">
+          <div class="eyebrow">locked rules</div>
+          <h2>what the simulation must obey</h2>
+          <ul class="rule-list" id="rules"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="eyebrow">anchor thread</div>
+          <h2 id="anchor-title">loading</h2>
+          <p style="margin-top:12px;">
+            <a class="link" id="anchor-link" href="#" target="_blank" rel="noreferrer">loading</a>
+          </p>
+          <div class="foot" id="anchor-summary"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script id="simulation-data" type="application/json">
+{
+  "approval_gate": {
+    "artifact_name": "nuora-day-one-simulation",
+    "status": "pending_review"
+  },
+  "locked_operating_rules": {
+    "hostile_thread_profile_ceiling": 4,
+    "primary_conversion_surface": "top_5_visible_comment_slots",
+    "posture": "mostly_positive_alignment_with_selective_downside_acknowledgment",
+    "reply_first": true,
+    "profile_behavior_ratio": {
+      "generic_health_percent": 80,
+      "nuora_related_percent": 20
+    }
+  },
+  "anchor_thread": {
+    "title": "has anyone tried nuora? trying to find something to maintain bacterial health!!",
+    "url": "https://www.reddit.com/r/Healthyhooha/comments/1ohxknt/has_anyone_tried_nuora_trying_to_find_something/",
+    "subreddit": "Healthyhooha",
+    "visibility_rank": 1,
+    "dominant_current_impression": "trust-friction thread where scam warnings and competitor reroutes currently outrank any believable bounded-positive experience",
+    "post_score": 6,
+    "comment_count": 33
+  },
+  "surface_snapshot": [
+    {
+      "visibility_rank": 1,
+      "subreddit": "Healthyhooha",
+      "dominant_current_impression": "scam warnings plus competitor reroute dominate the visible read",
+      "top_5_visible_comment_pattern": "doctor-first caution, explicit scam accusation, competitor recommendation with detailed regimen, biofilm-use question, low-information curiosity",
+      "desired_emotional_shift": "from scam-first to cautious-but-usable maintenance discussion"
+    },
+    {
+      "visibility_rank": 2,
+      "subreddit": "CytolyticVaginosis",
+      "dominant_current_impression": "billing-fraud pile-on with one isolated counterexample",
+      "top_5_visible_comment_pattern": "fraud story, cancellation counterexample, more duplicate-charge complaints, escalation advice, BBB complaint detail",
+      "desired_emotional_shift": "from fraud pile-on to mixed but survivable trust read with product-use specificity"
+    },
+    {
+      "visibility_rank": 3,
+      "subreddit": "VaginalMicrobiome",
+      "dominant_current_impression": "ad-triggered skepticism unless the thread is reframed around one specific target outcome",
+      "top_5_visible_comment_pattern": "image-led product curiosity, outcome-fit clarifier, scam dismissal",
+      "desired_emotional_shift": "from ad skepticism to narrow fit discussion"
+    },
+    {
+      "visibility_rank": 4,
+      "subreddit": "VaginalProbiotics",
+      "dominant_current_impression": "bot-review suspicion and alternative-brand substitution",
+      "top_5_visible_comment_pattern": "bot-review accusation, alternative product recommendation, gummy-format distrust",
+      "desired_emotional_shift": "from bot scam to mixed-usefulness conversation"
+    },
+    {
+      "visibility_rank": 4,
+      "subreddit": "TwoXChromosomes",
+      "dominant_current_impression": "Nuora is treated as a Facebook-ad supplement question inside a broader utility thread",
+      "top_5_visible_comment_pattern": "general supplement answers dominate while Nuora gets one direct trust-warning line",
+      "desired_emotional_shift": "from ad-skeptical aside to one-option-among-many utility read"
+    }
+  ],
+  "day_one_simulation": {
+    "comments": [
+      {
+        "timestamp_label": "mar 20, 2026 09:12 cet",
+        "relative_label": "day one / morning",
+        "profile_name": "reddit_cloudia_merra",
+        "role": "resonate",
+        "target_comment_summary": "doctor-first caution: if nothing is wrong, leave it alone",
+        "slot_intent": "soften the branch by shifting the frame from generic wellness use to maintenance after repeated flare cycles",
+        "text": "i get leaving it alone if nothing is wrong. i was taking it after back to back bv and yeast rounds, not on a perfectly calm week. mine was more of a five-week maintenance win where i stopped feeling thrown off after every period, not some instant fix.",
+        "rationale": "lived-experience opening, specific timeframe, bounded outcome"
+      },
+      {
+        "timestamp_label": "mar 20, 2026 11:04 cet",
+        "relative_label": "day one / late morning",
+        "profile_name": "reddit_connor_esla",
+        "role": "fixer",
+        "target_comment_summary": "scam warning focused on repeated card charges",
+        "slot_intent": "acknowledge the checkout concern without defending the company, then pull the branch toward practical product-use talk",
+        "text": "The auto-renew setup is sloppy, agreed. The capsules themselves were still decent for me as a maintenance probiotic after antibiotics. If anyone orders, strip the subscription box, save the confirmation page, and judge it as a maintenance product, not a rescue move.",
+        "rationale": "operational softener instead of corporate rebuttal"
+      },
+      {
+        "timestamp_label": "mar 20, 2026 14:26 cet",
+        "relative_label": "day one / afternoon",
+        "profile_name": "reddit_lauren_stewrt",
+        "role": "story_help",
+        "target_comment_summary": "competitor reroute to Her Florastor with detailed routine",
+        "slot_intent": "stop the competitor branch from owning all the practical detail by adding a richer Nuora-side anecdote with limits",
+        "text": "I almost skipped Nuora because the checkout page felt sneaky, so I only bought one bottle first and screenshotted the cart. For me it was a 'things stayed calmer between periods' kind of win, not a miracle cure. I still kept boric acid around after sex or antibiotics, but the constant slide back into irritation finally stopped being every-other-week drama.",
+        "rationale": "domestic detail, guarded trust, bounded improvement"
+      },
+      {
+        "timestamp_label": "mar 20, 2026 18:17 cet",
+        "relative_label": "day one / evening",
+        "profile_name": "reddit_catherine_emmar",
+        "role": "authority",
+        "target_comment_summary": "biofilm-use question",
+        "slot_intent": "prevent the thread from overclaiming by narrowing Nuora to a maintenance lane while preserving credibility",
+        "text": "Not for biofilm in my experience. It made more sense as a maintenance probiotic after treatment, once things were calmer, rather than the product that cleared an active problem.",
+        "rationale": "condition-match clarification keeps the branch honest"
+      }
+    ]
+  }
+}
+  </script>
+  <script>
+    const data = JSON.parse(document.getElementById('simulation-data').textContent);
+
+    document.getElementById('hero-thread').textContent = 'r/' + data.anchor_thread.subreddit;
+    document.getElementById('hero-target').textContent = 'top 5 visible slots';
+    document.getElementById('hero-ceiling').textContent = data.locked_operating_rules.hostile_thread_profile_ceiling + ' profiles';
+    document.getElementById('hero-posture').textContent = 'mostly positive / human';
+
+    document.getElementById('anchor-title').textContent = data.anchor_thread.title;
+    document.getElementById('anchor-link').textContent = data.anchor_thread.url;
+    document.getElementById('anchor-link').href = data.anchor_thread.url;
+    document.getElementById('anchor-summary').textContent =
+      'search rank #' + data.anchor_thread.visibility_rank +
+      ' for "Nuora" on 2026-03-19. current impression: ' + data.anchor_thread.dominant_current_impression +
+      '. live thread score ' + data.anchor_thread.post_score +
+      ' with ' + data.anchor_thread.comment_count + ' comments.';
+
+    const rules = [
+      'reply-first, not new-thread-first',
+      '80% generic health behavior / 20% Nuora-related behavior per profile',
+      'named Nuora threads + generic symptom/comparison threads are both in scope',
+      '4 profiles maximum in one hostile thread',
+      'top 5 visible comment slots are the conversion surface',
+      'selective downside acknowledgment is allowed; corporate certainty is not'
+    ];
+    const rulesEl = document.getElementById('rules');
+    rules.forEach((rule) => {
+      const li = document.createElement('li');
+      li.textContent = rule;
+      rulesEl.appendChild(li);
+    });
+
+    const timelineEl = document.getElementById('timeline');
+    data.day_one_simulation.comments.forEach((comment, index) => {
+      const card = document.createElement('article');
+      card.className = 'timeline-card';
+      card.innerHTML = `
+        <div class="timeline-meta">
+          <span class="pill">step ${index + 1}</span>
+          <span class="pill">${comment.timestamp_label}</span>
+          <span class="pill">${comment.profile_name}</span>
+          <span class="pill">${comment.role}</span>
+        </div>
+        <h3>${comment.target_comment_summary}</h3>
+        <p><strong>slot intent:</strong> ${comment.slot_intent}</p>
+        <div class="quote">${comment.text}</div>
+        <p><strong>why this shape:</strong> ${comment.rationale}</p>
+      `;
+      timelineEl.appendChild(card);
+    });
+
+    const matrixEl = document.getElementById('matrix');
+    data.surface_snapshot.forEach((entry) => {
+      const card = document.createElement('article');
+      card.className = 'matrix-card';
+      card.innerHTML = `
+        <div class="matrix-meta">
+          <span class="pill">rank ${entry.visibility_rank}</span>
+          <span class="pill">r/${entry.subreddit}</span>
+        </div>
+        <p><strong>current impression:</strong> ${entry.dominant_current_impression}</p>
+        <p><strong>top visible pattern:</strong> ${entry.top_5_visible_comment_pattern}</p>
+        <p><strong>desired shift:</strong> ${entry.desired_emotional_shift}</p>
+      `;
+      matrixEl.appendChild(card);
+    });
+  </script>
+</body>
+</html>

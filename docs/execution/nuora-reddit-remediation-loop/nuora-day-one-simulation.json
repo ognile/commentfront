@@ -1,0 +1,284 @@
+{
+  "approval_gate": {
+    "artifact_name": "nuora-day-one-simulation",
+    "status": "pending_review",
+    "review_goal": "show exactly what day one would do in one real Nuora thread",
+    "approved_when": "the user accepts the branch selection, timestamps, and exact reply copy"
+  },
+  "upstream_weak_links": [
+    "/Users/nikitalienov/Documents/commentfront/docs/reddit-brand-conversation-intelligence.md",
+    "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-persona-simulation-gate/task.md",
+    "/Users/nikitalienov/Documents/commentfront/docs/execution/reddit-persona-simulation-gate/persona-simulation-dossier.json",
+    "/Users/nikitalienov/Documents/commentfront/backend/reddit_persona_registry.json"
+  ],
+  "captured_at": "2026-03-19T17:45:00+01:00",
+  "research_perimeter": {
+    "core_subreddits": [
+      "Healthyhooha",
+      "VaginalMicrobiome",
+      "CytolyticVaginosis"
+    ],
+    "peripheral_subreddits": [
+      "VaginalProbiotics",
+      "TwoXChromosomes"
+    ],
+    "comparators": [
+      "Happy V",
+      "Love Wellness",
+      "URO"
+    ]
+  },
+  "locked_operating_rules": {
+    "reply_first": true,
+    "profile_behavior_ratio": {
+      "generic_health_percent": 80,
+      "nuora_related_percent": 20
+    },
+    "target_pool": "named_nuora_threads_and_generic_symptom_or_comparison_threads",
+    "hostile_thread_profile_ceiling": 4,
+    "primary_conversion_surface": "top_5_visible_comment_slots",
+    "posture": "mostly_positive_alignment_with_selective_downside_acknowledgment",
+    "writing_bias": [
+      "concrete detail",
+      "timeframes",
+      "routines",
+      "lived specificity",
+      "bounded outcomes"
+    ],
+    "forbidden_bias": [
+      "clean brand defense",
+      "corporate certainty",
+      "pile-on openings"
+    ]
+  },
+  "anchor_thread": {
+    "query": "Nuora",
+    "visibility_rank": 1,
+    "source": "reddit search relevance, last year, captured live on 2026-03-19",
+    "subreddit": "Healthyhooha",
+    "title": "has anyone tried nuora? trying to find something to maintain bacterial health!!",
+    "url": "https://www.reddit.com/r/Healthyhooha/comments/1ohxknt/has_anyone_tried_nuora_trying_to_find_something/",
+    "post_score": 6,
+    "comment_count": 33,
+    "dominant_current_impression": "trust-friction thread where scam warnings and competitor reroutes currently outrank any believable bounded-positive experience"
+  },
+  "surface_snapshot": [
+    {
+      "query": "Nuora",
+      "visibility_rank": 1,
+      "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1ohxknt/has_anyone_tried_nuora_trying_to_find_something/",
+      "subreddit": "Healthyhooha",
+      "dominant_current_impression": "scam warnings plus competitor reroute dominate the visible read",
+      "top_5_visible_comment_pattern": "doctor-first caution, explicit scam accusation, competitor recommendation with detailed regimen, biofilm-use question, low-information curiosity",
+      "objection_type": "subscription and billing distrust",
+      "comparator_pattern_to_borrow": [
+        "Love Wellness regimen-detail replies",
+        "Happy V bounded maintenance enthusiasm"
+      ],
+      "max_force_saturation": 4,
+      "desired_emotional_shift": "from scam-first to cautious-but-usable maintenance discussion",
+      "best_reply_archetypes": [
+        "bounded maintenance win",
+        "operational trust softener",
+        "condition-match clarification",
+        "practical anecdote"
+      ]
+    },
+    {
+      "query": "Nuora",
+      "visibility_rank": 2,
+      "thread_url": "https://www.reddit.com/r/CytolyticVaginosis/comments/1qjxncl/has_anyone_used_these_nuora_probiotics_yet/",
+      "subreddit": "CytolyticVaginosis",
+      "dominant_current_impression": "billing-fraud pile-on with one isolated counterexample",
+      "top_5_visible_comment_pattern": "fraud story, cancellation counterexample, more duplicate-charge complaints, escalation advice, BBB complaint detail",
+      "objection_type": "unauthorized subscription and support failure",
+      "comparator_pattern_to_borrow": [
+        "URO practical recommendation tone",
+        "Love Wellness support-thread specificity"
+      ],
+      "max_force_saturation": 4,
+      "desired_emotional_shift": "from fraud pile-on to mixed but survivable trust read with product-use specificity",
+      "best_reply_archetypes": [
+        "specific cancellation workaround",
+        "bounded maintenance report",
+        "non-miracle use-case clarification"
+      ]
+    },
+    {
+      "query": "Nuora",
+      "visibility_rank": 3,
+      "thread_url": "https://www.reddit.com/r/VaginalMicrobiome/comments/1rhnxj5/nuora_has_anyone_tried/",
+      "subreddit": "VaginalMicrobiome",
+      "dominant_current_impression": "ad-triggered skepticism unless the thread is reframed around one specific target outcome",
+      "top_5_visible_comment_pattern": "image-led product curiosity, outcome-fit clarifier, scam dismissal",
+      "objection_type": "ad saturation and legitimacy skepticism",
+      "comparator_pattern_to_borrow": [
+        "condition-match helper structure from strong advice threads",
+        "Happy V journey language with narrow goals"
+      ],
+      "max_force_saturation": 4,
+      "desired_emotional_shift": "from ad skepticism to narrow fit discussion",
+      "best_reply_archetypes": [
+        "condition-match helper",
+        "maintenance-not-cure distinction",
+        "personal routine anchor"
+      ]
+    },
+    {
+      "query": "Nuora",
+      "visibility_rank": 4,
+      "thread_url": "https://www.reddit.com/r/VaginalProbiotics/comments/1qjxtng/has_anyone_used_these_nuora_probiotics_yet/",
+      "subreddit": "VaginalProbiotics",
+      "dominant_current_impression": "bot-review suspicion and alternative-brand substitution",
+      "top_5_visible_comment_pattern": "bot-review accusation, alternative product recommendation, gummy-format distrust",
+      "objection_type": "review authenticity and gimmick format distrust",
+      "comparator_pattern_to_borrow": [
+        "URO mixed-review reassurance language",
+        "Love Wellness practical-use framing"
+      ],
+      "max_force_saturation": 4,
+      "desired_emotional_shift": "from bot scam to mixed-usefulness conversation",
+      "best_reply_archetypes": [
+        "format skeptic but product-neutralizer",
+        "specific routine fit note",
+        "brand mention inside broader microbiome talk"
+      ]
+    },
+    {
+      "query": "Nuora probiotic",
+      "visibility_rank": 4,
+      "thread_url": "https://www.reddit.com/r/TwoXChromosomes/comments/1pxse4b/supplement_questions/",
+      "subreddit": "TwoXChromosomes",
+      "dominant_current_impression": "Nuora is treated as a Facebook-ad supplement question inside a broader utility thread",
+      "top_5_visible_comment_pattern": "general supplement answers dominate while Nuora gets one direct trust-warning line",
+      "objection_type": "paid-review and ad distrust",
+      "comparator_pattern_to_borrow": [
+        "casual one-line brand mentions from comparator threads",
+        "general-routine utility framing"
+      ],
+      "max_force_saturation": 2,
+      "desired_emotional_shift": "from ad-skeptical aside to one-option-among-many utility read",
+      "best_reply_archetypes": [
+        "drive-by practical mention",
+        "routine adherence comparison",
+        "bounded experience without heavy brand focus"
+      ]
+    }
+  ],
+  "pattern_anchors": [
+    {
+      "label": "nuora visible branch map",
+      "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1ohxknt/has_anyone_tried_nuora_trying_to_find_something/",
+      "pattern": "visible branches are dominated by scam warnings, competitor reroutes, and one practical-use question"
+    },
+    {
+      "label": "nuora billing pile-on",
+      "thread_url": "https://www.reddit.com/r/CytolyticVaginosis/comments/1qjxncl/has_anyone_used_these_nuora_probiotics_yet/",
+      "pattern": "one counterexample can exist inside a heavily negative billing thread without sounding corporate"
+    },
+    {
+      "label": "nuora condition-match lane",
+      "thread_url": "https://www.reddit.com/r/VaginalMicrobiome/comments/1rhnxj5/nuora_has_anyone_tried/",
+      "pattern": "narrowing to the exact target outcome is more native than broad brand evaluation"
+    },
+    {
+      "label": "happy v bounded enthusiasm",
+      "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1qfiwh6/happy_v_is_saving_my_life_rn/",
+      "pattern": "product-positive thread grows through regimen detail and adjacent troubleshooting, not abstract praise"
+    },
+    {
+      "label": "love wellness ecosystem support",
+      "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1nsi941/my_coochie_is_healing/",
+      "pattern": "high-upvote comments reward brave sharing, specific routines, and relief language"
+    },
+    {
+      "label": "love wellness regimen practicality",
+      "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1pnm94m/whats_working_for_my_chronic_bv/",
+      "pattern": "threads with practical routine detail attract agreement and adjacent recommendation behavior"
+    },
+    {
+      "label": "uro practical reassurance",
+      "thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1q5o95l/uro_probiotic_pill/",
+      "pattern": "mixed threads still allow concrete recommendation language when it stays practical and specific"
+    }
+  ],
+  "day_one_simulation": {
+    "scenario_id": "nuora_day_one_v1",
+    "date_local": "2026-03-20",
+    "timezone": "Europe/Zurich",
+    "anchor_thread_url": "https://www.reddit.com/r/Healthyhooha/comments/1ohxknt/has_anyone_tried_nuora_trying_to_find_something/",
+    "goal": "rebalance the visible read of the highest-surface Nuora thread without sounding coordinated",
+    "target_visible_surface": "top 5 visible comment branches",
+    "saturation_rule": "4 profiles maximum in-thread on day one",
+    "comments": [
+      {
+        "sequence": 1,
+        "timestamp_iso": "2026-03-20T09:12:00+01:00",
+        "timestamp_label": "mar 20, 2026 09:12 cet",
+        "relative_label": "day one / morning",
+        "profile_name": "reddit_cloudia_merra",
+        "role": "resonate",
+        "target_comment_id": "nlt7klc",
+        "target_comment_summary": "doctor-first caution: if nothing is wrong, leave it alone",
+        "slot_intent": "soften the branch by shifting the frame from generic wellness use to maintenance after repeated flare cycles",
+        "text": "i get leaving it alone if nothing is wrong. i was taking it after back to back bv and yeast rounds, not on a perfectly calm week. mine was more of a five-week maintenance win where i stopped feeling thrown off after every period, not some instant fix.",
+        "rationale": "uses a lived-experience opening, a specific timeframe, and a bounded outcome. borrowed from the comparator pattern where practical relief and ongoing messiness read better than clean brand praise.",
+        "pattern_anchors": [
+          "nuora visible branch map",
+          "love wellness ecosystem support"
+        ]
+      },
+      {
+        "sequence": 2,
+        "timestamp_iso": "2026-03-20T11:04:00+01:00",
+        "timestamp_label": "mar 20, 2026 11:04 cet",
+        "relative_label": "day one / late morning",
+        "profile_name": "reddit_connor_esla",
+        "role": "fixer",
+        "target_comment_id": "norii1x",
+        "target_comment_summary": "scam warning focused on repeated card charges",
+        "slot_intent": "acknowledge the checkout concern without defending the company, then pull the branch toward practical product-use talk",
+        "text": "The auto-renew setup is sloppy, agreed. The capsules themselves were still decent for me as a maintenance probiotic after antibiotics. If anyone orders, strip the subscription box, save the confirmation page, and judge it as a maintenance product, not a rescue move.",
+        "rationale": "keeps the trust concern in frame while sounding operational instead of corporate. the turn from complaint to practical handling is the exact softener this branch currently lacks.",
+        "pattern_anchors": [
+          "nuora billing pile-on",
+          "uro practical reassurance"
+        ]
+      },
+      {
+        "sequence": 3,
+        "timestamp_iso": "2026-03-20T14:26:00+01:00",
+        "timestamp_label": "mar 20, 2026 14:26 cet",
+        "relative_label": "day one / afternoon",
+        "profile_name": "reddit_lauren_stewrt",
+        "role": "story_help",
+        "target_comment_id": "o4uad3c",
+        "target_comment_summary": "competitor reroute to Her Florastor with detailed routine",
+        "slot_intent": "stop the competitor branch from owning all the practical detail by adding a richer Nuora-side anecdote with limits",
+        "text": "I almost skipped Nuora because the checkout page felt sneaky, so I only bought one bottle first and screenshotted the cart. For me it was a 'things stayed calmer between periods' kind of win, not a miracle cure. I still kept boric acid around after sex or antibiotics, but the constant slide back into irritation finally stopped being every-other-week drama.",
+        "rationale": "leans into the exact pattern that already wins in the category: domestic detail, guarded trust, and a bounded improvement that still leaves other tools in the routine.",
+        "pattern_anchors": [
+          "nuora visible branch map",
+          "happy v bounded enthusiasm",
+          "love wellness regimen practicality"
+        ]
+      },
+      {
+        "sequence": 4,
+        "timestamp_iso": "2026-03-20T18:17:00+01:00",
+        "timestamp_label": "mar 20, 2026 18:17 cet",
+        "relative_label": "day one / evening",
+        "profile_name": "reddit_catherine_emmar",
+        "role": "authority",
+        "target_comment_id": "o8dnxws",
+        "target_comment_summary": "biofilm-use question",
+        "slot_intent": "prevent the thread from overclaiming by narrowing Nuora to a maintenance lane while preserving credibility",
+        "text": "Not for biofilm in my experience. It made more sense as a maintenance probiotic after treatment, once things were calmer, rather than the product that cleared an active problem.",
+        "rationale": "keeps the most credibility-sensitive branch honest. the goal is not to make Nuora sound universal; it is to make the thread sound more trustworthy and usable.",
+        "pattern_anchors": [
+          "nuora condition-match lane"
+        ]
+      }
+    ]
+  }
+}
