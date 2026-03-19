@@ -19,6 +19,7 @@
 - keep the tradeoff inside the real mechanism. reject hype or wrong expectations, but do not contradict the product's actual formula or target pathway.
 - on simulation boards, show the live reddit branch text verbatim. do not replace source wording with a cleaner label or summary.
 - separate reply target from observed context. if the plan is a top-level reply to the post, show the post as the target and any competing comment only as context being counterweighted.
+- when the plan is top-level, write the copy as top-level. remove nested-conversation openers like `yeah`, `same`, `too`, `either`, or continuation phrasing unless the action is actually nested.
 - same-thread day progression should change function:
 - `day_1`: soften the first visible read
 - `day_2`: make the product feel more usable by narrowing fit, routine, and trigger patterns
@@ -35,6 +36,7 @@
 - do not invent realism by denying the product's real lane. a natural-sounding sentence that breaks mechanism fidelity is still fake.
 - do not paraphrase the branch context on review artifacts. if the user is reviewing a simulation, they need to see the exact reddit wording the reply is reacting to.
 - do not present a top-level reply plan as if it were a nested reply. the board has to preserve the real execution shape.
+- do not keep nested-reply language after switching the target to the main post. if the opening only makes sense as a continuation of someone else's comment, rewrite it.
 - do not make `day_2` or `day_3` sound like the thread has no memory of what happened on `day_1`.
 - do not make Nuora sound like a miracle fix for active flare states when the stronger observed pattern is maintenance or stabilizing support.
 - do not fill a remediation board with abstract strategy text when the approval target is exact daily behavior.
@@ -50,6 +52,7 @@
 - verify product-truth fidelity. if the line contradicts the known formula, mechanism, or core use-case, rewrite it before review.
 - verify context fidelity. every simulation step should display the real reddit branch text verbatim, with no paraphrased branch label standing in for it.
 - verify target fidelity. every simulation step should make the actual reply target explicit, so the review surface matches the intended posting action.
+- verify language-shape fidelity. if the reply target is the main post, the opening sentence must make sense when read directly under the post with no prior comment above it.
 - verify the history file can be read back and that the day statuses, latest approved copy, and next planned action point to the right thread and artifact.
 
 ## promotion rules

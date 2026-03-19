@@ -83,6 +83,9 @@
 - the next review exposed a threading-model failure:
 - the board was showing observed branch context as if the planned action was replying to that nested comment
 - if the execution plan is top-level replies to the main post, the board has to say that explicitly and keep competing comments as observed context only
+- the latest review exposed a language-shape failure:
+- some replies were still written like nested continuations even after the target model was fixed
+- if the action is a top-level reply, the opening sentence has to make sense directly under the post with no `yeah`, `same`, `too`, or `either` dependency
 
 ## active todo
 1. review `day_2` on the same Healthyhooha Nuora thread as the main approval target.
@@ -105,6 +108,7 @@
 - mechanism fidelity is a hard gate. the copy can reject hype, but it cannot deny the product's actual lane just to sound more cautious.
 - in review artifacts, the parent branch text has to be shown verbatim. paraphrase is acceptable for internal synthesis, not for simulation presentation.
 - execution-target fidelity matters too. the review artifact has to match the actual reply shape, not just the emotional context it is trying to counterweight.
+- language-shape fidelity matters too. top-level replies must read as standalone answers to the post, not as continuations of the competing context.
 
 ## proven wins
 - the tracker was initialized with the adaptive execution loop skill at `docs/execution/nuora-reddit-remediation-loop/`.
