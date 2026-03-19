@@ -91,6 +91,18 @@ def _short_text(value: Optional[str], limit: int = 120) -> Optional[str]:
     return text if len(text) <= limit else text[:limit].strip()
 
 
+def _clean_thread_title_candidate(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    for prefix in ("post title:", "title:"):
+        if lowered.startswith(prefix):
+            trimmed = text[len(prefix) :].strip()
+            return trimmed or None
+    return text
+
+
 def _reddit_username_candidates(*values: Optional[str]) -> List[str]:
     candidates: List[str] = []
     seen = set()
@@ -2110,13 +2122,16 @@ async def _current_thread_title(page) -> Optional[str]:
         try:
             locator = page.locator(selector).first
             if await locator.count() > 0 and await locator.is_visible():
-                text = (await locator.inner_text()).strip()
+                candidates: List[str] = []
+                text = _clean_thread_title_candidate(await locator.inner_text())
                 if text:
-                    return text
+                    candidates.append(text)
                 for attr in ("title", "aria-label", "content"):
-                    value = (await locator.get_attribute(attr) or "").strip()
+                    value = _clean_thread_title_candidate(await locator.get_attribute(attr))
                     if value:
-                        return value
+                        candidates.append(value)
+                if candidates:
+                    return max(candidates, key=lambda item: len(str(item).strip()))
         except Exception:
             continue
     return None

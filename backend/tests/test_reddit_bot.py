@@ -516,6 +516,38 @@ def test_thread_context_present_accepts_typographic_apostrophe_title(monkeypatch
     assert asyncio.run(reddit_bot._thread_context_present(page, "Endocrinologist says pcos doesn't exist?")) is True
 
 
+def test_current_thread_title_prefers_full_aria_label_over_truncated_visible_text():
+    class _TruncatedTitleLocator:
+        async def count(self):
+            return 1
+
+        async def is_visible(self):
+            return True
+
+        async def inner_text(self):
+            return "Endocrinologist says pcos does"
+
+        async def get_attribute(self, name):
+            if name == "aria-label":
+                return "Post Title: Endocrinologist says pcos doesn’t exist?"
+            return None
+
+        @property
+        def first(self):
+            return self
+
+    class _TitlePage(_FakePage):
+        def locator(self, selector):
+            if selector == "h1":
+                return _TruncatedTitleLocator()
+            raise AssertionError(f"unexpected locator: {selector}")
+
+    assert (
+        asyncio.run(reddit_bot._current_thread_title(_TitlePage()))
+        == "Endocrinologist says pcos doesn’t exist?"
+    )
+
+
 def test_thread_context_present_accepts_matching_title_with_discussion_surface(monkeypatch):
     page = _FakePage()
     page.locator_text["h1"] = "metrogel help!"
