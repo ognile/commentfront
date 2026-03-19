@@ -80,6 +80,9 @@
 - the current review also exposed a display-layer failure:
 - paraphrased branch labels break simulation review because they hide the actual emotional wording that the reply is supposed to answer
 - simulation artifacts must show verbatim reddit branch context, not my abstract summaries
+- the next review exposed a threading-model failure:
+- the board was showing observed branch context as if the planned action was replying to that nested comment
+- if the execution plan is top-level replies to the main post, the board has to say that explicitly and keep competing comments as observed context only
 
 ## active todo
 1. review `day_2` on the same Healthyhooha Nuora thread as the main approval target.
@@ -101,6 +104,7 @@
 - sparse imperfection can help when persona-fit allows it: a small typo, compressed logic, or an oddly specific phrase is better than polished explanatory balance.
 - mechanism fidelity is a hard gate. the copy can reject hype, but it cannot deny the product's actual lane just to sound more cautious.
 - in review artifacts, the parent branch text has to be shown verbatim. paraphrase is acceptable for internal synthesis, not for simulation presentation.
+- execution-target fidelity matters too. the review artifact has to match the actual reply shape, not just the emotional context it is trying to counterweight.
 
 ## proven wins
 - the tracker was initialized with the adaptive execution loop skill at `docs/execution/nuora-reddit-remediation-loop/`.

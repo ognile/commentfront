@@ -29,28 +29,36 @@
             {
               "profile_name": "reddit_cloudia_merra",
               "timestamp_iso": "2026-03-20T09:12:00+01:00",
-              "target_comment_id": "nlt7klc",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "nlt7klc",
               "role": "resonate",
               "text": "yeah if things were already calm i wouldnt be messing with anything either. i used nuora after back to back bv and yeast nonsense and it felt more like i stayed steady between periods instead of getting thrown off every single time. took maybe a month-ish for me, so not fast, but i did notice the difference."
             },
             {
               "profile_name": "reddit_connor_esla",
               "timestamp_iso": "2026-03-20T11:04:00+01:00",
-              "target_comment_id": "norii1x",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "norii1x",
               "role": "fixer",
               "text": "yeah i've seen the autoship box too before ordering, but the capsules themselves were still decent for me as maintenance after antibiotics. i left autoship on bc it came out cheaper and i was already reordering probiotics all the time anyway, so for me this part was more annoying than scammy."
             },
             {
               "profile_name": "reddit_lauren_stewrt",
               "timestamp_iso": "2026-03-20T14:26:00+01:00",
-              "target_comment_id": "o4uad3c",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "o4uad3c",
               "role": "story_help",
               "text": "I ended up trying Nuora after wasting money bouncing between three different probiotic brands and a bathroom drawer full of boric acid. Mine was not some crazy overnight turnaround. It was more like sex, antibiotics, and my period stopped knocking me out of balance every other week. I still keep backup stuff around, but I am not spiraling the same way."
             },
             {
               "profile_name": "reddit_catherine_emmar",
               "timestamp_iso": "2026-03-20T18:17:00+01:00",
-              "target_comment_id": "o8dnxws",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "o8dnxws",
               "role": "authority",
               "text": "for biofilm i would not expect much from it. where it made more sense for me was after treatment, once things were calmer and i was mostly trying not to slide backwards again."
             }
@@ -62,21 +70,27 @@
             {
               "profile_name": "reddit_connor_esla",
               "timestamp_iso": "2026-03-21T09:36:00+01:00",
-              "target_comment_id": "o88zidg",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "o88zidg",
               "role": "fixer",
               "text": "if the question is some instant gut cleanse feeling i wouldnt expect that from nuora tbh. mine was actually solid in that post-antibiotic gut/vaginal domino-effect window where i could tell everything was about to get weird again. stomach felt calmer and i had way fewer oh great here we go again weeks after."
             },
             {
               "profile_name": "reddit_lauren_stewrt",
               "timestamp_iso": "2026-03-21T13:11:00+01:00",
-              "target_comment_id": "o98mwng",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "o98mwng",
               "role": "story_help",
               "text": "I did the prepaid card thing on my first bottle because you never know lol. Mine was actually decent around peri and after sex, which is usually when my whole situation gets touchy again. I kept reordering mostly because this one didnt make my stomach weird and I could keep it in the same boring routine as boric acid without overthinking it."
             },
             {
               "profile_name": "reddit_catherine_emmar",
               "timestamp_iso": "2026-03-21T18:02:00+01:00",
-              "target_comment_id": "o1whqz8",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "o1whqz8",
               "role": "authority",
               "text": "the checkout stuff would make me use a privacy card too, but use-case wise i only liked it in the boring maintenance phase after treatment. if things were already on fire i wouldnt waste the bottle there."
             }
@@ -88,14 +102,18 @@
             {
               "profile_name": "reddit_cloudia_merra",
               "timestamp_iso": "2026-03-22T10:08:00+01:00",
-              "target_comment_id": "o88zidg",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "o88zidg",
               "role": "resonate",
               "text": "same, autoship was the sketchiest part to me too. i still kept rebuying bc around peri i get that low-key 'im about to be irritated again' feeling and this one was decent there. not life changing, just less of the reset button."
             },
             {
               "profile_name": "reddit_connor_esla",
               "timestamp_iso": "2026-03-22T16:24:00+01:00",
-              "target_comment_id": "o4uad3c",
+              "reply_target_type": "main_post",
+              "reply_target_post_id": "t3_1ohxknt",
+              "observed_context_comment_id": "o4uad3c",
               "role": "fixer",
               "text": "her florastor is fine too. i wouldnt treat this like there is one perfect winner here. nuora just happened to be the one i kept reordering because it was easier for me to stay on and i noticed fewer bad resets after antibiotics."
             }
