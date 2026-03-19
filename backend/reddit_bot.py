@@ -2206,6 +2206,37 @@ async def _thread_discussion_surface_present(page) -> bool:
         return False
 
 
+async def _share_row_present(page) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                """() => {
+                    const visible = (rect) =>
+                        rect &&
+                        rect.width >= 24 &&
+                        rect.height >= 18 &&
+                        rect.bottom >= 0 &&
+                        rect.right >= 0 &&
+                        rect.top <= (window.innerHeight || 873) &&
+                        rect.left <= (window.innerWidth || 393);
+                    for (const node of Array.from(document.querySelectorAll('button, a, div, span'))) {
+                        const rect = node.getBoundingClientRect();
+                        if (!visible(rect)) continue;
+                        const text = String(node.innerText || node.textContent || '').toLowerCase().trim();
+                        const aria = String(node.getAttribute?.('aria-label') || '').toLowerCase().trim();
+                        const combined = `${text} | ${aria}`;
+                        if (combined === 'share |' || combined.includes('share')) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
 async def _scroll_page_to_top(page) -> None:
     try:
         await page.evaluate(
@@ -2237,7 +2268,7 @@ async def _thread_context_present(page, expected_title: Optional[str]) -> bool:
             return False
         if await _thread_discussion_surface_present(page):
             return True
-        if await _first_viewport_locator(page, COMMENT["share_button"]):
+        if await _share_row_present(page):
             return True
         return await _feed_post_card_count(page) < 2
     current_title = _normalize_text(await _current_thread_title(page))
@@ -2252,7 +2283,7 @@ async def _thread_context_present(page, expected_title: Optional[str]) -> bool:
         return False
     if await _thread_discussion_surface_present(page):
         return True
-    if await _first_viewport_locator(page, COMMENT["share_button"]):
+    if await _share_row_present(page):
         return True
     return await _feed_post_card_count(page) < 2
 

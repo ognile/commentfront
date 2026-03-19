@@ -574,12 +574,12 @@ def test_thread_context_present_accepts_matching_title_with_share_row(monkeypatc
     async def fake_discussion_surface(_page):
         return False
 
-    async def fake_first_viewport_locator(_page, _selectors):
-        return object()
+    async def fake_share_row_present(_page):
+        return True
 
     monkeypatch.setattr(reddit_bot, "_feed_post_card_count", fake_feed_count)
     monkeypatch.setattr(reddit_bot, "_thread_discussion_surface_present", fake_discussion_surface)
-    monkeypatch.setattr(reddit_bot, "_first_viewport_locator", fake_first_viewport_locator)
+    monkeypatch.setattr(reddit_bot, "_share_row_present", fake_share_row_present)
 
     assert asyncio.run(reddit_bot._thread_context_present(page, "metrogel help")) is True
 
