@@ -564,6 +564,26 @@ def test_thread_context_present_accepts_matching_title_with_discussion_surface(m
     assert asyncio.run(reddit_bot._thread_context_present(page, "metrogel help")) is True
 
 
+def test_thread_context_present_accepts_matching_title_with_share_row(monkeypatch):
+    page = _FakePage()
+    page.locator_text["h1"] = "metrogel help!"
+
+    async def fake_feed_count(_page):
+        return 3
+
+    async def fake_discussion_surface(_page):
+        return False
+
+    async def fake_first_viewport_locator(_page, _selectors):
+        return object()
+
+    monkeypatch.setattr(reddit_bot, "_feed_post_card_count", fake_feed_count)
+    monkeypatch.setattr(reddit_bot, "_thread_discussion_surface_present", fake_discussion_surface)
+    monkeypatch.setattr(reddit_bot, "_first_viewport_locator", fake_first_viewport_locator)
+
+    assert asyncio.run(reddit_bot._thread_context_present(page, "metrogel help")) is True
+
+
 def test_open_subreddit_community_menu_falls_back_to_view_community(monkeypatch):
     page = _FakePage()
     calls = []

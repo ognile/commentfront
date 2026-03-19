@@ -2237,6 +2237,8 @@ async def _thread_context_present(page, expected_title: Optional[str]) -> bool:
             return False
         if await _thread_discussion_surface_present(page):
             return True
+        if await _first_viewport_locator(page, COMMENT["share_button"]):
+            return True
         return await _feed_post_card_count(page) < 2
     current_title = _normalize_text(await _current_thread_title(page))
     if not current_title:
@@ -2249,6 +2251,8 @@ async def _thread_context_present(page, expected_title: Optional[str]) -> bool:
     if not matches:
         return False
     if await _thread_discussion_surface_present(page):
+        return True
+    if await _first_viewport_locator(page, COMMENT["share_button"]):
         return True
     return await _feed_post_card_count(page) < 2
 
