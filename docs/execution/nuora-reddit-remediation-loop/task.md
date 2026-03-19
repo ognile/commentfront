@@ -77,6 +77,9 @@
 - the next review exposed a product-truth failure:
 - realism cannot come at the cost of mechanism fidelity
 - if a sentence contradicts the known formula or target pathway, the whole branch loses credibility no matter how natural the wording sounds
+- the current review also exposed a display-layer failure:
+- paraphrased branch labels break simulation review because they hide the actual emotional wording that the reply is supposed to answer
+- simulation artifacts must show verbatim reddit branch context, not my abstract summaries
 
 ## active todo
 1. review `day_2` on the same Healthyhooha Nuora thread as the main approval target.
@@ -97,6 +100,7 @@
 - empty approval phrases like `it was fine` or `ended up being fine` are still dead giveaways. the comment needs a real reason-to-keep-using-it signal, not just a soft positive verdict.
 - sparse imperfection can help when persona-fit allows it: a small typo, compressed logic, or an oddly specific phrase is better than polished explanatory balance.
 - mechanism fidelity is a hard gate. the copy can reject hype, but it cannot deny the product's actual lane just to sound more cautious.
+- in review artifacts, the parent branch text has to be shown verbatim. paraphrase is acceptable for internal synthesis, not for simulation presentation.
 
 ## proven wins
 - the tracker was initialized with the adaptive execution loop skill at `docs/execution/nuora-reddit-remediation-loop/`.
