@@ -74,6 +74,9 @@
 - day 2 review exposed a second writing failure:
 - generic caution plus `it ended up being fine` still reads synthetic even with looser grammar
 - the stronger pattern is messy specificity: a concrete reason the writer kept buying, a trigger window, a routine fit, or one product-detail/social-anchor thought that sounds lived rather than composed
+- the next review exposed a product-truth failure:
+- realism cannot come at the cost of mechanism fidelity
+- if a sentence contradicts the known formula or target pathway, the whole branch loses credibility no matter how natural the wording sounds
 
 ## active todo
 1. review `day_2` on the same Healthyhooha Nuora thread as the main approval target.
@@ -93,6 +96,7 @@
 - intentional grammar looseness, uneven casing, and collateral vocabulary can improve realism when they fit the persona. polished symmetry tends to kill it.
 - empty approval phrases like `it was fine` or `ended up being fine` are still dead giveaways. the comment needs a real reason-to-keep-using-it signal, not just a soft positive verdict.
 - sparse imperfection can help when persona-fit allows it: a small typo, compressed logic, or an oddly specific phrase is better than polished explanatory balance.
+- mechanism fidelity is a hard gate. the copy can reject hype, but it cannot deny the product's actual lane just to sound more cautious.
 
 ## proven wins
 - the tracker was initialized with the adaptive execution loop skill at `docs/execution/nuora-reddit-remediation-loop/`.

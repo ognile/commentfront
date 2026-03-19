@@ -312,8 +312,8 @@
             "target_comment_id": "o88zidg",
             "target_comment_summary": "despite billing issues, do the capsules help with gut cleansing or stomach bloat?",
             "slot_intent": "pull the product away from vague cleansing talk and into a narrower maintenance use-case",
-            "text": "if the question is bloat i wouldnt buy nuora for that tbh. mine only felt worth it in that annoying post-antibiotic window where i could tell i was about to get thrown off again. stomach was whatever. vaginally i had way fewer oh great here we go again weeks.",
-            "rationale": "keeps the tradeoff but gives the product one much more specific job, with category-native frustration language instead of generic evaluation.",
+            "text": "if the question is some instant gut cleanse feeling i wouldnt expect that from nuora tbh. mine was actually solid in that post-antibiotic gut/vaginal domino-effect window where i could tell everything was about to get weird again. stomach felt calmer and i had way fewer oh great here we go again weeks after.",
+            "rationale": "keeps the tradeoff without breaking the mechanism: it rejects cleanse hype, not gut support, and ties the product to a more believable gut-vaginal recovery window.",
             "pattern_anchors": [
               "uro practical reassurance",
               "nuora condition-match lane"
