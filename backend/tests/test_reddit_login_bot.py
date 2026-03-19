@@ -208,27 +208,32 @@ def test_resolve_login_identifier_can_prefer_email():
     assert _resolve_login_identifier(credential, {"login_identifier_preference": "username"}) == "Connor_Esla"
 
 
-def test_create_session_from_credentials_skips_reference_bootstrap_by_default():
+def test_create_session_from_credentials_uses_reference_bootstrap_by_default_for_user_interaction_failure():
     credential = {"credential_id": "reddit::Connor_Esla", "profile_name": "reddit_connor_esla"}
 
     async def fake_login_reddit(**kwargs):
-        return {"success": False, "attempt_id": "attempt-1", "error": "blocked"}
+        return {"success": False, "attempt_id": "attempt-1", "error": "blocked", "profile_name": "reddit_connor_esla"}
 
-    async def unexpected_reference(**kwargs):
-        raise AssertionError("reference bootstrap should not run")
+    async def fake_reference(**kwargs):
+        return {"success": True, "profile_name": "reddit_connor_esla"}
 
-    with patch("reddit_login_bot.CredentialManager") as manager_cls, patch(
+    with patch("reddit_login_bot.RedditLoginLearningStore") as learning_store_cls, patch(
+        "reddit_login_bot.CredentialManager"
+    ) as manager_cls, patch(
         "reddit_login_bot.login_reddit", side_effect=fake_login_reddit
     ), patch(
         "reddit_login_bot._audit_has_user_interaction_failure", return_value=True
     ), patch(
-        "reddit_login_bot.login_reddit_from_reference_facebook_identity", side_effect=unexpected_reference
+        "reddit_login_bot._reference_facebook_session_candidates", return_value=["adele_hamilton"]
+    ), patch(
+        "reddit_login_bot.login_reddit_from_reference_facebook_identity", side_effect=fake_reference
     ):
+        learning_store_cls.return_value.record_attempt.return_value = None
         manager_cls.return_value.get_credential.return_value = credential
         result = asyncio.run(create_session_from_credentials("reddit::Connor_Esla"))
 
-    assert result["success"] is False
-    assert result["attempt_id"] == "attempt-1"
+    assert result["success"] is True
+    assert result["profile_name"] == "reddit_connor_esla"
 
 
 def test_create_session_from_credentials_allows_reference_bootstrap_when_enabled():
@@ -240,7 +245,9 @@ def test_create_session_from_credentials_allows_reference_bootstrap_when_enabled
     async def fake_reference(**kwargs):
         return {"success": True, "profile_name": "reddit_connor_esla"}
 
-    with patch("reddit_login_bot.CredentialManager") as manager_cls, patch(
+    with patch("reddit_login_bot.RedditLoginLearningStore") as learning_store_cls, patch(
+        "reddit_login_bot.CredentialManager"
+    ) as manager_cls, patch(
         "reddit_login_bot.login_reddit", side_effect=fake_login_reddit
     ), patch(
         "reddit_login_bot._audit_has_user_interaction_failure", return_value=True
@@ -249,6 +256,10 @@ def test_create_session_from_credentials_allows_reference_bootstrap_when_enabled
     ), patch(
         "reddit_login_bot.login_reddit_from_reference_facebook_identity", side_effect=fake_reference
     ):
+        learning_store_cls.return_value.record_attempt.return_value = None
+        learning_store_cls.return_value.recommended_strategies.return_value = [
+            {"strategy_id": "baseline_humanized"}
+        ]
         manager_cls.return_value.get_credential.return_value = credential
         result = asyncio.run(
             create_session_from_credentials("reddit::Connor_Esla", allow_reference_bootstrap=True)
@@ -256,3 +267,63 @@ def test_create_session_from_credentials_allows_reference_bootstrap_when_enabled
 
     assert result["success"] is True
     assert result["profile_name"] == "reddit_connor_esla"
+
+
+def test_create_session_from_credentials_escalates_to_email_identifier_strategy():
+    credential = {
+        "credential_id": "reddit::Kattie_Nicklas",
+        "profile_name": "reddit_kattie_nicklas",
+        "uid": "Kattie_Nicklas",
+        "username": "Kattie_Nicklas",
+        "email": "nicklakattie86@outlook.com",
+    }
+    strategy_calls = []
+
+    async def fake_login_reddit(**kwargs):
+        strategy_calls.append(kwargs.get("strategy_id"))
+        if kwargs.get("strategy_id") == "baseline_humanized":
+            return {
+                "success": False,
+                "attempt_id": "attempt-baseline",
+                "error": "blocked",
+                "profile_name": "reddit_kattie_nicklas",
+                "failure_bucket": "user_interaction_failed",
+            }
+        return {
+            "success": True,
+            "attempt_id": "attempt-email",
+            "profile_name": "reddit_kattie_nicklas",
+        }
+
+    async def fake_reference(**kwargs):
+        return {
+            "success": False,
+            "attempt_id": "attempt-reference",
+            "error": "still blocked",
+            "failure_bucket": "user_interaction_failed",
+            "profile_name": "reddit_kattie_nicklas",
+        }
+
+    with patch("reddit_login_bot.RedditLoginLearningStore") as learning_store_cls, patch(
+        "reddit_login_bot.CredentialManager"
+    ) as manager_cls, patch(
+        "reddit_login_bot.login_reddit", side_effect=fake_login_reddit
+    ), patch(
+        "reddit_login_bot._audit_has_user_interaction_failure", return_value=True
+    ), patch(
+        "reddit_login_bot._reference_facebook_session_candidates", return_value=["adele_hamilton"]
+    ), patch(
+        "reddit_login_bot.login_reddit_from_reference_facebook_identity", side_effect=fake_reference
+    ):
+        learning_store_cls.return_value.record_attempt.return_value = None
+        learning_store_cls.return_value.recommended_strategies.return_value = [
+            {"strategy_id": "baseline_humanized"},
+            {"strategy_id": "email_identifier_dwell"},
+        ]
+        manager_cls.return_value.get_credential.return_value = credential
+        result = asyncio.run(
+            create_session_from_credentials("reddit::Kattie_Nicklas", allow_reference_bootstrap=True)
+        )
+
+    assert result["success"] is True
+    assert strategy_calls == ["baseline_humanized", "email_identifier_dwell"]

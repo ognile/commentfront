@@ -1299,6 +1299,34 @@ async def _goto(page, url: str):
     await page.wait_for_timeout(500)
 
 
+async def _goto_in_authenticated_action_context(context, page, url: str, *, profile_name: str):
+    try:
+        await _goto(page, url)
+        return page
+    except Exception as exc:
+        if "ERR_EMPTY_RESPONSE" not in str(exc):
+            raise
+
+        logger.warning(
+            "[%s] action navigation to %s failed on current page after auth; retrying in fresh page",
+            profile_name,
+            url,
+        )
+        fresh_page = await context.new_page()
+        user_agent = None
+        try:
+            user_agent = await page.evaluate("navigator.userAgent")
+        except Exception:
+            user_agent = None
+        await apply_page_identity_overrides(context, fresh_page, user_agent=user_agent, locale="en-US")
+        await _goto(fresh_page, url)
+        try:
+            await page.close()
+        except Exception:
+            pass
+        return fresh_page
+
+
 async def _dismiss_reddit_open_app_sheet(page) -> bool:
     try:
         dismissal_payload = await page.evaluate(
@@ -4461,7 +4489,12 @@ async def join_subreddit(
 async def open_post_target(session: RedditSession, url: str, proxy_url: Optional[str] = None) -> Dict[str, Any]:
     async with _session_page(session, proxy_url) as (_browser, _context, page):
         try:
-            await _goto(page, url)
+            page = await _goto_in_authenticated_action_context(
+                _context,
+                page,
+                url,
+                profile_name=session.profile_name,
+            )
             screenshot = await save_debug_screenshot(page, f"reddit_open_target_{session.profile_name}")
             return _result(
                 success=True,

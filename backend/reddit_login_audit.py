@@ -43,10 +43,32 @@ def _screenshot_url(relative_path: str) -> str:
 
 def classify_reddit_failure(audit: Dict[str, Any], error: Optional[str]) -> Optional[str]:
     checkpoints = list(audit.get("checkpoints") or [])
+    events = list(audit.get("events") or [])
     error_text = " ".join(
         " ".join(checkpoint.get("visible_errors") or []) for checkpoint in checkpoints
     ).lower()
     error_blob = f"{error or ''} {error_text}".lower()
+
+    for event in events:
+        if str(event.get("event") or "") == "email_challenge_failed":
+            event_error = str(event.get("error") or "").lower()
+            for bucket in (
+                "email_login_failed",
+                "verification_mail_missing",
+                "challenge_submit_failed",
+                "mailbox_timeout",
+            ):
+                if bucket in event_error:
+                    return bucket
+
+    for bucket in (
+        "email_login_failed",
+        "verification_mail_missing",
+        "challenge_submit_failed",
+        "mailbox_timeout",
+    ):
+        if bucket in error_blob:
+            return bucket
 
     if "user-interaction-failed" in error_blob:
         return "user_interaction_failed"

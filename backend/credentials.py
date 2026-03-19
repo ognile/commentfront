@@ -1,13 +1,62 @@
 import json
 import logging
 import os
+import re
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import pyotp
 
 
 SUPPORTED_PLATFORMS = {"facebook", "reddit"}
+
+
+def _default_reddit_profile_name(username: str) -> str:
+    return f"reddit_{str(username or '').strip().lower()}"
+
+
+def _default_reddit_profile_url(username: str) -> str:
+    return f"https://www.reddit.com/user/{str(username or '').strip()}/"
+
+
+def _reddit_source_tag(source_label: Optional[str]) -> Optional[str]:
+    raw_value = str(source_label or "").strip()
+    if not raw_value:
+        return None
+
+    stem = Path(raw_value).stem or Path(raw_value).name or raw_value
+    normalized = re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
+    if not normalized:
+        return None
+    return f"source_{normalized}"
+
+
+def _resolve_reddit_tags(
+    *,
+    tags: Optional[List[str]],
+    fixture: bool,
+    source_label: Optional[str],
+) -> List[str]:
+    resolved: List[str] = []
+    base = list(tags or ["reddit"])
+
+    for tag in base:
+        value = str(tag or "").strip().lower()
+        if value and value not in resolved:
+            resolved.append(value)
+
+    if "reddit" not in resolved:
+        resolved.insert(0, "reddit")
+
+    source_tag = _reddit_source_tag(source_label)
+    if source_tag and source_tag not in resolved:
+        resolved.append(source_tag)
+
+    if fixture and "fixture" not in resolved:
+        resolved.append("fixture")
+
+    return resolved
 
 
 class CredentialManager:
@@ -200,24 +249,32 @@ class CredentialManager:
         profile_name: Optional[str] = None,
         fixture: bool = False,
         tags: Optional[List[str]] = None,
+        source_label: Optional[str] = None,
     ) -> str:
         """
-        Import a Reddit account from:
+        Import a Reddit account from either:
+        username:password:email:email_password
         username:password:email:email_password:totp_secret:profile_url
         """
         raw = str(line or "").strip()
         if not raw:
             raise ValueError("Empty Reddit credential line")
 
-        parts = raw.split(":", 5)
-        if len(parts) != 6:
-            raise ValueError("Expected 6 Reddit credential fields")
+        if raw.count(":") == 3:
+            username, password, email, email_password = [part.strip() for part in raw.split(":", 3)]
+            totp_secret = ""
+            profile_url = ""
+        else:
+            parts = raw.split(":", 5)
+            if len(parts) != 6:
+                raise ValueError("Expected 4 or 6 Reddit credential fields")
+            username, password, email, email_password, totp_secret, profile_url = [part.strip() for part in parts]
 
-        username, password, email, email_password, totp_secret, profile_url = [part.strip() for part in parts]
-        if not username or not password or not email or not profile_url:
+        if not username or not password or not email:
             raise ValueError("Missing required Reddit credential fields")
 
-        inferred_profile_name = profile_name or f"reddit_{username.lower()}"
+        inferred_profile_name = profile_name or _default_reddit_profile_name(username)
+        resolved_profile_url = profile_url or _default_reddit_profile_url(username)
         return self.add_credential(
             uid=username,
             username=username,
@@ -227,9 +284,9 @@ class CredentialManager:
             platform="reddit",
             email=email,
             email_password=email_password or None,
-            profile_url=profile_url,
+            profile_url=resolved_profile_url,
             display_name=username,
-            tags=tags or ["reddit"],
+            tags=_resolve_reddit_tags(tags=tags, fixture=fixture, source_label=source_label),
             fixture=fixture,
         )
 

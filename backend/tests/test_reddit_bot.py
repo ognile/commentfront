@@ -187,6 +187,28 @@ class _FakeViewportPage:
         return self._locator
 
 
+class _FakeActionPage:
+    def __init__(self, *, url="about:blank"):
+        self.url = url
+        self.closed = False
+
+    async def evaluate(self, script, *args):
+        if script == "navigator.userAgent":
+            return "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
+        return False
+
+    async def close(self):
+        self.closed = True
+
+
+class _FakeActionContext:
+    def __init__(self, fresh_page):
+        self._fresh_page = fresh_page
+
+    async def new_page(self):
+        return self._fresh_page
+
+
 def test_post_requires_flair_detects_required_flair_label_from_dom_text():
     page = _FakePage()
     page.body_text = ""
@@ -2644,6 +2666,41 @@ def test_run_reddit_action_classifies_browser_launch_error_as_infrastructure(mon
     assert "executable doesn't exist" in result["error"].lower()
     assert recorder.finalized
     assert recorder.finalized[0]["verdict"].final_verdict == "infra_failure"
+
+
+def test_open_post_target_recovers_empty_response_in_fresh_page(monkeypatch):
+    target_url = "https://www.reddit.com/user/Kattie_Nicklas/"
+    broken_page = _FakeActionPage(url="https://www.reddit.com/")
+    fresh_page = _FakeActionPage()
+    context = _FakeActionContext(fresh_page)
+
+    @asynccontextmanager
+    async def fake_session_page(_session, _proxy_url):
+        yield None, context, broken_page
+
+    async def fake_goto(page, url):
+        if page is broken_page:
+            raise RuntimeError(f"Page.goto: net::ERR_EMPTY_RESPONSE at {url}")
+        page.url = url
+
+    async def fake_identity(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(reddit_bot, "_session_page", fake_session_page)
+    monkeypatch.setattr(reddit_bot, "_goto", fake_goto)
+    monkeypatch.setattr(reddit_bot, "apply_page_identity_overrides", fake_identity)
+    monkeypatch.setattr(
+        reddit_bot,
+        "save_debug_screenshot",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result="shot.png"),
+    )
+
+    session = type("Session", (), {"profile_name": "reddit_kattie_nicklas"})()
+    result = asyncio.run(reddit_bot.open_post_target(session, target_url))
+
+    assert result["success"] is True
+    assert result["current_url"] == target_url
+    assert broken_page.closed is True
 
 
 def test_click_composer_text_region_uses_evaluate_candidate():

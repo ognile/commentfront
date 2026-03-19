@@ -1889,6 +1889,7 @@ class RedditAuditCompareRequest(BaseModel):
 class RedditBulkSeedRequest(BaseModel):
     lines: List[str]
     fixture: bool = True
+    source_label: Optional[str] = None
 
 
 class RedditActionRequest(BaseModel):
@@ -6903,6 +6904,7 @@ async def seed_reddit_credentials(
                 line,
                 fixture=request.fixture,
                 tags=["reddit", "fixture"] if request.fixture else ["reddit"],
+                source_label=request.source_label,
             )
             imported += 1
             created_ids.append(storage_key)

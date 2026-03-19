@@ -15,6 +15,10 @@ def _line(username: str) -> str:
     )
 
 
+def _line_4(username: str) -> str:
+    return f"{username}:pass123:{username.lower()}@example.com:mailpass"
+
+
 def test_execute_reddit_bulk_session_rollout_success_persists_report_and_preserves_order(tmp_path, monkeypatch):
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -70,6 +74,51 @@ def test_execute_reddit_bulk_session_rollout_success_persists_report_and_preserv
     persisted = reddit_rollout.load_reddit_rollout_report("run_success")
     assert persisted is not None
     assert persisted["summary"]["active_sessions_count"] == 2
+
+
+def test_execute_reddit_bulk_session_rollout_supports_4_field_lines(tmp_path, monkeypatch):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(reddit_rollout, "REDDIT_ROLLOUT_REPORTS_DIR", reports_dir)
+
+    manager = CredentialManager(file_path=str(tmp_path / "credentials.json"))
+
+    async def fake_create(*, credential_uid, proxy_url, proxy_source, broadcast_callback=None):
+        username = credential_uid.split("::", 1)[1]
+        return {
+            "success": True,
+            "profile_name": f"reddit_{username.lower()}",
+            "attempt_id": f"attempt-{username}",
+            "audit_json_url": f"/audit/{username}.json",
+        }
+
+    async def fake_test(session, proxy_url=None):
+        return {"success": True, "error": None}
+
+    async def fake_action(session, **kwargs):
+        return {"success": True, "error": None, "current_url": kwargs.get("url")}
+
+    monkeypatch.setattr(reddit_rollout, "create_reddit_session_from_credentials", fake_create)
+    monkeypatch.setattr(reddit_rollout, "test_reddit_session", fake_test)
+    monkeypatch.setattr(reddit_rollout, "run_reddit_action", fake_action)
+
+    report = asyncio.run(
+        reddit_rollout.execute_reddit_bulk_session_rollout(
+            run_id="run_4_field",
+            lines=[_line_4("Amy_Schaefera")],
+            proxy_url="http://proxy.example:8080",
+            proxy_source="env",
+            source_label="/tmp/business-order-transaction-details.txt",
+            fixture=False,
+            credential_manager=manager,
+        )
+    )
+
+    assert report["summary"]["active_sessions_count"] == 1
+    credential = manager.get_credential("reddit::Amy_Schaefera", platform="reddit")
+    assert credential is not None
+    assert credential["profile_url"] == "https://www.reddit.com/user/Amy_Schaefera/"
+    assert credential["tags"] == ["reddit", "source_business_order_transaction_details"]
 
 
 def test_execute_reddit_bulk_session_rollout_records_blocker_evidence(tmp_path, monkeypatch):
@@ -204,3 +253,119 @@ def test_execute_reddit_bulk_session_rollout_is_idempotent_for_existing_credenti
     assert first["results"][0]["credential_id"] == "reddit::Neera_Allvere"
     assert second["results"][0]["credential_id"] == "reddit::Neera_Allvere"
     assert second["summary"]["active_sessions_count"] == 1
+
+
+def test_execute_reddit_bulk_session_rollout_reuses_existing_valid_session(tmp_path, monkeypatch):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(reddit_rollout, "REDDIT_ROLLOUT_REPORTS_DIR", reports_dir)
+
+    manager = CredentialManager(file_path=str(tmp_path / "credentials.json"))
+    manager.import_reddit_account_line(
+        _line("Neera_Allvere"),
+        fixture=False,
+        tags=["reddit"],
+        source_label="existing-session",
+    )
+
+    class _FakeSession:
+        def __init__(self, profile_name):
+            self.profile_name = profile_name
+
+        def load(self):
+            return {"profile_name": self.profile_name}
+
+        def get_profile_url(self):
+            return f"https://www.reddit.com/user/{self.profile_name.removeprefix('reddit_').title().replace('_', '_')}/"
+
+    async def fake_test(session, proxy_url=None):
+        return {"success": True, "error": None}
+
+    async def fake_action(session, **kwargs):
+        return {"success": True, "error": None, "current_url": kwargs.get("url")}
+
+    async def unexpected_create(**kwargs):
+        raise AssertionError("create should not run when existing session is valid")
+
+    monkeypatch.setattr(reddit_rollout, "RedditSession", _FakeSession)
+    monkeypatch.setattr(reddit_rollout, "test_reddit_session", fake_test)
+    monkeypatch.setattr(reddit_rollout, "run_reddit_action", fake_action)
+    monkeypatch.setattr(reddit_rollout, "create_reddit_session_from_credentials", unexpected_create)
+
+    report = asyncio.run(
+        reddit_rollout.execute_reddit_bulk_session_rollout(
+            run_id="reuse_run",
+            lines=[_line("Neera_Allvere")],
+            proxy_url="http://proxy.example:8080",
+            proxy_source="env",
+            fixture=False,
+            credential_manager=manager,
+        )
+    )
+
+    result = report["results"][0]
+    assert report["status"] == "completed"
+    assert report["summary"]["active_sessions_count"] == 1
+    assert result["status"] == "success"
+    assert result["reused_existing_session"] is True
+    assert result["create_attempts"] == []
+
+
+def test_execute_reddit_bulk_session_rollout_retries_existing_session_on_empty_response(tmp_path, monkeypatch):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(reddit_rollout, "REDDIT_ROLLOUT_REPORTS_DIR", reports_dir)
+
+    manager = CredentialManager(file_path=str(tmp_path / "credentials.json"))
+    manager.import_reddit_account_line(
+        _line("Denyse_Cowans"),
+        fixture=False,
+        tags=["reddit"],
+        source_label="existing-session-retry",
+    )
+
+    class _FakeSession:
+        def __init__(self, profile_name):
+            self.profile_name = profile_name
+
+        def load(self):
+            return {"profile_name": self.profile_name}
+
+        def get_profile_url(self):
+            return "https://www.reddit.com/user/Denyse_Cowans/"
+
+    test_calls = {"count": 0}
+
+    async def flaky_test(session, proxy_url=None):
+        test_calls["count"] += 1
+        if test_calls["count"] == 1:
+            return {"success": False, "error": "Page.goto: net::ERR_EMPTY_RESPONSE at https://www.reddit.com/submit"}
+        return {"success": True, "error": None}
+
+    async def fake_action(session, **kwargs):
+        return {"success": True, "error": None, "current_url": kwargs.get("url")}
+
+    async def unexpected_create(**kwargs):
+        raise AssertionError("create should not run when existing session succeeds after retry")
+
+    monkeypatch.setattr(reddit_rollout, "RedditSession", _FakeSession)
+    monkeypatch.setattr(reddit_rollout, "test_reddit_session", flaky_test)
+    monkeypatch.setattr(reddit_rollout, "run_reddit_action", fake_action)
+    monkeypatch.setattr(reddit_rollout, "create_reddit_session_from_credentials", unexpected_create)
+
+    report = asyncio.run(
+        reddit_rollout.execute_reddit_bulk_session_rollout(
+            run_id="reuse_retry_run",
+            lines=[_line("Denyse_Cowans")],
+            proxy_url="http://proxy.example:8080",
+            proxy_source="env",
+            fixture=False,
+            credential_manager=manager,
+        )
+    )
+
+    result = report["results"][0]
+    assert report["summary"]["active_sessions_count"] == 1
+    assert result["status"] == "success"
+    assert result["reused_existing_session"] is True
+    assert test_calls["count"] == 2

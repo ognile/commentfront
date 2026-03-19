@@ -171,6 +171,91 @@ def _extract_bootstrap_errors(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     return extracted
 
 
+def _should_retry_existing_session(error: Optional[str]) -> bool:
+    text = str(error or "").lower()
+    return "err_empty_response" in text or "timeout" in text or "err_aborted" in text
+
+
+async def _reuse_existing_reddit_session(
+    *,
+    profile_name: str,
+    profile_url: Optional[str],
+    proxy_url: str,
+) -> Dict[str, Any]:
+    session = RedditSession(str(profile_name))
+    loaded = session.load()
+    if not loaded:
+        return {
+            "success": False,
+            "profile_name": profile_name,
+            "error": "existing session not found",
+            "reused_existing_session": False,
+        }
+
+    last_test_result = {"success": False, "error": None}
+    last_action_result = {"success": False, "error": None, "current_url": None}
+
+    for attempt in range(1, 4):
+        try:
+            test_result = await test_reddit_session(session, proxy_url)
+        except Exception as exc:
+            test_result = {"success": False, "error": str(exc)}
+        last_test_result = test_result
+
+        if not test_result.get("success"):
+            if attempt < 3 and _should_retry_existing_session(test_result.get("error")):
+                continue
+            return {
+                "success": False,
+                "profile_name": profile_name,
+                "error": test_result.get("error"),
+                "reused_existing_session": True,
+                "test_result": test_result,
+                "action_result": last_action_result,
+            }
+
+        try:
+            action_result = await run_reddit_action(
+                session,
+                action="open_target",
+                proxy_url=proxy_url,
+                url=profile_url or session.get_profile_url(),
+            )
+        except Exception as exc:
+            action_result = {"success": False, "error": str(exc), "current_url": None}
+        last_action_result = action_result
+
+        success = bool(test_result.get("success")) and bool(action_result.get("success"))
+        if success:
+            return {
+                "success": True,
+                "profile_name": profile_name,
+                "error": None,
+                "reused_existing_session": True,
+                "test_result": test_result,
+                "action_result": action_result,
+            }
+        if attempt < 3 and _should_retry_existing_session(action_result.get("error")):
+            continue
+        return {
+            "success": False,
+            "profile_name": profile_name,
+            "error": action_result.get("error") or test_result.get("error"),
+            "reused_existing_session": True,
+            "test_result": test_result,
+            "action_result": action_result,
+        }
+
+    return {
+        "success": False,
+        "profile_name": profile_name,
+        "error": last_action_result.get("error") or last_test_result.get("error"),
+        "reused_existing_session": True,
+        "test_result": last_test_result,
+        "action_result": last_action_result,
+    }
+
+
 async def execute_reddit_bulk_session_rollout(
     *,
     run_id: Optional[str] = None,
@@ -252,6 +337,7 @@ async def execute_reddit_bulk_session_rollout(
                     line,
                     fixture=fixture,
                     tags=["reddit", "fixture"] if fixture else ["reddit"],
+                    source_label=source_label,
                 )
                 credential = manager.get_credential(credential_id, platform="reddit")
                 if not credential:
@@ -280,38 +366,63 @@ async def execute_reddit_bulk_session_rollout(
                 continue
 
             create_result: Dict[str, Any] = {}
-            for attempt_number in range(1, max(1, int(max_create_attempts)) + 1):
-                try:
-                    create_result = await create_reddit_session_from_credentials(
-                        credential_uid=str(account_result["credential_id"]),
-                        proxy_url=proxy_url,
-                        proxy_source=proxy_source,
-                    )
-                except Exception as exc:
-                    create_result = {
-                        "success": False,
-                        "profile_name": account_result["profile_name"],
-                        "attempt_id": None,
-                        "audit_json_url": None,
-                        "failure_bucket": None,
-                        "error": str(exc),
-                        "bootstrap_errors": [],
-                    }
-                attempt_record = {
-                    "attempt_number": attempt_number,
-                    "success": bool(create_result.get("success")),
-                    "profile_name": create_result.get("profile_name"),
-                    "attempt_id": create_result.get("attempt_id"),
-                    "audit_json_url": create_result.get("audit_json_url"),
-                    "failure_bucket": create_result.get("failure_bucket"),
-                    "error": create_result.get("error"),
-                    "bootstrap_errors": _extract_bootstrap_errors(create_result),
+            existing_profile_name = str(
+                credential.get("linked_session_id")
+                or account_result["profile_name"]
+                or expected_profile_name
+            )
+            reused_existing_session = await _reuse_existing_reddit_session(
+                profile_name=existing_profile_name,
+                profile_url=account_result.get("profile_url"),
+                proxy_url=proxy_url,
+            )
+            if reused_existing_session.get("success"):
+                create_result = {
+                    "success": True,
+                    "profile_name": existing_profile_name,
+                    "attempt_id": None,
+                    "audit_json_url": None,
+                    "failure_bucket": None,
+                    "error": None,
+                    "bootstrap_errors": [],
+                    "reused_existing_session": True,
+                    "test_result": reused_existing_session.get("test_result"),
+                    "action_result": reused_existing_session.get("action_result"),
                 }
-                account_result["create_attempts"].append(attempt_record)
-                if create_result.get("success"):
-                    break
-                if not _should_retry_create(create_result, attempt_number=attempt_number, max_attempts=max_create_attempts):
-                    break
+
+            if not create_result.get("success"):
+                for attempt_number in range(1, max(1, int(max_create_attempts)) + 1):
+                    try:
+                        create_result = await create_reddit_session_from_credentials(
+                            credential_uid=str(account_result["credential_id"]),
+                            proxy_url=proxy_url,
+                            proxy_source=proxy_source,
+                        )
+                    except Exception as exc:
+                        create_result = {
+                            "success": False,
+                            "profile_name": account_result["profile_name"],
+                            "attempt_id": None,
+                            "audit_json_url": None,
+                            "failure_bucket": None,
+                            "error": str(exc),
+                            "bootstrap_errors": [],
+                        }
+                    attempt_record = {
+                        "attempt_number": attempt_number,
+                        "success": bool(create_result.get("success")),
+                        "profile_name": create_result.get("profile_name"),
+                        "attempt_id": create_result.get("attempt_id"),
+                        "audit_json_url": create_result.get("audit_json_url"),
+                        "failure_bucket": create_result.get("failure_bucket"),
+                        "error": create_result.get("error"),
+                        "bootstrap_errors": _extract_bootstrap_errors(create_result),
+                    }
+                    account_result["create_attempts"].append(attempt_record)
+                    if create_result.get("success"):
+                        break
+                    if not _should_retry_create(create_result, attempt_number=attempt_number, max_attempts=max_create_attempts):
+                        break
 
             account_result["create_success"] = bool(create_result.get("success"))
             account_result["attempt_id"] = create_result.get("attempt_id")
@@ -320,26 +431,33 @@ async def execute_reddit_bulk_session_rollout(
             account_result["error"] = create_result.get("error")
             account_result["bootstrap_errors"] = _extract_bootstrap_errors(create_result)
             account_result["profile_name"] = create_result.get("profile_name") or account_result["profile_name"]
+            account_result["reused_existing_session"] = bool(create_result.get("reused_existing_session"))
 
             if account_result["create_success"]:
-                session = RedditSession(str(account_result["profile_name"]))
-                try:
-                    test_result = await test_reddit_session(session, proxy_url)
-                except Exception as exc:
-                    test_result = {"success": False, "error": str(exc)}
+                if create_result.get("reused_existing_session"):
+                    test_result = dict(create_result.get("test_result") or {})
+                    action_result = dict(create_result.get("action_result") or {})
+                else:
+                    session = RedditSession(str(account_result["profile_name"]))
+                    try:
+                        test_result = await test_reddit_session(session, proxy_url)
+                    except Exception as exc:
+                        test_result = {"success": False, "error": str(exc)}
+
+                    try:
+                        action_result = await run_reddit_action(
+                            session,
+                            action="open_target",
+                            proxy_url=proxy_url,
+                            url=account_result.get("profile_url"),
+                        )
+                    except Exception as exc:
+                        action_result = {"success": False, "error": str(exc), "current_url": None}
+
                 account_result["test_success"] = bool(test_result.get("success"))
                 if not account_result["test_success"] and not account_result["error"]:
                     account_result["error"] = test_result.get("error")
 
-                try:
-                    action_result = await run_reddit_action(
-                        session,
-                        action="open_target",
-                        proxy_url=proxy_url,
-                        url=account_result.get("profile_url"),
-                    )
-                except Exception as exc:
-                    action_result = {"success": False, "error": str(exc), "current_url": None}
                 account_result["action_success"] = bool(action_result.get("success"))
                 if not account_result["action_success"] and not account_result["error"]:
                     account_result["error"] = action_result.get("error")

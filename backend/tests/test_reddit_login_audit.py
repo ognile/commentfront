@@ -19,6 +19,20 @@ def test_classify_reddit_failure_detects_login_banner_error():
     assert classify_reddit_failure(audit, "Reddit login failed") == "login_banner_error"
 
 
+def test_classify_reddit_failure_detects_email_login_failure_bucket():
+    audit = {
+        "events": [
+            {
+                "event": "email_challenge_failed",
+                "error": "email_login_failed: outlook password input not found",
+            }
+        ],
+        "checkpoints": [],
+    }
+
+    assert classify_reddit_failure(audit, "reddit login failed") == "email_login_failed"
+
+
 def test_classify_reddit_failure_detects_protected_route_failure_after_public_profile():
     audit = {
         "checkpoints": [

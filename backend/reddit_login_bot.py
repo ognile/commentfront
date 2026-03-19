@@ -16,8 +16,9 @@ from comment_bot import dump_interactive_elements, save_debug_screenshot
 from credentials import CredentialManager
 from fb_session import FacebookSession, apply_session_to_context, list_saved_sessions
 from proxy_manager import get_system_proxy
+from reddit_email_challenge import resolve_reddit_email_challenge
 from reddit_login_audit import RedditLoginAudit, compare_reddit_audits, load_reddit_audit
-from reddit_login_learning import default_strategy_config
+from reddit_login_learning import RedditLoginLearningStore, default_strategy_config
 from reddit_selectors import COOKIE_BANNER, LOGIN
 from reddit_session import RedditSession, verify_reddit_session_logged_in
 
@@ -574,8 +575,52 @@ async def _handle_otp(
     return True, last_body, last_status
 
 
+async def _resolve_email_challenge_if_present(
+    *,
+    page: Page,
+    browser,
+    credential: dict,
+    profile_name: str,
+    proxy_url: Optional[str],
+    fingerprint: Dict[str, str],
+    audit: Optional[RedditLoginAudit],
+    broadcast_callback: BroadcastFn,
+    phase: str,
+) -> Dict[str, Any]:
+    result = await resolve_reddit_email_challenge(
+        page,
+        browser,
+        credential=credential,
+        proxy_url=proxy_url,
+        fingerprint=fingerprint,
+    )
+    if not result.get("challenge_present"):
+        return result
+
+    if audit:
+        audit.record_event(
+            "email_challenge_resolved",
+            phase=phase,
+            mode=result.get("mode"),
+            mailbox_link_used=bool(result.get("mailbox_link_used")),
+            mailbox_code_used=bool(result.get("mailbox_code_used")),
+        )
+    await _broadcast(
+        broadcast_callback,
+        "reddit_session_progress",
+        {
+            "profile_name": profile_name,
+            "step": "email_challenge_resolved",
+            "phase": phase,
+            "mode": result.get("mode"),
+        },
+    )
+    return result
+
+
 async def _run_reddit_login_flow(
     *,
+    browser,
     page: Page,
     context,
     credential: dict,
@@ -590,6 +635,7 @@ async def _run_reddit_login_flow(
     login_navigation_timeout_ms: int = 45000,
     login_navigation_attempts: int = 3,
     strategy: Optional[Dict[str, Any]] = None,
+    broadcast_callback: BroadcastFn = None,
 ) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "success": False,
@@ -724,6 +770,23 @@ async def _run_reddit_login_flow(
     if _body_has_login_banner_error(login_body):
         raise RuntimeError(f"Reddit credential submit returned login error: {login_body[:200].strip()}")
 
+    try:
+        await _resolve_email_challenge_if_present(
+            page=page,
+            browser=browser,
+            credential=credential,
+            profile_name=profile_name,
+            proxy_url=proxy_url,
+            fingerprint=fingerprint,
+            audit=audit,
+            broadcast_callback=broadcast_callback,
+            phase="post_credential_submit",
+        )
+    except Exception as exc:
+        if audit:
+            audit.record_event("email_challenge_failed", phase="post_credential_submit", error=str(exc))
+        raise
+
     if await _otp_input_present(page):
         await _capture_checkpoint(audit, page, context, "otp_prompt")
 
@@ -746,6 +809,23 @@ async def _run_reddit_login_flow(
         await _wait_for_otp_resolution(page, context, profile_name=profile_name)
         await page.wait_for_timeout(3000)
         await _capture_checkpoint(audit, page, context, "after_otp_submit")
+
+    try:
+        await _resolve_email_challenge_if_present(
+            page=page,
+            browser=browser,
+            credential=credential,
+            profile_name=profile_name,
+            proxy_url=proxy_url,
+            fingerprint=fingerprint,
+            audit=audit,
+            broadcast_callback=broadcast_callback,
+            phase="post_otp_submit",
+        )
+    except Exception as exc:
+        if audit:
+            audit.record_event("email_challenge_failed", phase="post_otp_submit", error=str(exc))
+        raise
 
     page = await _settle_authenticated_session(
         page,
@@ -918,6 +998,7 @@ async def login_reddit(
             )
 
             result = await _run_reddit_login_flow(
+                browser=browser,
                 page=page,
                 context=context,
                 credential=credential,
@@ -928,6 +1009,7 @@ async def login_reddit(
                 persist_session=True,
                 session=session,
                 strategy=default_strategy_config(strategy_id),
+                broadcast_callback=broadcast_callback,
             )
             await _broadcast(
                 broadcast_callback,
@@ -1044,6 +1126,7 @@ async def login_reddit_from_reference_facebook_identity(
             audit.record_event("browser_context_created", reference_session_id=chosen_session_id)
 
             result = await _run_reddit_login_flow(
+                browser=browser,
                 page=page,
                 context=context,
                 credential=credential,
@@ -1057,6 +1140,7 @@ async def login_reddit_from_reference_facebook_identity(
                 cookie_blocklist_domains=BOOTSTRAP_COOKIE_BLOCKLIST if persist_session else None,
                 login_navigation_timeout_ms=15000 if persist_session else 45000,
                 login_navigation_attempts=1 if persist_session else 3,
+                broadcast_callback=None,
             )
             result.update(
                 {
@@ -1103,7 +1187,7 @@ async def create_session_from_credentials(
     proxy_source: str = "runtime",
     broadcast_callback: BroadcastFn = None,
     strategy_id: Optional[str] = None,
-    allow_reference_bootstrap: bool = False,
+    allow_reference_bootstrap: bool = True,
 ) -> Dict[str, Any]:
     manager = CredentialManager()
     credential = manager.get_credential(credential_uid, platform="reddit")
@@ -1113,20 +1197,58 @@ async def create_session_from_credentials(
             "platform": "reddit",
             "error": f"Reddit credential not found: {credential_uid}",
         }
-    result = await login_reddit(
-        credential=credential,
-        proxy_url=proxy_url,
-        proxy_source=proxy_source,
-        broadcast_callback=broadcast_callback,
-        strategy_id=strategy_id,
-    )
-    if result.get("success"):
-        return result
+    learning_store = RedditLoginLearningStore()
+    username = str(credential.get("username") or credential.get("uid") or "").strip()
+    recommended = learning_store.recommended_strategies(username) if username else [default_strategy_config(strategy_id)]
+    if strategy_id:
+        selected = default_strategy_config(strategy_id)
+        recommended = [
+            selected,
+            *[item for item in recommended if item.get("strategy_id") != selected.get("strategy_id")],
+        ]
 
-    if allow_reference_bootstrap and _audit_has_user_interaction_failure(result.get("attempt_id")):
+    session_profile_name = str(credential.get("profile_name") or f"reddit_{credential.get('uid')}")
+    last_result: Dict[str, Any] = {
+        "success": False,
+        "platform": "reddit",
+        "credential_id": credential.get("credential_id"),
+        "profile_name": session_profile_name,
+        "error": "no reddit login strategies attempted",
+    }
+
+    for strategy in recommended:
+        current_strategy_id = str(strategy.get("strategy_id") or "baseline_humanized")
+        result = await login_reddit(
+            credential=credential,
+            proxy_url=proxy_url,
+            proxy_source=proxy_source,
+            broadcast_callback=broadcast_callback,
+            strategy_id=current_strategy_id,
+        )
+        last_result = result
+        linked = bool(result.get("success"))
+        test_success = bool(result.get("success"))
+        action_success = bool(result.get("success"))
+        learning_store.record_attempt(
+            username=username,
+            strategy_id=current_strategy_id,
+            result=result,
+            linked=linked,
+            test_success=test_success,
+            action_success=action_success,
+            session=RedditSession(str(result.get("profile_name") or session_profile_name)),
+        )
+        if result.get("success"):
+            return result
+        if not _audit_has_user_interaction_failure(result.get("attempt_id")):
+            continue
+        if not allow_reference_bootstrap:
+            continue
+
         logger.info(
-            "Reddit standalone login hit user-interaction-failed for %s; retrying via deterministic reference identity bootstrap",
+            "Reddit standalone login hit user-interaction-failed for %s under %s; retrying via deterministic reference identity bootstrap",
             credential_uid,
+            current_strategy_id,
         )
         await _broadcast(
             broadcast_callback,
@@ -1134,6 +1256,7 @@ async def create_session_from_credentials(
             {
                 "profile_name": result.get("profile_name") or credential.get("profile_name"),
                 "step": "bootstrap_retry_reference_identity",
+                "strategy_id": current_strategy_id,
             },
         )
         bootstrap_errors = []
@@ -1144,7 +1267,16 @@ async def create_session_from_credentials(
                 credential=credential,
                 reference_session_id=reference_session_id,
                 persist_session=True,
-                target_profile_name=result.get("profile_name") or credential.get("profile_name") or f"reddit_{credential.get('uid')}",
+                target_profile_name=result.get("profile_name") or session_profile_name,
+            )
+            learning_store.record_attempt(
+                username=username,
+                strategy_id=f"{current_strategy_id}::reference::{reference_session_id}",
+                result=bootstrap_result,
+                linked=bool(bootstrap_result.get("success")),
+                test_success=bool(bootstrap_result.get("success")),
+                action_success=bool(bootstrap_result.get("success")),
+                session=RedditSession(str(bootstrap_result.get("profile_name") or session_profile_name)),
             )
             if bootstrap_result.get("success"):
                 return bootstrap_result
@@ -1156,16 +1288,17 @@ async def create_session_from_credentials(
                 }
             )
             logger.warning(
-                "Reddit bootstrap retry via %s failed for %s: %s",
+                "Reddit bootstrap retry via %s failed for %s under %s: %s",
                 reference_session_id,
                 credential_uid,
+                current_strategy_id,
                 bootstrap_result.get("error"),
             )
 
         result["bootstrap_errors"] = bootstrap_errors
-        return result
+        last_result = result
 
-    return result
+    return last_result
 
 
 async def run_reference_login_from_credentials(
