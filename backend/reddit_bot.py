@@ -5,6 +5,7 @@ Reddit mobile-web executor.
 import asyncio
 import logging
 import re
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -66,7 +67,21 @@ def _result(
 
 
 def _normalize_text(value: Optional[str]) -> str:
-    return " ".join(str(value or "").strip().lower().split())
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    normalized = normalized.translate(
+        str.maketrans(
+            {
+                "\u2018": "'",
+                "\u2019": "'",
+                "\u201c": '"',
+                "\u201d": '"',
+                "\u2013": "-",
+                "\u2014": "-",
+                "\u2026": "...",
+            }
+        )
+    )
+    return " ".join(normalized.strip().lower().split())
 
 
 def _short_text(value: Optional[str], limit: int = 120) -> Optional[str]:

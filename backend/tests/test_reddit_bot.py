@@ -504,6 +504,18 @@ def test_thread_context_present_accepts_matching_visible_thread_title(monkeypatc
     assert asyncio.run(reddit_bot._thread_context_present(page, "How do you call out weaponized incompetence")) is True
 
 
+def test_thread_context_present_accepts_typographic_apostrophe_title(monkeypatch):
+    page = _FakePage()
+    page.locator_text["h1"] = "Endocrinologist says pcos doesn’t exist?"
+
+    async def fake_feed_count(_page):
+        return 0
+
+    monkeypatch.setattr(reddit_bot, "_feed_post_card_count", fake_feed_count)
+
+    assert asyncio.run(reddit_bot._thread_context_present(page, "Endocrinologist says pcos doesn't exist?")) is True
+
+
 def test_thread_context_present_accepts_matching_title_with_discussion_surface(monkeypatch):
     page = _FakePage()
     page.locator_text["h1"] = "metrogel help!"
