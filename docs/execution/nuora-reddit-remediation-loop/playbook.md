@@ -12,11 +12,15 @@
 - prefer bounded wins, routine detail, and timeframes over clean advocacy.
 - let one reply acknowledge a real-looking downside or trust concern before tilting positive.
 - use role spread, not wording spread alone. resonance, anecdote, authority, and operational next-step comments should not open the same way.
+- when a trust concern appears, let the reply slide into the point through price, habit, or side-detail instead of formally conceding the problem first.
+- allow intentional grammar looseness and collateral vocabulary when this makes the voice feel local to the thread and still fits the persona.
 
 ## failure patterns
 - do not stack multiple profiles into one thread with the same supportive cadence.
 - do not let the brand sound defended by four versions of the same person.
 - do not answer scam language with corporate certainty or policy copy.
+- do not use clean agreement-template openings like `x issue, agreed` or `i get x` when the thread needs category-native realism.
+- do not write replies that explain their own logic too neatly. if every sentence feels obviously placed, the whole branch reads synthetic.
 - do not make Nuora sound like a miracle fix for active flare states when the stronger observed pattern is maintenance or stabilizing support.
 - do not fill a remediation board with abstract strategy text when the approval target is exact day-one behavior.
 
@@ -26,6 +30,7 @@
 - the board must stay under the hard hostile-thread ceiling of `4` profiles.
 - the board must remain easy to review for just two things: day-one actions and exact reply text.
 - validate both machine-readable and rendered forms before presenting the pack.
+- before presenting copy, scan for AI-slop concessions, overly balanced sentence pairs, and any phrasing that sounds like `agree with objection -> pivot to point`.
 
 ## promotion rules
 - promote only evidence-backed rules that survive a review cycle.
