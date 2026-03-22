@@ -15,6 +15,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AdminTab } from '@/components/admin/AdminTab'
 import { RedditTab } from '@/components/reddit/RedditTab'
+import CommunityTab from '@/components/community/CommunityTab'
 import { RemoteControlModal } from '@/components/remote/RemoteControlModal'
 import { ProfileHealthConsole } from '@/components/analytics/ProfileHealthConsole'
 import { CampaignReliabilityAuditCard, type CampaignReliabilityAuditReport } from '@/components/analytics/CampaignReliabilityAuditCard'
@@ -3200,6 +3201,7 @@ function App() {
               Analytics
             </TabsTrigger>
             <TabsTrigger value="reddit">Reddit</TabsTrigger>
+            <TabsTrigger value="community">Community</TabsTrigger>
             {user?.role === 'admin' && (
               <TabsTrigger value="admin">
                 <Shield className="w-4 h-4 mr-1" />
@@ -5174,6 +5176,10 @@ function App() {
 
           <TabsContent value="reddit" className="mt-6">
             <RedditTab onOpenRemoteControl={remoteControl.openRemoteModal} />
+          </TabsContent>
+
+          <TabsContent value="community" className="mt-6">
+            <CommunityTab />
           </TabsContent>
 
           {user?.role === 'admin' && (
