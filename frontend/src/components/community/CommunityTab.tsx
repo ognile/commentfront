@@ -7,8 +7,8 @@ import { apiFetch } from '../../lib/api'
 import { toast } from 'sonner'
 import {
   Heart, MessageSquare, FileText, ThumbsUp, ChevronLeft,
-  ChevronRight, Play, Pause, Settings, BookOpen, Image,
-  RefreshCw, Loader2, ExternalLink, Eye
+  ChevronRight, Play, Settings, BookOpen, Image,
+  RefreshCw, Loader2
 } from 'lucide-react'
 
 // ── Types ──
