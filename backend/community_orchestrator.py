@@ -144,7 +144,9 @@ Rules:
             return {"success": False, "error": f"no persona found for {task['profile_name']}"}
 
         # Generate warmup content
-        content = await generate_warmup_post(persona, day_index=0)
+        # If task has image_prompt set, force image generation; if null, text only
+        force_image = bool(task.get("image_prompt"))
+        content = await generate_warmup_post(persona, day_index=0, force_image=force_image)
         if not content.get("text"):
             return {"success": False, "error": f"content generation failed: {content.get('error', 'empty')}"}
 

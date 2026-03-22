@@ -61,6 +61,7 @@ async def generate_warmup_post(
     persona: Dict[str, Any],
     day_index: int,
     recent_captions: Optional[List[str]] = None,
+    force_image: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Generate a warmup post (text + optional image) for a persona.
 
@@ -102,9 +103,10 @@ Write ONLY the post text. Nothing else. No quotes around it."""
         logger.error(f"warmup text generation failed for {persona.get('profile_name')}: {exc}")
         return {"text": "", "image_path": None, "error": str(exc)}
 
-    # Generate image ~50% of the time (mix selfies + scenery)
+    # Generate image: force_image=True always, force_image=False never, None = 50% random
     image_path = None
-    if random.random() < 0.5:
+    should_generate_image = force_image if force_image is not None else (random.random() < 0.5)
+    if should_generate_image:
         image_result = await _generate_warmup_image(persona, topic)
         if image_result.get("success"):
             image_path = image_result["image_path"]
