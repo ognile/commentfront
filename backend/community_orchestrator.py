@@ -177,29 +177,68 @@ Rules:
         return result
 
     async def _action_like_post(self, task: Dict[str, Any]) -> Dict:
-        """Like a specific post."""
+        """Like a specific post URL."""
         import premium_actions
 
-        result = await premium_actions.perform_likes(
+        post_url = _to_mobile_url(task.get("target_url", ""))
+
+        like_task = f"""
+Navigate to this specific Facebook post and like it.
+
+Rules:
+- If you see a banner saying "The link you followed may be broken", close it using the X button.
+- Find the Like button on this post and tap it.
+- If the post is already liked (shows "Unlike"), finish with DONE.
+- Do NOT click "ok" unless a visible button with text exactly "OK" exists.
+- Finish with DONE after the like is confirmed (button changes to "Unlike" or shows a reaction).
+""".strip()
+
+        result = await premium_actions._execute_task(
             run_id=task["id"],
             cycle_index=0,
+            step_id="like_post",
             profile_name=task["profile_name"],
-            likes_count=1,
-            start_url=_to_mobile_url(task.get("target_url")),
+            action_type="like_post",
+            task=like_task,
+            start_url=post_url,
+            expected_count=1,
+            confirmation_keyword="like",
+            max_steps=10,
         )
         return result
 
     async def _action_reply_to_post(self, task: Dict[str, Any]) -> Dict:
-        """Reply to a specific post."""
+        """Reply/comment on a specific post URL."""
         import premium_actions
 
-        result = await premium_actions.perform_comment_replies(
+        post_url = _to_mobile_url(task.get("target_url", ""))
+        reply_text = task.get("text", "")
+
+        reply_task = f"""
+Navigate to this specific Facebook post and leave a comment on it.
+
+Rules:
+- If you see a banner saying "The link you followed may be broken", close it using the X button.
+- Find the comment input field on this post (tap "Comment" or the comment icon if needed).
+- Type this exact text as your comment:
+{reply_text}
+- Submit the comment by clicking the send/post button.
+- Do NOT click "ok" unless a visible button with text exactly "OK" exists.
+- Finish with DONE only after the comment is submitted and visible, or Facebook confirms it.
+- If comment is pending admin approval, that counts as submitted — finish with DONE.
+""".strip()
+
+        result = await premium_actions._execute_task(
             run_id=task["id"],
             cycle_index=0,
+            step_id="reply_to_post",
             profile_name=task["profile_name"],
-            replies_count=1,
-            reply_text=task.get("text", ""),
-            start_url=_to_mobile_url(task.get("target_url")),
+            action_type="reply_to_post",
+            task=reply_task,
+            start_url=post_url,
+            expected_count=1,
+            confirmation_keyword="comment",
+            max_steps=20,
         )
         return result
 
