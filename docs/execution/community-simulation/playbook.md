@@ -9,10 +9,12 @@
 6. if pass → mark done → next component
 
 ## stable tactics
-- add only proven reusable tactics here
+- FastAPI body params: use `body: dict` not typed params (avoids parsing issues with X-API-Key auth)
+- supabase bulk insert: all objects MUST have identical key sets (keep None values, don't strip them)
+- background agent for deploy polling: launch with run_in_background=true, don't sleep in main thread
 
 ## failure patterns
-- add recurring traps here
+- PostgREST PGRST102 "All object keys must match": bulk insert rows with different keys stripped → keep all keys with None
 
 ## verification patterns
 - curl supabase REST for table existence
