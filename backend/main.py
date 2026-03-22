@@ -238,6 +238,9 @@ premium_scheduler = PremiumScheduler(
     orchestrator=premium_orchestrator,
 )
 
+# Community scheduler (initialized in startup_event)
+community_scheduler = None
+
 # Initialize Reddit mission store/scheduler (runner wired below once helpers exist)
 reddit_mission_store = RedditMissionStore()
 reddit_mission_scheduler: Optional[RedditMissionScheduler] = None
@@ -9767,6 +9770,12 @@ async def startup_event():
     # Start premium automation scheduler
     await premium_scheduler.start()
     logger.info("Premium scheduler started on startup")
+    # Start community simulation scheduler
+    from community_scheduler import CommunityScheduler
+    global community_scheduler
+    community_scheduler = CommunityScheduler()
+    await community_scheduler.start()
+    logger.info("Community scheduler started on startup")
     if reddit_mission_scheduler:
         await reddit_mission_scheduler.start()
         logger.info("Reddit mission scheduler started on startup")
@@ -9785,6 +9794,9 @@ async def shutdown_event():
     logger.info("Appeal scheduler stopped on shutdown")
     await premium_scheduler.stop()
     logger.info("Premium scheduler stopped on shutdown")
+    if community_scheduler:
+        await community_scheduler.stop()
+        logger.info("Community scheduler stopped on shutdown")
     if reddit_mission_scheduler:
         await reddit_mission_scheduler.stop()
         logger.info("Reddit mission scheduler stopped on shutdown")
@@ -9810,6 +9822,193 @@ async def run_appeal_scheduler_now(current_user: dict = Depends(get_current_user
     scheduler = get_appeal_scheduler()
     result = await scheduler.run_now()
     return result
+
+
+# =========================================================================
+# Community Simulation Endpoints
+# =========================================================================
+
+
+@app.post("/community/personas")
+async def upsert_community_personas(
+    personas: list,
+    current_user: dict = Depends(get_current_user),
+):
+    """Bulk upsert community personas."""
+    from community_store import get_community_store
+    store = get_community_store()
+    rows = []
+    for p in personas:
+        rows.append({
+            "profile_name": p["profile_name"],
+            "display_name": p.get("display_name"),
+            "age": p.get("age"),
+            "persona_prompt": p["persona_prompt"],
+            "image_style_hints": p.get("image_style_hints", []),
+        })
+    await store.upsert_personas(rows)
+    return {"upserted": len(rows)}
+
+
+@app.get("/community/personas")
+async def list_community_personas(current_user: dict = Depends(get_current_user)):
+    """List all community personas."""
+    from community_store import get_community_store
+    return await get_community_store().list_personas()
+
+
+@app.post("/community/plans")
+async def create_community_plan(
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Create a community plan (warmup or community phase)."""
+    from community_store import get_community_store
+    store = get_community_store()
+    plan = await store.create_plan(
+        name=body["name"],
+        phase=body["phase"],
+        config=body.get("config", {}),
+    )
+    return plan
+
+
+@app.get("/community/plans")
+async def list_community_plans(current_user: dict = Depends(get_current_user)):
+    """List all community plans."""
+    from community_store import get_community_store
+    return await get_community_store().list_plans()
+
+
+@app.patch("/community/plans/{plan_id}/status")
+async def update_community_plan_status(
+    plan_id: str,
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update plan status (draft/active/paused/completed)."""
+    from community_store import get_community_store
+    store = get_community_store()
+    await store.update_plan_status(plan_id, body["status"])
+    return {"plan_id": plan_id, "status": body["status"]}
+
+
+@app.post("/community/plans/{plan_id}/generate-warmup")
+async def generate_community_warmup(
+    plan_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate warmup tasks for all personas in a plan."""
+    from community_store import get_community_store
+    from community_plan_generator import generate_warmup_plan
+    store = get_community_store()
+    plan = await store.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="plan not found")
+    personas = await store.list_personas()
+    persona_names = [p["profile_name"] for p in personas]
+    result = await generate_warmup_plan(plan_id, persona_names, plan.get("config", {}), store)
+    return result
+
+
+@app.post("/community/plans/{plan_id}/import-tasks")
+async def import_community_tasks(
+    plan_id: str,
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Import parsed sheet data as community tasks."""
+    from community_store import get_community_store
+    from community_plan_generator import import_sheet_data
+    store = get_community_store()
+    plan = await store.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="plan not found")
+    result = await import_sheet_data(plan_id, body["rows"], plan.get("config", {}), store)
+    return result
+
+
+@app.post("/community/join-group")
+async def community_join_group(
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Create staggered join_group tasks for profiles."""
+    from community_store import get_community_store
+    from community_plan_generator import _random_times_in_window
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    store = get_community_store()
+    group_url = body["group_url"]
+    profile_names = body["profile_names"]
+    stagger_minutes = body.get("stagger_minutes", 30)
+
+    # Create a temporary plan for joining
+    plan = await store.create_plan(
+        name=f"join_group_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}",
+        phase="community",
+        config={"group_url": group_url},
+    )
+
+    now = datetime.now(timezone.utc)
+    tasks = []
+    for i, name in enumerate(profile_names):
+        scheduled_at = now + timedelta(minutes=i * stagger_minutes)
+        tasks.append({
+            "plan_id": plan["id"],
+            "profile_name": name,
+            "action": "join_group",
+            "status": "pending",
+            "scheduled_at": scheduled_at.isoformat(),
+            "target_url": group_url,
+        })
+
+    await store.insert_tasks(tasks)
+    await store.update_plan_status(plan["id"], "active")
+
+    return {
+        "plan_id": plan["id"],
+        "tasks_created": len(tasks),
+        "stagger_minutes": stagger_minutes,
+        "estimated_completion_minutes": len(profile_names) * stagger_minutes,
+    }
+
+
+@app.get("/community/tasks")
+async def list_community_tasks(
+    plan_id: str = None,
+    status: str = None,
+    profile_name: str = None,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user),
+):
+    """List community tasks with optional filters."""
+    from community_store import get_community_store
+    store = get_community_store()
+    return await store.list_tasks(plan_id=plan_id, status=status, profile_name=profile_name, limit=limit)
+
+
+@app.post("/community/scheduler/tick")
+async def community_scheduler_tick(current_user: dict = Depends(get_current_user)):
+    """Manually trigger community scheduler tick."""
+    if not community_scheduler:
+        raise HTTPException(status_code=503, detail="community scheduler not initialized")
+    result = await community_scheduler.tick(source="manual")
+    return result
+
+
+@app.get("/community/status")
+async def community_status(current_user: dict = Depends(get_current_user)):
+    """Get community scheduler status + task counts."""
+    from community_store import get_community_store
+    store = get_community_store()
+    scheduler_status = community_scheduler.get_status() if community_scheduler else {"running": False}
+    counts = await store.get_task_counts()
+    return {
+        "scheduler": scheduler_status,
+        "tasks": counts,
+    }
 
 
 if __name__ == "__main__":
