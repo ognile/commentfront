@@ -9831,12 +9831,13 @@ async def run_appeal_scheduler_now(current_user: dict = Depends(get_current_user
 
 @app.post("/community/personas")
 async def upsert_community_personas(
-    personas: list,
+    body: dict,
     current_user: dict = Depends(get_current_user),
 ):
     """Bulk upsert community personas."""
     from community_store import get_community_store
     store = get_community_store()
+    personas = body.get("personas", body.get("data", []))
     rows = []
     for p in personas:
         rows.append({
