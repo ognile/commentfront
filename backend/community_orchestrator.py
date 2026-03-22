@@ -78,6 +78,14 @@ class CommunityOrchestrator:
             if success:
                 await self.store.complete_task(task_id, result)
                 logger.info(f"community task {task_id} completed successfully")
+                # Auto-memory: record what this profile did
+                content_summary = task.get("text") or result.get("generated_content", {}).get("text", "")
+                await self.store.add_memory(
+                    profile_name=profile_name,
+                    action=action,
+                    content_summary=content_summary[:200] if content_summary else None,
+                    target_description=task.get("target_url", "")[:200] if task.get("target_url") else None,
+                )
             else:
                 error = result.get("error") or "action reported failure"
                 await self.store.fail_task(task_id, error)

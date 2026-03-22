@@ -10012,6 +10012,102 @@ async def community_status(current_user: dict = Depends(get_current_user)):
     }
 
 
+# ── Knowledge Base ──
+
+@app.get("/community/kb")
+async def get_community_kb(current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    content = await get_community_store().get_knowledge_base()
+    return {"content": content}
+
+
+@app.put("/community/kb")
+async def update_community_kb(body: dict, current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    await get_community_store().update_knowledge_base(body["content"], updated_by=body.get("updated_by", "ui"))
+    return {"updated": True}
+
+
+# ── Arcs ──
+
+@app.get("/community/arcs")
+async def get_community_arcs(current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    return await get_community_store().get_all_arcs()
+
+
+@app.post("/community/arcs/{profile_name}/advance")
+async def advance_community_arc(profile_name: str, current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    new_stage = await get_community_store().advance_arc(profile_name)
+    return {"profile_name": profile_name, "new_stage": new_stage}
+
+
+@app.post("/community/arcs/{profile_name}/revert")
+async def revert_community_arc(profile_name: str, current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    new_stage = await get_community_store().revert_arc(profile_name)
+    return {"profile_name": profile_name, "new_stage": new_stage}
+
+
+# ── Memory ──
+
+@app.get("/community/memory/{profile_name}")
+async def get_community_memory(profile_name: str, limit: int = 20, current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    return await get_community_store().get_recent_memory(profile_name=profile_name, limit_per_profile=limit)
+
+
+# ── Planner ──
+
+@app.get("/community/planner/config")
+async def get_planner_config(current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    return await get_community_store().get_planner_config()
+
+
+@app.put("/community/planner/config")
+async def update_planner_config(body: dict, current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    await get_community_store().update_planner_config(body["config"])
+    return {"updated": True}
+
+
+@app.post("/community/planner/generate")
+async def generate_community_plan(body: dict = None, current_user: dict = Depends(get_current_user)):
+    """Manually trigger daily plan generation."""
+    from community_planner import generate_daily_plan
+    target_date = (body or {}).get("date")
+    result = await generate_daily_plan(target_date=target_date)
+    return result
+
+
+# ── Feed & Profile Stats ──
+
+@app.get("/community/feed")
+async def get_community_feed(
+    limit: int = 50,
+    action: str = None,
+    current_user: dict = Depends(get_current_user),
+):
+    from community_store import get_community_store
+    return await get_community_store().get_activity_feed(limit=limit, action_filter=action)
+
+
+@app.get("/community/profile/{profile_name}/stats")
+async def get_community_profile_stats(profile_name: str, current_user: dict = Depends(get_current_user)):
+    from community_store import get_community_store
+    store = get_community_store()
+    stats = await store.get_profile_stats(profile_name)
+    arc = await store.get_arc(profile_name)
+    persona = await store.get_persona(profile_name)
+    return {
+        "persona": persona,
+        "arc": arc,
+        "stats": stats,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
