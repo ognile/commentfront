@@ -109,8 +109,7 @@ async def import_sheet_data(
             "image_prompt": row.get("image_prompt"),
             "image_url": row.get("image_url"),
         }
-        # Remove None values to keep supabase clean
-        task = {k: v for k, v in task.items() if v is not None}
+        # PostgREST bulk insert requires all objects to have same keys — keep None values
         tasks.append(task)
 
     await store.insert_tasks(tasks)
