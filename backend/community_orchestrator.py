@@ -136,7 +136,7 @@ Rules:
         return result
 
     async def _action_warmup_post(self, task: Dict[str, Any]) -> Dict:
-        """Generate content and post to own timeline."""
+        """Generate content and post to own timeline with PUBLIC privacy."""
         import premium_actions
 
         persona = await self.store.get_persona(task["profile_name"])
@@ -144,18 +144,45 @@ Rules:
             return {"success": False, "error": f"no persona found for {task['profile_name']}"}
 
         # Generate warmup content
-        # If task has image_prompt set, force image generation; if null, text only
         force_image = bool(task.get("image_prompt"))
         content = await generate_warmup_post(persona, day_index=0, force_image=force_image)
         if not content.get("text"):
             return {"success": False, "error": f"content generation failed: {content.get('error', 'empty')}"}
 
-        result = await premium_actions.publish_feed_post(
+        caption = content["text"]
+        warmup_task = f"""
+Post to your own Facebook feed as this profile.
+
+Required actions:
+1. If you see a banner saying "The link you followed may be broken", close it using the X button.
+2. Open the create post flow by tapping "What's on your mind?".
+3. IMPORTANT: Before typing anything, check the privacy/audience setting. If it says "Friends" or anything other than "Public", tap on it and change it to "Public". The post MUST be Public.
+4. Write this exact text as the main post body:
+{caption}
+5. Prefer text-only submission. Do not upload an image if upload causes modal loops or prevents posting.
+6. Submit/publish the feed post with EXACTLY ONE click on "POST".
+7. After the first "POST" click:
+   - NEVER click "POST" again in this task.
+   - NEVER reopen the composer in this task.
+   - wait for confirmation ("Posted", "Just now", "Uploading your post...", or visible feed post) then finish.
+8. If no confirmation appears after waiting, end with FAILED instead of a second submit.
+9. Do NOT click "ok" unless a visible button with text exactly "OK" exists.
+10. Finish with DONE only after submission is completed and the post is visible on feed or permalink opens.
+""".strip()
+
+        result = await premium_actions._execute_task(
             run_id=task["id"],
             cycle_index=0,
+            step_id="warmup_post",
             profile_name=task["profile_name"],
-            caption=content["text"],
-            image_path=content.get("image_path"),
+            action_type="feed_post",
+            task=warmup_task,
+            start_url="https://m.facebook.com/me/?v=timeline",
+            upload_file_path=content.get("image_path"),
+            expected_count=1,
+            confirmation_keyword="post",
+            max_steps=30,
+            max_type_actions=1,
         )
         result["generated_content"] = content
         return result
