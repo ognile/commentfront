@@ -108,7 +108,7 @@ class CommunityOrchestrator:
         """Navigate to group URL and click Join Group."""
         import premium_actions
 
-        group_url = task.get("target_url", "")
+        group_url = _to_mobile_url(task.get("target_url", ""))
         join_task = f"""
 Navigate to this Facebook group and request to join it.
 
@@ -168,7 +168,7 @@ Rules:
             run_id=task["id"],
             cycle_index=0,
             profile_name=task["profile_name"],
-            topic_seed=task.get("target_url", ""),
+            topic_seed=_to_mobile_url(task.get("target_url", "")),
             allow_join_new=False,
             join_pending_policy="fail_run",
             group_post_text=task.get("text", ""),
@@ -185,7 +185,7 @@ Rules:
             cycle_index=0,
             profile_name=task["profile_name"],
             likes_count=1,
-            start_url=task.get("target_url"),
+            start_url=_to_mobile_url(task.get("target_url")),
         )
         return result
 
@@ -199,7 +199,7 @@ Rules:
             profile_name=task["profile_name"],
             replies_count=1,
             reply_text=task.get("text", ""),
-            start_url=task.get("target_url"),
+            start_url=_to_mobile_url(task.get("target_url")),
         )
         return result
 
@@ -250,6 +250,13 @@ Rules:
         except Exception as exc:
             logger.warning(f"screenshot upload failed for task {task_id}: {exc}")
             return None
+
+
+def _to_mobile_url(url: str) -> str:
+    """Convert facebook.com URL to m.facebook.com for faster loading through proxy."""
+    if not url:
+        return url
+    return url.replace("www.facebook.com", "m.facebook.com").replace("://facebook.com", "://m.facebook.com")
 
 
 def _now_iso() -> str:
