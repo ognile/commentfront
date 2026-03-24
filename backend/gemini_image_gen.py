@@ -240,6 +240,24 @@ async def generate_profile_photo_for_persona(persona_description: str, profile_n
     )
 
 
+def _clean_reference_image(image: Image.Image) -> Image.Image:
+    """Remove circular FB mask and convert to clean RGB for reference use."""
+    if image.mode == 'RGBA':
+        bg = Image.new('RGB', image.size, (255, 255, 255))
+        bg.paste(image, mask=image.split()[3])
+        image = bg
+    elif image.mode != 'RGB':
+        image = image.convert('RGB')
+
+    # Center crop 15% margin to remove circular edge artifacts + camera icon
+    w, h = image.size
+    margin = int(min(w, h) * 0.15)
+    if margin > 0:
+        image = image.crop((margin, margin, w - margin, h - margin))
+
+    return image
+
+
 async def generate_profile_photo_with_reference(
     reference_image_base64: str,
     pose_prompt: str,
@@ -273,8 +291,14 @@ async def generate_profile_photo_with_reference(
         image_bytes = base64.b64decode(base64_data)
         reference_image = Image.open(io.BytesIO(image_bytes))
 
-        # Simple, natural language prompt - this works better with Gemini
-        full_prompt = f"iPhone selfie of her {pose_prompt}"
+        # Clean reference: remove circular FB mask, convert to RGB
+        reference_image = _clean_reference_image(reference_image)
+
+        full_prompt = (
+            f"casual photo of this woman {pose_prompt}, taken with her phone. "
+            f"natural lighting, phone camera quality. no UI. no overlays. "
+            f"just a normal everyday photo like someone would post on facebook."
+        )
 
         logger.info(f"[IMAGE_GEN] Generating photo for: {profile_name}")
         logger.info(f"[IMAGE_GEN] Prompt: {full_prompt}")
