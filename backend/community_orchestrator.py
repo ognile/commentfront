@@ -158,6 +158,15 @@ Rules:
             return {"success": False, "error": f"content generation failed: {content.get('error', 'empty')}"}
 
         caption = content["text"]
+        has_image = bool(content.get("image_path"))
+
+        if has_image:
+            image_instruction = """5. IMPORTANT: You MUST attach the image. When the file chooser appears, the image will be auto-selected. Wait for it to upload, then continue.
+6. After the image is attached and text is written, submit the post with EXACTLY ONE click on "POST"."""
+        else:
+            image_instruction = """5. This is a text-only post. Do not upload any image.
+6. Submit/publish the feed post with EXACTLY ONE click on "POST"."""
+
         warmup_task = f"""
 Post to your own Facebook feed as this profile.
 
@@ -167,8 +176,7 @@ Required actions:
 3. IMPORTANT: Before typing anything, check the privacy/audience setting. If it says "Friends" or anything other than "Public", tap on it and change it to "Public". The post MUST be Public.
 4. Write this exact text as the main post body:
 {caption}
-5. Prefer text-only submission. Do not upload an image if upload causes modal loops or prevents posting.
-6. Submit/publish the feed post with EXACTLY ONE click on "POST".
+{image_instruction}
 7. After the first "POST" click:
    - NEVER click "POST" again in this task.
    - NEVER reopen the composer in this task.
