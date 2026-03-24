@@ -115,7 +115,44 @@ Write ONLY the post text. Nothing else. No quotes around it."""
 
 
 async def _generate_warmup_image(persona: Dict[str, Any], topic: str) -> Dict[str, Any]:
-    """Generate a lifestyle image for a warmup post."""
+    """Generate a character-consistent lifestyle image using the profile's actual photo as reference."""
+    profile_name = persona.get("profile_name", "unknown")
+
+    # Load session to get reference profile picture
+    from fb_session import FacebookSession
+    session = FacebookSession(profile_name)
+    if not session.load():
+        logger.warning(f"session not found for {profile_name}, falling back to scenery-only image")
+        return await _generate_scenery_image(topic, profile_name)
+
+    reference_b64 = session.data.get("profile_picture") if session.data else None
+
+    # Mix: 50% character selfie (with reference), 50% scenery (no person)
+    is_selfie = random.random() < 0.5
+
+    if is_selfie and reference_b64:
+        # Character-consistent: use reference image from profile picture
+        from gemini_image_gen import generate_profile_photo_with_reference
+        hints = persona.get("image_style_hints", [])
+        pose_prompt = random.choice(hints) if hints else topic
+        try:
+            result = await generate_profile_photo_with_reference(
+                reference_image_base64=reference_b64,
+                pose_prompt=pose_prompt,
+                profile_name=profile_name.replace(" ", "_").lower(),
+            )
+            if result.get("success") and result.get("image_path"):
+                return {"success": True, "image_path": result["image_path"]}
+            logger.warning(f"reference image gen failed for {profile_name}: {result.get('error')}, falling back to scenery")
+        except Exception as exc:
+            logger.warning(f"reference image gen exception for {profile_name}: {exc}, falling back to scenery")
+
+    # Scenery only (no person visible) — safe fallback, no wrong-person risk
+    return await _generate_scenery_image(topic, profile_name)
+
+
+async def _generate_scenery_image(topic: str, profile_name: str = "unknown") -> Dict[str, Any]:
+    """Generate a scenery/lifestyle image WITHOUT any person visible."""
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key or not genai or not types:
         return {"success": False, "error": "gemini unavailable"}
@@ -123,26 +160,12 @@ async def _generate_warmup_image(persona: Dict[str, Any], topic: str) -> Dict[st
     client = genai.Client(api_key=api_key)
     model = os.getenv("PREMIUM_IMAGE_MODEL", "gemini-3-pro-image-preview")
 
-    # Mix selfies and scenery
-    is_selfie = random.random() < 0.4
-    persona_prompt = persona.get("persona_prompt", "a woman in her 50s")
-    hints = persona.get("image_style_hints", [])
-    hint_text = f" Style hints: {', '.join(hints)}." if hints else ""
-
-    if is_selfie:
-        image_prompt = (
-            f"Realistic casual iPhone selfie of {persona_prompt}. "
-            f"Context: {topic}. "
-            f"Natural lighting, no makeup or minimal, candid expression. "
-            f"No text overlays, no watermarks, no AI artifacts.{hint_text}"
-        )
-    else:
-        image_prompt = (
-            f"Realistic candid lifestyle photo for social media. "
-            f"Scene: {topic}. No people visible. "
-            f"Natural lighting, ordinary everyday setting. "
-            f"No text overlays, no watermarks, no AI artifacts.{hint_text}"
-        )
+    image_prompt = (
+        f"Realistic candid lifestyle photo for social media. "
+        f"Scene: {topic}. No people visible. "
+        f"Natural lighting, ordinary everyday setting. "
+        f"No text overlays, no watermarks, no AI artifacts."
+    )
 
     try:
         response = await asyncio.to_thread(
@@ -173,12 +196,11 @@ async def _generate_warmup_image(persona: Dict[str, Any], topic: str) -> Dict[st
         else:
             image_bytes = image_data
 
-        profile_name = persona.get("profile_name", "unknown")
         filename = f"warmup_{profile_name}_{uuid.uuid4().hex[:8]}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png"
         path = IMAGE_OUTPUT_DIR / filename
         path.write_bytes(image_bytes)
 
         return {"success": True, "image_path": str(path)}
     except Exception as exc:
-        logger.error(f"warmup image generation failed: {exc}")
+        logger.error(f"scenery image generation failed: {exc}")
         return {"success": False, "error": str(exc)}
