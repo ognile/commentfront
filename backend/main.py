@@ -5314,30 +5314,14 @@ async def bulk_retry_failed_jobs(
     }
     logger.info(f"Bulk retry: {len(succeeded_profiles)} profiles already succeeded, will be excluded")
 
-    # Identify jobs that have NEVER succeeded (check ALL results, not just latest)
-    # This is critical for deployment resilience - if a retry succeeded but then
-    # deployment killed the process, we don't want to retry that job again
-    job_has_success: Dict[int, bool] = {}
-    job_comment: Dict[int, str] = {}
-    job_original_profile: Dict[int, str] = {}
+    # Identify jobs that have NEVER succeeded, using the campaign's authoritative
+    # comments list before falling back to historical retry rows.
+    failed_jobs = _build_failed_retry_jobs(campaign)
 
-    for result in campaign.get("results", []):
-        idx = result.get("job_index", 0)
-        if idx not in job_has_success:
-            job_has_success[idx] = False
-            job_comment[idx] = result.get("comment", "")
-            job_original_profile[idx] = result.get("profile_name", "")
-        if result.get("success"):
-            job_has_success[idx] = True
-
-    # Only retry jobs that have NEVER succeeded
-    failed_jobs = [
-        {"job_index": idx, "comment": job_comment.get(idx, ""), "original_profile": job_original_profile.get(idx, "")}
-        for idx, has_success in job_has_success.items()
-        if not has_success
-    ]
-
-    logger.info(f"Bulk retry: {len(failed_jobs)} jobs still need success (out of {len(job_has_success)} total)")
+    logger.info(
+        f"Bulk retry: {len(failed_jobs)} jobs still need success "
+        f"(out of {len({r.get('job_index', 0) for r in campaign.get('results', [])})} total)"
+    )
 
     if not failed_jobs:
         return {"success": True, "message": "No failed jobs to retry", "retried": 0, "succeeded": 0, "failed": 0}
@@ -5361,6 +5345,26 @@ async def bulk_retry_failed_jobs(
         comment = job["comment"]
         job_succeeded = False
         attempt = 0
+
+        if not comment:
+            logger.error(f"Bulk retry: job {job_index} has no retry comment text; skipping")
+            result = {
+                "profile_name": None,
+                "comment": comment,
+                "success": False,
+                "verified": False,
+                "method": "exhausted",
+                "error": "Missing retry comment text",
+                "job_index": job_index,
+                "is_retry": True,
+                "original_profile": job.get("original_profile"),
+                "retried_at": datetime.utcnow().isoformat(),
+                "attempts": 0,
+            }
+            all_results.append(result)
+            queue_manager.add_retry_result(campaign_id, result)
+            jobs_exhausted += 1
+            continue
 
         # For THIS job, track profiles we've tried (reset for each job)
         # But always exclude profiles that already succeeded in the campaign
@@ -5620,6 +5624,51 @@ async def proxy_health_endpoint(current_user: dict = Depends(get_current_user)) 
     return await check_proxy_health()
 
 
+def _first_non_empty_retry_text(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+    return ""
+
+
+def _build_failed_retry_jobs(campaign: Dict[str, Any]) -> List[Dict[str, Any]]:
+    results = campaign.get("results", []) or []
+    campaign_comments = campaign.get("comments", []) or []
+    job_results: Dict[int, List[Dict[str, Any]]] = {}
+
+    for result in results:
+        idx = int(result.get("job_index", 0))
+        job_results.setdefault(idx, []).append(result)
+
+    failed_jobs: List[Dict[str, Any]] = []
+    for idx in sorted(job_results):
+        rows = job_results[idx]
+        if any(row.get("success") for row in rows):
+            continue
+
+        campaign_comment = campaign_comments[idx] if idx < len(campaign_comments) else None
+        comment = _first_non_empty_retry_text(
+            campaign_comment,
+            *(
+                _first_non_empty_retry_text(row.get("comment"), row.get("text"))
+                for row in rows
+            ),
+        )
+        original_profile = next((row.get("profile_name") for row in rows if row.get("profile_name")), "")
+
+        failed_jobs.append(
+            {
+                "job_index": idx,
+                "comment": comment,
+                "original_profile": original_profile,
+            }
+        )
+
+    return failed_jobs
+
+
 async def _retry_single_campaign(
     campaign: dict,
     campaign_index: int,
@@ -5661,25 +5710,7 @@ async def _retry_single_campaign(
         if r.get("success") and r.get("profile_name")
     }
 
-    # Find jobs that never succeeded
-    job_has_success: Dict[int, bool] = {}
-    job_comment: Dict[int, str] = {}
-    job_original_profile: Dict[int, str] = {}
-
-    for result in campaign.get("results", []):
-        idx = result.get("job_index", 0)
-        if idx not in job_has_success:
-            job_has_success[idx] = False
-            job_comment[idx] = result.get("comment", "")
-            job_original_profile[idx] = result.get("profile_name", "")
-        if result.get("success"):
-            job_has_success[idx] = True
-
-    failed_jobs = [
-        {"job_index": idx, "comment": job_comment.get(idx, ""), "original_profile": job_original_profile.get(idx, "")}
-        for idx, has_success in job_has_success.items()
-        if not has_success
-    ]
+    failed_jobs = _build_failed_retry_jobs(campaign)
 
     if not failed_jobs:
         logger.info(f"Retry-all: campaign {campaign_id[:8]} has no failed jobs left")
@@ -5711,6 +5742,27 @@ async def _retry_single_campaign(
         job_succeeded = False
         job_tried_profiles = set(succeeded_profiles)
         consecutive_post_not_visible = 0
+
+        if not comment:
+            logger.error(f"Retry-all: campaign {campaign_id[:8]} job {job_index} has no retry comment text")
+            queue_manager.add_retry_result(
+                campaign_id,
+                {
+                    "profile_name": None,
+                    "comment": comment,
+                    "success": False,
+                    "verified": False,
+                    "method": "exhausted",
+                    "error": "Missing retry comment text",
+                    "job_index": job_index,
+                    "is_retry": True,
+                    "original_profile": job.get("original_profile"),
+                    "retried_at": datetime.utcnow().isoformat(),
+                },
+            )
+            campaign_jobs_exhausted += 1
+            continue
+
         job_history = [
             result
             for result in campaign.get("results", [])

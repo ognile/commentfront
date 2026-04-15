@@ -796,6 +796,142 @@ def test_retry_all_step4_not_visible_does_not_mark_post_dead(monkeypatch):
     assert len(no_eligible_errors) == 2
 
 
+def test_build_failed_retry_jobs_prefers_campaign_comment_over_busy_row():
+    campaign = {
+        "comments": ["first comment", "second comment"],
+        "results": [
+            {
+                "job_index": 0,
+                "profile_name": "busy_profile",
+                "success": False,
+                "error": "Profile busy (reserved by another task)",
+            },
+            {
+                "job_index": 0,
+                "profile_name": "profile_a",
+                "comment": "stale fallback",
+                "success": False,
+            },
+            {
+                "job_index": 1,
+                "profile_name": "profile_b",
+                "text": "second comment",
+                "success": False,
+            },
+        ],
+    }
+
+    failed_jobs = main._build_failed_retry_jobs(campaign)
+
+    assert failed_jobs == [
+        {"job_index": 0, "comment": "first comment", "original_profile": "busy_profile"},
+        {"job_index": 1, "comment": "second comment", "original_profile": "profile_b"},
+    ]
+
+
+def test_retry_all_uses_campaign_comment_when_first_failure_was_profile_busy(monkeypatch):
+    campaign_id = "campaign_retry_all_busy_comment"
+    main.queue_manager.history = [
+        {
+            "id": campaign_id,
+            "status": "completed",
+            "url": VALID_URL,
+            "comments": ["recover me"],
+            "filter_tags": [],
+            "enable_warmup": False,
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [
+                {
+                    "job_index": 0,
+                    "profile_name": "profile_busy",
+                    "success": False,
+                    "error": "Profile busy (reserved by another task)",
+                },
+                {
+                    "job_index": 0,
+                    "profile_name": "profile_old",
+                    "comment": "recover me",
+                    "success": False,
+                    "error": "Step 2 FAILED - Comments not opened",
+                },
+            ],
+        }
+    ]
+
+    posted_comments = []
+
+    class FakeFacebookSession:
+        def __init__(self, profile_name: str):
+            self.profile_name = profile_name
+
+        def load(self) -> bool:
+            return True
+
+        def has_valid_cookies(self) -> bool:
+            return True
+
+    class FakeProfileManager:
+        def __init__(self):
+            self.reserved = set()
+
+        def get_eligible_profiles(self, *, exclude_profiles=None, count=5, **_kwargs):
+            exclude = set(exclude_profiles or [])
+            return [] if "profile_retry" in exclude else ["profile_retry"]
+
+        async def reserve_profile(self, profile_name: str) -> bool:
+            if profile_name in self.reserved:
+                return False
+            self.reserved.add(profile_name)
+            return True
+
+        async def release_profile(self, profile_name: str):
+            self.reserved.discard(profile_name)
+
+        def mark_profile_used(self, **_kwargs):
+            return None
+
+        def mark_profile_restricted(self, **_kwargs):
+            return None
+
+    async def fake_post_comment_verified(**kwargs):
+        posted_comments.append(kwargs["comment"])
+        return {
+            "success": False,
+            "verified": False,
+            "method": "vision_verified",
+            "error": "Step 4 FAILED - Typed text not visible",
+            "throttled": False,
+        }
+
+    monkeypatch.setattr(main, "FacebookSession", FakeFacebookSession)
+    monkeypatch.setattr(
+        main,
+        "test_session",
+        lambda session, _proxy: asyncio.sleep(0, result={"valid": True, "health_status": "healthy", "health_reason": "ok"}),
+    )
+    monkeypatch.setattr(main, "post_comment_verified", fake_post_comment_verified)
+
+    result = asyncio.run(
+        main._retry_single_campaign(
+            campaign=main.queue_manager.get_campaign_from_history(campaign_id),
+            campaign_index=0,
+            total_campaigns=1,
+            profile_manager=FakeProfileManager(),
+            browser_semaphore=asyncio.Semaphore(1),
+        )
+    )
+
+    assert result["attempts"] == 1
+    assert posted_comments == ["recover me"]
+
+    updated = main.queue_manager.get_campaign_from_history(campaign_id)
+    assert updated is not None
+    assert updated["results"][-1]["comment"] == "recover me"
+
+
 def test_retry_all_reconciles_existing_comment_before_repost(monkeypatch):
     campaign_id = "campaign_bulk_retry_reconcile"
     main.queue_manager.history = [

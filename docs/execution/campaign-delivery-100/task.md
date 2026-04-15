@@ -19,19 +19,19 @@
 - auth-health gating is shipped and proven in production.
 - retry-all dead-post inference bug is shipped and proven in production.
 - recovered campaigns now include `d30e8a3f` at 18/18 and `2926e310` at 19/19.
-- `85ee0d53` and `22864f6b` remain stuck on a composer-activation bug: healthy profiles reach step 4/5 but the comment field stays on placeholder and send stays hidden.
-- the latest patch adds a textarea native-setter fallback after `fill` and `type` fail, with a unit test covering that exact failure sequence; production proof is next.
+- the latest production proof isolated a narrower retry-data bug: some failed jobs inherit an empty comment after an early `profile busy` row, so retries keep attempting blank submissions and the composer stays on placeholder.
+- the textarea native-setter fallback is shipped but is no longer treated as the primary fix path for these campaigns.
 
 ## active todo
-1. verify the textarea native-setter fix on `85ee0d53` and `22864f6b` in production.
-2. if those two still stall, capture the next distinct state transition and patch the smallest reproducible input-activation gap.
+1. deploy the retry comment-reconstruction fix that prefers `campaign.comments[job_index]` over sparse historical rows.
+2. replay `85ee0d53` and `22864f6b` from the corrected state and verify they no longer burn blank comments.
 3. run duplicate-control checks on recovered campaigns and confirm no duplicate successful profile assignments.
 4. continue replaying the remaining failed campaigns until they are 100% delivered or explicitly proven blocked by the post/composer state itself.
 
 ## current understanding
-- the original non-100% behavior was caused first by dead-session reuse, then by a wrong retry-all verifier, and now by a narrower composer activation failure on some post variants.
+- the original non-100% behavior was caused first by dead-session reuse, then by a wrong retry-all verifier, and now by a retry job reconstruction bug that can drop comment text after `profile busy` rows.
 - healthy-profile proof is real: sampled winners authenticate cleanly and sampled failure-cluster profiles classify as logged-out/checkpoint/video-selfie.
-- the remaining failures are no longer session-pool problems; they happen with healthy profiles after comments are opened.
+- the remaining failures are no longer session-pool problems; they happen when retry logic replays a blank comment into an otherwise healthy session.
 - production history is the only trustworthy progress surface for retries; the in-memory retry-all status endpoint is not useful mid-run.
 
 ## proven wins
@@ -42,6 +42,6 @@
 - post-deploy history shows `85ee0d53` and `22864f6b` no longer get freshly mislabeled as dead posts; they now fail explicitly at the empty-composer stage.
 
 ## open risks
-- the composer-activation fix may still be insufficient for some Facebook post variants if the editable node appears outside the currently searched selectors.
+- there may still be a secondary composer-activation issue on some Facebook variants after the blank-comment bug is removed, but it is no longer the leading explanation for the current failed jobs.
 - duplicate-proof still needs the final control pass on recovered campaigns.
-- several campaigns still need replay after the new textarea-focused production fix.
+- several campaigns still need replay after the retry-comment reconstruction fix.
