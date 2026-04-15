@@ -1045,6 +1045,59 @@ async def find_comment_input(page: Page) -> bool:
     return False
 
 
+async def _resolve_comment_input_locator(page: Page):
+    selectors = [
+        'div[contenteditable="true"]',
+        'div[role="textbox"]',
+        '[contenteditable="true"]',
+        'textarea',
+        'input[type="text"]',
+    ]
+
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+            if count <= 0:
+                continue
+
+            candidates = [locator.last] if count > 1 else [locator.first]
+            if count > 1:
+                candidates.append(locator.first)
+
+            for candidate in candidates:
+                if await candidate.is_visible():
+                    return candidate, selector
+        except Exception:
+            continue
+
+    return None, None
+
+
+async def _type_comment_into_active_input(page: Page, comment: str) -> Dict[str, Optional[str]]:
+    locator, selector = await _resolve_comment_input_locator(page)
+    if locator is not None:
+        try:
+            await locator.click()
+        except Exception:
+            pass
+
+        try:
+            await locator.fill(comment)
+            return {"method": "locator.fill", "selector": selector}
+        except Exception as fill_error:
+            logger.info(f"locator.fill failed for comment input ({selector}): {fill_error}")
+
+        try:
+            await locator.type(comment, delay=50)
+            return {"method": "locator.type", "selector": selector}
+        except Exception as type_error:
+            logger.info(f"locator.type failed for comment input ({selector}): {type_error}")
+
+    await page.keyboard.type(comment, delay=50)
+    return {"method": "page.keyboard.type", "selector": selector}
+
+
 async def audit_selectors(page: Page, selectors_dict: dict) -> dict:
     """
     Run all selectors and report matches with details.
@@ -1886,7 +1939,7 @@ async def post_comment_verified(
 
             # ========== STEP 4: Type comment and verify text appears ==========
             logger.info(f"Step 4: Typing comment: {comment[:30]}...")
-            await page.keyboard.type(comment, delay=50)
+            typing_result = await _type_comment_into_active_input(page, comment)
             await asyncio.sleep(0.8)
 
             screenshot = await save_debug_screenshot(page, "step4_typed")
@@ -1894,7 +1947,9 @@ async def post_comment_verified(
             if _has_local_typed_text_evidence(local_typed_presence):
                 logger.info(
                     "✓ Step 4: Typed text confirmed from composer DOM "
-                    f"(tag={local_typed_presence.get('activeElementTag')}, "
+                    f"(typing_method={typing_result.get('method')}, "
+                    f"selector={typing_result.get('selector')}, "
+                    f"tag={local_typed_presence.get('activeElementTag')}, "
                     f"role={local_typed_presence.get('activeElementRole')})"
                 )
             else:
