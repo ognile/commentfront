@@ -36,6 +36,7 @@ def isolate_queue_and_drafts(tmp_path, monkeypatch):
     main.draft_manager.save()
 
     main.queue_idempotency_index.clear()
+    main._campaign_retry_claims.clear()
 
     async def _noop_broadcast(*_args, **_kwargs):
         return None
@@ -50,6 +51,7 @@ def isolate_queue_and_drafts(tmp_path, monkeypatch):
     main.queue_manager.history = []
     main.draft_manager.drafts = {}
     main.queue_idempotency_index.clear()
+    main._campaign_retry_claims.clear()
 
 
 def test_queue_duplicate_conflict_returns_warning_and_enqueues():
@@ -930,6 +932,75 @@ def test_retry_all_uses_campaign_comment_when_first_failure_was_profile_busy(mon
     updated = main.queue_manager.get_campaign_from_history(campaign_id)
     assert updated is not None
     assert updated["results"][-1]["comment"] == "recover me"
+
+
+def test_bulk_retry_rejects_when_campaign_replay_already_running():
+    campaign_id = "campaign_bulk_retry_claimed"
+    main.queue_manager.history = [
+        {
+            "id": campaign_id,
+            "status": "completed",
+            "url": VALID_URL,
+            "comments": ["recover me"],
+            "filter_tags": [],
+            "enable_warmup": False,
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [
+                {
+                    "job_index": 0,
+                    "profile_name": "profile_old",
+                    "comment": "recover me",
+                    "success": False,
+                    "error": "Step 2 FAILED - Comments not opened",
+                },
+            ],
+        }
+    ]
+    main._campaign_retry_claims[campaign_id] = {
+        "token": "claim-1",
+        "source": "manual_bulk_retry",
+        "started_at": "2026-04-15T18:00:00",
+        "updated_at": "2026-04-15T18:00:01",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(main.bulk_retry_failed_jobs(campaign_id, current_user={"username": "tester"}))
+
+    assert exc_info.value.status_code == 409
+    assert "already running" in str(exc_info.value.detail)
+
+
+def test_retry_all_skips_when_campaign_replay_already_running():
+    campaign_id = "campaign_retry_all_claimed"
+    main._campaign_retry_claims[campaign_id] = {
+        "token": "claim-1",
+        "source": "manual_bulk_retry",
+        "started_at": "2026-04-15T18:00:00",
+        "updated_at": "2026-04-15T18:00:01",
+    }
+
+    result = asyncio.run(
+        main._retry_single_campaign(
+            campaign={
+                "id": campaign_id,
+                "status": "completed",
+                "url": VALID_URL,
+                "success_count": 0,
+                "total_count": 1,
+                "results": [],
+            },
+            campaign_index=0,
+            total_campaigns=1,
+            profile_manager=object(),
+            browser_semaphore=asyncio.Semaphore(1),
+        )
+    )
+
+    assert result["skipped"] is True
+    assert "already running" in result["skip_reason"]
 
 
 def test_retry_all_reconciles_existing_comment_before_repost(monkeypatch):

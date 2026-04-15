@@ -1422,314 +1422,327 @@ class QueueProcessor:
         filter_tags = campaign.get("filter_tags", [])
         enable_warmup = campaign.get("enable_warmup", False)
 
-        ar["status"] = "in_progress"
-        self.queue_manager.save()
-
-        self.logger.info(f"Auto-retry round {round_num} for campaign {campaign_id[:8]}...")
-
-        await broadcast_update("auto_retry_round_start", {
-            "campaign_id": campaign_id,
-            "round": round_num,
-            "jobs_remaining": sum(1 for fj in ar.get("failed_jobs", []) if not fj.get("exhausted"))
-        })
-
-        from profile_manager import get_profile_manager
-        profile_manager = get_profile_manager()
-
-        # Get profiles that already succeeded in this campaign
-        succeeded_profiles = {
-            r.get("profile_name")
-            for r in campaign.get("results", [])
-            if r.get("success") and r.get("profile_name")
-        }
-
-        round_succeeded = 0
-        round_failed = 0
-
-        for fj in ar.get("failed_jobs", []):
-            if fj.get("exhausted"):
-                continue
-
-            job_index = fj["job_index"]
-            comment = fj.get("comment", "")
-            job_history = [
-                result
-                for result in campaign.get("results", [])
-                if result.get("job_index") == job_index
-            ]
-            last_failure = next((result for result in reversed(job_history) if not result.get("success")), None)
-
-            if self._failure_requires_reconciliation(last_failure):
-                reconciliation_profile = fj.get("last_profile", "")
-                if reconciliation_profile:
-                    reserved_reconciliation = await profile_manager.reserve_profile(reconciliation_profile)
-                    if not reserved_reconciliation:
-                        self.logger.warning(
-                            f"Auto-retry reconciliation skipped for campaign {campaign_id[:8]} job {job_index}: "
-                            f"profile {reconciliation_profile} is currently reserved"
-                        )
-                        round_failed += 1
-                        continue
-
-                    try:
-                        session = FacebookSession(reconciliation_profile)
-                        if session.load():
-                            reconciliation = await reconcile_comment_submission(
-                                session=session,
-                                url=url,
-                                comment_text=comment,
-                                proxy=get_system_proxy(),
-                            )
-                            if reconciliation.get("found") is True:
-                                self.logger.info(
-                                    f"Auto-retry reconciliation recovered campaign {campaign_id[:8]} job {job_index} "
-                                    f"without repost (profile={reconciliation_profile}, confidence={reconciliation.get('confidence', 0.0):.2f})"
-                                )
-                                self.queue_manager.record_retry_attempt(
-                                    campaign_id=campaign_id,
-                                    job_index=job_index,
-                                    profile=reconciliation_profile,
-                                    round_num=round_num,
-                                    success=True,
-                                    error=None,
-                                    was_restriction=False,
-                                    method="reconciled_existing_comment",
-                                    verified=True,
-                                    metadata={
-                                        "reconciled_without_repost": True,
-                                        "reconciliation_confidence": reconciliation.get("confidence", 0.0),
-                                        "reconciliation_reason": reconciliation.get("reason"),
-                                    },
-                                )
-                                await broadcast_update("auto_retry_job_result", {
-                                    "campaign_id": campaign_id,
-                                    "job_index": job_index,
-                                    "profile": reconciliation_profile,
-                                    "success": True,
-                                    "error": None,
-                                    "method": "reconciled_existing_comment",
-                                    "round": round_num,
-                                })
-                                round_succeeded += 1
-                                succeeded_profiles.add(reconciliation_profile)
-                                continue
-
-                            if reconciliation.get("found") is None:
-                                self.logger.warning(
-                                    f"Auto-retry reconciliation inconclusive for campaign {campaign_id[:8]} job {job_index}: "
-                                    f"{reconciliation.get('reason', 'unknown reason')}"
-                                )
-                                round_failed += 1
-                                continue
-                        else:
-                            self.logger.warning(
-                                f"Auto-retry reconciliation session missing for campaign {campaign_id[:8]} "
-                                f"job {job_index} profile={reconciliation_profile}"
-                            )
-                    finally:
-                        await profile_manager.release_profile(reconciliation_profile)
-
-            excluded = set(fj.get("excluded_profiles", []))
-            exclude_from_selection = list(excluded | succeeded_profiles)
-            preferred_profile = None
-            last_profile = fj.get("last_profile", "")
-            if last_profile and last_profile not in exclude_from_selection:
-                preferred_profile = last_profile
-
-            reservation_owner = f"auto_retry:{campaign_id}:{job_index}:{uuid.uuid4().hex[:8]}"
-            selection = await self._select_live_profile(
-                profile_manager=profile_manager,
-                filter_tags=filter_tags,
-                exclude_profiles=set(exclude_from_selection),
-                reservation_source="auto_retry_job",
-                reservation_owner=reservation_owner,
-                reservation_metadata={"campaign_id": campaign_id, "job_index": job_index, "round": round_num},
-                forced_profile_name=preferred_profile,
-                allow_regenerate=True,
+        try:
+            retry_claim_token = await _claim_campaign_retry_execution(
+                campaign_id,
+                source=f"auto_retry_round_{round_num}",
             )
-            if selection is None and preferred_profile:
+        except CampaignRetryAlreadyRunningError as exc:
+            self.logger.info(f"Auto-retry skipped for {campaign_id[:8]}...: {exc}")
+            return
+
+        try:
+            ar["status"] = "in_progress"
+            self.queue_manager.save()
+
+            self.logger.info(f"Auto-retry round {round_num} for campaign {campaign_id[:8]}...")
+
+            await broadcast_update("auto_retry_round_start", {
+                "campaign_id": campaign_id,
+                "round": round_num,
+                "jobs_remaining": sum(1 for fj in ar.get("failed_jobs", []) if not fj.get("exhausted"))
+            })
+
+            from profile_manager import get_profile_manager
+            profile_manager = get_profile_manager()
+
+            # Get profiles that already succeeded in this campaign
+            succeeded_profiles = {
+                r.get("profile_name")
+                for r in campaign.get("results", [])
+                if r.get("success") and r.get("profile_name")
+            }
+
+            round_succeeded = 0
+            round_failed = 0
+
+            for fj in ar.get("failed_jobs", []):
+                await _touch_campaign_retry_execution(campaign_id, retry_claim_token)
+                if fj.get("exhausted"):
+                    continue
+
+                job_index = fj["job_index"]
+                comment = fj.get("comment", "")
+                job_history = [
+                    result
+                    for result in campaign.get("results", [])
+                    if result.get("job_index") == job_index
+                ]
+                last_failure = next((result for result in reversed(job_history) if not result.get("success")), None)
+
+                if self._failure_requires_reconciliation(last_failure):
+                    reconciliation_profile = fj.get("last_profile", "")
+                    if reconciliation_profile:
+                        reserved_reconciliation = await profile_manager.reserve_profile(reconciliation_profile)
+                        if not reserved_reconciliation:
+                            self.logger.warning(
+                                f"Auto-retry reconciliation skipped for campaign {campaign_id[:8]} job {job_index}: "
+                                f"profile {reconciliation_profile} is currently reserved"
+                            )
+                            round_failed += 1
+                            continue
+
+                        try:
+                            session = FacebookSession(reconciliation_profile)
+                            if session.load():
+                                reconciliation = await reconcile_comment_submission(
+                                    session=session,
+                                    url=url,
+                                    comment_text=comment,
+                                    proxy=get_system_proxy(),
+                                )
+                                if reconciliation.get("found") is True:
+                                    self.logger.info(
+                                        f"Auto-retry reconciliation recovered campaign {campaign_id[:8]} job {job_index} "
+                                        f"without repost (profile={reconciliation_profile}, confidence={reconciliation.get('confidence', 0.0):.2f})"
+                                    )
+                                    self.queue_manager.record_retry_attempt(
+                                        campaign_id=campaign_id,
+                                        job_index=job_index,
+                                        profile=reconciliation_profile,
+                                        round_num=round_num,
+                                        success=True,
+                                        error=None,
+                                        was_restriction=False,
+                                        method="reconciled_existing_comment",
+                                        verified=True,
+                                        metadata={
+                                            "reconciled_without_repost": True,
+                                            "reconciliation_confidence": reconciliation.get("confidence", 0.0),
+                                            "reconciliation_reason": reconciliation.get("reason"),
+                                        },
+                                    )
+                                    await broadcast_update("auto_retry_job_result", {
+                                        "campaign_id": campaign_id,
+                                        "job_index": job_index,
+                                        "profile": reconciliation_profile,
+                                        "success": True,
+                                        "error": None,
+                                        "method": "reconciled_existing_comment",
+                                        "round": round_num,
+                                    })
+                                    round_succeeded += 1
+                                    succeeded_profiles.add(reconciliation_profile)
+                                    continue
+
+                                if reconciliation.get("found") is None:
+                                    self.logger.warning(
+                                        f"Auto-retry reconciliation inconclusive for campaign {campaign_id[:8]} job {job_index}: "
+                                        f"{reconciliation.get('reason', 'unknown reason')}"
+                                    )
+                                    round_failed += 1
+                                    continue
+                            else:
+                                self.logger.warning(
+                                    f"Auto-retry reconciliation session missing for campaign {campaign_id[:8]} "
+                                    f"job {job_index} profile={reconciliation_profile}"
+                                )
+                        finally:
+                            await profile_manager.release_profile(reconciliation_profile)
+
+                excluded = set(fj.get("excluded_profiles", []))
+                exclude_from_selection = list(excluded | succeeded_profiles)
+                preferred_profile = None
+                last_profile = fj.get("last_profile", "")
+                if last_profile and last_profile not in exclude_from_selection:
+                    preferred_profile = last_profile
+
+                reservation_owner = f"auto_retry:{campaign_id}:{job_index}:{uuid.uuid4().hex[:8]}"
                 selection = await self._select_live_profile(
                     profile_manager=profile_manager,
                     filter_tags=filter_tags,
-                    exclude_profiles=set(exclude_from_selection) | {preferred_profile},
+                    exclude_profiles=set(exclude_from_selection),
                     reservation_source="auto_retry_job",
                     reservation_owner=reservation_owner,
                     reservation_metadata={"campaign_id": campaign_id, "job_index": job_index, "round": round_num},
+                    forced_profile_name=preferred_profile,
                     allow_regenerate=True,
                 )
+                if selection is None and preferred_profile:
+                    selection = await self._select_live_profile(
+                        profile_manager=profile_manager,
+                        filter_tags=filter_tags,
+                        exclude_profiles=set(exclude_from_selection) | {preferred_profile},
+                        reservation_source="auto_retry_job",
+                        reservation_owner=reservation_owner,
+                        reservation_metadata={"campaign_id": campaign_id, "job_index": job_index, "round": round_num},
+                        allow_regenerate=True,
+                    )
 
-            if not selection:
-                self.logger.warning(f"Auto-retry: job {job_index} exhausted all healthy profiles")
-                self.queue_manager.mark_retry_job_exhausted(campaign_id, job_index)
-                round_failed += 1
-                continue
+                if not selection:
+                    self.logger.warning(f"Auto-retry: job {job_index} exhausted all healthy profiles")
+                    self.queue_manager.mark_retry_job_exhausted(campaign_id, job_index)
+                    round_failed += 1
+                    continue
 
-            profile_name = str(selection["profile_name"])
-            session = selection["session"]
-            linked_credential = selection.get("linked_credential")
-            self.logger.info(f"Auto-retry: job {job_index} with profile {profile_name}")
+                profile_name = str(selection["profile_name"])
+                session = selection["session"]
+                linked_credential = selection.get("linked_credential")
+                self.logger.info(f"Auto-retry: job {job_index} with profile {profile_name}")
 
-            try:
-                from gemini_vision import set_observation_context
-                set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
+                try:
+                    from gemini_vision import set_observation_context
+                    set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
 
-                result = await post_comment_verified(
-                    session=session,
-                    url=url,
-                    comment=comment,
-                    proxy=get_system_proxy(),
-                    enable_warmup=enable_warmup,
-                    forensic_context={
-                        "platform": "facebook",
-                        "engine": "auto_retry_comment",
+                    result = await post_comment_verified(
+                        session=session,
+                        url=url,
+                        comment=comment,
+                        proxy=get_system_proxy(),
+                        enable_warmup=enable_warmup,
+                        forensic_context={
+                            "platform": "facebook",
+                            "engine": "auto_retry_comment",
+                            "campaign_id": campaign_id,
+                            "job_id": str(job_index),
+                            "run_id": campaign_id,
+                            "parent_attempt_id": fj.get("attempt_id"),
+                        },
+                    )
+
+                    success = result.get("success", False)
+                    was_restriction = bool(result.get("throttled"))
+                    error = result.get("error")
+                    method = result.get("method")
+                    failure_type = self._determine_failure_type(
+                        success=bool(success),
+                        was_restriction=was_restriction,
+                        error=error,
+                        method=method,
+                    )
+
+                    health_status = str(result.get("session_health_status") or AUTH_HEALTH_HEALTHY).strip().lower()
+                    health_reason = result.get("session_health_reason") or error
+                    if health_status == AUTH_HEALTH_HEALTHY:
+                        self._persist_session_health(
+                            profile_manager,
+                            profile_name=profile_name,
+                            health_status=AUTH_HEALTH_HEALTHY,
+                            health_reason=health_reason or "auto-retry session passed",
+                            linked_credential=linked_credential,
+                            needs_attention=False,
+                            needs_deletion=False,
+                        )
+                    elif health_status in SESSION_BLOCKED_STATES:
+                        self._persist_session_health(
+                            profile_manager,
+                            profile_name=profile_name,
+                            health_status=health_status,
+                            health_reason=health_reason,
+                            linked_credential=linked_credential,
+                            needs_attention=True,
+                            needs_deletion=health_status in SESSION_DELETE_CANDIDATE_STATES,
+                        )
+
+                    profile_manager.mark_profile_used(
+                        profile_name=profile_name,
+                        campaign_id=campaign_id,
+                        comment=comment,
+                        success=success,
+                        failure_type=failure_type
+                    )
+
+                    if was_restriction:
+                        self._apply_restriction_signal(
+                            profile_manager,
+                            profile_name=profile_name,
+                            reason=result.get("throttle_reason", "Facebook restriction"),
+                            attempt_id=result.get("attempt_id"),
+                        )
+
+                    self.queue_manager.record_retry_attempt(
+                        campaign_id=campaign_id,
+                        job_index=job_index,
+                        profile=profile_name,
+                        round_num=round_num,
+                        success=success,
+                        error=error,
+                        was_restriction=was_restriction,
+                        method=str(method or "auto_retry"),
+                        verified=result.get("verified"),
+                    )
+
+                    await broadcast_update("auto_retry_job_result", {
                         "campaign_id": campaign_id,
-                        "job_id": str(job_index),
-                        "run_id": campaign_id,
-                        "parent_attempt_id": fj.get("attempt_id"),
-                    },
-                )
+                        "job_index": job_index,
+                        "profile": profile_name,
+                        "success": success,
+                        "error": error,
+                        "method": method,
+                        "round": round_num
+                    })
 
-                success = result.get("success", False)
-                was_restriction = bool(result.get("throttled"))
-                error = result.get("error")
-                method = result.get("method")
-                failure_type = self._determine_failure_type(
-                    success=bool(success),
-                    was_restriction=was_restriction,
-                    error=error,
-                    method=method,
-                )
+                    if success:
+                        round_succeeded += 1
+                        succeeded_profiles.add(profile_name)
+                    elif health_status in SESSION_BLOCKED_STATES:
+                        fj.setdefault("excluded_profiles", []).append(profile_name)
+                        self.queue_manager.save()
+                        continue
+                    else:
+                        round_failed += 1
 
-                health_status = str(result.get("session_health_status") or AUTH_HEALTH_HEALTHY).strip().lower()
-                health_reason = result.get("session_health_reason") or error
-                if health_status == AUTH_HEALTH_HEALTHY:
-                    self._persist_session_health(
-                        profile_manager,
-                        profile_name=profile_name,
-                        health_status=AUTH_HEALTH_HEALTHY,
-                        health_reason=health_reason or "auto-retry session passed",
-                        linked_credential=linked_credential,
-                        needs_attention=False,
-                        needs_deletion=False,
+                except Exception as e:
+                    self.logger.error(f"Auto-retry: job {job_index} exception: {e}")
+                    self.queue_manager.record_retry_attempt(
+                        campaign_id=campaign_id,
+                        job_index=job_index,
+                        profile=profile_name,
+                        round_num=round_num,
+                        success=False,
+                        error=str(e),
+                        was_restriction=False,
                     )
-                elif health_status in SESSION_BLOCKED_STATES:
-                    self._persist_session_health(
+                    round_failed += 1
+                finally:
+                    await self._release_profile_with_context(
                         profile_manager,
-                        profile_name=profile_name,
-                        health_status=health_status,
-                        health_reason=health_reason,
-                        linked_credential=linked_credential,
-                        needs_attention=True,
-                        needs_deletion=health_status in SESSION_DELETE_CANDIDATE_STATES,
+                        profile_name,
+                        source="auto_retry_job",
+                        owner=reservation_owner,
                     )
 
-                profile_manager.mark_profile_used(
-                    profile_name=profile_name,
-                    campaign_id=campaign_id,
-                    comment=comment,
-                    success=success,
-                    failure_type=failure_type
-                )
+            # Check if all jobs are now succeeded or exhausted
+            campaign = self.queue_manager.get_campaign_from_history(campaign_id)
+            ar = campaign.get("auto_retry", {}) if campaign else {}
+            remaining = [fj for fj in ar.get("failed_jobs", []) if not fj.get("exhausted")]
 
-                if was_restriction:
-                    self._apply_restriction_signal(
-                        profile_manager,
-                        profile_name=profile_name,
-                        reason=result.get("throttle_reason", "Facebook restriction"),
-                        attempt_id=result.get("attempt_id"),
-                    )
+            # Check which remaining jobs still haven't succeeded
+            job_successes = {}
+            for r in campaign.get("results", []):
+                if r.get("success"):
+                    job_successes[r.get("job_index")] = True
 
-                self.queue_manager.record_retry_attempt(
-                    campaign_id=campaign_id,
-                    job_index=job_index,
-                    profile=profile_name,
-                    round_num=round_num,
-                    success=success,
-                    error=error,
-                    was_restriction=was_restriction,
-                    method=str(method or "auto_retry"),
-                    verified=result.get("verified"),
-                )
+            still_failed = [fj for fj in remaining if not job_successes.get(fj["job_index"])]
 
-                await broadcast_update("auto_retry_job_result", {
+            if not still_failed:
+                final_status = "completed" if round_succeeded > 0 or not remaining else "exhausted"
+                self.queue_manager.complete_auto_retry(campaign_id, final_status)
+                await broadcast_update("auto_retry_complete", {
                     "campaign_id": campaign_id,
-                    "job_index": job_index,
-                    "profile": profile_name,
-                    "success": success,
-                    "error": error,
-                    "method": method,
-                    "round": round_num
+                    "final_status": final_status
+                })
+            else:
+                # Advance to next round
+                self.queue_manager.advance_retry_round(campaign_id)
+                # Re-read to get updated next_retry_at
+                campaign = self.queue_manager.get_campaign_from_history(campaign_id)
+                next_at = campaign.get("auto_retry", {}).get("next_retry_at") if campaign else None
+
+                await broadcast_update("auto_retry_round_complete", {
+                    "campaign_id": campaign_id,
+                    "round": round_num,
+                    "succeeded": round_succeeded,
+                    "failed": round_failed,
+                    "next_retry_at": next_at
                 })
 
-                if success:
-                    round_succeeded += 1
-                    succeeded_profiles.add(profile_name)
-                elif health_status in SESSION_BLOCKED_STATES:
-                    fj.setdefault("excluded_profiles", []).append(profile_name)
-                    self.queue_manager.save()
-                    continue
-                else:
-                    round_failed += 1
-
-            except Exception as e:
-                self.logger.error(f"Auto-retry: job {job_index} exception: {e}")
-                self.queue_manager.record_retry_attempt(
-                    campaign_id=campaign_id,
-                    job_index=job_index,
-                    profile=profile_name,
-                    round_num=round_num,
-                    success=False,
-                    error=str(e),
-                    was_restriction=False,
-                )
-                round_failed += 1
-            finally:
-                await self._release_profile_with_context(
-                    profile_manager,
-                    profile_name,
-                    source="auto_retry_job",
-                    owner=reservation_owner,
-                )
-
-        # Check if all jobs are now succeeded or exhausted
-        campaign = self.queue_manager.get_campaign_from_history(campaign_id)
-        ar = campaign.get("auto_retry", {}) if campaign else {}
-        remaining = [fj for fj in ar.get("failed_jobs", []) if not fj.get("exhausted")]
-
-        # Check which remaining jobs still haven't succeeded
-        job_successes = {}
-        for r in campaign.get("results", []):
-            if r.get("success"):
-                job_successes[r.get("job_index")] = True
-
-        still_failed = [fj for fj in remaining if not job_successes.get(fj["job_index"])]
-
-        if not still_failed:
-            final_status = "completed" if round_succeeded > 0 or not remaining else "exhausted"
-            self.queue_manager.complete_auto_retry(campaign_id, final_status)
-            await broadcast_update("auto_retry_complete", {
-                "campaign_id": campaign_id,
-                "final_status": final_status
-            })
-        else:
-            # Advance to next round
-            self.queue_manager.advance_retry_round(campaign_id)
-            # Re-read to get updated next_retry_at
-            campaign = self.queue_manager.get_campaign_from_history(campaign_id)
-            next_at = campaign.get("auto_retry", {}).get("next_retry_at") if campaign else None
-
-            await broadcast_update("auto_retry_round_complete", {
-                "campaign_id": campaign_id,
-                "round": round_num,
-                "succeeded": round_succeeded,
-                "failed": round_failed,
-                "next_retry_at": next_at
-            })
-
-        self.logger.info(
-            f"Auto-retry round {round_num} done for {campaign_id[:8]}...: "
-            f"{round_succeeded} succeeded, {round_failed} failed, {len(still_failed)} still pending"
-        )
+            self.logger.info(
+                f"Auto-retry round {round_num} done for {campaign_id[:8]}...: "
+                f"{round_succeeded} succeeded, {round_failed} failed, {len(still_failed)} still pending"
+            )
+        finally:
+            await _release_campaign_retry_execution(campaign_id, retry_claim_token)
 
 
 # Initialize queue processor
@@ -1739,6 +1752,57 @@ queue_processor = QueueProcessor(queue_manager)
 _browser_semaphore = asyncio.Semaphore(MAX_CONCURRENT)  # Limit concurrent browser instances
 _retry_all_task: Optional[asyncio.Task] = None
 _retry_all_progress: Dict = {}
+_campaign_retry_claims: Dict[str, Dict[str, str]] = {}
+_campaign_retry_claims_lock = asyncio.Lock()
+
+
+class CampaignRetryAlreadyRunningError(RuntimeError):
+    """Raised when a campaign replay path is already active."""
+
+    def __init__(self, campaign_id: str, source: str, started_at: str):
+        self.campaign_id = campaign_id
+        self.source = source
+        self.started_at = started_at
+        message = (
+            f"campaign {campaign_id[:8]} replay already running "
+            f"via {source} since {started_at}"
+        )
+        super().__init__(message)
+
+
+async def _claim_campaign_retry_execution(campaign_id: str, source: str) -> str:
+    """Claim campaign replay ownership so the same failed-job set is never replayed twice at once."""
+    now = datetime.utcnow().isoformat()
+    async with _campaign_retry_claims_lock:
+        active = _campaign_retry_claims.get(campaign_id)
+        if active:
+            raise CampaignRetryAlreadyRunningError(
+                campaign_id=campaign_id,
+                source=str(active.get("source") or "unknown"),
+                started_at=str(active.get("started_at") or "unknown"),
+            )
+        token = uuid.uuid4().hex
+        _campaign_retry_claims[campaign_id] = {
+            "token": token,
+            "source": source,
+            "started_at": now,
+            "updated_at": now,
+        }
+        return token
+
+
+async def _touch_campaign_retry_execution(campaign_id: str, token: str) -> None:
+    async with _campaign_retry_claims_lock:
+        active = _campaign_retry_claims.get(campaign_id)
+        if active and active.get("token") == token:
+            active["updated_at"] = datetime.utcnow().isoformat()
+
+
+async def _release_campaign_retry_execution(campaign_id: str, token: str) -> None:
+    async with _campaign_retry_claims_lock:
+        active = _campaign_retry_claims.get(campaign_id)
+        if active and active.get("token") == token:
+            _campaign_retry_claims.pop(campaign_id, None)
 
 
 # Helper functions for campaign queue
@@ -5286,7 +5350,25 @@ async def bulk_retry_failed_jobs(
     """
     from profile_manager import get_profile_manager
     profile_manager = get_profile_manager()
+    try:
+        retry_claim_token = await _claim_campaign_retry_execution(
+            campaign_id,
+            source="manual_bulk_retry",
+        )
+    except CampaignRetryAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    try:
+        return await _execute_bulk_retry_failed_jobs(
+            campaign_id=campaign_id,
+            profile_manager=profile_manager,
+            retry_claim_token=retry_claim_token,
+        )
+    finally:
+        await _release_campaign_retry_execution(campaign_id, retry_claim_token)
+
+
+async def _execute_bulk_retry_failed_jobs(campaign_id: str, profile_manager, retry_claim_token: str) -> Dict:
     # Verify campaign exists in history
     campaign = queue_manager.get_campaign_from_history(campaign_id)
     if not campaign:
@@ -5341,6 +5423,7 @@ async def bulk_retry_failed_jobs(
 
     # Process each failed job
     for job_num, job in enumerate(failed_jobs):
+        await _touch_campaign_retry_execution(campaign_id, retry_claim_token)
         job_index = job["job_index"]
         comment = job["comment"]
         job_succeeded = False
@@ -5678,6 +5761,44 @@ async def _retry_single_campaign(
 ) -> Dict:
     """Retry all failed jobs in a single campaign. Used by _run_retry_all for parallel execution."""
     campaign_id = campaign.get("id")
+    try:
+        retry_claim_token = await _claim_campaign_retry_execution(
+            campaign_id,
+            source="retry_all",
+        )
+    except CampaignRetryAlreadyRunningError as exc:
+        logger.warning(f"Retry-all skipped for {campaign_id[:8]}...: {exc}")
+        return {
+            "campaign_id": campaign_id,
+            "jobs_succeeded": 0,
+            "jobs_exhausted": 0,
+            "attempts": 0,
+            "skipped": True,
+            "skip_reason": str(exc),
+        }
+
+    try:
+        return await _execute_retry_single_campaign(
+            campaign=campaign,
+            campaign_index=campaign_index,
+            total_campaigns=total_campaigns,
+            profile_manager=profile_manager,
+            browser_semaphore=browser_semaphore,
+            retry_claim_token=retry_claim_token,
+        )
+    finally:
+        await _release_campaign_retry_execution(campaign_id, retry_claim_token)
+
+
+async def _execute_retry_single_campaign(
+    campaign: dict,
+    campaign_index: int,
+    total_campaigns: int,
+    profile_manager,
+    browser_semaphore: asyncio.Semaphore,
+    retry_claim_token: str,
+) -> Dict:
+    campaign_id = campaign.get("id")
     sc = campaign.get("success_count", 0)
     tc = campaign.get("total_count", 0)
     failed_count = tc - sc
@@ -5723,6 +5844,7 @@ async def _retry_single_campaign(
     url_is_dead = False  # Set True if post URL itself is broken — skip remaining jobs
 
     for job in failed_jobs:
+        await _touch_campaign_retry_execution(campaign_id, retry_claim_token)
         # If a previous job proved the URL is dead, skip remaining jobs
         if url_is_dead:
             result = {

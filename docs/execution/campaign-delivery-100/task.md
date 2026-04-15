@@ -19,19 +19,20 @@
 - auth-health gating is shipped and proven in production.
 - retry-all dead-post inference bug is shipped and proven in production.
 - recovered campaigns now include `d30e8a3f` at 18/18 and `2926e310` at 19/19.
-- the latest production proof isolated a narrower retry-data bug: some failed jobs inherit an empty comment after an early `profile busy` row, so retries keep attempting blank submissions and the composer stays on placeholder.
-- the textarea native-setter fallback is shipped but is no longer treated as the primary fix path for these campaigns.
+- the retry comment-reconstruction fix is shipped locally and already produced fresh production successes with real `comment_excerpt` values on `85ee0d53`, `22864f6b`, `7d8d9a83`, `9777d21e`, `0c54f09a`, `52a5ac00`, `b1f7572d`, and `7a0ca07e`.
+- the latest production proof isolated a second replay-orchestration bug: concurrent replay of the same campaign can post the same `job_index` twice when repeated manual retries overlap.
+- a shared campaign replay claim is now implemented locally across manual bulk-retry, retry-all, and auto-retry, and the focused regression suite passed `23/23`.
 
 ## active todo
-1. deploy the retry comment-reconstruction fix that prefers `campaign.comments[job_index]` over sparse historical rows.
-2. replay `85ee0d53` and `22864f6b` from the corrected state and verify they no longer burn blank comments.
-3. run duplicate-control checks on recovered campaigns and confirm no duplicate successful profile assignments.
+1. deploy the replay-claim guard together with the retry comment-reconstruction fix from committed github state.
+2. verify railway is running the guarded replay code, then resume recovery only on the campaigns still below 100%.
+3. rerun duplicate-control checks on all recovered campaigns and confirm no new duplicate successful `job_index` rows are created.
 4. continue replaying the remaining failed campaigns until they are 100% delivered or explicitly proven blocked by the post/composer state itself.
 
 ## current understanding
-- the original non-100% behavior was caused first by dead-session reuse, then by a wrong retry-all verifier, and now by a retry job reconstruction bug that can drop comment text after `profile busy` rows.
+- the original non-100% behavior was caused first by dead-session reuse, then by a wrong retry-all verifier, then by retry job reconstruction dropping comment text after `profile busy` rows, and finally by overlapping replay ownership on the same campaign.
 - healthy-profile proof is real: sampled winners authenticate cleanly and sampled failure-cluster profiles classify as logged-out/checkpoint/video-selfie.
-- the remaining failures are no longer session-pool problems; they happen when retry logic replays a blank comment into an otherwise healthy session.
+- the remaining failures are no longer session-pool problems; they now split into two concrete classes: blank-comment retries from poisoned history rows, and duplicate risk when the same campaign replay is started twice before the first one finishes.
 - production history is the only trustworthy progress surface for retries; the in-memory retry-all status endpoint is not useful mid-run.
 
 ## proven wins
@@ -39,9 +40,10 @@
 - live production session tests confirmed bad profiles are really bad and healthy controls are really healthy.
 - `d30e8a3f` recovered all the way to 18/18 after the session-health and verifier fixes.
 - `2926e310` recovered all the way to 19/19.
-- post-deploy history shows `85ee0d53` and `22864f6b` no longer get freshly mislabeled as dead posts; they now fail explicitly at the empty-composer stage.
+- post-deploy history and forensics show `85ee0d53` and `22864f6b` now retry with real comment text instead of blank placeholders.
+- local proof now covers the replay guard: manual bulk-retry rejects a second overlapping run with `409`, and retry-all skips a claimed campaign instead of reposting it.
 
 ## open risks
-- there may still be a secondary composer-activation issue on some Facebook variants after the blank-comment bug is removed, but it is no longer the leading explanation for the current failed jobs.
-- duplicate-proof still needs the final control pass on recovered campaigns.
-- several campaigns still need replay after the retry-comment reconstruction fix.
+- one already-posted duplicate remains in historical results for `7d8d9a83`; it is proof of the prior race, not yet proof that the deployed guard has eliminated future duplicates.
+- several campaigns still need replay after the guarded deploy.
+- if any campaign still stalls after both fixes, the next blocker must be proven from production forensics before changing more code.
