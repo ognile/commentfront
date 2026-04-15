@@ -1071,27 +1071,44 @@ async def _resolve_comment_input_locator(page: Page):
 
 
 async def _type_comment_into_active_input(page: Page, comment: str) -> Dict[str, Optional[str]]:
-    locator, selector = await _resolve_comment_input_locator(page)
-    if locator is not None:
+    attempted_selector = None
+
+    for _ in range(3):
+        locator, selector = await _resolve_comment_input_locator(page)
+        if locator is None:
+            await asyncio.sleep(0.2)
+            continue
+
+        attempted_selector = selector
         try:
             await locator.click()
         except Exception:
             pass
 
-        try:
-            await locator.fill(comment)
-            return {"method": "locator.fill", "selector": selector}
-        except Exception as fill_error:
-            logger.info(f"locator.fill failed for comment input ({selector}): {fill_error}")
+        for method_name, action in (
+            ("locator.fill", lambda: locator.fill(comment)),
+            ("locator.type", lambda: locator.type(comment, delay=50)),
+        ):
+            try:
+                await action()
+            except Exception as error:
+                logger.info(f"{method_name} failed for comment input ({selector}): {error}")
+                continue
 
-        try:
-            await locator.type(comment, delay=50)
-            return {"method": "locator.type", "selector": selector}
-        except Exception as type_error:
-            logger.info(f"locator.type failed for comment input ({selector}): {type_error}")
+            await asyncio.sleep(0.2)
+            local_presence = await _collect_typed_text_presence(page, comment)
+            if _has_local_typed_text_evidence(local_presence):
+                return {"method": method_name, "selector": selector}
+
+            logger.info(
+                f"{method_name} did not produce local composer text for selector {selector}; "
+                "continuing to next candidate"
+            )
+
+        await asyncio.sleep(0.2)
 
     await page.keyboard.type(comment, delay=50)
-    return {"method": "page.keyboard.type", "selector": selector}
+    return {"method": "page.keyboard.type", "selector": attempted_selector}
 
 
 async def audit_selectors(page: Page, selectors_dict: dict) -> dict:
