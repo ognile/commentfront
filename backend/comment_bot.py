@@ -223,6 +223,57 @@ def _normalize_submission_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
+def _has_local_typed_text_evidence(local_presence: Optional[Dict[str, Any]]) -> bool:
+    local_presence = local_presence or {}
+    return bool(
+        local_presence.get("composerTextVisible")
+        or local_presence.get("activeElementContainsText")
+    )
+
+
+async def _collect_typed_text_presence(page: Page, comment_text: str) -> Dict[str, Any]:
+    snippet = str(comment_text or "")[-120:]
+    return await page.evaluate(
+        """(snippet) => {
+            const norm = (value) => (value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+            const snippetNorm = norm(snippet);
+            const selectors = [
+                'textarea',
+                'input',
+                '[contenteditable="true"]',
+                '[role="textbox"]',
+                '[role="combobox"]'
+            ];
+            const nodes = [];
+            for (const selector of selectors) {
+                for (const node of document.querySelectorAll(selector)) {
+                    if (!nodes.includes(node)) {
+                        nodes.push(node);
+                    }
+                }
+            }
+
+            const readValue = (node) => norm(node && (node.value || node.innerText || node.textContent || ''));
+            const composerTextVisible = nodes.some((node) => {
+                if (!snippetNorm) {
+                    return false;
+                }
+                return readValue(node).includes(snippetNorm);
+            });
+
+            const activeValue = readValue(document.activeElement);
+
+            return {
+                composerTextVisible,
+                activeElementContainsText: Boolean(snippetNorm) && activeValue.includes(snippetNorm),
+                activeElementTag: document.activeElement ? document.activeElement.tagName || '' : '',
+                activeElementRole: document.activeElement ? document.activeElement.getAttribute('role') || '' : '',
+            };
+        }""",
+        snippet,
+    )
+
+
 def _is_composer_element(element: Dict[str, Any]) -> bool:
     """Best-effort composer detection for element-dump entries."""
     tag = str(element.get("tag") or "").lower()
@@ -1839,9 +1890,18 @@ async def post_comment_verified(
             await asyncio.sleep(0.8)
 
             screenshot = await save_debug_screenshot(page, "step4_typed")
-            verification = await vision.verify_state(screenshot, "text_typed", expected_text=comment[-100:])
-            if not verification.success:
-                raise Exception(f"Step 4 FAILED - Typed text not visible: {verification.message}")
+            local_typed_presence = await _collect_typed_text_presence(page, comment)
+            if _has_local_typed_text_evidence(local_typed_presence):
+                logger.info(
+                    "✓ Step 4: Typed text confirmed from composer DOM "
+                    f"(tag={local_typed_presence.get('activeElementTag')}, "
+                    f"role={local_typed_presence.get('activeElementRole')})"
+                )
+            else:
+                verification = await vision.verify_state(screenshot, "text_typed", expected_text=comment[-100:])
+                if not verification.success:
+                    raise Exception(f"Step 4 FAILED - Typed text not visible: {verification.message}")
+                logger.info(f"✓ Step 4: Typed text visible (confidence: {verification.confidence:.0%})")
 
             result["steps_completed"].append("text_typed")
             await record_current_event(
@@ -1850,7 +1910,6 @@ async def post_comment_verified(
                 phase="compose",
                 source="post_comment_verified",
             )
-            logger.info(f"✓ Step 4: Typed text visible (confidence: {verification.confidence:.0%})")
 
             # ========== STEP 5: Click send button using self-healing loop ==========
             logger.info("Step 5: Clicking send button (CSS selectors + Gemini healing)")

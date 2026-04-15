@@ -45,6 +45,16 @@ class _FakePage:
         return _FakeLocator(1 if text.lower() in body else 0, self._body_text)
 
 
+class _FakeEvaluatePage:
+    def __init__(self, response):
+        self.response = response
+        self.last_snippet = None
+
+    async def evaluate(self, _script: str, snippet: str):
+        self.last_snippet = snippet
+        return self.response
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -90,6 +100,32 @@ def test_verify_post_loaded_rejects_checkpoint_shell():
     )
 
     assert _run(comment_bot.verify_post_loaded(page)) is False
+
+
+def test_local_typed_text_evidence_accepts_composer_match():
+    page = _FakeEvaluatePage(
+        {
+            "composerTextVisible": True,
+            "activeElementContainsText": False,
+            "activeElementTag": "DIV",
+            "activeElementRole": "textbox",
+        }
+    )
+
+    presence = _run(comment_bot._collect_typed_text_presence(page, "hello from the composer"))
+
+    assert presence["composerTextVisible"] is True
+    assert comment_bot._has_local_typed_text_evidence(presence) is True
+    assert page.last_snippet == "hello from the composer"
+
+
+def test_local_typed_text_evidence_rejects_missing_composer_text():
+    presence = {
+        "composerTextVisible": False,
+        "activeElementContainsText": False,
+    }
+
+    assert comment_bot._has_local_typed_text_evidence(presence) is False
 
 
 def test_recent_performance_lock_ignores_infra_failures(isolated_profile_manager):
