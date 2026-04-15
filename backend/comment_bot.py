@@ -1019,23 +1019,20 @@ async def find_comment_input(page: Page) -> bool:
                     # Wait for UI to respond after click
                     await asyncio.sleep(0.5)
 
-                    # After clicking placeholder, try to focus the actual input element
-                    # On mobile FB, clicking placeholder reveals/activates a contenteditable div
-                    focus_selectors = [
-                        'div[contenteditable="true"]',
-                        'div[role="textbox"]',
-                        '[contenteditable="true"]',
-                    ]
-                    for focus_sel in focus_selectors:
+                    editable_locator, editable_selector = await _resolve_comment_input_locator(page)
+                    if editable_locator is None:
+                        logger.info("Clicked comment placeholder but no editable composer appeared yet")
+                        continue
+
+                    try:
+                        await editable_locator.focus()
+                    except Exception:
                         try:
-                            focus_loc = page.locator(focus_sel).first
-                            if await focus_loc.count() > 0 and await focus_loc.is_visible():
-                                await focus_loc.focus()
-                                logger.info(f"Focused element using: {focus_sel}")
-                                break
+                            await editable_locator.click()
                         except Exception:
                             pass
 
+                    logger.info(f"Focused editable comment composer using: {editable_selector}")
                     await save_debug_screenshot(page, "clicked_comment_input")
                     return True
         except Exception as e:
@@ -1048,10 +1045,9 @@ async def find_comment_input(page: Page) -> bool:
 async def _resolve_comment_input_locator(page: Page):
     selectors = [
         'div[contenteditable="true"]',
-        'div[role="textbox"]',
         '[contenteditable="true"]',
         'textarea',
-        'input[type="text"]',
+        'input:not([type]), input[type="text"], input[type="search"]',
     ]
 
     for selector in selectors:
@@ -1929,6 +1925,10 @@ async def post_comment_verified(
                     raise Exception(f"Step 3 FAILED - Could not focus input: {click_result.get('error', 'Unknown')}")
 
             await asyncio.sleep(0.8)
+
+            editable_locator, editable_selector = await _resolve_comment_input_locator(page)
+            if editable_locator is None:
+                raise Exception("Step 3 FAILED - Could not activate editable comment composer")
 
             # Skip Gemini verification for input_active - it always returns 0% in headless
             # (Playwright doesn't show visual cursor, so Gemini can't verify)
