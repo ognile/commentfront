@@ -690,6 +690,112 @@ def test_retry_all_still_exhausts_early_when_post_is_dead(monkeypatch):
     assert failed_results[-1]["error"] == "Post URL appears dead (all profiles failed on prior job)"
 
 
+def test_retry_all_step4_not_visible_does_not_mark_post_dead(monkeypatch):
+    campaign_id = "campaign_bulk_retry_step4_visibility"
+    main.queue_manager.history = [
+        {
+            "id": campaign_id,
+            "status": "completed",
+            "url": VALID_URL,
+            "filter_tags": [],
+            "enable_warmup": False,
+            "success_count": 0,
+            "total_count": 2,
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [
+                {
+                    "job_index": 0,
+                    "text": "recover me",
+                    "comment": "recover me",
+                    "success": False,
+                    "profile_name": "profile_0",
+                },
+                {
+                    "job_index": 1,
+                    "text": "second job",
+                    "comment": "second job",
+                    "success": False,
+                    "profile_name": "profile_1",
+                },
+            ],
+        }
+    ]
+
+    profiles = [f"profile_{i}" for i in range(6)]
+
+    class FakeFacebookSession:
+        def __init__(self, profile_name: str):
+            self.profile_name = profile_name
+
+        def load(self) -> bool:
+            return True
+
+        def has_valid_cookies(self) -> bool:
+            return True
+
+    class FakeProfileManager:
+        def __init__(self):
+            self.reserved = set()
+
+        def get_eligible_profiles(self, *, exclude_profiles=None, count=5, **_kwargs):
+            exclude = set(exclude_profiles or [])
+            return [profile for profile in profiles if profile not in exclude][:count]
+
+        async def reserve_profile(self, profile_name: str) -> bool:
+            if profile_name in self.reserved:
+                return False
+            self.reserved.add(profile_name)
+            return True
+
+        async def release_profile(self, profile_name: str):
+            self.reserved.discard(profile_name)
+
+        def mark_profile_used(self, **_kwargs):
+            return None
+
+        def mark_profile_restricted(self, **_kwargs):
+            return None
+
+    async def fake_post_comment_verified(**_kwargs):
+        return {
+            "success": False,
+            "verified": False,
+            "method": "vision_verified",
+            "error": "Step 4 FAILED - Typed text not visible: the comment input field only contains placeholder text and no typed content",
+            "throttled": False,
+        }
+
+    monkeypatch.setattr(main, "FacebookSession", FakeFacebookSession)
+    monkeypatch.setattr(
+        main,
+        "test_session",
+        lambda session, _proxy: asyncio.sleep(0, result={"valid": True, "health_status": "healthy", "health_reason": "ok"}),
+    )
+    monkeypatch.setattr(main, "post_comment_verified", fake_post_comment_verified)
+
+    result = asyncio.run(
+        main._retry_single_campaign(
+            campaign=main.queue_manager.get_campaign_from_history(campaign_id),
+            campaign_index=0,
+            total_campaigns=1,
+            profile_manager=FakeProfileManager(),
+            browser_semaphore=asyncio.Semaphore(1),
+        )
+    )
+
+    assert result["jobs_succeeded"] == 0
+    assert result["jobs_exhausted"] == 2
+    assert result["attempts"] == 12
+
+    updated = main.queue_manager.get_campaign_from_history(campaign_id)
+    failed_results = [r for r in updated["results"] if not r.get("success")]
+    assert all("Early termination" not in str(r.get("error")) for r in failed_results)
+    assert all("Post URL appears dead" not in str(r.get("error")) for r in failed_results)
+    no_eligible_errors = [r.get("error") for r in failed_results if r.get("error") == "No eligible profiles remaining"]
+    assert len(no_eligible_errors) == 2
+
+
 def test_retry_all_reconciles_existing_comment_before_repost(monkeypatch):
     campaign_id = "campaign_bulk_retry_reconcile"
     main.queue_manager.history = [

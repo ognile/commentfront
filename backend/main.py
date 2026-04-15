@@ -5912,8 +5912,7 @@ async def _retry_single_campaign(
                     succeeded_profiles.add(profile_name)
                     consecutive_post_not_visible = 0
                 else:
-                    error_text = str(post_result.get("error", "")).lower()
-                    if "not visible" in error_text:
+                    if _is_dead_post_visibility_error(post_result.get("error")):
                         consecutive_post_not_visible += 1
                     else:
                         consecutive_post_not_visible = 0
@@ -5986,6 +5985,11 @@ async def _retry_single_campaign(
 
 
 MAX_PARALLEL_CAMPAIGNS = 3
+
+
+def _is_dead_post_visibility_error(error: Optional[str]) -> bool:
+    error_text = str(error or "").strip().lower()
+    return error_text.startswith("step 1 failed - post not visible")
 
 
 async def _run_retry_all(failed_campaigns: list, profile_manager, proxy_ip: str):
