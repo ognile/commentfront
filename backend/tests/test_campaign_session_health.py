@@ -68,6 +68,39 @@ def _write_session(sessions_dir: Path, profile_name: str):
     (sessions_dir / f"{profile_name}.json").write_text(json.dumps(payload))
 
 
+class _FakeComposerLocator:
+    def __init__(self):
+        self.clicks = 0
+        self.fill_calls = []
+        self.type_calls = []
+        self.evaluate_calls = []
+
+    async def click(self):
+        self.clicks += 1
+
+    async def fill(self, value):
+        self.fill_calls.append(value)
+
+    async def type(self, value, delay=0):
+        self.type_calls.append((value, delay))
+
+    async def evaluate(self, script, value):
+        self.evaluate_calls.append((script, value))
+
+
+class _FakeKeyboard:
+    def __init__(self):
+        self.calls = []
+
+    async def type(self, value, delay=0):
+        self.calls.append((value, delay))
+
+
+class _FakeComposerPage:
+    def __init__(self):
+        self.keyboard = _FakeKeyboard()
+
+
 @pytest.fixture
 def isolated_profile_manager(tmp_path, monkeypatch):
     sessions_dir = tmp_path / "sessions"
@@ -126,6 +159,38 @@ def test_local_typed_text_evidence_rejects_missing_composer_text():
     }
 
     assert comment_bot._has_local_typed_text_evidence(presence) is False
+
+
+def test_type_comment_uses_native_setter_after_textarea_fill_and_type_fail(monkeypatch):
+    locator = _FakeComposerLocator()
+    page = _FakeComposerPage()
+    local_presence = iter(
+        [
+            {"composerTextVisible": False, "activeElementContainsText": False},
+            {"composerTextVisible": False, "activeElementContainsText": False},
+            {"composerTextVisible": True, "activeElementContainsText": False},
+        ]
+    )
+
+    async def fake_resolve_comment_input_locator(_page):
+        return locator, "textarea"
+
+    async def fake_collect_typed_text_presence(_page, snippet):
+        assert snippet == "hello from textarea"
+        return next(local_presence)
+
+    monkeypatch.setattr(comment_bot, "_resolve_comment_input_locator", fake_resolve_comment_input_locator)
+    monkeypatch.setattr(comment_bot, "_collect_typed_text_presence", fake_collect_typed_text_presence)
+
+    result = _run(comment_bot._type_comment_into_active_input(page, "hello from textarea"))
+
+    assert result == {"method": "textarea.native_setter", "selector": "textarea"}
+    assert locator.clicks == 1
+    assert locator.fill_calls == ["hello from textarea"]
+    assert locator.type_calls == [("hello from textarea", 50)]
+    assert len(locator.evaluate_calls) == 1
+    assert locator.evaluate_calls[0][1] == "hello from textarea"
+    assert page.keyboard.calls == []
 
 
 def test_recent_performance_lock_ignores_infra_failures(isolated_profile_manager):

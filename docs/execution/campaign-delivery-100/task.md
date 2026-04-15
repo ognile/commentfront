@@ -20,10 +20,10 @@
 - retry-all dead-post inference bug is shipped and proven in production.
 - recovered campaigns now include `d30e8a3f` at 18/18 and `2926e310` at 19/19.
 - `85ee0d53` and `22864f6b` remain stuck on a composer-activation bug: healthy profiles reach step 4/5 but the comment field stays on placeholder and send stays hidden.
-- the latest patch requiring a real editable composer has been pushed and is awaiting production proof.
+- the latest patch adds a textarea native-setter fallback after `fill` and `type` fail, with a unit test covering that exact failure sequence; production proof is next.
 
 ## active todo
-1. verify the latest composer-activation fix on `85ee0d53` and `22864f6b` in production.
+1. verify the textarea native-setter fix on `85ee0d53` and `22864f6b` in production.
 2. if those two still stall, capture the next distinct state transition and patch the smallest reproducible input-activation gap.
 3. run duplicate-control checks on recovered campaigns and confirm no duplicate successful profile assignments.
 4. continue replaying the remaining failed campaigns until they are 100% delivered or explicitly proven blocked by the post/composer state itself.
@@ -44,4 +44,4 @@
 ## open risks
 - the composer-activation fix may still be insufficient for some Facebook post variants if the editable node appears outside the currently searched selectors.
 - duplicate-proof still needs the final control pass on recovered campaigns.
-- several campaigns still need replay after the last composer-focused production fix.
+- several campaigns still need replay after the new textarea-focused production fix.

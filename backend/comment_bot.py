@@ -1105,6 +1105,34 @@ async def _type_comment_into_active_input(page: Page, comment: str) -> Dict[str,
                 "continuing to next candidate"
             )
 
+        if selector and selector.startswith("textarea"):
+            try:
+                await locator.evaluate(
+                    """(el, text) => {
+                        el.focus();
+                        const proto = Object.getPrototypeOf(el);
+                        const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+                        if (descriptor && descriptor.set) {
+                            descriptor.set.call(el, text);
+                        } else {
+                            el.value = text;
+                        }
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    comment,
+                )
+                await asyncio.sleep(0.2)
+                local_presence = await _collect_typed_text_presence(page, comment)
+                if _has_local_typed_text_evidence(local_presence):
+                    return {"method": "textarea.native_setter", "selector": selector}
+                logger.info(
+                    f"textarea native setter did not produce local composer text for selector {selector}; "
+                    "continuing to next candidate"
+                )
+            except Exception as error:
+                logger.info(f"textarea native setter failed for selector {selector}: {error}")
+
         await asyncio.sleep(0.2)
 
     await page.keyboard.type(comment, delay=50)
