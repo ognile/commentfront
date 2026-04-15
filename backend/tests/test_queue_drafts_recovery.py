@@ -559,6 +559,11 @@ def test_retry_all_does_not_exhaust_early_on_infrastructure_failures(monkeypatch
         }
 
     monkeypatch.setattr(main, "FacebookSession", FakeFacebookSession)
+    monkeypatch.setattr(
+        main,
+        "test_session",
+        lambda session, _proxy: asyncio.sleep(0, result={"valid": True, "health_status": "healthy", "health_reason": "ok"}),
+    )
     monkeypatch.setattr(main, "post_comment_verified", fake_post_comment_verified)
 
     result = asyncio.run(
@@ -658,6 +663,11 @@ def test_retry_all_still_exhausts_early_when_post_is_dead(monkeypatch):
         }
 
     monkeypatch.setattr(main, "FacebookSession", FakeFacebookSession)
+    monkeypatch.setattr(
+        main,
+        "test_session",
+        lambda session, _proxy: asyncio.sleep(0, result={"valid": True, "health_status": "healthy", "health_reason": "ok"}),
+    )
     monkeypatch.setattr(main, "post_comment_verified", fake_post_comment_verified)
 
     result = asyncio.run(

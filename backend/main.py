@@ -43,6 +43,13 @@ import nest_asyncio
 nest_asyncio.apply()
 
 from comment_bot import (
+    AUTH_HEALTH_CHECKPOINT,
+    AUTH_HEALTH_HEALTHY,
+    AUTH_HEALTH_HUMAN_VERIFICATION,
+    AUTH_HEALTH_INFRA_BLOCKED,
+    AUTH_HEALTH_LOGGED_OUT,
+    AUTH_HEALTH_NEEDS_ATTENTION,
+    AUTH_HEALTH_VIDEO_SELFIE,
     post_comment,
     post_comment_verified,
     reply_to_comment_verified,
@@ -289,6 +296,20 @@ media_index: Dict[str, Dict] = {}
 # Idempotency cache for /queue submissions
 queue_idempotency_index: Dict[str, str] = {}
 
+SESSION_DELETE_CANDIDATE_STATES = {
+    AUTH_HEALTH_CHECKPOINT,
+    AUTH_HEALTH_HUMAN_VERIFICATION,
+    AUTH_HEALTH_VIDEO_SELFIE,
+}
+
+SESSION_BLOCKED_STATES = {
+    AUTH_HEALTH_LOGGED_OUT,
+    AUTH_HEALTH_CHECKPOINT,
+    AUTH_HEALTH_HUMAN_VERIFICATION,
+    AUTH_HEALTH_VIDEO_SELFIE,
+    AUTH_HEALTH_NEEDS_ATTENTION,
+}
+
 
 # =========================================================================
 # Queue Processor - Background task for processing campaign queue
@@ -391,6 +412,293 @@ class QueueProcessor:
             attempt_id=attempt_id,
         )
         return "restriction_suspected"
+
+    @staticmethod
+    def _resolve_linked_credential(profile_name: str, session: Optional[FacebookSession] = None) -> Optional[Dict[str, Any]]:
+        user_id = session.get_user_id() if session and hasattr(session, "get_user_id") else None
+        return credential_manager.find_linked_credential(
+            profile_name=profile_name,
+            user_id=user_id,
+            platform="facebook",
+        )
+
+    @staticmethod
+    def _persist_session_health(
+        profile_manager,
+        *,
+        profile_name: str,
+        health_status: Optional[str],
+        health_reason: Optional[str],
+        linked_credential: Optional[Dict[str, Any]] = None,
+        needs_attention: Optional[bool] = None,
+        needs_deletion: Optional[bool] = None,
+        ) -> Dict[str, Any]:
+        final_status = str(health_status or "unknown").strip().lower() or "unknown"
+        if not hasattr(profile_manager, "update_auth_health"):
+            return {
+                "profile_name": profile_name,
+                "health_status": final_status,
+                "health_reason": health_reason,
+                "linked_credential_id": (linked_credential or {}).get("credential_id"),
+                "needs_attention": needs_attention,
+                "needs_deletion": needs_deletion,
+            }
+        return profile_manager.update_auth_health(
+            profile_name,
+            health_status=final_status,
+            health_reason=health_reason,
+            linked_credential_id=(linked_credential or {}).get("credential_id"),
+            needs_attention=needs_attention,
+            needs_deletion=needs_deletion,
+        )
+
+    @staticmethod
+    async def _reserve_profile_with_context(
+        profile_manager,
+        profile_name: str,
+        *,
+        source: str,
+        owner: str,
+        metadata: Dict[str, Any],
+    ) -> bool:
+        try:
+            return await profile_manager.reserve_profile(
+                profile_name,
+                source=source,
+                owner=owner,
+                metadata=metadata,
+            )
+        except TypeError:
+            return await profile_manager.reserve_profile(profile_name)
+
+    @staticmethod
+    async def _release_profile_with_context(
+        profile_manager,
+        profile_name: str,
+        *,
+        source: str,
+        owner: str,
+    ) -> bool:
+        try:
+            return await profile_manager.release_profile(
+                profile_name,
+                source=source,
+                owner=owner,
+            )
+        except TypeError:
+            return await profile_manager.release_profile(profile_name)
+
+    async def _test_and_repair_session(
+        self,
+        *,
+        profile_manager,
+        profile_name: str,
+        allow_regenerate: bool,
+    ) -> Dict[str, Any]:
+        session = FacebookSession(profile_name)
+        if not session.load():
+            linked_credential = self._resolve_linked_credential(profile_name, None)
+            self._persist_session_health(
+                profile_manager,
+                profile_name=profile_name,
+                health_status=AUTH_HEALTH_NEEDS_ATTENTION,
+                health_reason="session file not found",
+                linked_credential=linked_credential,
+                needs_attention=True,
+            )
+            return {
+                "ok": False,
+                "profile_name": profile_name,
+                "session": None,
+                "linked_credential": linked_credential,
+                "health_status": AUTH_HEALTH_NEEDS_ATTENTION,
+                "health_reason": "session file not found",
+            }
+
+        linked_credential = self._resolve_linked_credential(profile_name, session)
+        test_result = await test_session(session, get_system_proxy())
+        health_status = str(test_result.get("health_status") or AUTH_HEALTH_NEEDS_ATTENTION).strip().lower()
+        health_reason = test_result.get("health_reason") or test_result.get("error")
+
+        if test_result.get("valid"):
+            self._persist_session_health(
+                profile_manager,
+                profile_name=profile_name,
+                health_status=AUTH_HEALTH_HEALTHY,
+                health_reason=health_reason or "session verified",
+                linked_credential=linked_credential,
+                needs_attention=False,
+                needs_deletion=False,
+            )
+            return {
+                "ok": True,
+                "profile_name": profile_name,
+                "session": session,
+                "linked_credential": linked_credential,
+                "health_status": AUTH_HEALTH_HEALTHY,
+                "health_reason": health_reason or "session verified",
+                "test_result": test_result,
+            }
+
+        if (
+            allow_regenerate
+            and health_status == AUTH_HEALTH_LOGGED_OUT
+            and linked_credential
+            and linked_credential.get("credential_id")
+        ):
+            self.logger.warning(
+                f"Session {profile_name} is logged out. attempting regeneration via credential "
+                f"{linked_credential['credential_id']}"
+            )
+            regen_result = await create_session_from_credentials(
+                linked_credential["credential_id"],
+                proxy_url=get_system_proxy(),
+                broadcast_callback=None,
+            )
+            if regen_result.get("success"):
+                refreshed_profile_name = str(regen_result.get("profile_name") or profile_name).strip() or profile_name
+                refreshed_session = FacebookSession(refreshed_profile_name)
+                if refreshed_session.load():
+                    retest_result = await test_session(refreshed_session, get_system_proxy())
+                    retest_status = str(retest_result.get("health_status") or AUTH_HEALTH_NEEDS_ATTENTION).strip().lower()
+                    retest_reason = retest_result.get("health_reason") or retest_result.get("error")
+                    if retest_result.get("valid"):
+                        self._persist_session_health(
+                            profile_manager,
+                            profile_name=refreshed_profile_name,
+                            health_status=AUTH_HEALTH_HEALTHY,
+                            health_reason=retest_reason or "session regenerated and verified",
+                            linked_credential=linked_credential,
+                            needs_attention=False,
+                            needs_deletion=False,
+                        )
+                        return {
+                            "ok": True,
+                            "profile_name": refreshed_profile_name,
+                            "session": refreshed_session,
+                            "linked_credential": linked_credential,
+                            "health_status": AUTH_HEALTH_HEALTHY,
+                            "health_reason": retest_reason or "session regenerated and verified",
+                            "test_result": retest_result,
+                        }
+                    health_status = AUTH_HEALTH_NEEDS_ATTENTION
+                    health_reason = retest_reason or "session regeneration did not restore authentication"
+                else:
+                    health_status = AUTH_HEALTH_NEEDS_ATTENTION
+                    health_reason = "session regeneration completed but no session file was saved"
+            else:
+                health_status = AUTH_HEALTH_NEEDS_ATTENTION
+                health_reason = regen_result.get("error") or "session regeneration failed"
+
+        needs_deletion = health_status in SESSION_DELETE_CANDIDATE_STATES
+        needs_attention = health_status == AUTH_HEALTH_NEEDS_ATTENTION or needs_deletion
+        if health_status == AUTH_HEALTH_LOGGED_OUT and allow_regenerate:
+            health_status = AUTH_HEALTH_NEEDS_ATTENTION
+            needs_attention = True
+            health_reason = health_reason or "logged out after regeneration path"
+
+        self._persist_session_health(
+            profile_manager,
+            profile_name=profile_name,
+            health_status=health_status,
+            health_reason=health_reason,
+            linked_credential=linked_credential,
+            needs_attention=needs_attention,
+            needs_deletion=needs_deletion,
+        )
+        return {
+            "ok": False,
+            "profile_name": profile_name,
+            "session": None,
+            "linked_credential": linked_credential,
+            "health_status": health_status,
+            "health_reason": health_reason,
+            "test_result": test_result,
+        }
+
+    async def _select_live_profile(
+        self,
+        *,
+        profile_manager,
+        filter_tags: Optional[List[str]],
+        exclude_profiles: Set[str],
+        reservation_source: str,
+        reservation_owner: str,
+        reservation_metadata: Dict[str, Any],
+        forced_profile_name: Optional[str] = None,
+        allow_regenerate: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        attempted_profiles = set(exclude_profiles)
+
+        while True:
+            if forced_profile_name:
+                candidate_batch = [] if forced_profile_name in attempted_profiles else [forced_profile_name]
+            else:
+                candidate_batch = profile_manager.get_eligible_profiles(
+                    filter_tags=filter_tags if filter_tags else None,
+                    count=10,
+                    exclude_profiles=list(attempted_profiles),
+                )
+
+            if not candidate_batch:
+                return None
+
+            for candidate in candidate_batch:
+                reserved = await self._reserve_profile_with_context(
+                    profile_manager,
+                    candidate,
+                    source=reservation_source,
+                    owner=reservation_owner,
+                    metadata=reservation_metadata,
+                )
+                if not reserved:
+                    attempted_profiles.add(candidate)
+                    continue
+
+                health_result = await self._test_and_repair_session(
+                    profile_manager=profile_manager,
+                    profile_name=candidate,
+                    allow_regenerate=allow_regenerate,
+                )
+                if health_result.get("ok"):
+                    selected_profile = str(health_result.get("profile_name") or candidate).strip() or candidate
+                    if selected_profile != candidate:
+                        await self._release_profile_with_context(
+                            profile_manager,
+                            candidate,
+                            source=reservation_source,
+                            owner=reservation_owner,
+                        )
+                        if not await self._reserve_profile_with_context(
+                            profile_manager,
+                            selected_profile,
+                            source=reservation_source,
+                            owner=reservation_owner,
+                            metadata=reservation_metadata,
+                        ):
+                            attempted_profiles.add(selected_profile)
+                            continue
+                    return {
+                        **health_result,
+                        "profile_name": selected_profile,
+                        "reservation_source": reservation_source,
+                        "reservation_owner": reservation_owner,
+                    }
+
+                await self._release_profile_with_context(
+                    profile_manager,
+                    candidate,
+                    source=reservation_source,
+                    owner=reservation_owner,
+                )
+                attempted_profiles.add(candidate)
+
+                refreshed_profile_name = str(health_result.get("profile_name") or "").strip()
+                if refreshed_profile_name and refreshed_profile_name != candidate:
+                    attempted_profiles.add(refreshed_profile_name)
+
+                if forced_profile_name:
+                    return None
 
     async def _recover_inflight_checkpoint(
         self,
@@ -662,37 +970,20 @@ class QueueProcessor:
                         "error": error_msg
                     })
                     return
-                assigned_profiles = [forced_profile_name for _ in range(len(jobs))]
+                self.logger.info(f"Campaign {campaign_id[:8]} will use forced profile {forced_profile_name}")
             else:
-                assigned_profiles = profile_manager.get_eligible_profiles(
-                    filter_tags=filter_tags if filter_tags else None,
-                    count=len(jobs)
+                self.logger.info(
+                    f"Campaign {campaign_id[:8]} will use live profile selection "
+                    f"(tags={filter_tags or []}, jobs={len(jobs)})"
                 )
 
-            if not assigned_profiles:
-                error_msg = f"No eligible profiles match tags: {filter_tags}" if filter_tags else "No eligible profiles available"
-                self.queue_manager.set_failed(campaign_id, error_msg)
-                await broadcast_update("queue_campaign_failed", {
-                    "campaign_id": campaign_id,
-                    "error": error_msg
-                })
-                return
-
-            self.logger.info(
-                f"Profile selection (forced={forced_profile_name if forced_profile_name else 'none'}): {assigned_profiles}"
-            )
-
-            if len(assigned_profiles) < len(jobs):
-                self.logger.warning(f"Only {len(assigned_profiles)} profiles available for {len(jobs)} jobs")
-
-            # Calculate total jobs based on available profiles
-            total_jobs = min(len(jobs), len(assigned_profiles))
+            total_jobs = len(jobs)
             duration_seconds = duration_minutes * 60
 
             # Recover unfinished inflight checkpoint from previous deployment/restart.
             await self._recover_inflight_checkpoint(
                 campaign=campaign,
-                jobs=jobs[:total_jobs],
+                jobs=jobs,
                 url=url,
                 profile_manager=profile_manager,
             )
@@ -702,7 +993,7 @@ class QueueProcessor:
 
             # Build list of PENDING jobs with their ORIGINAL indexes preserved
             pending_jobs = []
-            for original_idx, job in enumerate(jobs[:total_jobs]):
+            for original_idx, job in enumerate(jobs):
                 if original_idx not in attempted_indexes:
                     pending_jobs.append((original_idx, job))
 
@@ -721,23 +1012,6 @@ class QueueProcessor:
                 })
                 self.logger.info(f"Campaign {campaign_id}: All jobs already completed, marking done")
                 return
-
-            # Get profiles ONLY for pending jobs (not all jobs)
-            if forced_profile_name:
-                pending_profiles = [forced_profile_name for _ in range(len(pending_jobs))]
-            else:
-                pending_profiles = profile_manager.get_eligible_profiles(
-                    filter_tags=filter_tags if filter_tags else None,
-                    count=len(pending_jobs)
-                )
-
-            if not pending_profiles:
-                error_msg = f"No eligible profiles for {len(pending_jobs)} remaining jobs"
-                self.queue_manager.set_failed(campaign_id, error_msg)
-                await broadcast_update("queue_campaign_failed", {"campaign_id": campaign_id, "error": error_msg})
-                return
-
-            self.logger.info(f"Profiles for {len(pending_jobs)} pending jobs: {pending_profiles}")
 
             # Recalculate timing for REMAINING jobs only
             base_delay = duration_seconds / len(pending_jobs) if len(pending_jobs) > 1 else 0
@@ -760,11 +1034,6 @@ class QueueProcessor:
                     text = text.lower()
                     job["text"] = text
 
-                # Get profile for this pending job
-                profile_name = pending_profiles[pending_idx] if pending_idx < len(pending_profiles) else None
-                if not profile_name:
-                    self.logger.error(f"No profile available for pending job {pending_idx}")
-                    continue
                 # Check for cancellation before each job
                 if self._current_campaign_cancelled:
                     self.logger.info(f"Campaign {campaign_id} was cancelled, stopping")
@@ -787,269 +1056,297 @@ class QueueProcessor:
                         "campaign_id": campaign_id,
                         "job_index": original_job_idx,
                         "delay_seconds": round(delay_seconds),
-                        "profile_name": profile_name
+                        "profile_name": forced_profile_name
                     })
 
                     self.logger.info(f"Campaign {campaign_id}: Waiting {delay_seconds:.0f}s before job {original_job_idx}")
                     await asyncio.sleep(delay_seconds)
 
-                # Update progress with ORIGINAL job index for accurate display (e.g., "Job 8/13" not "Job 1/6")
-                self.queue_manager.update_job_progress(campaign_id, original_job_idx + 1, total_jobs, profile_name)
+                job_tried_profiles: Set[str] = set()
+                job_finished = False
 
-                await broadcast_update("job_start", {
-                    "campaign_id": campaign_id,
-                    "job_index": original_job_idx,
-                    "total_jobs": total_jobs,
-                    "profile_name": profile_name,
-                    "comment": text[:50],
-                    "job_type": job_type,
-                })
-
-                # Reserve profile to prevent concurrent browser sessions
-                reserved = await profile_manager.reserve_profile(profile_name)
-                if not reserved:
-                    self.logger.warning(f"Profile {profile_name} reserved by another task, skipping job {original_job_idx}")
-                    job_result = {
-                        "profile_name": profile_name,
-                        "success": False,
-                        "error": "Profile busy (reserved by another task)",
-                        "job_index": original_job_idx
-                    }
-                    results.append(job_result)
-                    self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
-                    continue
-
-                attempt_id: Optional[str] = None
-                try:
-                    session = FacebookSession(profile_name)
-                    attempt_id = str(uuid.uuid4())
-                    comment_hash = self._comment_hash(text)
-                    self.queue_manager.set_inflight_job(
-                        campaign_id,
-                        job_index=original_job_idx,
-                        profile_name=profile_name,
-                        comment_hash=comment_hash,
-                        phase="starting",
-                        attempt_id=attempt_id,
-                        metadata={"job_type": job_type},
+                while not job_finished:
+                    reservation_owner = f"campaign:{campaign_id}:{original_job_idx}:{uuid.uuid4().hex[:8]}"
+                    selection = await self._select_live_profile(
+                        profile_manager=profile_manager,
+                        filter_tags=filter_tags,
+                        exclude_profiles=job_tried_profiles,
+                        reservation_source="campaign_job",
+                        reservation_owner=reservation_owner,
+                        reservation_metadata={"campaign_id": campaign_id, "job_index": original_job_idx},
+                        forced_profile_name=forced_profile_name,
+                        allow_regenerate=True,
                     )
 
-                    async def phase_callback(phase: str, metadata: Dict[str, str]):
-                        self.queue_manager.update_inflight_phase(
+                    if not selection:
+                        job_result = {
+                            "profile_name": None,
+                            "comment": text,
+                            "text": text,
+                            "job_type": job_type,
+                            "success": False,
+                            "verified": False,
+                            "method": "exhausted",
+                            "error": "No healthy profiles available",
+                            "job_index": original_job_idx,
+                        }
+                        results.append(job_result)
+                        self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
+                        break
+
+                    profile_name = str(selection["profile_name"])
+                    session = selection["session"]
+                    job_tried_profiles.add(profile_name)
+
+                    self.queue_manager.update_job_progress(campaign_id, original_job_idx + 1, total_jobs, profile_name)
+                    await broadcast_update("job_start", {
+                        "campaign_id": campaign_id,
+                        "job_index": original_job_idx,
+                        "total_jobs": total_jobs,
+                        "profile_name": profile_name,
+                        "comment": text[:50],
+                        "job_type": job_type,
+                    })
+
+                    attempt_id: Optional[str] = None
+                    try:
+                        attempt_id = str(uuid.uuid4())
+                        comment_hash = self._comment_hash(text)
+                        self.queue_manager.set_inflight_job(
                             campaign_id,
-                            phase=phase,
+                            job_index=original_job_idx,
+                            profile_name=profile_name,
+                            comment_hash=comment_hash,
+                            phase="starting",
                             attempt_id=attempt_id,
-                            metadata=metadata,
+                            metadata={"job_type": job_type},
                         )
 
-                    if not session.load():
+                        async def phase_callback(phase: str, metadata: Dict[str, str]):
+                            self.queue_manager.update_inflight_phase(
+                                campaign_id,
+                                phase=phase,
+                                attempt_id=attempt_id,
+                                metadata=metadata,
+                            )
+
+                        from gemini_vision import set_observation_context
+                        set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
+
+                        if enable_warmup:
+                            await broadcast_update("warmup_start", {
+                                "campaign_id": campaign_id,
+                                "job_index": original_job_idx,
+                                "profile_name": profile_name
+                            })
+
+                        result = await post_comment_verified(
+                            session=session,
+                            url=url,
+                            comment=text,
+                            proxy=get_system_proxy(),
+                            enable_warmup=enable_warmup,
+                            phase_callback=phase_callback,
+                            forensic_context={
+                                "platform": "facebook",
+                                "engine": "campaign_comment",
+                                "campaign_id": campaign_id,
+                                "job_id": str(original_job_idx),
+                                "run_id": campaign_id,
+                            },
+                        ) if job_type != "reply_comment" else None
+
+                        target_comment_url = str(job.get("target_comment_url") or "").strip()
+                        target_comment_id = parse_comment_id_from_url(target_comment_url) if target_comment_url else None
+                        image_id = str(job.get("image_id") or "").strip()
+
+                        if job_type == "reply_comment":
+                            media_item = _get_media_or_none(image_id)
+                            if not media_item:
+                                result = {
+                                    "success": False,
+                                    "verified": False,
+                                    "method": "validation",
+                                    "error": f"image_id not found or expired: {image_id}",
+                                }
+                            elif not target_comment_id:
+                                result = {
+                                    "success": False,
+                                    "verified": False,
+                                    "method": "validation",
+                                    "error": f"target_comment_url missing parseable comment_id: {target_comment_url}",
+                                }
+                            else:
+                                result = await reply_to_comment_verified(
+                                    session=session,
+                                    url=url,
+                                    target_comment_url=target_comment_url,
+                                    target_comment_id=target_comment_id,
+                                    reply_text=text,
+                                    image_path=media_item["path"],
+                                    proxy=get_system_proxy(),
+                                    enable_warmup=enable_warmup,
+                                    phase_callback=phase_callback,
+                                )
+                        else:
+                            target_comment_url = None
+                            target_comment_id = None
+                            image_id = None
+
+                        health_status = str(result.get("session_health_status") or AUTH_HEALTH_HEALTHY).strip().lower()
+                        health_reason = result.get("session_health_reason") or result.get("error")
+                        linked_credential = selection.get("linked_credential")
+                        if health_status == AUTH_HEALTH_HEALTHY:
+                            self._persist_session_health(
+                                profile_manager,
+                                profile_name=profile_name,
+                                health_status=AUTH_HEALTH_HEALTHY,
+                                health_reason=health_reason or "campaign session passed",
+                                linked_credential=linked_credential,
+                                needs_attention=False,
+                                needs_deletion=False,
+                            )
+                        elif health_status in SESSION_BLOCKED_STATES:
+                            self._persist_session_health(
+                                profile_manager,
+                                profile_name=profile_name,
+                                health_status=health_status,
+                                health_reason=health_reason,
+                                linked_credential=linked_credential,
+                                needs_attention=True,
+                                needs_deletion=health_status in SESSION_DELETE_CANDIDATE_STATES,
+                            )
+
+                        failure_type = self._determine_failure_type(
+                            success=bool(result["success"]),
+                            was_restriction=bool(result.get("throttled")),
+                            error=result.get("error"),
+                            method=result.get("method"),
+                        )
+
+                        profile_manager.mark_profile_used(
+                            profile_name=profile_name,
+                            campaign_id=campaign_id,
+                            comment=text,
+                            success=result["success"],
+                            failure_type=failure_type
+                        )
+
+                        if not result.get("success") and health_status in SESSION_BLOCKED_STATES:
+                            self.queue_manager.update_inflight_phase(
+                                campaign_id,
+                                phase="finalized",
+                                attempt_id=attempt_id,
+                                metadata={"error": health_reason or health_status, "session_health_status": health_status},
+                            )
+                            self.logger.warning(
+                                f"Campaign {campaign_id[:8]} job {original_job_idx}: "
+                                f"reselecting after auth failure on {profile_name} "
+                                f"({health_status}: {health_reason})"
+                            )
+                            continue
+
                         self.queue_manager.update_inflight_phase(
                             campaign_id,
                             phase="finalized",
                             attempt_id=attempt_id,
-                            metadata={"error": "Session not found"},
+                            metadata={"success": str(bool(result.get("success")))},
+                        )
+                        await broadcast_update("job_complete", {
+                            "campaign_id": campaign_id,
+                            "job_index": original_job_idx,
+                            "profile_name": profile_name,
+                            "success": result["success"],
+                            "verified": result.get("verified", False),
+                            "method": result.get("method", "unknown"),
+                            "error": result.get("error"),
+                            "warmup": result.get("warmup"),
+                            "job_type": job_type,
+                            "target_comment_id": target_comment_id,
+                        })
+
+                        job_result = {
+                            "profile_name": profile_name,
+                            "comment": text,
+                            "text": text,
+                            "job_type": job_type,
+                            "target_comment_url": target_comment_url,
+                            "target_comment_id": target_comment_id,
+                            "image_id": image_id,
+                            "success": result["success"],
+                            "verified": result.get("verified", False),
+                            "method": result.get("method", "unknown"),
+                            "error": result.get("error"),
+                            "job_index": original_job_idx,
+                            "warmup": result.get("warmup")
+                        }
+                        results.append(job_result)
+                        self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
+
+                        if result.get("throttled") and failure_type != "infrastructure":
+                            throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
+                            self.logger.warning(f"Profile {profile_name} throttled: {throttle_reason}")
+                            self._apply_restriction_signal(
+                                profile_manager,
+                                profile_name=profile_name,
+                                reason=throttle_reason,
+                                attempt_id=result.get("attempt_id"),
+                            )
+                            await broadcast_update("profile_throttled", {
+                                "profile_name": profile_name,
+                                "reason": throttle_reason,
+                                "campaign_id": campaign_id,
+                                "job_index": original_job_idx
+                            })
+                        elif result.get("throttled") and failure_type == "infrastructure":
+                            self.logger.info(f"Skipping restriction for {profile_name} — infrastructure error, not real restriction")
+
+                        job_finished = True
+
+                    except Exception as e:
+                        self.logger.error(f"Error processing job {original_job_idx} in campaign {campaign_id}: {e}")
+                        self.queue_manager.update_inflight_phase(
+                            campaign_id,
+                            phase="finalized",
+                            attempt_id=attempt_id,
+                            metadata={"error": str(e)},
                         )
                         await broadcast_update("job_error", {
                             "campaign_id": campaign_id,
                             "job_index": original_job_idx,
-                            "error": "Session not found"
+                            "error": str(e)
                         })
                         job_result = {
                             "profile_name": profile_name,
                             "success": False,
-                            "error": "Session not found",
+                            "error": str(e),
                             "job_index": original_job_idx
                         }
                         results.append(job_result)
-                        # DEPLOYMENT RESILIENCE: Save immediately to disk
                         self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
-                        continue
 
-                    # Set Gemini observation context for debugging
-                    from gemini_vision import set_observation_context
-                    set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
-
-                    # Broadcast warmup start if enabled
-                    if enable_warmup:
-                        await broadcast_update("warmup_start", {
-                            "campaign_id": campaign_id,
-                            "job_index": original_job_idx,
-                            "profile_name": profile_name
-                        })
-
-                    result = await post_comment_verified(
-                        session=session,
-                        url=url,
-                        comment=text,
-                        proxy=get_system_proxy(),
-                        enable_warmup=enable_warmup,
-                        phase_callback=phase_callback,
-                        forensic_context={
-                            "platform": "facebook",
-                            "engine": "campaign_comment",
-                            "campaign_id": campaign_id,
-                            "job_id": str(original_job_idx),
-                            "run_id": campaign_id,
-                        },
-                    ) if job_type != "reply_comment" else None
-
-                    target_comment_url = str(job.get("target_comment_url") or "").strip()
-                    target_comment_id = parse_comment_id_from_url(target_comment_url) if target_comment_url else None
-                    image_id = str(job.get("image_id") or "").strip()
-
-                    if job_type == "reply_comment":
-                        media_item = _get_media_or_none(image_id)
-                        if not media_item:
-                            result = {
-                                "success": False,
-                                "verified": False,
-                                "method": "validation",
-                                "error": f"image_id not found or expired: {image_id}",
-                            }
-                        elif not target_comment_id:
-                            result = {
-                                "success": False,
-                                "verified": False,
-                                "method": "validation",
-                                "error": f"target_comment_url missing parseable comment_id: {target_comment_url}",
-                            }
-                        else:
-                            result = await reply_to_comment_verified(
-                                session=session,
-                                url=url,
-                                target_comment_url=target_comment_url,
-                                target_comment_id=target_comment_id,
-                                reply_text=text,
-                                image_path=media_item["path"],
-                                proxy=get_system_proxy(),
-                                enable_warmup=enable_warmup,
-                                phase_callback=phase_callback,
-                            )
-                    else:
-                        target_comment_url = None
-                        target_comment_id = None
-                        image_id = None
-
-                    self.queue_manager.update_inflight_phase(
-                        campaign_id,
-                        phase="finalized",
-                        attempt_id=attempt_id,
-                        metadata={"success": str(bool(result.get("success")))},
-                    )
-                    await broadcast_update("job_complete", {
-                        "campaign_id": campaign_id,
-                        "job_index": original_job_idx,
-                        "profile_name": profile_name,
-                        "success": result["success"],
-                        "verified": result.get("verified", False),
-                        "method": result.get("method", "unknown"),
-                        "error": result.get("error"),
-                        "warmup": result.get("warmup"),
-                        "job_type": job_type,
-                        "target_comment_id": target_comment_id,
-                    })
-
-                    job_result = {
-                        "profile_name": profile_name,
-                        "comment": text,
-                        "text": text,
-                        "job_type": job_type,
-                        "target_comment_url": target_comment_url,
-                        "target_comment_id": target_comment_id,
-                        "image_id": image_id,
-                        "success": result["success"],
-                        "verified": result.get("verified", False),
-                        "method": result.get("method", "unknown"),
-                        "error": result.get("error"),
-                        "job_index": original_job_idx,
-                        "warmup": result.get("warmup")
-                    }
-                    results.append(job_result)
-                    # DEPLOYMENT RESILIENCE: Save immediately to disk
-                    self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
-
-                    # Determine failure type for analytics granularity
-                    # Check infrastructure FIRST — proxy/timeout errors must not be classified as restriction
-                    failure_type = self._determine_failure_type(
-                        success=bool(result["success"]),
-                        was_restriction=bool(result.get("throttled")),
-                        error=result.get("error"),
-                        method=result.get("method"),
-                    )
-
-                    # Track profile usage for rotation (LRU - only updates timestamp on success)
-                    profile_manager.mark_profile_used(
-                        profile_name=profile_name,
-                        campaign_id=campaign_id,
-                        comment=text,
-                        success=result["success"],
-                        failure_type=failure_type
-                    )
-
-                    # Check for throttling/restriction detection
-                    # Layer 3: Don't restrict profiles on infrastructure errors even if throttled=True leaked through
-                    if result.get("throttled") and failure_type != "infrastructure":
-                        throttle_reason = result.get("throttle_reason", "Facebook restriction detected")
-                        self.logger.warning(f"Profile {profile_name} throttled: {throttle_reason}")
-
-                        self._apply_restriction_signal(
-                            profile_manager,
-                            profile_name=profile_name,
-                            reason=throttle_reason,
-                            attempt_id=result.get("attempt_id"),
+                        exc_failure_type = self._determine_failure_type(
+                            success=False,
+                            was_restriction=False,
+                            error=str(e),
                         )
 
-                        # Broadcast throttle event to frontend
-                        await broadcast_update("profile_throttled", {
-                            "profile_name": profile_name,
-                            "reason": throttle_reason,
-                            "campaign_id": campaign_id,
-                            "job_index": original_job_idx
-                        })
-                    elif result.get("throttled") and failure_type == "infrastructure":
-                        self.logger.info(f"Skipping restriction for {profile_name} — infrastructure error, not real restriction")
-
-                except Exception as e:
-                    self.logger.error(f"Error processing job {original_job_idx} in campaign {campaign_id}: {e}")
-                    self.queue_manager.update_inflight_phase(
-                        campaign_id,
-                        phase="finalized",
-                        attempt_id=attempt_id,
-                        metadata={"error": str(e)},
-                    )
-                    await broadcast_update("job_error", {
-                        "campaign_id": campaign_id,
-                        "job_index": original_job_idx,
-                        "error": str(e)
-                    })
-                    job_result = {
-                        "profile_name": profile_name,
-                        "success": False,
-                        "error": str(e),
-                        "job_index": original_job_idx
-                    }
-                    results.append(job_result)
-                    # DEPLOYMENT RESILIENCE: Save immediately to disk
-                    self.queue_manager.save_job_result(campaign_id, original_job_idx, job_result)
-
-                    # Track exception in analytics (classify as infrastructure error)
-                    exc_failure_type = self._determine_failure_type(
-                        success=False,
-                        was_restriction=False,
-                        error=str(e),
-                    )
-
-                    profile_manager.mark_profile_used(
-                        profile_name=profile_name,
-                        campaign_id=campaign_id,
-                        comment=text,
-                        success=False,
-                        failure_type=exc_failure_type
-                    )
-                finally:
-                    # Always release profile reservation after browser closes
-                    self.queue_manager.clear_inflight_job(campaign_id, attempt_id=attempt_id)
-                    await profile_manager.release_profile(profile_name)
+                        profile_manager.mark_profile_used(
+                            profile_name=profile_name,
+                            campaign_id=campaign_id,
+                            comment=text,
+                            success=False,
+                            failure_type=exc_failure_type
+                        )
+                        job_finished = True
+                    finally:
+                        self.queue_manager.clear_inflight_job(campaign_id, attempt_id=attempt_id)
+                        await self._release_profile_with_context(
+                            profile_manager,
+                            profile_name,
+                            source="campaign_job",
+                            owner=reservation_owner,
+                        )
 
             # Campaign completed - get ALL results (including from previous runs before deployment)
             current_campaign = self.queue_manager.get_campaign(campaign_id)
@@ -1234,51 +1531,45 @@ class QueueProcessor:
 
             excluded = set(fj.get("excluded_profiles", []))
             exclude_from_selection = list(excluded | succeeded_profiles)
+            preferred_profile = None
+            last_profile = fj.get("last_profile", "")
+            if last_profile and last_profile not in exclude_from_selection:
+                preferred_profile = last_profile
 
-            # Get eligible profiles
-            eligible = profile_manager.get_eligible_profiles(
-                filter_tags=filter_tags if filter_tags else None,
-                count=5,
-                exclude_profiles=exclude_from_selection
+            reservation_owner = f"auto_retry:{campaign_id}:{job_index}:{uuid.uuid4().hex[:8]}"
+            selection = await self._select_live_profile(
+                profile_manager=profile_manager,
+                filter_tags=filter_tags,
+                exclude_profiles=set(exclude_from_selection),
+                reservation_source="auto_retry_job",
+                reservation_owner=reservation_owner,
+                reservation_metadata={"campaign_id": campaign_id, "job_index": job_index, "round": round_num},
+                forced_profile_name=preferred_profile,
+                allow_regenerate=True,
             )
+            if selection is None and preferred_profile:
+                selection = await self._select_live_profile(
+                    profile_manager=profile_manager,
+                    filter_tags=filter_tags,
+                    exclude_profiles=set(exclude_from_selection) | {preferred_profile},
+                    reservation_source="auto_retry_job",
+                    reservation_owner=reservation_owner,
+                    reservation_metadata={"campaign_id": campaign_id, "job_index": job_index, "round": round_num},
+                    allow_regenerate=True,
+                )
 
-            if not eligible:
-                self.logger.warning(f"Auto-retry: job {job_index} exhausted all profiles")
+            if not selection:
+                self.logger.warning(f"Auto-retry: job {job_index} exhausted all healthy profiles")
                 self.queue_manager.mark_retry_job_exhausted(campaign_id, job_index)
                 round_failed += 1
                 continue
 
-            # Profile selection: prefer last_profile if still eligible (transient failure)
-            last_profile = fj.get("last_profile", "")
-            ordered_profiles = eligible[:]
-            if last_profile and last_profile in ordered_profiles and last_profile not in excluded:
-                ordered_profiles.remove(last_profile)
-                ordered_profiles.insert(0, last_profile)
-
-            profile_name: Optional[str] = None
-            for candidate in ordered_profiles:
-                if await profile_manager.reserve_profile(candidate):
-                    profile_name = candidate
-                    break
-
-            if not profile_name:
-                self.logger.warning(
-                    f"Auto-retry: no free profile reservation available for campaign {campaign_id[:8]} job {job_index}"
-                )
-                round_failed += 1
-                continue
-
+            profile_name = str(selection["profile_name"])
+            session = selection["session"]
+            linked_credential = selection.get("linked_credential")
             self.logger.info(f"Auto-retry: job {job_index} with profile {profile_name}")
 
             try:
-                session = FacebookSession(profile_name)
-                if not session.load():
-                    self.logger.warning(f"Auto-retry: session {profile_name} not found, marking exhausted for job")
-                    fj.setdefault("excluded_profiles", []).append(profile_name)
-                    self.queue_manager.save()
-                    round_failed += 1
-                    continue
-
                 from gemini_vision import set_observation_context
                 set_observation_context(profile_name=profile_name, campaign_id=campaign_id)
 
@@ -1308,6 +1599,29 @@ class QueueProcessor:
                     error=error,
                     method=method,
                 )
+
+                health_status = str(result.get("session_health_status") or AUTH_HEALTH_HEALTHY).strip().lower()
+                health_reason = result.get("session_health_reason") or error
+                if health_status == AUTH_HEALTH_HEALTHY:
+                    self._persist_session_health(
+                        profile_manager,
+                        profile_name=profile_name,
+                        health_status=AUTH_HEALTH_HEALTHY,
+                        health_reason=health_reason or "auto-retry session passed",
+                        linked_credential=linked_credential,
+                        needs_attention=False,
+                        needs_deletion=False,
+                    )
+                elif health_status in SESSION_BLOCKED_STATES:
+                    self._persist_session_health(
+                        profile_manager,
+                        profile_name=profile_name,
+                        health_status=health_status,
+                        health_reason=health_reason,
+                        linked_credential=linked_credential,
+                        needs_attention=True,
+                        needs_deletion=health_status in SESSION_DELETE_CANDIDATE_STATES,
+                    )
 
                 profile_manager.mark_profile_used(
                     profile_name=profile_name,
@@ -1350,6 +1664,10 @@ class QueueProcessor:
                 if success:
                     round_succeeded += 1
                     succeeded_profiles.add(profile_name)
+                elif health_status in SESSION_BLOCKED_STATES:
+                    fj.setdefault("excluded_profiles", []).append(profile_name)
+                    self.queue_manager.save()
+                    continue
                 else:
                     round_failed += 1
 
@@ -1366,7 +1684,12 @@ class QueueProcessor:
                 )
                 round_failed += 1
             finally:
-                await profile_manager.release_profile(profile_name)
+                await self._release_profile_with_context(
+                    profile_manager,
+                    profile_name,
+                    source="auto_retry_job",
+                    owner=reservation_owner,
+                )
 
         # Check if all jobs are now succeeded or exhausted
         campaign = self.queue_manager.get_campaign_from_history(campaign_id)
@@ -1746,6 +2069,12 @@ class SessionInfo(BaseModel):
     reservation_controller_user: Optional[str] = None
     reservation_platform: Optional[str] = None
     reservation_metadata: Optional[Dict[str, Any]] = None
+    health_status: str = "unknown"
+    health_reason: Optional[str] = None
+    last_health_check_at: Optional[str] = None
+    needs_attention: bool = False
+    needs_deletion: bool = False
+    linked_credential_id: Optional[str] = None
 
 
 class TagUpdateRequest(BaseModel):
@@ -2516,12 +2845,38 @@ async def health_deep():
     try:
         sessions = list_saved_sessions()
         valid_count = sum(1 for s in sessions if s.get("has_valid_cookies"))
+        from profile_manager import ProfileManager
+
+        pm = ProfileManager()
+        auth_valid_count = 0
+        auth_invalid_count = 0
+        auth_unknown_count = 0
+        needs_attention_count = 0
+        needs_deletion_count = 0
+        for session in sessions:
+            state = pm.get_profile_state(session.get("profile_name") or "") or {}
+            health_status = str(state.get("health_status") or "unknown").strip().lower()
+            if health_status == AUTH_HEALTH_HEALTHY:
+                auth_valid_count += 1
+            elif health_status in SESSION_BLOCKED_STATES or state.get("needs_deletion"):
+                auth_invalid_count += 1
+            else:
+                auth_unknown_count += 1
+            if state.get("needs_attention"):
+                needs_attention_count += 1
+            if state.get("needs_deletion"):
+                needs_deletion_count += 1
         checks["sessions"] = {
             "total": len(sessions),
-            "valid": valid_count,
-            "invalid": len(sessions) - valid_count
+            "cookie_valid": valid_count,
+            "cookie_invalid": len(sessions) - valid_count,
+            "auth_valid": auth_valid_count,
+            "auth_invalid": auth_invalid_count,
+            "auth_unknown": auth_unknown_count,
+            "needs_attention": needs_attention_count,
+            "needs_deletion": needs_deletion_count,
         }
-        if valid_count == 0:
+        if auth_valid_count == 0 and valid_count == 0:
             overall = "critical"
     except Exception as e:
         checks["sessions"] = {"error": str(e)}
@@ -2558,15 +2913,21 @@ async def health_deep():
 
     # 5. Profile stats
     try:
-        from profile_manager import ProfileManager
         pm = ProfileManager()
         profiles = pm.state.get("profiles", {})
         active = sum(1 for p in profiles.values() if p.get("status") == "active")
         restricted = sum(1 for p in profiles.values() if p.get("status") == "restricted")
+        auth_valid = sum(1 for p in profiles.values() if str(p.get("health_status") or "").lower() == AUTH_HEALTH_HEALTHY)
+        auth_invalid = sum(
+            1 for p in profiles.values()
+            if str(p.get("health_status") or "").lower() in SESSION_BLOCKED_STATES or p.get("needs_deletion")
+        )
         checks["profiles"] = {
             "active": active,
             "restricted": restricted,
-            "total": len(profiles)
+            "total": len(profiles),
+            "auth_valid": auth_valid,
+            "auth_invalid": auth_invalid,
         }
         if active == 0:
             overall = "critical"
@@ -2997,8 +3358,11 @@ async def _reserve_profile_operation_or_raise(
 async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[SessionInfo]:
     """Get all saved sessions with proxy info."""
     from urllib.parse import urlparse
+    from profile_manager import get_profile_manager
 
     sessions = list_saved_sessions()
+    profile_manager = get_profile_manager()
+    profile_manager.refresh_from_sessions()
     results = []
 
     for s in sessions:
@@ -3024,6 +3388,15 @@ async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[S
             proxy_source = None
             proxy_label = None
         reservation = _reservation_view(s["profile_name"])
+        analytics = profile_manager.get_profile_analytics(s["profile_name"]) or {}
+        linked_credential = analytics.get("linked_credential_id")
+        if not linked_credential:
+            resolved_credential = credential_manager.find_linked_credential(
+                profile_name=s["profile_name"],
+                user_id=s.get("user_id"),
+                platform="facebook",
+            )
+            linked_credential = (resolved_credential or {}).get("credential_id")
 
         results.append(SessionInfo(
             file=s["file"],
@@ -3037,6 +3410,12 @@ async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[S
             proxy_source=proxy_source,
             profile_picture=s.get("profile_picture"),
             tags=s.get("tags", []),
+            health_status=analytics.get("health_status", "unknown"),
+            health_reason=analytics.get("health_reason"),
+            last_health_check_at=analytics.get("last_health_check_at"),
+            needs_attention=bool(analytics.get("needs_attention", False)),
+            needs_deletion=bool(analytics.get("needs_deletion", False)),
+            linked_credential_id=linked_credential,
             **reservation,
         ))
 
@@ -3099,6 +3478,20 @@ async def test_session_endpoint(profile_name: str, current_user: dict = Depends(
     try:
         session = FacebookSession(profile_name)
         result = await test_session(session, get_system_proxy())
+        from profile_manager import get_profile_manager
+
+        profile_manager = get_profile_manager()
+        linked_credential = queue_processor._resolve_linked_credential(profile_name, session if session.load() else None)
+        health_status = result.get("health_status") or (AUTH_HEALTH_HEALTHY if result.get("valid") else AUTH_HEALTH_NEEDS_ATTENTION)
+        queue_processor._persist_session_health(
+            profile_manager,
+            profile_name=profile_name,
+            health_status=health_status,
+            health_reason=result.get("health_reason") or result.get("error"),
+            linked_credential=linked_credential,
+            needs_attention=health_status in SESSION_BLOCKED_STATES,
+            needs_deletion=health_status in SESSION_DELETE_CANDIDATE_STATES,
+        )
         return result
     finally:
         from profile_manager import get_profile_manager
@@ -4977,16 +5370,18 @@ async def bulk_retry_failed_jobs(
 
         # Keep trying profiles until success or no more profiles available
         while not job_succeeded:
-            # Get eligible profiles, excluding:
-            # 1. Profiles that already succeeded in this campaign (prevents duplicates)
-            # 2. Profiles we've already tried for THIS specific job
-            eligible = profile_manager.get_eligible_profiles(
-                filter_tags=filter_tags if filter_tags else None,
-                count=5,  # Get a small batch
-                exclude_profiles=list(job_tried_profiles)
+            reservation_owner = f"bulk_retry:{campaign_id}:{job_index}:{uuid.uuid4().hex[:8]}"
+            selection = await queue_processor._select_live_profile(
+                profile_manager=profile_manager,
+                filter_tags=filter_tags,
+                exclude_profiles=set(job_tried_profiles),
+                reservation_source="bulk_retry_job",
+                reservation_owner=reservation_owner,
+                reservation_metadata={"campaign_id": campaign_id, "job_index": job_index},
+                allow_regenerate=True,
             )
 
-            if not eligible:
+            if not selection:
                 # No more profiles to try for this job
                 logger.warning(f"Bulk retry: Job {job_index} exhausted all profiles after {attempt} attempts")
                 result = {
@@ -5008,20 +5403,15 @@ async def bulk_retry_failed_jobs(
                 jobs_exhausted += 1
                 break
 
-            # Try the first eligible profile (LRU order)
-            profile_name = eligible[0]
+            profile_name = str(selection["profile_name"])
+            session = selection["session"]
+            linked_credential = selection.get("linked_credential")
             job_tried_profiles.add(profile_name)
             attempt += 1
 
             logger.info(f"Bulk retry: Job {job_index} attempt {attempt} with {profile_name}")
 
             try:
-                session = FacebookSession(profile_name)
-                if not session.load() or not session.has_valid_cookies():
-                    # Session invalid, try next profile
-                    logger.warning(f"Bulk retry: Session {profile_name} invalid, trying next")
-                    continue
-
                 # Execute with warmup from original campaign
                 post_result = await post_comment_verified(
                     session=session,
@@ -5049,6 +5439,29 @@ async def bulk_retry_failed_jobs(
                     else:
                         failure_type = "facebook_error"
 
+                health_status = str(post_result.get("session_health_status") or AUTH_HEALTH_HEALTHY).strip().lower()
+                health_reason = post_result.get("session_health_reason") or post_result.get("error")
+                if health_status == AUTH_HEALTH_HEALTHY:
+                    queue_processor._persist_session_health(
+                        profile_manager,
+                        profile_name=profile_name,
+                        health_status=AUTH_HEALTH_HEALTHY,
+                        health_reason=health_reason or "bulk retry session passed",
+                        linked_credential=linked_credential,
+                        needs_attention=False,
+                        needs_deletion=False,
+                    )
+                elif health_status in SESSION_BLOCKED_STATES:
+                    queue_processor._persist_session_health(
+                        profile_manager,
+                        profile_name=profile_name,
+                        health_status=health_status,
+                        health_reason=health_reason,
+                        linked_credential=linked_credential,
+                        needs_attention=True,
+                        needs_deletion=health_status in SESSION_DELETE_CANDIDATE_STATES,
+                    )
+
                 # Track in profile analytics
                 profile_manager.mark_profile_used(
                     profile_name=profile_name,
@@ -5057,6 +5470,13 @@ async def bulk_retry_failed_jobs(
                     success=post_result.get("success", False),
                     failure_type=failure_type
                 )
+
+                if not post_result.get("success") and health_status in SESSION_BLOCKED_STATES:
+                    logger.warning(
+                        f"Bulk retry: reselecting after auth failure on {profile_name} "
+                        f"({health_status}: {health_reason})"
+                    )
+                    continue
 
                 # Check for throttling and auto-block
                 if post_result.get("throttled"):
@@ -5125,6 +5545,13 @@ async def bulk_retry_failed_jobs(
                 # Save immediately
                 queue_manager.add_retry_result(campaign_id, result)
                 # Continue to next profile
+            finally:
+                await queue_processor._release_profile_with_context(
+                    profile_manager,
+                    profile_name,
+                    source="bulk_retry_job",
+                    owner=reservation_owner,
+                )
 
         # Broadcast progress after each job completes (success or exhausted)
         await broadcast_update("queue_campaign_bulk_retry_progress", {
@@ -5365,13 +5792,18 @@ async def _retry_single_campaign(
                         await profile_manager.release_profile(reconciliation_profile)
 
         while not job_succeeded:
-            eligible = profile_manager.get_eligible_profiles(
-                filter_tags=filter_tags if filter_tags else None,
-                count=5,
-                exclude_profiles=list(job_tried_profiles)
+            reservation_owner = f"retry_all:{campaign_id}:{job_index}:{uuid.uuid4().hex[:8]}"
+            selection = await queue_processor._select_live_profile(
+                profile_manager=profile_manager,
+                filter_tags=filter_tags,
+                exclude_profiles=set(job_tried_profiles),
+                reservation_source="retry_all_job",
+                reservation_owner=reservation_owner,
+                reservation_metadata={"campaign_id": campaign_id, "job_index": job_index},
+                allow_regenerate=True,
             )
 
-            if not eligible:
+            if not selection:
                 result = {
                     "profile_name": None, "comment": comment, "success": False,
                     "verified": False, "method": "exhausted",
@@ -5384,36 +5816,25 @@ async def _retry_single_campaign(
                 campaign_jobs_exhausted += 1
                 break
 
-            profile_name = eligible[0]
+            profile_name = str(selection["profile_name"])
+            session = selection["session"]
+            linked_credential = selection.get("linked_credential")
             job_tried_profiles.add(profile_name)
             campaign_attempts += 1
 
             try:
-                session = FacebookSession(profile_name)
-                if not session.load() or not session.has_valid_cookies():
-                    continue
-
-                # Reserve profile to prevent parallel browser conflicts
-                reserved = await profile_manager.reserve_profile(profile_name)
-                if not reserved:
-                    logger.debug(f"Retry-all: {profile_name} reserved by another campaign, skipping")
-                    continue
-
-                try:
-                    async with browser_semaphore:
-                        post_result = await post_comment_verified(
-                            session=session, url=url, comment=comment,
-                            proxy=get_system_proxy(), enable_warmup=enable_warmup,
-                            forensic_context={
-                                "platform": "facebook",
-                                "engine": "retry_all_comment",
-                                "run_id": campaign_id,
-                                "campaign_id": campaign_id,
-                                "job_id": str(job_index),
-                            },
-                        )
-                finally:
-                    await profile_manager.release_profile(profile_name)
+                async with browser_semaphore:
+                    post_result = await post_comment_verified(
+                        session=session, url=url, comment=comment,
+                        proxy=get_system_proxy(), enable_warmup=enable_warmup,
+                        forensic_context={
+                            "platform": "facebook",
+                            "engine": "retry_all_comment",
+                            "run_id": campaign_id,
+                            "campaign_id": campaign_id,
+                            "job_id": str(job_index),
+                        },
+                    )
 
                 failure_type = None
                 if not post_result.get("success", False):
@@ -5425,11 +5846,41 @@ async def _retry_single_campaign(
                     else:
                         failure_type = "facebook_error"
 
+                health_status = str(post_result.get("session_health_status") or AUTH_HEALTH_HEALTHY).strip().lower()
+                health_reason = post_result.get("session_health_reason") or post_result.get("error")
+                if health_status == AUTH_HEALTH_HEALTHY:
+                    queue_processor._persist_session_health(
+                        profile_manager,
+                        profile_name=profile_name,
+                        health_status=AUTH_HEALTH_HEALTHY,
+                        health_reason=health_reason or "retry-all session passed",
+                        linked_credential=linked_credential,
+                        needs_attention=False,
+                        needs_deletion=False,
+                    )
+                elif health_status in SESSION_BLOCKED_STATES:
+                    queue_processor._persist_session_health(
+                        profile_manager,
+                        profile_name=profile_name,
+                        health_status=health_status,
+                        health_reason=health_reason,
+                        linked_credential=linked_credential,
+                        needs_attention=True,
+                        needs_deletion=health_status in SESSION_DELETE_CANDIDATE_STATES,
+                    )
+
                 profile_manager.mark_profile_used(
                     profile_name=profile_name, campaign_id=campaign_id,
                     comment=comment, success=post_result.get("success", False),
                     failure_type=failure_type
                 )
+
+                if not post_result.get("success") and health_status in SESSION_BLOCKED_STATES:
+                    logger.warning(
+                        f"Retry-all: reselecting after auth failure on {profile_name} "
+                        f"({health_status}: {health_reason})"
+                    )
+                    continue
 
                 # Layer 3: Don't restrict profiles on infrastructure errors
                 if post_result.get("throttled") and failure_type != "infrastructure":
@@ -5505,6 +5956,13 @@ async def _retry_single_campaign(
                     "retried_at": datetime.utcnow().isoformat()
                 }
                 queue_manager.add_retry_result(campaign_id, result)
+            finally:
+                await queue_processor._release_profile_with_context(
+                    profile_manager,
+                    profile_name,
+                    source="retry_all_job",
+                    owner=reservation_owner,
+                )
 
     # Check if campaign is now fully successful
     updated = queue_manager.get_campaign_from_history(campaign_id)

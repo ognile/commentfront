@@ -57,6 +57,34 @@ interface TaskCounts {
   pending: number; running: number; completed: number; failed: number; total: number
 }
 
+type PlannerConfigValue = string | number | boolean | number[] | string[] | null
+type PlannerConfigMap = Record<string, PlannerConfigValue>
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message
+  }
+  return fallback
+}
+
+function getNumberConfig(config: PlannerConfigMap, key: string, fallback: number): number {
+  const value = config[key]
+  return typeof value === 'number' ? value : fallback
+}
+
+function getStringConfig(config: PlannerConfigMap, key: string, fallback: string): string {
+  const value = config[key]
+  return typeof value === 'string' ? value : fallback
+}
+
+function getRangeConfig(config: PlannerConfigMap, key: string): number[] {
+  const value = config[key]
+  if (Array.isArray(value)) {
+    return value.map((item) => Number(item) || 0)
+  }
+  return [0, 0]
+}
+
 // ── Main Component ──
 
 export default function CommunityTab() {
@@ -86,7 +114,7 @@ export default function CommunityTab() {
       setTaskCounts(statusRes.tasks)
       setSchedulerRunning(statusRes.scheduler.running)
       setFeed(feedRes)
-    } catch (e) {
+    } catch {
       toast.error('failed to load community data')
     } finally {
       setLoading(false)
@@ -192,8 +220,8 @@ function FeedView({ feed, taskCounts, onRefresh }: { feed: Task[]; taskCounts: T
       const result = await apiFetch<{ tasks_created: number; date: string }>('/community/planner/generate', { method: 'POST', body: JSON.stringify({}) })
       toast.success(`generated ${result.tasks_created} tasks for ${result.date}`)
       onRefresh()
-    } catch (e: any) {
-      toast.error(e.message || 'plan generation failed')
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, 'plan generation failed'))
     } finally {
       setGenerating(false)
     }
@@ -305,8 +333,8 @@ function ProfileView({ profileName, onBack, onRefresh }: {
       // Reload profile
       const updated = await apiFetch<ProfileStats>(`/community/profile/${encodeURIComponent(profileName)}/stats`)
       setData(updated)
-    } catch (e: any) {
-      toast.error(e.message)
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, 'failed to advance stage'))
     } finally {
       setAdvancing(false)
     }
@@ -319,8 +347,8 @@ function ProfileView({ profileName, onBack, onRefresh }: {
       onRefresh()
       const updated = await apiFetch<ProfileStats>(`/community/profile/${encodeURIComponent(profileName)}/stats`)
       setData(updated)
-    } catch (e: any) {
-      toast.error(e.message)
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, 'failed to revert stage'))
     }
   }
 
@@ -424,8 +452,8 @@ function KBEditor({ onBack }: { onBack: () => void }) {
         body: JSON.stringify({ content, updated_by: 'ui' }),
       })
       toast.success('knowledge base saved')
-    } catch (e: any) {
-      toast.error(e.message)
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, 'failed to save knowledge base'))
     } finally {
       setSaving(false)
     }
@@ -462,12 +490,12 @@ function KBEditor({ onBack }: { onBack: () => void }) {
 // ── Planner Config ──
 
 function PlannerConfig({ onBack }: { onBack: () => void }) {
-  const [config, setConfig] = useState<Record<string, any>>({})
+  const [config, setConfig] = useState<PlannerConfigMap>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    apiFetch<Record<string, any>>('/community/planner/config')
+    apiFetch<PlannerConfigMap>('/community/planner/config')
       .then(setConfig)
       .catch(() => toast.error('failed to load config'))
       .finally(() => setLoading(false))
@@ -481,20 +509,20 @@ function PlannerConfig({ onBack }: { onBack: () => void }) {
         body: JSON.stringify({ config }),
       })
       toast.success('planner config saved')
-    } catch (e: any) {
-      toast.error(e.message)
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, 'failed to save planner config'))
     } finally {
       setSaving(false)
     }
   }
 
   const updateRange = (key: string, idx: number, value: number) => {
-    const range = [...(config[key] || [0, 0])]
+    const range = [...getRangeConfig(config, key)]
     range[idx] = value
     setConfig({ ...config, [key]: range })
   }
 
-  const updateValue = (key: string, value: any) => {
+  const updateValue = (key: string, value: PlannerConfigValue) => {
     setConfig({ ...config, [key]: value })
   }
 
@@ -521,9 +549,9 @@ function PlannerConfig({ onBack }: { onBack: () => void }) {
         <ConfigRange label="Group replies/day" configKey="group_replies_per_day" config={config} onChange={updateRange} />
 
         <div className="border-t border-pearl-border pt-4">
-          <ConfigSlider label="Image ratio" value={Math.round((config.image_ratio || 0.5) * 100)} suffix="%"
+          <ConfigSlider label="Image ratio" value={Math.round(getNumberConfig(config, 'image_ratio', 0.5) * 100)} suffix="%"
             onChange={v => updateValue('image_ratio', v / 100)} />
-          <ConfigSlider label="Product mention ratio" value={Math.round((config.product_mention_ratio || 0.3) * 100)} suffix="%"
+          <ConfigSlider label="Product mention ratio" value={Math.round(getNumberConfig(config, 'product_mention_ratio', 0.3) * 100)} suffix="%"
             onChange={v => updateValue('product_mention_ratio', v / 100)} />
         </div>
 
@@ -531,7 +559,7 @@ function PlannerConfig({ onBack }: { onBack: () => void }) {
           <div className="flex items-center justify-between text-xs mb-2">
             <span className="text-pearl-secondary">Schedule</span>
             <select
-              value={config.planner_schedule || 'daily_midnight'}
+              value={getStringConfig(config, 'planner_schedule', 'daily_midnight')}
               onChange={e => updateValue('planner_schedule', e.target.value)}
               className="border border-pearl-border rounded px-2 py-1 text-xs bg-white"
             >
@@ -551,10 +579,10 @@ function PlannerConfig({ onBack }: { onBack: () => void }) {
 }
 
 function ConfigRange({ label, configKey, config, onChange }: {
-  label: string; configKey: string; config: Record<string, any>
+  label: string; configKey: string; config: PlannerConfigMap
   onChange: (key: string, idx: number, value: number) => void
 }) {
-  const range = config[configKey] || [0, 0]
+  const range = getRangeConfig(config, configKey)
   return (
     <div className="flex items-center justify-between text-xs">
       <span className="text-pearl-secondary">{label}</span>

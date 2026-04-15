@@ -79,6 +79,10 @@ class CredentialManager:
             return normalized_uid
         return f"{platform}::{normalized_uid}"
 
+    @staticmethod
+    def _normalize_profile_name(profile_name: Optional[str]) -> str:
+        return str(profile_name or "").strip().replace(" ", "_").replace("/", "_").lower()
+
     def _find_storage_key(self, identifier: str, platform: Optional[str] = None) -> Optional[str]:
         needle = str(identifier or "").strip()
         if not needle:
@@ -359,6 +363,40 @@ class CredentialManager:
                 }
             )
         return output
+
+    def find_linked_credential(
+        self,
+        *,
+        profile_name: Optional[str] = None,
+        user_id: Optional[str] = None,
+        platform: Optional[str] = None,
+    ):
+        """Resolve the credential linked to a session by profile name, linked session id, or uid."""
+        normalized_platform = self._normalize_platform(platform)
+        normalized_profile = self._normalize_profile_name(profile_name)
+        normalized_user_id = str(user_id or "").strip()
+
+        for storage_key, record in self.credentials.items():
+            if self._normalize_platform(record.get("platform")) != normalized_platform:
+                continue
+
+            candidates = {
+                self._normalize_profile_name(record.get("profile_name")),
+                self._normalize_profile_name(record.get("linked_session_id")),
+            }
+            uid = str(record.get("uid") or "").strip()
+
+            if normalized_user_id and uid == normalized_user_id:
+                resolved = dict(record)
+                resolved["credential_id"] = storage_key
+                return resolved
+
+            if normalized_profile and normalized_profile in candidates:
+                resolved = dict(record)
+                resolved["credential_id"] = storage_key
+                return resolved
+
+        return None
 
     def _totp_secret_for_record(self, record: Optional[dict]) -> Optional[str]:
         if not record:

@@ -35,6 +35,22 @@ except ImportError:
 
 logger = logging.getLogger("CommentBot")
 
+AUTH_HEALTH_HEALTHY = "healthy"
+AUTH_HEALTH_LOGGED_OUT = "logged_out"
+AUTH_HEALTH_CHECKPOINT = "checkpoint"
+AUTH_HEALTH_HUMAN_VERIFICATION = "human_verification"
+AUTH_HEALTH_VIDEO_SELFIE = "video_selfie"
+AUTH_HEALTH_NEEDS_ATTENTION = "needs_attention"
+AUTH_HEALTH_INFRA_BLOCKED = "infra_blocked"
+
+AUTH_HEALTH_BLOCKING_STATES = {
+    AUTH_HEALTH_LOGGED_OUT,
+    AUTH_HEALTH_CHECKPOINT,
+    AUTH_HEALTH_HUMAN_VERIFICATION,
+    AUTH_HEALTH_VIDEO_SELFIE,
+    AUTH_HEALTH_NEEDS_ATTENTION,
+}
+
 
 def _brief(e: Exception) -> str:
     """Truncate Playwright errors to first line (full call logs can be 60+ lines)."""
@@ -1254,6 +1270,121 @@ def is_reels_page(url: str) -> bool:
     return "/reel/" in url or "/watch/" in url or "/videos/" in url
 
 
+async def classify_facebook_auth_state(page: Page) -> Dict[str, Any]:
+    """Classify the current facebook shell into a real auth-health state."""
+    result = {
+        "health_status": AUTH_HEALTH_NEEDS_ATTENTION,
+        "health_reason": "state unknown",
+        "current_url": str(page.url or ""),
+        "authenticated": False,
+    }
+    try:
+        current_url = str(page.url or "").lower()
+        body_text = ""
+        try:
+            body_text = (await page.locator("body").inner_text(timeout=3000)).lower()
+        except Exception:
+            body_text = (await page.text_content("body") or "").lower()
+        body_text = " ".join(body_text.split())
+
+        if any(token in current_url for token in ["neterror", "chrome-error", "about:blank"]):
+            result["health_status"] = AUTH_HEALTH_INFRA_BLOCKED
+            result["health_reason"] = f"infrastructure shell: {current_url or 'blank page'}"
+            return result
+
+        if any(
+            token in body_text
+            for token in [
+                "video selfie",
+                "record a video selfie",
+                "take a video selfie",
+                "submit a video selfie",
+            ]
+        ):
+            result["health_status"] = AUTH_HEALTH_VIDEO_SELFIE
+            result["health_reason"] = "facebook requested a video selfie"
+            return result
+
+        if (
+            "checkpoint" in current_url
+            or any(
+                token in body_text
+                for token in [
+                    "confirm your identity",
+                    "we need more information",
+                    "review recent login",
+                    "check your notifications on another device",
+                    "secure your account",
+                    "identity confirmation",
+                ]
+            )
+        ):
+            result["health_status"] = AUTH_HEALTH_CHECKPOINT
+            result["health_reason"] = "facebook checkpoint or identity challenge"
+            return result
+
+        if any(
+            token in body_text
+            for token in [
+                "confirm you're human",
+                "confirm you’re human",
+                "confirm you are human",
+                "complete the security check",
+                "verify that you're human",
+                "verify that you’re human",
+            ]
+        ):
+            result["health_status"] = AUTH_HEALTH_HUMAN_VERIFICATION
+            result["health_reason"] = "facebook human verification challenge"
+            return result
+
+        login_form_present = False
+        try:
+            login_form_present = (
+                await page.locator('input[name="email"], input[name="pass"], form[action*="login"]').count()
+            ) > 0
+        except Exception:
+            login_form_present = False
+
+        if (
+            "/login" in current_url
+            or login_form_present
+            or (
+                " log in " in f" {body_text} "
+                and any(token in body_text for token in ["open app", "forgot password", "password"])
+            )
+        ):
+            result["health_status"] = AUTH_HEALTH_LOGGED_OUT
+            result["health_reason"] = "facebook login shell is visible"
+            return result
+
+        if any(
+            token in body_text
+            for token in [
+                "loading...",
+                "tap to refresh",
+                "something went wrong",
+                "temporarily blocked",
+            ]
+        ):
+            result["health_status"] = AUTH_HEALTH_NEEDS_ATTENTION
+            result["health_reason"] = "facebook returned a loading or error shell"
+            return result
+
+        result["health_status"] = AUTH_HEALTH_HEALTHY
+        result["health_reason"] = "authenticated facebook shell confirmed"
+        result["authenticated"] = True
+        return result
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if any(token in error_text for token in ["timeout", "proxy", "connection", "network", "net::err", "tunnel"]):
+            result["health_status"] = AUTH_HEALTH_INFRA_BLOCKED
+            result["health_reason"] = _brief(exc)
+            return result
+        result["health_reason"] = _brief(exc)
+        return result
+
+
 async def verify_post_loaded(page: Page) -> bool:
     """Verify we're on a valid post page, not Reels."""
     try:
@@ -1262,19 +1393,34 @@ async def verify_post_loaded(page: Page) -> bool:
             logger.error(f"Landed on Reels page: {page.url}")
             return False
 
+        auth_state = await classify_facebook_auth_state(page)
+        if auth_state["health_status"] in AUTH_HEALTH_BLOCKING_STATES:
+            logger.warning(
+                f"Rejecting unauthenticated post shell for {page.url}: "
+                f"{auth_state['health_status']} ({auth_state['health_reason']})"
+            )
+            return False
+
         # 1. Check for 'From your link' (redirect success)
         if await page.get_by_text("From your link").count() > 0:
             return True
 
-        # 2. Check URL structure
-        if "story.php" in page.url or "/posts/" in page.url:
-            return True
-
-        # 3. Check for specific post elements
+        # 2. Check for specific post elements
         if await page.locator('[data-sigil="m-feed-voice-subtitle"]').count() > 0:
             return True
 
-        # 4. Accept visible comment UI as post context (reaction row may be off-screen).
+        authenticated_post_selectors = [
+            '[role="article"]',
+            '[data-ft]',
+            'a[href*="comment_id="]',
+            '[aria-label*="like" i]',
+            '[aria-label*="comment" i]',
+        ]
+        for selector in authenticated_post_selectors:
+            if await page.locator(selector).count() > 0:
+                return True
+
+        # 3. Accept visible comment UI as post context (reaction row may be off-screen).
         comment_ui_selectors = [
             'textarea[aria-label*="comment" i]',
             'textarea[placeholder*="comment" i]',
@@ -1319,10 +1465,16 @@ async def wait_for_post_visible(page: Page, vision, max_attempts: int = 4) -> bo
         verification = await vision.verify_state(screenshot, "post_visible")
 
         if verification.success:
-            logger.info(f"Post visible on attempt {attempt + 1} (confidence: {verification.confidence:.0%})")
-            # PROACTIVE AUDIT: Dump all interactive elements now that page is loaded
-            await dump_interactive_elements(page, "PAGE LOADED - Gemini confirmed post visible")
-            return True
+            auth_state = await classify_facebook_auth_state(page)
+            if auth_state["health_status"] not in AUTH_HEALTH_BLOCKING_STATES:
+                logger.info(f"Post visible on attempt {attempt + 1} (confidence: {verification.confidence:.0%})")
+                # PROACTIVE AUDIT: Dump all interactive elements now that page is loaded
+                await dump_interactive_elements(page, "PAGE LOADED - Gemini confirmed post visible")
+                return True
+            logger.warning(
+                f"Gemini post-visible hit rejected by auth gate: "
+                f"{auth_state['health_status']} ({auth_state['health_reason']})"
+            )
 
         # Exponential backoff: 1s, 2s, 4s, 8s
         wait_time = base_wait * (2 ** attempt)
@@ -1839,6 +1991,9 @@ async def post_comment_verified(
             logger.error(f"FAILED: {_brief(e)}")
             logger.error(f"Steps completed before failure: {result['steps_completed']}")
             if 'page' in locals():
+                auth_state = await classify_facebook_auth_state(page)
+                result["session_health_status"] = auth_state.get("health_status")
+                result["session_health_reason"] = auth_state.get("health_reason")
                 error_screenshot = await save_debug_screenshot(page, "error_state")
 
                 # Check for restriction/throttling when there's a failure
@@ -1851,8 +2006,24 @@ async def post_comment_verified(
                 ])
 
                 if is_infra_error:
+                    result["session_health_status"] = AUTH_HEALTH_INFRA_BLOCKED
+                    result["session_health_reason"] = result.get("error")
                     result["throttled"] = False
                     logger.info(f"Skipping restriction check — infrastructure error: {str(e)[:100]}")
+                elif auth_state.get("health_status") in {
+                    AUTH_HEALTH_CHECKPOINT,
+                    AUTH_HEALTH_HUMAN_VERIFICATION,
+                    AUTH_HEALTH_VIDEO_SELFIE,
+                }:
+                    result["throttled"] = True
+                    result["throttle_reason"] = auth_state.get("health_reason")
+                    logger.warning(
+                        f"AUTH CHALLENGE DETECTED: {auth_state.get('health_status')} "
+                        f"({auth_state.get('health_reason')})"
+                    )
+                elif auth_state.get("health_status") == AUTH_HEALTH_LOGGED_OUT:
+                    result["throttled"] = False
+                    logger.warning("Logged-out facebook shell detected during posting flow")
                 elif vision and error_screenshot:
                     try:
                         restriction_check = await vision.check_restriction(error_screenshot)
@@ -2385,7 +2556,9 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
     result = {
         "valid": False,
         "user_id": None,
-        "error": None
+        "error": None,
+        "health_status": AUTH_HEALTH_NEEDS_ATTENTION,
+        "health_reason": None,
     }
     
     if not session.load():
@@ -2429,12 +2602,21 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
             await page.goto("https://m.facebook.com/me/", wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(1)
 
+            auth_state = await classify_facebook_auth_state(page)
+            result["health_status"] = auth_state.get("health_status")
+            result["health_reason"] = auth_state.get("health_reason")
             current_url = page.url.lower()
-            if "/login" not in current_url and "checkpoint" not in current_url:
+            if auth_state.get("health_status") == AUTH_HEALTH_HEALTHY and "/login" not in current_url and "checkpoint" not in current_url:
                 result["valid"] = True
                 result["user_id"] = session.get_user_id()
         except Exception as e:
             result["error"] = str(e)
+            if not result.get("health_reason"):
+                result["health_status"] = AUTH_HEALTH_INFRA_BLOCKED if any(
+                    token in str(e).lower()
+                    for token in ["timeout", "proxy", "connection", "network", "net::err", "tunnel"]
+                ) else AUTH_HEALTH_NEEDS_ATTENTION
+                result["health_reason"] = _brief(e)
         finally:
             await browser.close()
             

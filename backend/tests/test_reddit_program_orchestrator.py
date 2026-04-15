@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -255,11 +255,12 @@ def test_target_reuse_checks_pending_reserved_items(tmp_path):
 def test_target_reuse_checks_recent_other_program_history(tmp_path):
     store = RedditProgramStore(file_path=str(tmp_path / "programs.json"))
     first_program = store.create_program(_spec())
+    recent_timestamp = datetime.now(timezone.utc) - timedelta(days=2)
     first_program["target_history"] = [
         {
-            "timestamp": "2026-03-10T08:00:00Z",
+            "timestamp": recent_timestamp.isoformat().replace("+00:00", "Z"),
             "profile_name": "reddit_amy",
-            "local_date": "2026-03-10",
+            "local_date": recent_timestamp.date().isoformat(),
             "target_ref": "https://www.reddit.com/r/womenshealth/comments/post/comment/c9/",
             "success": True,
             "final_verdict": "success_confirmed",
@@ -272,7 +273,7 @@ def test_target_reuse_checks_recent_other_program_history(tmp_path):
     assert orchestrator._target_already_used(
         second_program,
         profile_name="reddit_beta",
-        local_date="2026-03-12",
+        local_date=datetime.now(timezone.utc).date().isoformat(),
         target_ref="https://www.reddit.com/r/womenshealth/comments/post/comment/c9/",
     )
 

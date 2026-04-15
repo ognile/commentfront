@@ -14,6 +14,15 @@ from dataclasses import dataclass
 
 logger = logging.getLogger("ProfileManager")
 
+HEALTHY_SESSION_STATES = {"healthy", "unknown", "infra_blocked"}
+BLOCKED_SESSION_STATES = {
+    "logged_out",
+    "checkpoint",
+    "human_verification",
+    "video_selfie",
+    "needs_attention",
+}
+
 
 @dataclass
 class ProfileState:
@@ -80,6 +89,12 @@ class ProfileManager:
             "recovery_last_event": None,
             "recovery_last_event_at": None,
             "recovery_history": [],
+            "health_status": "unknown",
+            "health_reason": None,
+            "last_health_check_at": None,
+            "needs_attention": False,
+            "needs_deletion": False,
+            "linked_credential_id": None,
         }
 
     def _ensure_profile(self, profile_name: str) -> Dict[str, Any]:
@@ -271,7 +286,9 @@ class ProfileManager:
             "restricted": 0,
             "auto_burned": 0,
             "excluded": 0,
-            "reserved": 0
+            "reserved": 0,
+            "auth_unhealthy": 0,
+            "recent_performance_locked": 0,
         }
 
         for session in sessions:
@@ -341,6 +358,15 @@ class ProfileManager:
                     skip_reasons["restricted"] += 1
                     continue
 
+            health_status = str(state.get("health_status") or "unknown").strip().lower()
+            if state.get("needs_deletion") or health_status in BLOCKED_SESSION_STATES:
+                skip_reasons["auth_unhealthy"] += 1
+                continue
+
+            if self.is_recent_performance_locked(profile_name):
+                skip_reasons["recent_performance_locked"] += 1
+                continue
+
             # Auto-restrict profiles with very low success rates
             # Exclude infrastructure failures (proxy/timeout) from calculation — those aren't the profile's fault
             total_attempts = state.get("usage_count", 0)
@@ -374,6 +400,50 @@ class ProfileManager:
             f"skipped: {skip_reasons}, tags={filter_tags}"
         )
         return result
+
+    def update_auth_health(
+        self,
+        profile_name: str,
+        *,
+        health_status: str,
+        health_reason: Optional[str] = None,
+        linked_credential_id: Optional[str] = None,
+        needs_attention: Optional[bool] = None,
+        needs_deletion: Optional[bool] = None,
+        checked_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        profile = self._ensure_profile(profile_name)
+        status_value = str(health_status or "unknown").strip().lower() or "unknown"
+        profile["health_status"] = status_value
+        profile["health_reason"] = health_reason
+        profile["last_health_check_at"] = checked_at or (datetime.utcnow().isoformat() + "Z")
+        profile["needs_attention"] = bool(
+            needs_attention
+            if needs_attention is not None
+            else status_value in {"needs_attention", "checkpoint", "human_verification", "video_selfie"}
+        )
+        profile["needs_deletion"] = bool(
+            needs_deletion
+            if needs_deletion is not None
+            else status_value in {"checkpoint", "human_verification", "video_selfie"}
+        )
+        if linked_credential_id is not None:
+            profile["linked_credential_id"] = linked_credential_id
+        self._save_state()
+        return copy.deepcopy(profile)
+
+    def is_recent_performance_locked(self, profile_name: str, window: int = 5) -> bool:
+        profile = self.get_profile_state(profile_name) or {}
+        history = list(profile.get("usage_history") or [])
+        non_infra_attempts = [
+            item
+            for item in reversed(history)
+            if str(item.get("failure_type") or "").lower() != "infrastructure"
+        ]
+        if len(non_infra_attempts) < window:
+            return False
+        sample = non_infra_attempts[:window]
+        return all(not bool(item.get("success")) for item in sample)
 
     def _clear_restriction(self, profile_name: str):
         """Clear restriction on a profile (internal use for auto-expiry)."""
@@ -782,12 +852,26 @@ class ProfileManager:
         week_success = 0
         restricted_count = 0
         active_count = 0
+        auth_valid_count = 0
+        auth_invalid_count = 0
+        needs_attention_count = 0
+        needs_deletion_count = 0
 
         for profile_name, profile in self.state["profiles"].items():
             if profile.get("status") == "restricted":
                 restricted_count += 1
             else:
                 active_count += 1
+
+            health_status = str(profile.get("health_status") or "unknown").strip().lower()
+            if health_status == "healthy":
+                auth_valid_count += 1
+            elif health_status in BLOCKED_SESSION_STATES or profile.get("needs_deletion"):
+                auth_invalid_count += 1
+            if profile.get("needs_attention"):
+                needs_attention_count += 1
+            if profile.get("needs_deletion"):
+                needs_deletion_count += 1
 
             daily_stats = profile.get("daily_stats", {})
 
@@ -816,7 +900,11 @@ class ProfileManager:
             "profiles": {
                 "active": active_count,
                 "restricted": restricted_count,
-                "total": active_count + restricted_count
+                "total": active_count + restricted_count,
+                "auth_valid": auth_valid_count,
+                "auth_invalid": auth_invalid_count,
+                "needs_attention": needs_attention_count,
+                "needs_deletion": needs_deletion_count,
             }
         }
 
@@ -856,6 +944,13 @@ class ProfileManager:
             "reservation_source": reservation.get("source"),
             "reservation_owner": reservation.get("owner"),
             "reservation_metadata": reservation.get("metadata"),
+            "health_status": profile.get("health_status", "unknown"),
+            "health_reason": profile.get("health_reason"),
+            "last_health_check_at": profile.get("last_health_check_at"),
+            "needs_attention": bool(profile.get("needs_attention", False)),
+            "needs_deletion": bool(profile.get("needs_deletion", False)),
+            "linked_credential_id": profile.get("linked_credential_id"),
+            "recent_performance_locked": self.is_recent_performance_locked(normalized),
             "recovery_state": profile.get("recovery_state", "none"),
             "recovery_last_event": profile.get("recovery_last_event"),
             "recovery_last_event_at": profile.get("recovery_last_event_at"),
