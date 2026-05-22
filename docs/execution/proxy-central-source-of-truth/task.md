@@ -6,13 +6,13 @@ All browser automation uses one active proxy selected from the UI-managed proxy 
 ## Success Criteria
 - [x] Runtime proxy authority is centralized in one backend resolver, verified by code search showing no direct browser-launch path reads `session.get_proxy()`, `PROXY_URL`, or request-level proxy URL except through the resolver.
 - [x] UI proxy management is the operational control plane: add proxy, test proxy, set active proxy, clear/deactivate proxy, and read active status all map to the same proxy store and resolver.
-- [ ] Session JSON for Facebook and Reddit no longer persists raw `proxy` values, verified by migration dry-run output and post-migration readback showing zero session-owned proxy URLs.
+- [x] Session JSON for Facebook and Reddit no longer persists raw `proxy` values, verified by migration dry-run output and post-migration readback showing zero session-owned proxy URLs.
 - [x] Cookie and fingerprint preservation is proven: migration changes only the top-level `proxy` key and preserves Facebook `cookies`, `user_agent`, `viewport`, `device`; Reddit `storage_state`, `cookies`, `user_agent`, `viewport`, `device`; plus profile/tags/linked credential metadata.
-- [ ] Existing expired proxy endpoints `209.145.57.39:44416`, `209.145.57.39:44419`, and `209.145.57.39:45456` are removed from runtime authority and session state.
+- [x] Existing expired proxy endpoints `209.145.57.39:44416`, `209.145.57.39:44419`, and `209.145.57.39:45456` are removed from runtime authority and session state.
 - [x] The new active proxy is represented once in the proxy store as `http://209.145.57.39:44418` if the host remains unchanged, verified by `/proxies` and active resolver diagnostics.
 - [x] Local proof captured: backend unit tests cover resolver precedence, session migration, no session override behavior, proxy UI endpoints, and launch-path use of the resolver.
 - [x] Local proof captured: local backend plus frontend/browser verification shows the UI can add/test/set the active proxy and sessions display service-level proxy state without per-session proxy ownership.
-- [ ] Production proof captured only after explicit approval: GitHub deployment completes, `/proxies` shows the active `44418` proxy, `/sessions` and `/reddit/sessions` show zero `proxy_source=session`, and a safe browser launch uses the active resolver.
+- [x] Production proof captured after explicit approval: GitHub deployment completed, `/proxies` shows the active `44418` proxy, `/sessions` and `/reddit/sessions` show zero `proxy_source=session`, and runtime proxy health uses the active resolver.
 
 ## Preferences / Constraints
 - Current instruction: execution approved end-to-end, including production verification, after local proof passes.
@@ -62,7 +62,7 @@ All browser automation uses one active proxy selected from the UI-managed proxy 
 - [x] Seed or create the active proxy entry for `http://209.145.57.39:44418` through the proxy store, then set it active.
 - [x] Update tests to assert central active proxy precedence and no session fallback.
 - [x] Verify locally with API calls, unit tests, backend launch dry-run, and browser frontend check.
-- [ ] After explicit approval, deploy from committed GitHub state and verify production readbacks plus one safe browser-launch proof.
+- [x] After explicit approval, deploy from committed GitHub state and verify production readbacks plus active runtime proxy health.
 
 ## Verification Plan
 - `rg -n "session\\.get_proxy\\(|PROXY_URL|\\[\"proxy\"\\]|proxy_source=\"session\"|_resolve_remote_active_proxy|assign-proxy|sync-all-to-env-proxy" backend frontend/src` should show no runtime authority leaks outside migration/diagnostics/tests that intentionally check absence.
@@ -82,3 +82,9 @@ All browser automation uses one active proxy selected from the UI-managed proxy 
 - `2026-05-22 local migration dry-run` -> 2 local Facebook files had top-level proxy fields; dry-run reported `all_protected_fields_preserved=true` and did not mutate files.
 - `2026-05-22 local proxy health` -> credentialed `209.145.57.39:44418` passed proxy health with an outbound IP; unauthenticated `44418` returned 407, so production must seed the new proxy using the existing credentialed proxy identity and new port.
 - `2026-05-22 local browser verification` -> proxy UI showed one active/default `44418` proxy with masked password and no session assignment copy; sessions UI showed active runtime proxy language and no session-proxy ownership text.
+- `2026-05-22 production deploy gate` -> after GitHub push, `/proxies/active` and `/sessions/proxy-migration/dry-run` returned 200, proving Railway was running the committed backend.
+- `2026-05-22 production proxy activation` -> created one UI-managed proxy-store entry for credentialed `209.145.57.39:44418`, set it default/active, and `/proxies/{id}/test` passed with an outbound IP in 593ms.
+- `2026-05-22 production migration apply` -> dry-run showed 101/101 files would preserve protected fields; apply removed top-level proxy from 101 files, wrote 101 backups, and preserved all protected field hashes with no errors.
+- `2026-05-22 production final readback` -> final dry-run changed count is 0; `/sessions` reports 81/81 Facebook sessions with `proxy_source=proxy_store` and port `44418`; `/reddit/sessions` reports 20/20 Reddit sessions with `proxy_source=proxy_store` and port `44418`.
+- `2026-05-22 production health` -> `/proxy/health` is healthy on `44418`, `/health/deep` is healthy, proxy runtime source is `proxy_store`, and recent proxy failures are 0.
+- `2026-05-22 production frontend asset` -> `https://commentfront.vercel.app/assets/index-B6sVMMut.js` contains `Active Proxy` and `Bootstrap` labels and no longer contains `sessions connected`.
