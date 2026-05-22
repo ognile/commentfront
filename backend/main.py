@@ -20,6 +20,7 @@ from users import user_manager
 
 # Maximum concurrent browser sessions for campaigns
 MAX_CONCURRENT = 5
+SESSION_HEALTH_CHECK_TIMEOUT_SECONDS = 90
 import logging
 import os
 import hashlib
@@ -514,7 +515,18 @@ class QueueProcessor:
             }
 
         linked_credential = self._resolve_linked_credential(profile_name, session)
-        test_result = await test_session(session, get_active_proxy())
+        try:
+            test_result = await asyncio.wait_for(
+                test_session(session, get_active_proxy()),
+                timeout=SESSION_HEALTH_CHECK_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            test_result = {
+                "valid": False,
+                "health_status": AUTH_HEALTH_INFRA_BLOCKED,
+                "health_reason": f"session health check timed out after {SESSION_HEALTH_CHECK_TIMEOUT_SECONDS}s",
+                "error": f"session health check timed out after {SESSION_HEALTH_CHECK_TIMEOUT_SECONDS}s",
+            }
         health_status = str(test_result.get("health_status") or AUTH_HEALTH_NEEDS_ATTENTION).strip().lower()
         health_reason = test_result.get("health_reason") or test_result.get("error")
 
@@ -557,7 +569,18 @@ class QueueProcessor:
                 refreshed_profile_name = str(regen_result.get("profile_name") or profile_name).strip() or profile_name
                 refreshed_session = FacebookSession(refreshed_profile_name)
                 if refreshed_session.load():
-                    retest_result = await test_session(refreshed_session, get_active_proxy())
+                    try:
+                        retest_result = await asyncio.wait_for(
+                            test_session(refreshed_session, get_active_proxy()),
+                            timeout=SESSION_HEALTH_CHECK_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        retest_result = {
+                            "valid": False,
+                            "health_status": AUTH_HEALTH_INFRA_BLOCKED,
+                            "health_reason": f"session regeneration retest timed out after {SESSION_HEALTH_CHECK_TIMEOUT_SECONDS}s",
+                            "error": f"session regeneration retest timed out after {SESSION_HEALTH_CHECK_TIMEOUT_SECONDS}s",
+                        }
                     retest_status = str(retest_result.get("health_status") or AUTH_HEALTH_NEEDS_ATTENTION).strip().lower()
                     retest_reason = retest_result.get("health_reason") or retest_result.get("error")
                     if retest_result.get("valid"):

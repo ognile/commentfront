@@ -893,6 +893,35 @@ def test_retry_result_normalizes_null_total_count_for_crashed_campaigns():
     assert updated["status"] == "completed"
 
 
+def test_session_health_check_timeout_returns_infra_blocked(monkeypatch):
+    class FakeFacebookSession:
+        def __init__(self, profile_name: str):
+            self.profile_name = profile_name
+
+        def load(self) -> bool:
+            return True
+
+    async def slow_test_session(*_args, **_kwargs):
+        await asyncio.sleep(1)
+        return {"valid": True, "health_status": "healthy"}
+
+    monkeypatch.setattr(main, "SESSION_HEALTH_CHECK_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(main, "FacebookSession", FakeFacebookSession)
+    monkeypatch.setattr(main, "test_session", slow_test_session)
+
+    result = asyncio.run(
+        main.queue_processor._test_and_repair_session(
+            profile_manager=object(),
+            profile_name="slow_profile",
+            allow_regenerate=False,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["health_status"] == main.AUTH_HEALTH_INFRA_BLOCKED
+    assert "timed out" in result["health_reason"]
+
+
 def test_last_three_days_recovery_ledger_captures_active_and_no_result_failed_campaigns():
     recent = datetime.utcnow().isoformat()
     old = (datetime.utcnow() - timedelta(days=5)).isoformat()
