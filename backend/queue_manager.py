@@ -64,6 +64,26 @@ def get_campaign_remaining_failed_jobs(campaign: dict) -> int:
     return max(0, total_jobs - success_count)
 
 
+def refresh_campaign_delivery_counts(campaign: dict) -> None:
+    """Normalize campaign delivery counters after retry results are appended."""
+    results = campaign.get("results") or []
+    job_successes = {}
+    original_job_count = get_campaign_total_jobs(campaign)
+
+    for result in results:
+        try:
+            job_idx = int(result.get("job_index", 0))
+        except (TypeError, ValueError):
+            job_idx = 0
+        if not result.get("is_retry"):
+            original_job_count = max(original_job_count, job_idx + 1)
+        if result.get("success"):
+            job_successes[job_idx] = True
+
+    campaign["success_count"] = len(job_successes)
+    campaign["total_count"] = original_job_count
+
+
 def get_campaign_retry_overdue_seconds(campaign: dict, now: Optional[datetime] = None) -> Optional[int]:
     """Return overdue seconds for scheduled retries, otherwise None."""
     auto_retry = campaign.get("auto_retry") or {}
@@ -610,25 +630,10 @@ class CampaignQueueManager:
                 # Add the retry result
                 campaign["results"].append(result)
 
-                # Recalculate success_count as unique job_indexes with at least one success
-                # This ensures retries don't double-count and properly update status
-                job_successes = {}
-                original_job_count = 0
-                for r in campaign["results"]:
-                    job_idx = r.get("job_index", 0)
-                    # Track the highest job_index to determine original job count
-                    if not r.get("is_retry"):
-                        original_job_count = max(original_job_count, job_idx + 1)
-                    if r.get("success"):
-                        job_successes[job_idx] = True
-
-                campaign["success_count"] = len(job_successes)
-                # total_count should stay as original number of comments (don't increment for retries)
-                if original_job_count > 0:
-                    campaign["total_count"] = original_job_count
+                refresh_campaign_delivery_counts(campaign)
 
                 # Update status if all original jobs now have a success
-                if campaign["success_count"] >= campaign.get("total_count", 0):
+                if campaign["success_count"] >= campaign["total_count"]:
                     campaign["status"] = "completed"
 
                 # Mark as having retries
@@ -671,24 +676,10 @@ class CampaignQueueManager:
                 # Add all retry results
                 campaign["results"].extend(results)
 
-                # Recalculate success_count as unique job_indexes with at least one success
-                job_successes = {}
-                original_job_count = 0
-                for r in campaign["results"]:
-                    job_idx = r.get("job_index", 0)
-                    # Track the highest job_index to determine original job count
-                    if not r.get("is_retry"):
-                        original_job_count = max(original_job_count, job_idx + 1)
-                    if r.get("success"):
-                        job_successes[job_idx] = True
-
-                campaign["success_count"] = len(job_successes)
-                # total_count should stay as original number of comments
-                if original_job_count > 0:
-                    campaign["total_count"] = original_job_count
+                refresh_campaign_delivery_counts(campaign)
 
                 # Update status if all original jobs now have a success
-                if campaign["success_count"] >= campaign.get("total_count", 0):
+                if campaign["success_count"] >= campaign["total_count"]:
                     campaign["status"] = "completed"
 
                 # Mark as having retries
@@ -998,18 +989,7 @@ class CampaignQueueManager:
             campaign["results"] = []
         campaign["results"].append(result)
 
-        # Recalculate success_count
-        job_successes = {}
-        original_job_count = 0
-        for r in campaign["results"]:
-            idx = r.get("job_index", 0)
-            if not r.get("is_retry"):
-                original_job_count = max(original_job_count, idx + 1)
-            if r.get("success"):
-                job_successes[idx] = True
-        campaign["success_count"] = len(job_successes)
-        if original_job_count > 0:
-            campaign["total_count"] = original_job_count
+        refresh_campaign_delivery_counts(campaign)
         campaign["has_retries"] = True
         campaign["last_retry_at"] = datetime.utcnow().isoformat()
 
@@ -1061,8 +1041,8 @@ class CampaignQueueManager:
         ar["status"] = final_status
         ar["completed_at"] = datetime.utcnow().isoformat()
 
-        # Update campaign status if all jobs now succeeded
-        if campaign.get("success_count", 0) >= campaign.get("total_count", 0):
+        refresh_campaign_delivery_counts(campaign)
+        if campaign["success_count"] >= campaign["total_count"]:
             campaign["status"] = "completed"
 
         self.save()

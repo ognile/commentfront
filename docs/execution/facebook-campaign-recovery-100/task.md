@@ -66,3 +66,5 @@ Facebook campaign delivery for every run created or executed in the last 3 days 
 - `2026-05-22 local tests` -> `pytest -q backend/tests/test_broadcast_reliability.py backend/tests/test_queue_drafts_recovery.py` passed 19 tests; `pytest -q backend/tests` passed 411 tests.
 - `2026-05-22 local api verification` -> local uvicorn on `127.0.0.1:8117` served `/queue/last-3-days-recovery-ledger?hours_back=72`, `/queue/retry-all-failed/status`, and `/health/deep` successfully.
 - `2026-05-22 browser verification fallback` -> bundled Playwright opened `http://127.0.0.1:8117/queue/last-3-days-recovery-ledger?hours_back=72` and read the expected JSON ledger response.
+- `2026-05-22 production retry discovery` -> first bulk retry recovered one job in two no-result campaigns, then retry persistence hit `'>=' not supported between instances of 'int' and 'NoneType'` because raw crashed campaigns had `total_count=null`.
+- `2026-05-22 retry persistence fix` -> retry result writes now normalize `success_count` and `total_count` from stored campaign jobs/comments before status comparison; local focused tests passed 20 tests and full backend passed 412 tests.

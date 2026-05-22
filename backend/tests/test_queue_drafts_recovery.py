@@ -847,6 +847,52 @@ def test_build_failed_retry_jobs_includes_crashed_jobs_with_no_results():
     ]
 
 
+def test_retry_result_normalizes_null_total_count_for_crashed_campaigns():
+    campaign_id = "campaign_crashed_without_counts"
+    main.queue_manager.history = [
+        {
+            "id": campaign_id,
+            "status": "failed",
+            "url": VALID_URL,
+            "comments": ["first", "second"],
+            "success_count": None,
+            "total_count": None,
+            "created_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat(),
+            "results": [],
+        }
+    ]
+
+    updated = main.queue_manager.add_retry_result(
+        campaign_id,
+        {
+            "job_index": 0,
+            "comment": "first",
+            "success": True,
+            "is_retry": True,
+        },
+    )
+
+    assert updated is not None
+    assert updated["success_count"] == 1
+    assert updated["total_count"] == 2
+    assert updated["status"] == "failed"
+
+    updated = main.queue_manager.add_retry_result(
+        campaign_id,
+        {
+            "job_index": 1,
+            "comment": "second",
+            "success": True,
+            "is_retry": True,
+        },
+    )
+
+    assert updated["success_count"] == 2
+    assert updated["total_count"] == 2
+    assert updated["status"] == "completed"
+
+
 def test_last_three_days_recovery_ledger_captures_active_and_no_result_failed_campaigns():
     recent = datetime.utcnow().isoformat()
     old = (datetime.utcnow() - timedelta(days=5)).isoformat()

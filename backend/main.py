@@ -6297,7 +6297,8 @@ async def _run_retry_all(failed_campaigns: list, profile_manager, proxy_ip: str)
         "jobs_succeeded": 0,
         "jobs_exhausted": 0,
         "total_attempts": 0,
-        "campaign_results": []
+        "campaign_results": [],
+        "campaign_errors": [],
     }
 
     try:
@@ -6332,8 +6333,15 @@ async def _run_retry_all(failed_campaigns: list, profile_manager, proxy_ip: str)
                 if updated and updated.get("success_count", 0) >= updated.get("total_count", 0):
                     _retry_all_progress["campaigns_succeeded"] += 1
             except Exception as e:
-                logger.error(f"Retry-all: campaign {index} failed with exception: {e}")
+                logger.exception(f"Retry-all: campaign {index} failed with exception")
                 _retry_all_progress["campaigns_completed"] += 1
+                _retry_all_progress["campaign_errors"].append(
+                    {
+                        "campaign_id": campaign.get("id"),
+                        "campaign_index": index,
+                        "error": str(e),
+                    }
+                )
 
         logger.info(f"Retry-all: launching {len(failed_campaigns)} campaigns (max {MAX_PARALLEL_CAMPAIGNS} concurrent)")
         await asyncio.gather(
@@ -6349,7 +6357,8 @@ async def _run_retry_all(failed_campaigns: list, profile_manager, proxy_ip: str)
             "total_jobs_succeeded": _retry_all_progress["jobs_succeeded"],
             "total_jobs_exhausted": _retry_all_progress["jobs_exhausted"],
             "total_attempts": _retry_all_progress["total_attempts"],
-            "campaign_results": _retry_all_progress["campaign_results"]
+            "campaign_results": _retry_all_progress["campaign_results"],
+            "campaign_errors": _retry_all_progress["campaign_errors"],
         }
 
         await broadcast_update("bulk_retry_all_complete", summary)
