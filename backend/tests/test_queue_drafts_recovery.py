@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -829,6 +829,74 @@ def test_build_failed_retry_jobs_prefers_campaign_comment_over_busy_row():
         {"job_index": 0, "comment": "first comment", "original_profile": "busy_profile"},
         {"job_index": 1, "comment": "second comment", "original_profile": "profile_b"},
     ]
+
+
+def test_build_failed_retry_jobs_includes_crashed_jobs_with_no_results():
+    campaign = {
+        "comments": ["first crashed comment", "second crashed comment"],
+        "results": [],
+        "success_count": 0,
+        "total_count": 2,
+    }
+
+    failed_jobs = main._build_failed_retry_jobs(campaign)
+
+    assert failed_jobs == [
+        {"job_index": 0, "comment": "first crashed comment", "original_profile": ""},
+        {"job_index": 1, "comment": "second crashed comment", "original_profile": ""},
+    ]
+
+
+def test_last_three_days_recovery_ledger_captures_active_and_no_result_failed_campaigns():
+    recent = datetime.utcnow().isoformat()
+    old = (datetime.utcnow() - timedelta(days=5)).isoformat()
+    main.queue_manager.campaigns = {
+        "active_campaign": {
+            "id": "active_campaign",
+            "status": "pending",
+            "url": VALID_URL,
+            "comments": ["active job"],
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": recent,
+            "results": [],
+        }
+    }
+    main.queue_manager.history = [
+        {
+            "id": "crashed_campaign",
+            "status": "failed",
+            "url": VALID_URL,
+            "comments": ["recover me"],
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": recent,
+            "completed_at": recent,
+            "error": "Set changed size during iteration",
+            "results": [],
+        },
+        {
+            "id": "old_campaign",
+            "status": "failed",
+            "url": VALID_URL,
+            "comments": ["too old"],
+            "success_count": 0,
+            "total_count": 1,
+            "created_at": old,
+            "completed_at": old,
+            "results": [],
+        },
+    ]
+
+    ledger = main._build_last_three_days_recovery_ledger(72)
+    rows = {row["id"]: row for row in ledger["campaigns"]}
+
+    assert set(rows) == {"active_campaign", "crashed_campaign"}
+    assert rows["active_campaign"]["recovery_state"] == "recovering"
+    assert rows["crashed_campaign"]["recovery_state"] == "retryable"
+    assert rows["crashed_campaign"]["retryable_jobs"] == 1
+    assert rows["crashed_campaign"]["failure_classes"] == {"missing_result_evidence": 1}
+    assert ledger["summary"]["jobs_remaining"] == 2
 
 
 def test_retry_all_uses_campaign_comment_when_first_failure_was_profile_busy(monkeypatch):

@@ -69,6 +69,7 @@ from campaign_ai_product_store import get_campaign_ai_product_store
 from queue_manager import (
     CampaignQueueManager,
     canonicalize_campaign_jobs,
+    decorate_campaign_delivery,
     find_duplicate_text_conflicts,
     near_duplicate_ratio,
     get_campaign_success_count,
@@ -199,7 +200,7 @@ async def broadcast_update(update_type: str, data: dict):
         return
     message = json.dumps({"type": update_type, "data": data, "timestamp": datetime.now().isoformat()})
     disconnected = set()
-    for ws in active_connections:
+    for ws in list(active_connections):
         try:
             await ws.send_text(message)
         except WebSocketDisconnect:
@@ -5650,24 +5651,59 @@ def _first_non_empty_retry_text(*values: Any) -> str:
     return ""
 
 
+def _parse_campaign_timestamp(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return None
+
+
+def _campaign_touches_window(campaign: Dict[str, Any], cutoff: datetime) -> bool:
+    for field in ("created_at", "started_at", "completed_at", "last_retry_at"):
+        timestamp = _parse_campaign_timestamp(campaign.get(field))
+        if timestamp and timestamp >= cutoff:
+            return True
+    return False
+
+
+def _campaign_job_text(campaign: Dict[str, Any], idx: int) -> str:
+    jobs = campaign.get("jobs") or []
+    if idx < len(jobs) and isinstance(jobs[idx], dict):
+        job = jobs[idx]
+        return _first_non_empty_retry_text(job.get("comment"), job.get("text"))
+
+    comments = campaign.get("comments") or []
+    if idx < len(comments):
+        return _first_non_empty_retry_text(comments[idx])
+
+    return ""
+
+
 def _build_failed_retry_jobs(campaign: Dict[str, Any]) -> List[Dict[str, Any]]:
     results = campaign.get("results", []) or []
-    campaign_comments = campaign.get("comments", []) or []
     job_results: Dict[int, List[Dict[str, Any]]] = {}
 
     for result in results:
-        idx = int(result.get("job_index", 0))
+        try:
+            idx = int(result.get("job_index", 0))
+        except (TypeError, ValueError):
+            idx = 0
         job_results.setdefault(idx, []).append(result)
 
+    total_jobs = get_campaign_total_jobs(campaign)
+    candidate_indexes = set(range(total_jobs))
+    candidate_indexes.update(job_results.keys())
+
     failed_jobs: List[Dict[str, Any]] = []
-    for idx in sorted(job_results):
-        rows = job_results[idx]
+    for idx in sorted(candidate_indexes):
+        rows = job_results.get(idx, [])
         if any(row.get("success") for row in rows):
             continue
 
-        campaign_comment = campaign_comments[idx] if idx < len(campaign_comments) else None
         comment = _first_non_empty_retry_text(
-            campaign_comment,
+            _campaign_job_text(campaign, idx),
             *(
                 _first_non_empty_retry_text(row.get("comment"), row.get("text"))
                 for row in rows
@@ -5684,6 +5720,155 @@ def _build_failed_retry_jobs(campaign: Dict[str, Any]) -> List[Dict[str, Any]]:
         )
 
     return failed_jobs
+
+
+def _classify_recovery_failure(result: Optional[Dict[str, Any]]) -> str:
+    if not result:
+        return "missing_result_evidence"
+
+    error = str(result.get("error") or "").lower()
+    method = str(result.get("method") or "").lower()
+    health_status = str(result.get("session_health_status") or "").lower()
+
+    if "set changed size during iteration" in error:
+        return "broadcast_concurrency"
+    if "no healthy profiles" in error or "no eligible profiles" in error:
+        return "profile_pool_exhaustion"
+    if health_status in SESSION_BLOCKED_STATES:
+        return "auth_blocker"
+    if any(token in error for token in ("proxy", "timeout", "net::", "connection", "network", "err_empty_response", "err_connection")):
+        return "infra_transport"
+    if "post not visible" in error:
+        return "post_visibility"
+    if "comment not posted" in error or "comments are present" in error:
+        return "verification"
+    if method == "exhausted":
+        return "exhausted"
+    return "automation_or_platform"
+
+
+def _campaign_recovery_row(campaign: Dict[str, Any], source: str, now: datetime) -> Dict[str, Any]:
+    decorated = decorate_campaign_delivery(campaign, now=now)
+    total_jobs = get_campaign_total_jobs(decorated)
+    success_count = get_campaign_success_count(decorated)
+    failed_jobs = _build_failed_retry_jobs(decorated)
+
+    results_by_job: Dict[int, List[Dict[str, Any]]] = {}
+    for result in decorated.get("results", []) or []:
+        try:
+            idx = int(result.get("job_index", 0))
+        except (TypeError, ValueError):
+            idx = 0
+        results_by_job.setdefault(idx, []).append(result)
+
+    successful_indexes = {
+        idx
+        for idx, rows in results_by_job.items()
+        if any(row.get("success") for row in rows)
+    }
+    remaining_indexes = [idx for idx in range(total_jobs) if idx not in successful_indexes]
+    unresolved_jobs = []
+    failure_classes: Dict[str, int] = {}
+    for idx in remaining_indexes:
+        rows = results_by_job.get(idx, [])
+        last_failure = next((row for row in reversed(rows) if not row.get("success")), None)
+        failure_class = _classify_recovery_failure(last_failure)
+        failure_classes[failure_class] = failure_classes.get(failure_class, 0) + 1
+        unresolved_jobs.append(
+            {
+                "job_index": idx,
+                "failure_class": failure_class,
+                "last_error": (last_failure or {}).get("error"),
+                "has_result_evidence": bool(rows),
+                "retryable": bool(_campaign_job_text(decorated, idx) or rows),
+            }
+        )
+
+    status = str(decorated.get("status") or "").lower()
+    auto_retry_status = str((decorated.get("auto_retry") or {}).get("status") or "").lower()
+    if success_count >= total_jobs:
+        recovery_state = "delivered"
+    elif source == "active" or status in ("pending", "processing") or auto_retry_status in ("scheduled", "in_progress"):
+        recovery_state = "recovering"
+    elif failed_jobs:
+        recovery_state = "retryable"
+    else:
+        recovery_state = "blocked_no_retry_payload"
+
+    return {
+        "id": decorated.get("id"),
+        "source": source,
+        "status": decorated.get("status"),
+        "created_at": decorated.get("created_at"),
+        "started_at": decorated.get("started_at"),
+        "completed_at": decorated.get("completed_at"),
+        "last_retry_at": decorated.get("last_retry_at"),
+        "url": decorated.get("url"),
+        "total_jobs": total_jobs,
+        "success_count": success_count,
+        "remaining_jobs": max(0, total_jobs - success_count),
+        "retryable_jobs": len(failed_jobs),
+        "results_count": len(decorated.get("results", []) or []),
+        "delivery_state": decorated.get("delivery_state"),
+        "recovery_state": recovery_state,
+        "failure_classes": failure_classes,
+        "unresolved_jobs": unresolved_jobs[:20],
+    }
+
+
+def _build_last_three_days_recovery_ledger(hours_back: int) -> Dict[str, Any]:
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=hours_back)
+    rows: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+
+    for campaign in queue_manager.campaigns.values():
+        campaign_id = campaign.get("id")
+        if campaign_id and campaign_id in seen_ids:
+            continue
+        if not _campaign_touches_window(campaign, cutoff):
+            continue
+        rows.append(_campaign_recovery_row(campaign, "active", now))
+        if campaign_id:
+            seen_ids.add(campaign_id)
+
+    for campaign in queue_manager.get_history(limit=queue_manager.MAX_HISTORY):
+        campaign_id = campaign.get("id")
+        if campaign_id and campaign_id in seen_ids:
+            continue
+        if not _campaign_touches_window(campaign, cutoff):
+            continue
+        rows.append(_campaign_recovery_row(campaign, "history", now))
+        if campaign_id:
+            seen_ids.add(campaign_id)
+
+    summary = {
+        "campaigns_total": len(rows),
+        "campaigns_delivered": sum(1 for row in rows if row["recovery_state"] == "delivered"),
+        "campaigns_recovering": sum(1 for row in rows if row["recovery_state"] == "recovering"),
+        "campaigns_retryable": sum(1 for row in rows if row["recovery_state"] == "retryable"),
+        "campaigns_blocked": sum(1 for row in rows if row["recovery_state"] == "blocked_no_retry_payload"),
+        "jobs_total": sum(row["total_jobs"] for row in rows),
+        "jobs_successful": sum(row["success_count"] for row in rows),
+        "jobs_remaining": sum(row["remaining_jobs"] for row in rows),
+        "jobs_retryable": sum(row["retryable_jobs"] for row in rows),
+    }
+    summary["delivery_rate"] = (
+        round(summary["jobs_successful"] / summary["jobs_total"] * 100, 2)
+        if summary["jobs_total"]
+        else 100.0
+    )
+
+    return {
+        "success": True,
+        "window": {
+            "hours_back": hours_back,
+            "cutoff": cutoff.isoformat(),
+            "now": now.isoformat(),
+        },
+        "summary": summary,
+        "campaigns": rows,
+    }
 
 
 async def _retry_single_campaign(
@@ -6222,9 +6407,11 @@ async def retry_all_failed_campaigns(
     if unblocked_count:
         logger.info(f"Retry-all: unblocked {unblocked_count} auto-burned profiles with stats reset")
 
-    # Find all campaigns with failures in the time window
+    # Find all campaigns with failures in the time window. Use any campaign
+    # lifecycle timestamp so campaigns that crashed before completion results
+    # are still eligible for recovery.
     cutoff = datetime.utcnow() - timedelta(hours=hours_back)
-    all_history = queue_manager.get_history(limit=100)
+    all_history = queue_manager.get_history(limit=queue_manager.MAX_HISTORY)
 
     failed_campaigns = []
     for campaign in all_history:
@@ -6234,13 +6421,8 @@ async def retry_all_failed_campaigns(
             continue
         if sc >= tc:
             continue
-        completed_at = campaign.get("completed_at")
-        if completed_at:
-            try:
-                if datetime.fromisoformat(completed_at.replace("Z", "+00:00")).replace(tzinfo=None) < cutoff:
-                    continue
-            except (ValueError, TypeError):
-                pass
+        if not _campaign_touches_window(campaign, cutoff):
+            continue
         failed_campaigns.append(campaign)
 
     if not failed_campaigns:
@@ -6261,6 +6443,15 @@ async def retry_all_failed_campaigns(
         "unblocked_profiles": unblocked_count,
         "message": f"Retrying {len(failed_campaigns)} campaigns in parallel (max {MAX_PARALLEL_CAMPAIGNS} at a time)"
     }
+
+
+@app.get("/queue/last-3-days-recovery-ledger")
+async def last_three_days_recovery_ledger(
+    hours_back: int = Query(default=72, ge=1, le=168),
+    current_user: dict = Depends(get_current_user),
+) -> Dict:
+    """Return the exact recovery ledger for campaigns created or executed in the last N hours."""
+    return _build_last_three_days_recovery_ledger(hours_back)
 
 
 @app.get("/queue/retry-all-failed/status")

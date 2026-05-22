@@ -43,13 +43,13 @@ Facebook campaign delivery for every run created or executed in the last 3 days 
 | reliability audit | `/queue/reliability-audit?lookback_days=14&min_total_count=1`: verdict `needs fixes before trust`, 638 jobs, 564 final completed, 16 unrecovered, root causes include infra/transport, navigation, post-verification, other | audit only sees history window and does not include all pending backlog | current reliability endpoint undercounts total recovery work | use it as one signal, not the full source of truth |
 
 ## Proposed Execution Sequence
-- [ ] Add a read-only last-3-days recovery ledger that merges pending queue, history, retry metadata, result-level failures, and profile health into one timestamp-bounded source of truth.
-- [ ] Fix websocket broadcast concurrency by iterating over a snapshot of active connections and preserving disconnect cleanup.
-- [ ] Add failed-campaign recovery for campaigns with zero result rows: synthesize retryable failed jobs from stored `jobs`/`comments` while preserving original campaign IDs and comments.
+- [x] Add a read-only last-3-days recovery ledger that merges pending queue, history, retry metadata, result-level failures, and profile health into one timestamp-bounded source of truth.
+- [x] Fix websocket broadcast concurrency by iterating over a snapshot of active connections and preserving disconnect cleanup.
+- [x] Add failed-campaign recovery for campaigns with zero result rows: synthesize retryable failed jobs from stored `jobs`/`comments` while preserving original campaign IDs and comments.
 - [ ] Add profile-health retest workflow for `infra_blocked` sessions under the active proxy; only clear state when the authenticated shell is proven.
-- [ ] Tighten retry selection so it targets the last-3-days recovery ledger, includes no-result failed campaigns and pending recovered campaigns, but excludes true auth blockers and impossible posts.
+- [x] Tighten retry selection so it targets the last-3-days recovery ledger, includes no-result failed campaigns and pending recovered campaigns, but excludes true auth blockers and impossible posts.
 - [ ] Add forensic gates for older navigation/post-verification failures before reposting: inspect screenshot/artifact if available, then classify as retryable or impossible.
-- [ ] Run local tests and localhost/browser queue verification.
+- [x] Run local tests and localhost/browser queue verification.
 - [ ] Deploy from committed GitHub state and verify production endpoints are on the new build.
 - [ ] Execute production recovery in controlled batches, reading back each batch until every last-3-days job is successful or explicitly impossible.
 
@@ -63,3 +63,6 @@ Facebook campaign delivery for every run created or executed in the last 3 days 
 - `2026-05-22 profile health audit` -> 35 profiles are `infra_blocked` from `Page.goto: Timeout 60000ms exceeded`; 6 profiles are true auth blockers requiring attention/deletion.
 - `2026-05-22 reliability audit` -> 14-day reliability endpoint verdict is `needs fixes before trust`; dominant retry triggers are infra/transport, page-load/navigation, and post-verification.
 - `2026-05-22 user scope clarification` -> north star is specifically last 3 days runs all 100% delivery, not only today's visible backlog or last 100 history rows.
+- `2026-05-22 local tests` -> `pytest -q backend/tests/test_broadcast_reliability.py backend/tests/test_queue_drafts_recovery.py` passed 19 tests; `pytest -q backend/tests` passed 411 tests.
+- `2026-05-22 local api verification` -> local uvicorn on `127.0.0.1:8117` served `/queue/last-3-days-recovery-ledger?hours_back=72`, `/queue/retry-all-failed/status`, and `/health/deep` successfully.
+- `2026-05-22 browser verification fallback` -> bundled Playwright opened `http://127.0.0.1:8117/queue/last-3-days-recovery-ledger?hours_back=72` and read the expected JSON ledger response.
