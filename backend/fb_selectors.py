@@ -139,13 +139,17 @@ COMMENT = {
         # Facebook mobile comment input - various possible selectors
         'div[aria-label="Write a comment..."]',  # Exact match (Gemini suggested)
         'div[aria-label*="Write a comment"]',    # Partial match
+        'div[aria-label*="Write an answer" i]',   # Some Facebook posts use answer composer copy
         'div[contenteditable="true"]',
         'div[role="textbox"]',
         'textarea[role="combobox"]',             # Some posts render textarea instead of div
         'textarea[name="comment_text"]',
         'input[placeholder*="Write a comment"]',
+        'input[placeholder*="Write an answer" i]',
         'div[data-placeholder*="comment"]',
+        'div[data-placeholder*="answer" i]',
         '[contenteditable][aria-label*="comment"]',
+        '[contenteditable][aria-label*="answer" i]',
     ],
     "comment_submit": [
         # Facebook mobile send/post button

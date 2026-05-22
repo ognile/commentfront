@@ -232,7 +232,7 @@ IMAGE SIZE: 393 pixels wide, 873 pixels tall.
 Coordinates must be: x between 0-393, y between 0-873.
 
 The input field is:
-- A text box saying "Write a comment..." or similar placeholder
+- A text box saying "Write a comment...", "Write an answer...", or similar placeholder
 - Located at the bottom of the screen
 - May have a small profile picture to the LEFT of it
 - Has a white/light background with gray placeholder text
@@ -291,7 +291,7 @@ Do NOT write anything else. Just one line in the format above.""",
     "comments_opened": """Analyze this Facebook mobile screenshot.
 
 Check if the COMMENTS SECTION is now open:
-1. Can you see a "Write a comment..." input field?
+1. Can you see a "Write a comment..." or "Write an answer..." input field?
 2. Is there a text input area ready for typing?
 
 IMPORTANT: You MUST respond with ONLY one of these exact formats:

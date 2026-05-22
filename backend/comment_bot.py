@@ -1000,8 +1000,10 @@ async def find_comment_input(page: Page) -> bool:
     strategies = [
         ("get_by_placeholder('Write a comment...')", page.get_by_placeholder("Write a comment...")),
         ("get_by_placeholder('Write a comment', exact=False)", page.get_by_placeholder("Write a comment", exact=False)),
+        ("get_by_placeholder('Write an answer', exact=False)", page.get_by_placeholder("Write an answer", exact=False)),
         ("get_by_text('Write a comment...')", page.get_by_text("Write a comment...")),
         ("get_by_text('Write a comment', exact=False)", page.get_by_text("Write a comment", exact=False)),
+        ("get_by_text('Write an answer', exact=False)", page.get_by_text("Write an answer", exact=False)),
         ("get_by_role('textbox')", page.get_by_role("textbox")),
     ]
 
@@ -1335,7 +1337,8 @@ async def open_comment_box(page: Page) -> bool:
         'div[role="button"][aria-label*="Comment"]',
         'div[aria-label="Comment"]',
         'span:text("Comment")',
-        'div:text("Write a comment...")'
+        'div:text("Write a comment...")',
+        'div:text("Write an answer...")',
     ]
     return await smart_click(page, selectors, "Comment Button")
 
@@ -1348,7 +1351,9 @@ async def type_comment(page: Page, comment: str) -> bool:
         '[contenteditable="true"]',
         'textarea',
         'div[aria-label="Write a comment"]',
-        'div:text("Write a comment")'
+        'div[aria-label*="Write an answer" i]',
+        'div:text("Write a comment")',
+        'div:text("Write an answer")',
     ]
     
     if not await smart_focus(page, input_selectors, "Comment Input"):
