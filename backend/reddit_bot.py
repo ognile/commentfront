@@ -1289,12 +1289,18 @@ async def _select_post_compose_tab(page, *, label: str) -> bool:
 @asynccontextmanager
 async def _session_page(session: RedditSession, proxy_url: Optional[str] = None):
     fingerprint = session.get_device_fingerprint()
+    if not proxy_url:
+        from proxy_manager import get_active_proxy
+
+        proxy_url = get_active_proxy()
+    if not proxy_url:
+        raise RuntimeError("no active proxy available. add and activate a proxy in proxy management.")
     async with async_playwright() as playwright:
         browser, context = await create_browser_context(
             playwright,
             user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
             viewport=session.get_viewport(),
-            proxy_url=proxy_url or session.get_proxy(),
+            proxy_url=proxy_url,
             timezone_id=fingerprint["timezone"],
             locale=fingerprint["locale"],
             headless=True,

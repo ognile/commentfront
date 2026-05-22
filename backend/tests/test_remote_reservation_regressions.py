@@ -78,7 +78,7 @@ def test_get_sessions_includes_reservation_metadata(isolated_profile_manager, mo
         ],
     )
     monkeypatch.setattr(main, "FacebookSession", _FakeFacebookSession)
-    monkeypatch.setattr(main, "PROXY_URL", None)
+    monkeypatch.setattr(main, "get_active_proxy_info", lambda: None)
 
     sessions = _run(main.get_sessions(current_user={"username": "tester"}))
     payload = sessions[0].model_dump()
@@ -121,7 +121,7 @@ def test_get_reddit_sessions_includes_reservation_metadata(isolated_profile_mana
             }
         ],
     )
-    monkeypatch.setattr(main, "get_system_proxy", lambda: None)
+    monkeypatch.setattr(main, "get_active_proxy_info", lambda: None)
 
     sessions = _run(main.get_reddit_sessions(current_user={"username": "tester"}))
     payload = sessions[0].model_dump()

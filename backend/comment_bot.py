@@ -1661,7 +1661,7 @@ async def post_comment(
     async with async_playwright() as p:
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
-        # System proxy only — no session proxy fallback
+        # Central active proxy only; no session proxy fallback.
         active_proxy = proxy
         if not active_proxy:
             raise Exception("No proxy available — cannot launch browser without proxy")
@@ -1841,7 +1841,7 @@ async def post_comment_verified(
     async with async_playwright() as p:
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
-        # System proxy only — no session proxy fallback
+        # Central active proxy only; no session proxy fallback.
         active_proxy = proxy
         if not active_proxy:
             raise Exception("No proxy available — cannot launch browser without proxy")
@@ -2725,7 +2725,7 @@ async def test_session(session: FacebookSession, proxy: Optional[str] = None) ->
         return result
 
     async with async_playwright() as p:
-        # System proxy only — no session proxy fallback
+        # Central active proxy only; no session proxy fallback.
         active_proxy = proxy
         if not active_proxy:
             raise Exception("No proxy available — cannot launch browser without proxy")

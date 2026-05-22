@@ -1249,8 +1249,8 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
         # Get session data (matching comment_bot.py gold standard)
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
-        from proxy_manager import get_system_proxy
-        proxy_url = get_system_proxy()
+        from proxy_manager import get_active_proxy, get_active_proxy_info
+        proxy_url = get_active_proxy()
         if not proxy_url:
             raise Exception("No proxy available — cannot launch browser without proxy")
         device_fingerprint = session.get_device_fingerprint()
@@ -1322,7 +1322,6 @@ async def refresh_session_profile_name(profile_name: str) -> Dict[str, Any]:
                     "cookies": session.get_cookies(),
                     "user_agent": session.get_user_agent(),
                     "viewport": session.get_viewport(),
-                    "proxy": session.get_proxy(),
                     "device": device_fingerprint,  # Preserve device fingerprint for consistency
                     "tags": session.data.get("tags", []),  # Preserve existing tags
                 }
@@ -1387,8 +1386,8 @@ async def refresh_session_picture(profile_name: str) -> Dict[str, Any]:
         user_id = session.get_user_id()
         user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
         viewport = session.get_viewport() or MOBILE_VIEWPORT
-        from proxy_manager import get_system_proxy
-        proxy_url = get_system_proxy()
+        from proxy_manager import get_active_proxy, get_active_proxy_info
+        proxy_url = get_active_proxy()
         if not proxy_url:
             result["error"] = "No proxy available"
             return result
@@ -1520,8 +1519,8 @@ async def login_facebook(
         }
 
         if not proxy:
-            from proxy_manager import get_system_proxy
-            proxy = get_system_proxy()
+            from proxy_manager import get_active_proxy, get_active_proxy_info
+            proxy = get_active_proxy()
         if not proxy:
             raise Exception("No proxy available — cannot launch browser without proxy")
         context_options["proxy"] = _build_playwright_proxy(proxy)
@@ -2044,8 +2043,8 @@ async def fetch_profile_data_from_cookies(
     try:
         async with async_playwright() as p:
             # Resolve proxy — system proxy is the single source of truth
-            from proxy_manager import get_system_proxy
-            active_proxy = proxy or get_system_proxy()
+            from proxy_manager import get_active_proxy, get_active_proxy_info
+            active_proxy = proxy or get_active_proxy()
             if not active_proxy:
                 raise Exception("No proxy available — cannot launch browser without proxy")
 

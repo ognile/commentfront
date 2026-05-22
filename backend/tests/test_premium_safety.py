@@ -46,15 +46,15 @@ def test_profile_candidate_urls_respects_max_candidate_limit(monkeypatch):
     ]
 
 
-def test_resolve_precheck_proxy_prefers_session_proxy(monkeypatch):
+def test_resolve_precheck_proxy_ignores_session_proxy(monkeypatch):
     session = _SessionStub("12345", proxy="http://session-proxy:8000")
-    monkeypatch.setattr("proxy_manager.get_system_proxy", lambda: "http://system-proxy:9000")
-    assert _resolve_precheck_proxy(session) == "http://session-proxy:8000"
+    monkeypatch.setattr("proxy_manager.get_active_proxy", lambda: "http://system-proxy:9000")
+    assert _resolve_precheck_proxy(session) == "http://system-proxy:9000"
 
 
 def test_resolve_precheck_proxy_falls_back_to_system_proxy(monkeypatch):
     session = _SessionStub("12345", proxy="")
-    monkeypatch.setattr("proxy_manager.get_system_proxy", lambda: "http://system-proxy:9000")
+    monkeypatch.setattr("proxy_manager.get_active_proxy", lambda: "http://system-proxy:9000")
     assert _resolve_precheck_proxy(session) == "http://system-proxy:9000"
 
 

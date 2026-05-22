@@ -264,12 +264,9 @@ def _profile_candidate_urls(session: FacebookSession, profile_name: str) -> List
 
 
 def _resolve_precheck_proxy(session: FacebookSession) -> Optional[str]:
-    session_proxy = str(session.get_proxy() or "").strip()
-    if session_proxy:
-        return session_proxy
-    from proxy_manager import get_system_proxy
+    from proxy_manager import get_active_proxy
 
-    return get_system_proxy()
+    return get_active_proxy()
 
 
 def _url_profile_hint(url: Optional[str], user_id: Optional[str]) -> bool:

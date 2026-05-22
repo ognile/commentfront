@@ -15,7 +15,7 @@ from config import DEFAULT_USER_AGENT, MOBILE_VIEWPORT, REDDIT_MOBILE_USER_AGENT
 from comment_bot import dump_interactive_elements, save_debug_screenshot
 from credentials import CredentialManager
 from fb_session import FacebookSession, apply_session_to_context, list_saved_sessions
-from proxy_manager import get_system_proxy
+from proxy_manager import get_active_proxy
 from reddit_email_challenge import resolve_reddit_email_challenge
 from reddit_login_audit import RedditLoginAudit, compare_reddit_audits, load_reddit_audit
 from reddit_login_learning import RedditLoginLearningStore, default_strategy_config
@@ -1065,13 +1065,12 @@ async def login_reddit_from_reference_facebook_identity(
             "error": f"Reference Facebook session invalid: {chosen_session_id}",
         }
 
-    stored_proxy = reference_session.get_proxy()
-    proxy_url = stored_proxy or get_system_proxy()
+    proxy_url = get_active_proxy()
     if not proxy_url:
         return {
             "success": False,
             "platform": "reddit",
-            "error": "Reference Facebook session has no proxy and no service proxy is configured",
+            "error": "No active proxy configured. Add and activate a proxy in proxy management.",
         }
 
     fingerprint = reference_session.get_device_fingerprint()
@@ -1090,7 +1089,7 @@ async def login_reddit_from_reference_facebook_identity(
         credential_label=_credential_label(credential),
         session_id=chosen_session_id,
         proxy_url=_mask_proxy(proxy_url),
-        proxy_source="session" if stored_proxy else "env",
+        proxy_source="active_proxy",
         context_data={
             "user_agent": reference_session.get_user_agent() or DEFAULT_USER_AGENT,
             "viewport": reference_session.get_viewport() or MOBILE_VIEWPORT,
@@ -1332,7 +1331,7 @@ async def test_session(session: RedditSession, proxy_url: Optional[str] = None) 
                 playwright,
                 user_agent=session.get_user_agent() or REDDIT_MOBILE_USER_AGENT,
                 viewport=session.get_viewport(),
-                proxy_url=proxy_url or session.get_proxy(),
+                proxy_url=proxy_url or get_active_proxy(),
                 timezone_id=fingerprint["timezone"],
                 locale=fingerprint["locale"],
                 headless=True,

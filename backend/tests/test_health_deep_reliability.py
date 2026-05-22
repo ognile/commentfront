@@ -94,9 +94,12 @@ def test_health_deep_does_not_trigger_queue_recovery(monkeypatch):
         def get_default_proxy(self):
             return None
 
+        def get_active_proxy(self):
+            return None
+
     monkeypatch.setattr(main.CampaignQueueManager, "load", _fail_if_called)
     monkeypatch.setattr(main, "ProxyManager", FakeProxyManager)
-    monkeypatch.setattr(main, "get_system_proxy", lambda: None)
+    monkeypatch.setattr(main, "get_active_proxy", lambda: None)
 
     result = asyncio.run(main.health_deep())
 
@@ -120,6 +123,9 @@ def test_health_deep_reports_runtime_proxy_health_fields(monkeypatch):
         def get_default_proxy(self):
             return {"id": "p1", "url": "http://default-proxy:9000"}
 
+        def get_active_proxy(self):
+            return {"id": "p1", "url": "http://default-proxy:9000", "source": "proxy_store"}
+
     async def _fake_runtime_proxy_health():
         return {
             "healthy": True,
@@ -129,7 +135,7 @@ def test_health_deep_reports_runtime_proxy_health_fields(monkeypatch):
         }
 
     monkeypatch.setattr(main, "ProxyManager", FakeProxyManager)
-    monkeypatch.setattr(main, "get_system_proxy", lambda: "http://default-proxy:9000")
+    monkeypatch.setattr(main, "get_active_proxy", lambda: "http://default-proxy:9000")
     monkeypatch.setattr(main, "check_proxy_health", _fake_runtime_proxy_health)
 
     result = asyncio.run(main.health_deep())
@@ -143,5 +149,5 @@ def test_health_deep_reports_runtime_proxy_health_fields(monkeypatch):
         "ip": "107.77.225.131",
         "response_ms": 551,
         "error": None,
-        "source": "default",
+        "source": "proxy_store",
     }

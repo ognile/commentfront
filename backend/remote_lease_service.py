@@ -30,7 +30,7 @@ from browser_factory import apply_page_identity_overrides, create_browser_contex
 from config import DEFAULT_USER_AGENT, MOBILE_VIEWPORT, REDDIT_MOBILE_USER_AGENT
 from fb_session import FacebookSession, apply_session_to_context
 from profile_manager import get_profile_manager
-from proxy_manager import get_system_proxy
+from proxy_manager import get_active_proxy_info
 from reddit_session import RedditSession
 from safe_io import atomic_write_json, safe_read_json
 
@@ -107,10 +107,10 @@ class RemoteSessionSpec:
     timezone_id: str
     locale: str
     proxy_url: str
-    proxy_source: Literal["session", "env"]
+    proxy_source: str
     start_url: str
     fallback_proxy_url: Optional[str] = None
-    fallback_proxy_source: Optional[Literal["session", "env"]] = None
+    fallback_proxy_source: Optional[str] = None
     wait_until: str = "domcontentloaded"
     fallback_start_urls: List[str] = field(default_factory=list)
     storage_state: Optional[Dict[str, Any]] = None
@@ -153,24 +153,13 @@ def _reddit_session_has_persisted_auth(session: RedditSession) -> bool:
     return bool(stored_cookies or direct_cookies)
 
 
-def _pick_remote_proxy(stored_proxy: Optional[str]) -> Optional[str]:
-    return stored_proxy or get_system_proxy()
-
-
-def _resolve_remote_proxy_plan(
-    stored_proxy: Optional[str],
-) -> Tuple[str, Literal["session", "env"], Optional[str], Optional[Literal["session", "env"]]]:
-    session_proxy = str(stored_proxy or "").strip()
-    env_proxy = str(get_system_proxy() or "").strip()
-
-    if session_proxy:
-        fallback_proxy = env_proxy if env_proxy and env_proxy != session_proxy else None
-        return session_proxy, "session", fallback_proxy, ("env" if fallback_proxy else None)
-
-    if env_proxy:
-        return env_proxy, "env", None, None
-
-    return "", "env", None, None
+def _resolve_remote_active_proxy() -> Tuple[str, str, Optional[str], Optional[str]]:
+    active_proxy = get_active_proxy_info() or {}
+    proxy_url = str(active_proxy.get("url") or "").strip()
+    proxy_source = str(active_proxy.get("source") or "none")
+    if proxy_url:
+        return proxy_url, proxy_source, None, None
+    return "", "none", None, None
 
 
 def _facebook_remote_start_urls(session: FacebookSession) -> Tuple[str, List[str]]:
@@ -208,10 +197,9 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
         if not session.has_valid_cookies():
             raise RuntimeError("session has invalid cookies")
 
-        stored_proxy = session.get_proxy()
-        proxy_url, proxy_source, fallback_proxy_url, fallback_proxy_source = _resolve_remote_proxy_plan(stored_proxy)
+        proxy_url, proxy_source, fallback_proxy_url, fallback_proxy_source = _resolve_remote_active_proxy()
         if not proxy_url:
-            raise RuntimeError("no proxy available. configure PROXY_URL or persist a session proxy.")
+            raise RuntimeError("no active proxy available. add and activate a proxy in proxy management.")
 
         fingerprint = session.get_device_fingerprint()
         start_url, fallback_start_urls = _facebook_remote_start_urls(session)
@@ -242,10 +230,9 @@ def _resolve_remote_session_spec(session_id: str, platform: RemotePlatform) -> R
     if not _reddit_session_has_persisted_auth(session):
         raise RuntimeError("reddit session has no persisted auth state")
 
-    stored_proxy = session.get_proxy()
-    proxy_url, proxy_source, fallback_proxy_url, fallback_proxy_source = _resolve_remote_proxy_plan(stored_proxy)
+    proxy_url, proxy_source, fallback_proxy_url, fallback_proxy_source = _resolve_remote_active_proxy()
     if not proxy_url:
-        raise RuntimeError("no proxy available. configure PROXY_URL or persist a session proxy.")
+        raise RuntimeError("no active proxy available. add and activate a proxy in proxy management.")
 
     fingerprint = session.get_device_fingerprint()
     storage_state = session.get_storage_state() or None
@@ -933,7 +920,7 @@ class RemoteLease:
         self._log_event("browser_start", {"reason": reason})
 
         session_spec = _resolve_remote_session_spec(self.session_id, self.platform)
-        proxy_attempts: List[Tuple[str, Literal["session", "env"]]] = [(session_spec.proxy_url, session_spec.proxy_source)]
+        proxy_attempts: List[Tuple[str, str]] = [(session_spec.proxy_url, session_spec.proxy_source)]
         if session_spec.fallback_proxy_url and session_spec.fallback_proxy_source:
             proxy_attempts.append((session_spec.fallback_proxy_url, session_spec.fallback_proxy_source))
 
@@ -974,11 +961,6 @@ class RemoteLease:
                 self._page.on("close", lambda: asyncio.create_task(self._handle_page_closed("page_closed")))
                 self._page.on("crash", lambda: asyncio.create_task(self._handle_page_closed("page_crashed")))
                 navigation_timeout_seconds = REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS
-                if proxy_source == "session" and session_spec.fallback_proxy_url:
-                    navigation_timeout_seconds = min(
-                        navigation_timeout_seconds,
-                        REMOTE_SESSION_PROXY_NAVIGATION_TIMEOUT_SECONDS,
-                    )
                 navigation_result = await self._navigate_initial_page(
                     session_spec,
                     reason=reason,

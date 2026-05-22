@@ -9,7 +9,7 @@ import logging
 import asyncio
 import aiohttp
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, unquote
 import uuid
 
@@ -48,6 +48,14 @@ class ProxyManager:
         else:
             self.logger.info(f"Saved {len(self.proxies)} proxies.")
 
+    def _parse_proxy_url(self, url: str) -> Dict[str, Any]:
+        parsed = urlparse(url)
+        return {
+            "host": parsed.hostname,
+            "port": parsed.port,
+            "username": unquote(parsed.username) if parsed.username else None,
+        }
+
     def add_proxy(
         self,
         name: str,
@@ -70,16 +78,16 @@ class ProxyManager:
         # Generate unique ID
         proxy_id = f"proxy_{uuid.uuid4().hex[:8]}"
 
-        # Parse URL to extract components
-        parsed = urlparse(url)
+        parsed = self._parse_proxy_url(url)
+        should_activate = not self.get_default_proxy()
 
         proxy = {
             "id": proxy_id,
             "name": name,
             "url": url,
-            "host": parsed.hostname,
-            "port": parsed.port,
-            "username": unquote(parsed.username) if parsed.username else None,
+            "host": parsed["host"],
+            "port": parsed["port"],
+            "username": parsed["username"],
             "type": proxy_type,
             "country": country,
             "health_status": "untested",
@@ -87,9 +95,8 @@ class ProxyManager:
             "success_rate": None,
             "avg_response_ms": None,
             "test_count": 0,
-            "assigned_sessions": [],
             "created_at": datetime.utcnow().isoformat(),
-            "is_default": False
+            "is_default": should_activate
         }
 
         self.proxies[proxy_id] = proxy
@@ -130,10 +137,10 @@ class ProxyManager:
 
         # Re-parse URL if it was updated
         if "url" in updates:
-            parsed = urlparse(updates["url"])
-            self.proxies[proxy_id]["host"] = parsed.hostname
-            self.proxies[proxy_id]["port"] = parsed.port
-            self.proxies[proxy_id]["username"] = unquote(parsed.username) if parsed.username else None
+            parsed = self._parse_proxy_url(updates["url"])
+            self.proxies[proxy_id]["host"] = parsed["host"]
+            self.proxies[proxy_id]["port"] = parsed["port"]
+            self.proxies[proxy_id]["username"] = parsed["username"]
 
         self.proxies[proxy_id]["updated_at"] = datetime.utcnow().isoformat()
         self.save_proxies()
@@ -280,56 +287,6 @@ class ProxyManager:
 
         self.save_proxies()
 
-    def assign_to_session(self, proxy_id: str, session_name: str) -> bool:
-        """
-        Assign a proxy to a session.
-
-        Args:
-            proxy_id: Proxy ID
-            session_name: Session profile name
-
-        Returns:
-            True if successful
-        """
-        if proxy_id not in self.proxies:
-            return False
-
-        assigned = self.proxies[proxy_id].get("assigned_sessions", [])
-        if session_name not in assigned:
-            assigned.append(session_name)
-            self.proxies[proxy_id]["assigned_sessions"] = assigned
-            self.save_proxies()
-
-        return True
-
-    def unassign_from_session(self, proxy_id: str, session_name: str) -> bool:
-        """Remove proxy assignment from a session."""
-        if proxy_id not in self.proxies:
-            return False
-
-        assigned = self.proxies[proxy_id].get("assigned_sessions", [])
-        if session_name in assigned:
-            assigned.remove(session_name)
-            self.proxies[proxy_id]["assigned_sessions"] = assigned
-            self.save_proxies()
-
-        return True
-
-    def get_proxy_for_session(self, session_name: str) -> Optional[str]:
-        """
-        Get the proxy URL assigned to a session.
-
-        Args:
-            session_name: Session profile name
-
-        Returns:
-            Proxy URL or None if no proxy assigned
-        """
-        for proxy_id, proxy in self.proxies.items():
-            if session_name in proxy.get("assigned_sessions", []):
-                return proxy.get("url")
-        return None
-
     def set_default(self, proxy_id: str) -> bool:
         """
         Set a proxy as the default. Clears default from other proxies.
@@ -384,30 +341,86 @@ class ProxyManager:
         default = self.get_default_proxy()
         return default.get("url") if default else None
 
+    def get_active_proxy(self) -> Optional[Dict[str, Any]]:
+        """
+        Resolve the single active runtime proxy.
 
-# Module-level singleton for get_system_proxy()
+        The UI-managed proxy store is authoritative once it contains any proxy.
+        PROXY_URL is only a bootstrap source while the store is empty.
+        """
+        default = self.get_default_proxy()
+        if default and default.get("url"):
+            proxy = default.copy()
+            proxy["source"] = "proxy_store"
+            proxy["active"] = True
+            proxy["url_masked"] = self._mask_url(proxy.get("url", ""))
+            return proxy
+
+        if self.proxies:
+            return None
+
+        env_url = os.getenv("PROXY_URL", "")
+        if not env_url:
+            return None
+        parsed = self._parse_proxy_url(env_url)
+        return {
+            "id": "bootstrap_env",
+            "name": "Bootstrap Proxy (env)",
+            "url": env_url,
+            "url_masked": self._mask_url(env_url),
+            "host": parsed["host"],
+            "port": parsed["port"],
+            "username": parsed["username"],
+            "type": "mobile",
+            "country": "US",
+            "health_status": "bootstrap",
+            "last_tested": None,
+            "success_rate": None,
+            "avg_response_ms": None,
+            "test_count": 0,
+            "created_at": None,
+            "is_default": True,
+            "is_system": True,
+            "source": "bootstrap_env",
+            "active": True,
+        }
+
+    def get_active_proxy_url(self) -> Optional[str]:
+        active = self.get_active_proxy()
+        return active.get("url") if active else None
+
+
+# Module-level singleton for active proxy resolution.
 _proxy_manager_instance: Optional[ProxyManager] = None
 
 
-def get_system_proxy() -> Optional[str]:
+def get_active_proxy() -> Optional[str]:
     """
-    Single source of truth for proxy resolution.
+    Return the URL for the single active runtime proxy.
 
-    Resolution order:
-    1. Proxy pool default (proxies.json with is_default=True)
-    2. PROXY_URL environment variable
-    3. None (caller must handle — no proxy = fail)
-
-    Every browser launch point must use this function.
+    Browser launch code must use this function or receive its result from a
+    caller. Session files are never proxy authorities.
     """
     global _proxy_manager_instance
     try:
         if _proxy_manager_instance is None:
             _proxy_manager_instance = ProxyManager()
-        default = _proxy_manager_instance.get_default_proxy()
-        if default and default.get("url"):
-            return default["url"]
-    except Exception:
-        pass
-    url = os.getenv("PROXY_URL", "")
-    return url if url else None
+        else:
+            _proxy_manager_instance.load_proxies()
+        return _proxy_manager_instance.get_active_proxy_url()
+    except Exception as exc:
+        logging.getLogger("ProxyManager").error(f"Failed to resolve active proxy: {exc}")
+        return None
+
+
+def get_active_proxy_info() -> Optional[Dict[str, Any]]:
+    global _proxy_manager_instance
+    try:
+        if _proxy_manager_instance is None:
+            _proxy_manager_instance = ProxyManager()
+        else:
+            _proxy_manager_instance.load_proxies()
+        return _proxy_manager_instance.get_active_proxy()
+    except Exception as exc:
+        logging.getLogger("ProxyManager").error(f"Failed to resolve active proxy info: {exc}")
+        return None

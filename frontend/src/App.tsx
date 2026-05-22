@@ -33,8 +33,8 @@ interface Session {
   extracted_at: string;
   valid: boolean;
   proxy?: string;
-  proxy_masked?: string;  // Masked proxy URL for display
-  proxy_source?: string;  // "session" or "env" to show source
+  proxy_masked?: string;  // Active runtime proxy, never session-owned
+  proxy_source?: string;  // "proxy_store" or "bootstrap_env"
   profile_picture?: string | null;  // Base64 encoded PNG
   tags?: string[];  // Session tags for filtering
 }
@@ -212,10 +212,11 @@ interface Proxy {
   success_rate: number | null;
   avg_response_ms: number | null;
   test_count: number;
-  assigned_sessions: string[];
   created_at: string | null;
-  is_system?: boolean;  // True for PROXY_URL system proxy
+  is_system?: boolean;  // True for bootstrap env proxy
   is_default?: boolean;  // True if this is the user-set default proxy
+  is_active?: boolean;
+  source?: string;
 }
 
 interface SessionCreateStatus {
@@ -1808,7 +1809,7 @@ function App() {
       result = result.filter(s => s.valid === sessionStatusFilters.valid);
     }
 
-    // Filter by proxy status
+    // Filter by active proxy availability
     if (sessionStatusFilters.hasProxy !== undefined) {
       result = result.filter(s =>
         sessionStatusFilters.hasProxy ? !!s.proxy_masked : !s.proxy_masked
@@ -2931,7 +2932,7 @@ function App() {
   };
 
   // Session creation function
-  const createSession = async (uid: string, proxyId?: string) => {
+  const createSession = async (uid: string) => {
     setCreatingSession(uid);
     setSessionCreateStatus(prev => ({
       ...prev,
@@ -2943,8 +2944,7 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
-          credential_uid: uid,
-          proxy_id: proxyId
+          credential_uid: uid
         })
       });
 
@@ -4098,7 +4098,7 @@ function App() {
                           : 'bg-white border-[rgba(0,0,0,0.1)] text-[#666666] hover:border-[#999999]'
                       }`}
                     >
-                      Proxy
+                      Active Proxy
                     </button>
                     <button
                       onClick={() => setSessionStatusFilters(prev => ({
@@ -4111,7 +4111,7 @@ function App() {
                           : 'bg-white border-[rgba(0,0,0,0.1)] text-[#666666] hover:border-[#999999]'
                       }`}
                     >
-                      No Proxy
+                      No Active Proxy
                     </button>
                     <button
                       onClick={() => setSessionStatusFilters(prev => ({
@@ -4208,7 +4208,7 @@ function App() {
                               <span>•</span>
                               <span className={`flex items-center gap-1 ${session.proxy_masked ? 'text-[#999999]' : 'text-red-400'}`}>
                                 <span className={`w-1.5 h-1.5 rounded-full ${session.proxy_masked ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                                {session.proxy_masked ? 'Proxy' : 'No Proxy'}
+                                {session.proxy_masked ? 'Active proxy' : 'No active proxy'}
                               </span>
                             </div>
                           </div>
@@ -4654,7 +4654,10 @@ function App() {
                             <div className="flex items-center gap-2">
                               <span className="font-medium text-[#111111]">{proxy.name}</span>
                               {proxy.is_system && (
-                                <Badge variant="secondary" className="text-[10px]">System</Badge>
+                                <Badge variant="secondary" className="text-[10px]">Bootstrap</Badge>
+                              )}
+                              {proxy.is_active && (
+                                <Badge variant="default" className="text-[10px] bg-emerald-600">Active</Badge>
                               )}
                               {proxy.is_default && (
                                 <Badge variant="default" className="text-[10px] bg-blue-500">Default</Badge>
@@ -4717,12 +4720,6 @@ function App() {
                                 <span>Success: {(proxy.success_rate * 100).toFixed(0)}%</span>
                                 {proxy.avg_response_ms && <span>Avg: {proxy.avg_response_ms}ms</span>}
                                 <span>Tests: {proxy.test_count}</span>
-                              </div>
-                            )}
-                            {proxy.assigned_sessions.length > 0 && (
-                              <div className="text-green-600 font-medium">
-                                <span className="w-2 h-2 rounded-full bg-green-500 inline-block mr-1"></span>
-                                {proxy.assigned_sessions.length} sessions connected
                               </div>
                             )}
                           </div>

@@ -22,7 +22,7 @@ class _FakeFacebookSession:
         return True
 
     def get_proxy(self):
-        return "http://session-proxy:8080"
+        return "http://active-proxy:9090"
 
     def get_device_fingerprint(self):
         return {"timezone": "America/New_York", "locale": "en-US"}
@@ -196,17 +196,20 @@ def isolated_remote_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_lease_service, "REMOTE_LEASES_DIR", old_dir)
 
 
-def test_resolve_remote_session_spec_prefers_saved_facebook_proxy(monkeypatch):
+def test_resolve_remote_session_spec_ignores_saved_facebook_proxy(monkeypatch):
     monkeypatch.setattr(remote_lease_service, "FacebookSession", _FakeFacebookSession)
-    monkeypatch.setattr(remote_lease_service, "get_system_proxy", lambda: "http://env-proxy:9090")
+    monkeypatch.setattr(remote_lease_service, "get_active_proxy_info", lambda: {
+        "url": "http://active-proxy:9090",
+        "source": "proxy_store",
+    })
 
     spec = remote_lease_service._resolve_remote_session_spec("adele_hamilton", "facebook")
 
     assert spec.platform == "facebook"
-    assert spec.proxy_url == "http://session-proxy:8080"
-    assert spec.proxy_source == "session"
-    assert spec.fallback_proxy_url == "http://env-proxy:9090"
-    assert spec.fallback_proxy_source == "env"
+    assert spec.proxy_url == "http://active-proxy:9090"
+    assert spec.proxy_source == "proxy_store"
+    assert spec.fallback_proxy_url is None
+    assert spec.fallback_proxy_source is None
     assert spec.start_url == "https://m.facebook.com/me/?v=timeline"
     assert spec.fallback_start_urls == [
         "https://m.facebook.com/me/",
@@ -220,28 +223,32 @@ def test_resolve_remote_session_spec_prefers_saved_facebook_proxy(monkeypatch):
     assert spec.user_agent == "facebook-agent"
 
 
-def test_resolve_remote_proxy_plan_falls_back_to_env(monkeypatch):
-    monkeypatch.setattr(remote_lease_service, "get_system_proxy", lambda: "http://env-proxy:9090")
+def test_resolve_remote_active_proxy_uses_active_resolver(monkeypatch):
+    monkeypatch.setattr(remote_lease_service, "get_active_proxy_info", lambda: {
+        "url": "http://active-proxy:9090",
+        "source": "proxy_store",
+    })
 
-    primary_url, primary_source, fallback_url, fallback_source = remote_lease_service._resolve_remote_proxy_plan(
-        "http://session-proxy:8080"
-    )
+    primary_url, primary_source, fallback_url, fallback_source = remote_lease_service._resolve_remote_active_proxy()
 
-    assert primary_url == "http://session-proxy:8080"
-    assert primary_source == "session"
-    assert fallback_url == "http://env-proxy:9090"
-    assert fallback_source == "env"
+    assert primary_url == "http://active-proxy:9090"
+    assert primary_source == "proxy_store"
+    assert fallback_url is None
+    assert fallback_source is None
 
 
-def test_resolve_remote_session_spec_uses_reddit_identity_and_env_proxy(monkeypatch):
+def test_resolve_remote_session_spec_uses_reddit_identity_and_active_proxy(monkeypatch):
     monkeypatch.setattr(remote_lease_service, "RedditSession", _FakeRedditSession)
-    monkeypatch.setattr(remote_lease_service, "get_system_proxy", lambda: "http://env-proxy:9090")
+    monkeypatch.setattr(remote_lease_service, "get_active_proxy_info", lambda: {
+        "url": "http://active-proxy:9090",
+        "source": "proxy_store",
+    })
 
     spec = remote_lease_service._resolve_remote_session_spec("reddit_neera_allvere", "reddit")
 
     assert spec.platform == "reddit"
-    assert spec.proxy_url == "http://env-proxy:9090"
-    assert spec.proxy_source == "env"
+    assert spec.proxy_url == "http://active-proxy:9090"
+    assert spec.proxy_source == "proxy_store"
     assert spec.fallback_proxy_url is None
     assert spec.fallback_proxy_source is None
     assert spec.start_url == "https://www.reddit.com/user/Neera_Allvere/"
@@ -253,7 +260,10 @@ def test_resolve_remote_session_spec_uses_reddit_identity_and_env_proxy(monkeypa
 
 def test_resolve_remote_session_spec_rejects_reddit_without_persisted_auth(monkeypatch):
     monkeypatch.setattr(remote_lease_service, "RedditSession", _NoAuthRedditSession)
-    monkeypatch.setattr(remote_lease_service, "get_system_proxy", lambda: "http://env-proxy:9090")
+    monkeypatch.setattr(remote_lease_service, "get_active_proxy_info", lambda: {
+        "url": "http://active-proxy:9090",
+        "source": "proxy_store",
+    })
 
     with pytest.raises(RuntimeError, match="no persisted auth state"):
         remote_lease_service._resolve_remote_session_spec("reddit_neera_allvere", "reddit")
@@ -410,15 +420,15 @@ def test_navigate_initial_page_uses_shorter_timeout_when_requested(monkeypatch):
             viewport={"width": 393, "height": 873},
             timezone_id="America/New_York",
             locale="en-US",
-            proxy_url="http://session-proxy:8080",
-            proxy_source="session",
+            proxy_url="http://active-proxy:9090",
+            proxy_source="proxy_store",
             start_url="https://m.facebook.com/me/?v=timeline",
         )
 
         await lease._navigate_initial_page(
             spec,
             reason="attach",
-            proxy_source="session",
+            proxy_source="proxy_store",
             navigation_timeout_seconds=3,
         )
 
@@ -465,8 +475,8 @@ def test_navigate_initial_page_fast_fails_dead_shell_proxy(monkeypatch):
             viewport={"width": 393, "height": 873},
             timezone_id="America/New_York",
             locale="en-US",
-            proxy_url="http://session-proxy:8080",
-            proxy_source="session",
+            proxy_url="http://active-proxy:9090",
+            proxy_source="proxy_store",
             start_url="https://m.facebook.com/me/?v=timeline",
             fallback_start_urls=[
                 "https://m.facebook.com/me/",
@@ -478,7 +488,7 @@ def test_navigate_initial_page_fast_fails_dead_shell_proxy(monkeypatch):
             await lease._navigate_initial_page(
                 spec,
                 reason="attach",
-                proxy_source="session",
+                proxy_source="proxy_store",
                 navigation_timeout_seconds=remote_lease_service.REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS,
             )
 
@@ -538,8 +548,8 @@ def test_navigate_initial_page_keeps_trying_partial_documents(monkeypatch):
             viewport={"width": 393, "height": 873},
             timezone_id="America/New_York",
             locale="en-US",
-            proxy_url="http://session-proxy:8080",
-            proxy_source="session",
+            proxy_url="http://active-proxy:9090",
+            proxy_source="proxy_store",
             start_url="https://m.facebook.com/me/?v=timeline",
             fallback_start_urls=["https://m.facebook.com/me/"],
         )
@@ -547,7 +557,7 @@ def test_navigate_initial_page_keeps_trying_partial_documents(monkeypatch):
         result = await lease._navigate_initial_page(
             spec,
             reason="attach",
-            proxy_source="session",
+            proxy_source="proxy_store",
             navigation_timeout_seconds=remote_lease_service.REMOTE_STARTUP_NAVIGATION_TIMEOUT_SECONDS,
         )
 

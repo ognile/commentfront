@@ -31,6 +31,7 @@ CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 import asyncio
 import json
 import random
+import shutil
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -213,11 +214,7 @@ async def broadcast_update(update_type: str, data: dict):
     for ws in disconnected:
         active_connections.discard(ws)
 
-# Get proxy from environment
-PROXY_URL = os.getenv("PROXY_URL", "")
-
-
-from proxy_manager import get_system_proxy
+from proxy_manager import get_active_proxy, get_active_proxy_info
 
 # Initialize credential manager
 credential_manager = CredentialManager()
@@ -516,7 +513,7 @@ class QueueProcessor:
             }
 
         linked_credential = self._resolve_linked_credential(profile_name, session)
-        test_result = await test_session(session, get_system_proxy())
+        test_result = await test_session(session, get_active_proxy())
         health_status = str(test_result.get("health_status") or AUTH_HEALTH_NEEDS_ATTENTION).strip().lower()
         health_reason = test_result.get("health_reason") or test_result.get("error")
 
@@ -552,14 +549,14 @@ class QueueProcessor:
             )
             regen_result = await create_session_from_credentials(
                 linked_credential["credential_id"],
-                proxy_url=get_system_proxy(),
+                proxy_url=get_active_proxy(),
                 broadcast_callback=None,
             )
             if regen_result.get("success"):
                 refreshed_profile_name = str(regen_result.get("profile_name") or profile_name).strip() or profile_name
                 refreshed_session = FacebookSession(refreshed_profile_name)
                 if refreshed_session.load():
-                    retest_result = await test_session(refreshed_session, get_system_proxy())
+                    retest_result = await test_session(refreshed_session, get_active_proxy())
                     retest_status = str(retest_result.get("health_status") or AUTH_HEALTH_NEEDS_ATTENTION).strip().lower()
                     retest_reason = retest_result.get("health_reason") or retest_result.get("error")
                     if retest_result.get("valid"):
@@ -766,7 +763,7 @@ class QueueProcessor:
                     session=session,
                     url=url,
                     comment_text=comment_text,
-                    proxy=get_system_proxy(),
+                    proxy=get_active_proxy(),
                 )
             else:
                 reconciliation = {"found": None, "confidence": 0.0, "reason": "session missing during reconciliation"}
@@ -1144,7 +1141,7 @@ class QueueProcessor:
                             session=session,
                             url=url,
                             comment=text,
-                            proxy=get_system_proxy(),
+                            proxy=get_active_proxy(),
                             enable_warmup=enable_warmup,
                             phase_callback=phase_callback,
                             forensic_context={
@@ -1184,7 +1181,7 @@ class QueueProcessor:
                                     target_comment_id=target_comment_id,
                                     reply_text=text,
                                     image_path=media_item["path"],
-                                    proxy=get_system_proxy(),
+                                    proxy=get_active_proxy(),
                                     enable_warmup=enable_warmup,
                                     phase_callback=phase_callback,
                                 )
@@ -1489,7 +1486,7 @@ class QueueProcessor:
                                     session=session,
                                     url=url,
                                     comment_text=comment,
-                                    proxy=get_system_proxy(),
+                                    proxy=get_active_proxy(),
                                 )
                                 if reconciliation.get("found") is True:
                                     self.logger.info(
@@ -1588,7 +1585,7 @@ class QueueProcessor:
                         session=session,
                         url=url,
                         comment=comment,
-                        proxy=get_system_proxy(),
+                        proxy=get_active_proxy(),
                         enable_warmup=enable_warmup,
                         forensic_context={
                             "platform": "facebook",
@@ -2124,7 +2121,7 @@ class SessionInfo(BaseModel):
     valid: bool
     proxy: Optional[str] = None  # "session", "service", or None
     proxy_masked: Optional[str] = None  # Masked proxy URL for display
-    proxy_source: Optional[str] = None  # "session" or "env" to show source
+    proxy_source: Optional[str] = None
     profile_picture: Optional[str] = None  # Base64 encoded PNG
     tags: List[str] = []  # Session tags for filtering
     is_reserved: bool = False
@@ -2214,10 +2211,11 @@ class ProxyInfo(BaseModel):
     success_rate: Optional[float]
     avg_response_ms: Optional[int]
     test_count: int
-    assigned_sessions: List[str]
     created_at: Optional[str]  # Optional for system proxy
-    is_system: bool = False  # True for PROXY_URL system proxy
+    is_system: bool = False  # True for bootstrap env proxy
     is_default: bool = False  # True if this is the user-set default proxy
+    is_active: bool = False
+    source: Optional[str] = None
 
 
 class ProxyTestResult(BaseModel):
@@ -2254,13 +2252,11 @@ class RedditSessionInfo(BaseModel):
 
 class RedditSessionCreateRequest(BaseModel):
     credential_id: str
-    proxy_id: Optional[str] = None
 
 
 class RedditSessionBulkCreateRequest(BaseModel):
     lines: List[str]
     fixture: bool = True
-    proxy_id: Optional[str] = None
     source_label: Optional[str] = None
     max_create_attempts: int = 2
     wait_for_completion: bool = False
@@ -2268,7 +2264,6 @@ class RedditSessionBulkCreateRequest(BaseModel):
 
 class RedditConvergeUnlinkedRequest(BaseModel):
     usernames: List[str] = []
-    proxy_id: Optional[str] = None
     wait_for_completion: bool = False
 
 
@@ -2572,12 +2567,10 @@ class RedditProgramUpdateRequest(BaseModel):
 
 class SessionCreateRequest(BaseModel):
     credential_uid: str
-    proxy_id: Optional[str] = None
 
 
 class BatchSessionCreateRequest(BaseModel):
     credential_uids: List[str]
-    proxy_id: Optional[str] = None
 
 
 # ============================================================================
@@ -3006,13 +2999,9 @@ async def health_deep():
             1 for p in proxies
             if p.get("health_status") in ("failed", "unhealthy")
         )
-        runtime_proxy_url = get_system_proxy()
-        runtime_source = "none"
-        default_proxy = proxy_mgr.get_default_proxy()
-        if default_proxy and default_proxy.get("url"):
-            runtime_source = "default"
-        elif os.getenv("PROXY_URL"):
-            runtime_source = "env"
+        runtime_proxy_url = get_active_proxy()
+        active_info = proxy_mgr.get_active_proxy() or {}
+        runtime_source = active_info.get("source") or "none"
 
         runtime = {
             "configured": bool(runtime_proxy_url),
@@ -3420,37 +3409,19 @@ async def _reserve_profile_operation_or_raise(
 
 @app.get("/sessions")
 async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[SessionInfo]:
-    """Get all saved sessions with proxy info."""
-    from urllib.parse import urlparse
+    """Get all saved sessions with active runtime proxy info."""
     from profile_manager import get_profile_manager
 
     sessions = list_saved_sessions()
     profile_manager = get_profile_manager()
     profile_manager.refresh_from_sessions()
     results = []
+    active_proxy = get_active_proxy_info() or {}
+    proxy_masked = _mask_proxy_value(active_proxy.get("url"))
+    proxy_source = active_proxy.get("source")
 
     for s in sessions:
-        # Load session to get actual proxy URL
-        session = FacebookSession(s["profile_name"])
-        stored_proxy = None
-        if session.load():
-            stored_proxy = session.get_proxy()
-
-        # Determine proxy source and masked URL
-        if stored_proxy:
-            parsed = urlparse(stored_proxy)
-            proxy_masked = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-            proxy_source = "session"
-            proxy_label = "session"
-        elif PROXY_URL:
-            parsed = urlparse(PROXY_URL)
-            proxy_masked = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-            proxy_source = "env"
-            proxy_label = "service"
-        else:
-            proxy_masked = None
-            proxy_source = None
-            proxy_label = None
+        proxy_label = "active_proxy" if proxy_masked else None
         reservation = _reservation_view(s["profile_name"])
         analytics = profile_manager.get_profile_analytics(s["profile_name"]) or {}
         linked_credential = analytics.get("linked_credential_id")
@@ -3486,53 +3457,16 @@ async def get_sessions(current_user: dict = Depends(get_current_user)) -> List[S
     return results
 
 
-@app.get("/sessions/audit-proxies")
-async def audit_session_proxies(current_user: dict = Depends(get_current_user)) -> List[Dict]:
-    """
-    Audit all sessions to show actual proxy values.
-    Used to verify if stored proxies match PROXY_URL environment variable.
-    """
-    sessions = list_saved_sessions()
-    results = []
-    for s in sessions:
-        session = FacebookSession(s["profile_name"])
-        if session.load():
-            stored_proxy = session.get_proxy() or ""
-            matches = stored_proxy == PROXY_URL if stored_proxy else False
-            results.append({
-                "profile_name": s["profile_name"],
-                "has_proxy": bool(stored_proxy),
-                "matches_env_proxy": matches,
-                "stored_proxy_masked": stored_proxy[:30] + "..." if stored_proxy else None,
-                "env_proxy_masked": PROXY_URL[:30] + "..." if PROXY_URL else None,
-            })
-    return results
+@app.get("/sessions/proxy-migration/dry-run")
+async def dry_run_session_proxy_migration(current_user: dict = Depends(get_current_user)) -> Dict:
+    """Audit session-owned proxy fields without changing cookies or fingerprints."""
+    return _session_proxy_migration_report(apply=False)
 
 
-@app.post("/sessions/sync-all-to-env-proxy")
-async def sync_all_sessions_to_env_proxy(current_user: dict = Depends(get_current_user)) -> Dict:
-    """
-    Force ALL sessions to use the PROXY_URL environment variable.
-    This updates the proxy field in each session's JSON file.
-    """
-    if not PROXY_URL:
-        raise HTTPException(400, "PROXY_URL environment variable not set")
-
-    sessions = list_saved_sessions()
-    updated = 0
-    for s in sessions:
-        session = FacebookSession(s["profile_name"])
-        if session.load():
-            session.data["proxy"] = PROXY_URL
-            session.save()
-            updated += 1
-
-    return {
-        "success": True,
-        "updated": updated,
-        "total": len(sessions),
-        "proxy_masked": PROXY_URL[:30] + "..."
-    }
+@app.post("/sessions/proxy-migration/apply")
+async def apply_session_proxy_migration(current_user: dict = Depends(get_current_user)) -> Dict:
+    """Remove only top-level proxy fields from Facebook and Reddit session files."""
+    return _session_proxy_migration_report(apply=True)
 
 
 @app.post("/sessions/{profile_name}/test")
@@ -3541,7 +3475,7 @@ async def test_session_endpoint(profile_name: str, current_user: dict = Depends(
     reservation_owner = await _reserve_profile_operation_or_raise(profile_name, operation="facebook_session_test")
     try:
         session = FacebookSession(profile_name)
-        result = await test_session(session, get_system_proxy())
+        result = await test_session(session, get_active_proxy())
         from profile_manager import get_profile_manager
 
         profile_manager = get_profile_manager()
@@ -3637,7 +3571,7 @@ async def post_comment_endpoint(request: CommentRequest, current_user: dict = De
         session=session,
         url=request.url,
         comment=request.comment,
-        proxy=get_system_proxy(),
+        proxy=get_active_proxy(),
         forensic_context={"platform": "facebook", "engine": "direct_comment", "run_id": "direct_comment"},
     )
     
@@ -3687,7 +3621,7 @@ async def run_campaign(request: CampaignRequest, current_user: dict = Depends(ge
                 session=session,
                 url=request.url,
                 comment=comment,
-                proxy=get_system_proxy(),
+                proxy=get_active_proxy(),
                 forensic_context={
                     "platform": "facebook",
                     "engine": "staggered_campaign_comment",
@@ -3876,7 +3810,7 @@ async def run_campaign_queue(request: CampaignQueueRequest, current_user: dict =
                     session=session,
                     url=campaign.url,
                     comment=comment,
-                    proxy=get_system_proxy(),
+                    proxy=get_active_proxy(),
                     forensic_context={
                         "platform": "facebook",
                         "engine": "campaign_comment",
@@ -4169,7 +4103,7 @@ async def run_test_campaign(request: TestCampaignRequest, current_user: dict = D
                 session=session,
                 url=request.url,
                 comment=comment,
-                proxy=get_system_proxy(),
+                proxy=get_active_proxy(),
                 enable_warmup=request.enable_warmup,
                 forensic_context={
                     "platform": "facebook",
@@ -5201,7 +5135,7 @@ async def retry_campaign_job(
             session=session,
             url=url,
             comment=request.comment,
-            proxy=get_system_proxy(),
+            proxy=get_active_proxy(),
             enable_warmup=enable_warmup,  # RESPECT original campaign's warmup setting
             forensic_context={
                 "platform": "facebook",
@@ -5504,7 +5438,7 @@ async def _execute_bulk_retry_failed_jobs(campaign_id: str, profile_manager, ret
                     session=session,
                     url=url,
                     comment=comment,
-                    proxy=get_system_proxy(),
+                    proxy=get_active_proxy(),
                     enable_warmup=enable_warmup,
                     forensic_context={
                         "platform": "facebook",
@@ -5677,7 +5611,7 @@ async def _execute_bulk_retry_failed_jobs(campaign_id: str, profile_manager, ret
 async def check_proxy_health() -> Dict:
     """Quick proxy health check via ipify.org. Returns {healthy, ip, response_ms, error}."""
     import aiohttp
-    proxy_url = get_system_proxy()
+    proxy_url = get_active_proxy()
     if not proxy_url:
         return {"healthy": False, "ip": None, "response_ms": None, "error": "No proxy configured"}
 
@@ -5908,7 +5842,7 @@ async def _execute_retry_single_campaign(
                                 session=session,
                                 url=url,
                                 comment_text=comment,
-                                proxy=get_system_proxy(),
+                                proxy=get_active_proxy(),
                             )
                             if reconciliation.get("found") is True:
                                 queue_manager.add_retry_result(
@@ -6000,7 +5934,7 @@ async def _execute_retry_single_campaign(
                 async with browser_semaphore:
                     post_result = await post_comment_verified(
                         session=session, url=url, comment=comment,
-                        proxy=get_system_proxy(), enable_warmup=enable_warmup,
+                        proxy=get_active_proxy(), enable_warmup=enable_warmup,
                         forensic_context={
                             "platform": "facebook",
                             "engine": "retry_all_comment",
@@ -6710,7 +6644,7 @@ async def premium_duplicates_report(
 async def get_config(current_user: dict = Depends(get_current_user)) -> Dict:
     """Get current configuration."""
     return {
-        "proxy_configured": bool(PROXY_URL),
+        "proxy_configured": bool(get_active_proxy()),
         "viewport": MOBILE_VIEWPORT,
         "user_agent": DEFAULT_USER_AGENT
     }
@@ -6941,14 +6875,89 @@ def _mask_proxy_value(proxy_value: Optional[str]) -> Optional[str]:
         return None
 
 
-def _resolve_effective_proxy(proxy_id: Optional[str] = None) -> Optional[str]:
-    proxy_url = get_system_proxy()
-    if proxy_id:
-        proxy = proxy_manager.get_proxy(proxy_id)
-        if not proxy:
-            raise HTTPException(status_code=404, detail=f"Proxy not found: {proxy_id}")
-        proxy_url = proxy.get("url")
-    return proxy_url
+def _stable_json_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _session_proxy_migration_report(*, apply: bool = False) -> Dict[str, Any]:
+    """
+    Remove only top-level session proxy fields.
+
+    Safety contract: for every changed file, data with the top-level `proxy`
+    key removed must match the post-migration data exactly.
+    """
+    from fb_session import SESSIONS_DIR
+    from reddit_session import REDDIT_SESSIONS_DIR
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    platforms = [
+        ("facebook", SESSIONS_DIR, "*.json"),
+        ("reddit", REDDIT_SESSIONS_DIR, "*.json"),
+    ]
+    files: List[Dict[str, Any]] = []
+    changed = 0
+    errors: List[str] = []
+
+    for platform, directory, pattern in platforms:
+        for path in sorted(Path(directory).glob(pattern)):
+            data = safe_read_json(str(path))
+            if not isinstance(data, dict):
+                continue
+            has_proxy = "proxy" in data
+            before_without_proxy = dict(data)
+            removed_proxy = before_without_proxy.pop("proxy", None)
+            before_hash = _stable_json_hash(before_without_proxy)
+            after_hash = before_hash
+            protected_fields_preserved = True
+            backup_path = None
+            applied = False
+
+            if has_proxy:
+                changed += 1
+                if apply:
+                    backup_path = str(path.with_name(f"{path.name}.proxy-backup-{timestamp}"))
+                    try:
+                        shutil.copy2(path, backup_path)
+                        protected_fields_preserved = _stable_json_hash(before_without_proxy) == before_hash
+                        if not protected_fields_preserved:
+                            raise RuntimeError("protected field hash changed before write")
+                        if not atomic_write_json(str(path), before_without_proxy):
+                            raise RuntimeError("atomic write failed")
+                        written = safe_read_json(str(path))
+                        protected_fields_preserved = written == before_without_proxy
+                        if not protected_fields_preserved:
+                            raise RuntimeError("post-write data differs beyond proxy removal")
+                        after_hash = _stable_json_hash(written)
+                        applied = True
+                    except Exception as exc:
+                        errors.append(f"{platform}:{path.name}:{exc}")
+
+            files.append({
+                "platform": platform,
+                "file": path.name,
+                "has_proxy": has_proxy,
+                "removed_proxy_masked": _mask_proxy_value(str(removed_proxy or "")),
+                "protected_fields_hash": before_hash,
+                "after_hash": after_hash,
+                "protected_fields_preserved": protected_fields_preserved,
+                "backup_path": backup_path,
+                "applied": applied,
+            })
+
+    return {
+        "success": not errors,
+        "mode": "apply" if apply else "dry_run",
+        "changed_file_count": changed,
+        "total_file_count": len(files),
+        "all_protected_fields_preserved": all(item["protected_fields_preserved"] for item in files),
+        "errors": errors,
+        "files": files,
+    }
+
+
+def _resolve_effective_proxy() -> Optional[str]:
+    return get_active_proxy()
 
 
 def _reddit_program_payload_from_request(request: RedditProgramCreateRequest) -> Dict[str, Any]:
@@ -7561,10 +7570,10 @@ async def seed_reddit_credentials(
 async def get_reddit_sessions(current_user: dict = Depends(get_current_user)):
     sessions = list_saved_reddit_sessions()
     results = []
+    active_proxy = get_active_proxy_info() or {}
+    proxy_masked = _mask_proxy_value(active_proxy.get("url"))
+    proxy_source = active_proxy.get("source")
     for item in sessions:
-        stored_proxy = item.get("proxy")
-        proxy_masked = _mask_proxy_value(stored_proxy or get_system_proxy())
-        proxy_source = "session" if stored_proxy else ("env" if get_system_proxy() else None)
         reservation = _reservation_view(item["profile_name"])
         results.append(
             RedditSessionInfo(
@@ -7576,7 +7585,7 @@ async def get_reddit_sessions(current_user: dict = Depends(get_current_user)):
                 profile_url=item.get("profile_url"),
                 extracted_at=item.get("extracted_at"),
                 valid=bool(item.get("has_valid_session")),
-                proxy="session" if stored_proxy else ("service" if get_system_proxy() else None),
+                proxy="active_proxy" if proxy_masked else None,
                 proxy_masked=proxy_masked,
                 proxy_source=proxy_source,
                 tags=item.get("tags", []),
@@ -7594,11 +7603,11 @@ async def create_reddit_session_endpoint(
     request: RedditSessionCreateRequest,
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
-    proxy_url = _resolve_effective_proxy(request.proxy_id)
+    proxy_url = _resolve_effective_proxy()
     if not proxy_url:
         raise HTTPException(
             status_code=400,
-            detail="Cannot create Reddit session: no proxy configured. Configure a default proxy or PROXY_URL.",
+            detail="Cannot create Reddit session: no proxy configured. Add and activate a proxy in proxy management.",
         )
 
     async def broadcast_callback(update_type: str, data: dict):
@@ -7606,12 +7615,12 @@ async def create_reddit_session_endpoint(
 
     await broadcast_update(
         "reddit_session_create_start",
-        {"credential_id": request.credential_id, "proxy_id": request.proxy_id},
+        {"credential_id": request.credential_id, "proxy_source": "active_proxy"},
     )
     result = await create_reddit_session_from_credentials(
         credential_uid=request.credential_id,
         proxy_url=proxy_url,
-        proxy_source="proxy_id" if request.proxy_id else ("env" if get_system_proxy() else "runtime"),
+        proxy_source="active_proxy",
         broadcast_callback=broadcast_callback,
     )
     await broadcast_update(
@@ -7632,11 +7641,11 @@ async def bulk_create_reddit_sessions_endpoint(
     request: RedditSessionBulkCreateRequest,
     current_user: dict = Depends(get_current_user),
 ) -> Dict:
-    proxy_url = _resolve_effective_proxy(request.proxy_id)
+    proxy_url = _resolve_effective_proxy()
     if not proxy_url:
         raise HTTPException(
             status_code=400,
-            detail="Cannot create Reddit sessions: no proxy configured. Configure a default proxy or PROXY_URL.",
+            detail="Cannot create Reddit sessions: no proxy configured. Add and activate a proxy in proxy management.",
         )
 
     normalized_lines = [str(line or "").strip() for line in list(request.lines or []) if str(line or "").strip()]
@@ -7660,7 +7669,7 @@ async def bulk_create_reddit_sessions_endpoint(
             run_id=run_id,
             lines=normalized_lines,
             proxy_url=proxy_url,
-            proxy_source="proxy_id" if request.proxy_id else ("env" if get_system_proxy() else "runtime"),
+            proxy_source="active_proxy",
             fixture=request.fixture,
             source_label=request.source_label,
             max_create_attempts=request.max_create_attempts,
@@ -7674,7 +7683,7 @@ async def bulk_create_reddit_sessions_endpoint(
             run_id=run_id,
             lines=normalized_lines,
             proxy_url=proxy_url,
-            proxy_source="proxy_id" if request.proxy_id else ("env" if get_system_proxy() else "runtime"),
+            proxy_source="active_proxy",
             fixture=request.fixture,
             source_label=request.source_label,
             max_create_attempts=request.max_create_attempts,
@@ -7747,8 +7756,8 @@ async def converge_unlinked_reddit_sessions_endpoint(
         active_run_id, _ = active
         raise HTTPException(status_code=409, detail=f"Reddit convergence already running: {active_run_id}")
 
-    proxy_url = _resolve_effective_proxy(request.proxy_id)
-    proxy_source = "named_proxy" if request.proxy_id else "env"
+    proxy_url = _resolve_effective_proxy()
+    proxy_source = "active_proxy"
     usernames = [str(item or "").strip() for item in list(request.usernames or []) if str(item or "").strip()]
     target_usernames = usernames or list(DEFAULT_UNLINKED_ORDER)
     run_id = f"reddit_converge_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
@@ -8845,42 +8854,33 @@ async def get_otp(
 # Proxy Endpoints
 @app.get("/proxies", response_model=List[ProxyInfo])
 async def get_proxies(current_user: dict = Depends(get_current_user)):
-    """Get all saved proxies including system proxy from PROXY_URL."""
-    from urllib.parse import urlparse
-
+    """Get UI-managed proxies and bootstrap env proxy only while the store is empty."""
     proxy_manager.load_proxies()
     proxies = proxy_manager.list_proxies()
+    active = proxy_manager.get_active_proxy() or {}
+    active_id = active.get("id")
 
     result = []
 
-    # Add system proxy (from PROXY_URL env var) if configured
-    if PROXY_URL:
-        parsed = urlparse(PROXY_URL)
-        # Get sessions that have this proxy stored
-        sessions = list_saved_sessions()
-        assigned = []
-        for s in sessions:
-            session = FacebookSession(s["profile_name"])
-            if session.load() and session.get_proxy() == PROXY_URL:
-                assigned.append(s["profile_name"])
-
+    if not proxies and active.get("source") == "bootstrap_env":
         result.append(ProxyInfo(
-            id="system",
-            name="Mobile Proxy (System)",
-            url_masked=f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
-            host=parsed.hostname,
-            port=parsed.port,
-            type="mobile",
-            country="US",
-            health_status="active",
+            id=active["id"],
+            name=active["name"],
+            url_masked=active["url_masked"],
+            host=active.get("host"),
+            port=active.get("port"),
+            type=active.get("type", "mobile"),
+            country=active.get("country", "US"),
+            health_status=active.get("health_status", "bootstrap"),
             last_tested=None,
             success_rate=None,
             avg_response_ms=None,
             test_count=0,
-            assigned_sessions=assigned,
             created_at=None,
             is_system=True,
-            is_default=False  # System proxy cannot be set as default
+            is_default=True,
+            is_active=True,
+            source=active.get("source"),
         ))
 
     # Add user-configured proxies
@@ -8898,10 +8898,11 @@ async def get_proxies(current_user: dict = Depends(get_current_user)):
             success_rate=p.get("success_rate"),
             avg_response_ms=p.get("avg_response_ms"),
             test_count=p.get("test_count", 0),
-            assigned_sessions=p.get("assigned_sessions", []),
             created_at=p.get("created_at", ""),
             is_system=False,
-            is_default=p.get("is_default", False)
+            is_default=p.get("is_default", False),
+            is_active=p.get("id") == active_id,
+            source="proxy_store",
         ))
 
     return result
@@ -8917,6 +8918,28 @@ async def add_proxy(request: ProxyAddRequest, current_user: dict = Depends(get_c
         country=request.country
     )
     return {"success": True, "proxy_id": proxy["id"], "proxy": proxy}
+
+
+@app.get("/proxies/active")
+async def get_active_proxy_endpoint(current_user: dict = Depends(get_current_user)) -> Dict:
+    """Return the single active runtime proxy without exposing credentials."""
+    proxy_manager.load_proxies()
+    active = proxy_manager.get_active_proxy()
+    if not active:
+        return {"configured": False, "proxy": None}
+    return {
+        "configured": True,
+        "proxy": {
+            "id": active.get("id"),
+            "name": active.get("name"),
+            "url_masked": active.get("url_masked") or _mask_proxy_value(active.get("url")),
+            "host": active.get("host"),
+            "port": active.get("port"),
+            "source": active.get("source"),
+            "is_system": bool(active.get("is_system", False)),
+            "is_active": True,
+        },
+    }
 
 
 @app.get("/proxies/{proxy_id}")
@@ -8971,11 +8994,7 @@ async def test_proxy(proxy_id: str, current_user: dict = Depends(get_current_use
 @app.post("/proxies/{proxy_id}/set-default")
 async def set_default_proxy(proxy_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
     """
-    Set a proxy as the system default.
-
-    The default proxy will be used for all operations that don't have
-    a per-session proxy configured. This takes precedence over the
-    PROXY_URL environment variable.
+    Set a proxy as the single active runtime proxy.
     """
     success = proxy_manager.set_default(proxy_id)
     if not success:
@@ -8992,41 +9011,12 @@ async def set_default_proxy(proxy_id: str, current_user: dict = Depends(get_curr
 
 @app.post("/proxies/clear-default")
 async def clear_default_proxy(current_user: dict = Depends(get_current_user)) -> Dict:
-    """
-    Clear the default proxy setting.
-
-    After clearing, the system will fall back to using the PROXY_URL
-    environment variable.
-    """
+    """Clear the active proxy setting. Runtime launches will fail until a proxy is active."""
     proxy_manager.clear_default()
     return {
         "success": True,
-        "message": "Default proxy cleared. System will use PROXY_URL environment variable."
+        "message": "Default proxy cleared. Set an active proxy before launching browser automation."
     }
-
-
-@app.post("/sessions/{profile_name}/assign-proxy")
-async def assign_proxy_to_session(profile_name: str, proxy_id: str, current_user: dict = Depends(get_current_user)) -> Dict:
-    """Assign a proxy to a session."""
-    # Verify session exists
-    session = FacebookSession(profile_name)
-    if not session.load():
-        raise HTTPException(status_code=404, detail=f"Session not found: {profile_name}")
-
-    # Verify proxy exists
-    proxy = proxy_manager.get_proxy(proxy_id)
-    if not proxy:
-        raise HTTPException(status_code=404, detail=f"Proxy not found: {proxy_id}")
-
-    # Assign proxy
-    success = proxy_manager.assign_to_session(proxy_id, profile_name)
-    if success:
-        # Also update the session's proxy field
-        session.data["proxy"] = proxy.get("url")
-        session.save()
-        return {"success": True, "profile_name": profile_name, "proxy_id": proxy_id}
-
-    raise HTTPException(status_code=500, detail="Failed to assign proxy")
 
 
 # Session Creation Endpoint
@@ -9040,26 +9030,19 @@ async def create_session(request: SessionCreateRequest, current_user: dict = Dep
     """
     credential_uid = request.credential_uid
 
-    # Get proxy URL - use effective proxy (user default > env var), allow override from proxy_id
-    proxy_url = get_system_proxy()  # Start with effective proxy (respects user default)
-    if request.proxy_id:
-        proxy = proxy_manager.get_proxy(request.proxy_id)
-        if proxy:
-            proxy_url = proxy.get("url")
-        else:
-            raise HTTPException(status_code=404, detail=f"Proxy not found: {request.proxy_id}")
+    proxy_url = get_active_proxy()
 
     # FAIL if no proxy available - sessions must always have a proxy
     if not proxy_url:
         raise HTTPException(
             status_code=400,
-            detail="Cannot create session: No proxy configured. Set a default proxy or PROXY_URL environment variable."
+            detail="Cannot create session: No proxy configured. Add and activate a proxy in proxy management."
         )
 
     # Broadcast that session creation is starting
     await broadcast_update("session_create_start", {
         "credential_uid": credential_uid,
-        "proxy_id": request.proxy_id
+        "proxy_source": "active_proxy"
     })
 
     # Create a broadcast callback that uses our WebSocket broadcast
@@ -9103,19 +9086,12 @@ async def create_sessions_batch(request: BatchSessionCreateRequest, current_user
     if not credential_uids:
         raise HTTPException(status_code=400, detail="No credentials provided")
 
-    # Get proxy URL - use effective proxy (user default > env var), allow override from proxy_id
-    proxy_url = get_system_proxy()
-    if request.proxy_id:
-        proxy = proxy_manager.get_proxy(request.proxy_id)
-        if proxy:
-            proxy_url = proxy.get("url")
-        else:
-            raise HTTPException(status_code=404, detail=f"Proxy not found: {request.proxy_id}")
+    proxy_url = get_active_proxy()
 
     if not proxy_url:
         raise HTTPException(
             status_code=400,
-            detail="Cannot create sessions: No proxy configured. Set a default proxy or PROXY_URL environment variable."
+            detail="Cannot create sessions: No proxy configured. Add and activate a proxy in proxy management."
         )
 
     logger.info(f"Starting batch session creation for {len(credential_uids)} credentials")
@@ -9136,7 +9112,7 @@ async def create_sessions_batch(request: BatchSessionCreateRequest, current_user
             # Broadcast individual start
             await broadcast_update("session_create_start", {
                 "credential_uid": credential_uid,
-                "proxy_id": request.proxy_id
+                "proxy_source": "active_proxy"
             })
 
             # Create broadcast callback
@@ -9862,7 +9838,7 @@ async def test_dialog_navigation(
         }
 
         # Add system proxy (mandatory)
-        proxy = get_system_proxy()
+        proxy = get_active_proxy()
         if not proxy:
             raise Exception("No proxy available — cannot launch browser without proxy")
         context_options["proxy"] = _build_playwright_proxy(proxy)

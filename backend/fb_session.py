@@ -2,7 +2,7 @@
 Facebook Session Manager
 
 Handles extraction, persistence, and validation of Facebook sessions.
-Sessions are saved as JSON files containing cookies, user agent, viewport, and proxy info.
+Sessions are saved as JSON files containing cookies, user agent, viewport, and device identity.
 """
 
 import hashlib
@@ -42,7 +42,7 @@ class FacebookSession:
         Args:
             page: Playwright page object (must be logged in to Facebook)
             adspower_id: The AdsPower profile ID (for reference)
-            proxy: Proxy URL used by this profile
+            proxy: Deprecated. Runtime proxy is resolved centrally and is not persisted.
 
         Returns:
             Dict containing all session data
@@ -66,7 +66,6 @@ class FacebookSession:
             "cookies": cookies,
             "user_agent": user_agent,
             "viewport": viewport,
-            "proxy": proxy,
         }
 
         # Check for essential Facebook cookies
@@ -148,10 +147,8 @@ class FacebookSession:
         return self.data.get("viewport", {"width": 393, "height": 873})
 
     def get_proxy(self) -> Optional[str]:
-        """Get proxy from loaded session."""
-        if not self.data:
-            return None
-        return self.data.get("proxy")
+        """Sessions are not proxy authorities."""
+        return None
 
     def has_valid_cookies(self) -> bool:
         """Check if session has the essential Facebook cookies."""
@@ -185,7 +182,7 @@ class FacebookSession:
         Args:
             cookies: List of cookies in Playwright format
             user_agent: User agent string to use
-            proxy: Proxy URL (optional, empty = use service proxy)
+            proxy: Deprecated. Runtime proxy is resolved centrally and is not persisted.
             profile_picture: Base64 encoded profile picture (optional)
             tags: List of tags for filtering (optional)
             display_name: Pretty name for UI display (e.g., "Elizabeth Cruz")
@@ -209,7 +206,6 @@ class FacebookSession:
             "cookies": cookies,
             "user_agent": user_agent,
             "viewport": {"width": 393, "height": 873},
-            "proxy": proxy,
             "tags": tags or ["imported"],
         }
 
@@ -361,7 +357,7 @@ def list_saved_sessions() -> List[Dict[str, Any]]:
                 "display_name": data.get("display_name") or data.get("profile_name"),  # Pretty name for UI
                 "user_id": None,  # Will extract below
                 "extracted_at": data.get("extracted_at"),
-                "proxy": data.get("proxy"),
+                "proxy": None,
                 "has_valid_cookies": ("c_user" in cookie_names and "xs" in cookie_names),
                 "profile_picture": data.get("profile_picture"),  # Base64 PNG or None
                 "tags": data.get("tags", []),  # Session tags for filtering

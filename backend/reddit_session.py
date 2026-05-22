@@ -80,7 +80,6 @@ class RedditSession:
             "cookies": cookies,
             "user_agent": user_agent,
             "viewport": viewport,
-            "proxy": proxy,
             "device": device_fingerprint,
             "tags": list(tags or ["reddit"]),
             "fixture": bool(fixture),
@@ -132,9 +131,7 @@ class RedditSession:
         return dict(self.data.get("viewport") or MOBILE_VIEWPORT)
 
     def get_proxy(self) -> Optional[str]:
-        if not self.data:
-            return None
-        return self.data.get("proxy")
+        return None
 
     def get_device_fingerprint(self) -> Dict[str, str]:
         if self.data:
@@ -306,7 +303,7 @@ def list_saved_reddit_sessions() -> List[Dict[str, Any]]:
                 "email": data.get("email"),
                 "profile_url": data.get("profile_url"),
                 "extracted_at": data.get("extracted_at"),
-                "proxy": data.get("proxy"),
+                "proxy": None,
                 "has_valid_session": persisted_cookie_count > 0,
                 "tags": list(data.get("tags") or []),
                 "fixture": bool(data.get("fixture", False)),

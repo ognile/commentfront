@@ -933,8 +933,8 @@ REASONING: Comment was submitted"""
             }
 
             # System proxy only — single source of truth
-            from proxy_manager import get_system_proxy
-            proxy = get_system_proxy()
+            from proxy_manager import get_active_proxy, get_active_proxy_info
+            proxy = get_active_proxy()
             if not proxy:
                 raise Exception("No proxy available — cannot launch browser without proxy")
             context_options["proxy"] = _build_playwright_proxy(proxy)
