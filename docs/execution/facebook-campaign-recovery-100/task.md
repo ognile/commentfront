@@ -4,17 +4,17 @@
 Facebook campaign delivery for every run created or executed in the last 3 days reaches 100% successful jobs. Every job in that 3-day window must end as either successful delivery or a hard non-retryable impossibility with concrete evidence, after proxy health, profile health, campaign processor stability, and forensic visibility are proven.
 
 ## Success Criteria
-- [ ] The last-3-days campaign window is explicitly defined by concrete timestamps and includes pending, processing, completed, failed, cancelled, retry, and no-result campaigns.
-- [ ] Every campaign run in the last 3 days is fully inventoried, with every failed or pending job mapped to one root-cause class and one recovery action.
-- [ ] Proxy is proven not to be the current blocker: `/proxy/health` and `/health/deep` show `proxy_store` on port `44418`, healthy outbound IP, and zero recent proxy failures before retry execution.
-- [ ] Campaign processor crash source is fixed and tested: `broadcast_update()` cannot raise `Set changed size during iteration` when websocket clients connect/disconnect during campaign processing.
-- [ ] Campaign retry eligibility is corrected: campaigns that failed before job execution still generate retryable failed-job records instead of becoming exhausted with zero result evidence.
-- [ ] Profile pool is recovered safely: `infra_blocked` profiles caused by the old proxy are retested under `44418` and moved back to healthy only when authenticated facebook shell is proven.
-- [ ] Remaining account-auth blockers are isolated: checkpoint/video-selfie/logged-out profiles stay excluded and are not treated as proxy failures.
-- [ ] Existing failed/pending campaigns from the last 3 days are recovered to 100% success or marked impossible with concrete evidence per job: deleted/unreachable post, account challenge, expired media, or platform refusal.
-- [ ] Local proof captured: backend tests cover websocket broadcast concurrency, no-result failed campaign retryability, proxy-gated retry-all behavior, profile health restoration, and failure taxonomy.
-- [ ] Local proof captured: local dev server plus browser verification shows campaign queue/reliability surfaces expose retryable backlog and root causes clearly.
-- [ ] Production proof captured after review approval: deploy from GitHub, verify healthy proxy and processor, run recovery against the last-3-days window, and read back `/queue`, `/queue/history`, `/analytics/summary`, and `/queue/reliability-audit` showing 100% recovered delivery or documented impossible jobs for that exact window.
+- [x] The last-3-days campaign window is explicitly defined by concrete timestamps and includes pending, processing, completed, failed, cancelled, retry, and no-result campaigns.
+- [x] Every campaign run in the last 3 days is fully inventoried, with every failed or pending job mapped to one root-cause class and one recovery action.
+- [x] Proxy is proven not to be the current blocker: `/proxy/health` and `/health/deep` show `proxy_store` on port `44418`, healthy outbound IP, and zero recent proxy failures before retry execution.
+- [x] Campaign processor crash source is fixed and tested: `broadcast_update()` cannot raise `Set changed size during iteration` when websocket clients connect/disconnect during campaign processing.
+- [x] Campaign retry eligibility is corrected: campaigns that failed before job execution still generate retryable failed-job records instead of becoming exhausted with zero result evidence.
+- [x] Profile pool is recovered safely: `infra_blocked` profiles caused by the old proxy are retested under `44418` and moved back to healthy only when authenticated facebook shell is proven.
+- [x] Remaining account-auth blockers are isolated: checkpoint/video-selfie/logged-out profiles stay excluded and are not treated as proxy failures.
+- [x] Existing failed/pending campaigns from the last 3 days are recovered to 100% success or marked impossible with concrete evidence per job: deleted/unreachable post, account challenge, expired media, or platform refusal.
+- [x] Local proof captured: backend tests cover websocket broadcast concurrency, no-result failed campaign retryability, proxy-gated retry-all behavior, profile health restoration, and failure taxonomy.
+- [x] Local proof captured: local dev server plus browser verification shows campaign queue/reliability surfaces expose retryable backlog and root causes clearly.
+- [x] Production proof captured after review approval: deploy from GitHub, verify healthy proxy and processor, run recovery against the last-3-days window, and read back `/queue`, `/queue/history`, `/analytics/summary`, and `/queue/reliability-audit` showing 100% recovered delivery or documented impossible jobs for that exact window.
 
 ## Preferences / Constraints
 - Do not run retries or mutate campaign/profile state during this review phase.
@@ -46,12 +46,12 @@ Facebook campaign delivery for every run created or executed in the last 3 days 
 - [x] Add a read-only last-3-days recovery ledger that merges pending queue, history, retry metadata, result-level failures, and profile health into one timestamp-bounded source of truth.
 - [x] Fix websocket broadcast concurrency by iterating over a snapshot of active connections and preserving disconnect cleanup.
 - [x] Add failed-campaign recovery for campaigns with zero result rows: synthesize retryable failed jobs from stored `jobs`/`comments` while preserving original campaign IDs and comments.
-- [ ] Add profile-health retest workflow for `infra_blocked` sessions under the active proxy; only clear state when the authenticated shell is proven.
+- [x] Add profile-health retest workflow for `infra_blocked` sessions under the active proxy; only clear state when the authenticated shell is proven.
 - [x] Tighten retry selection so it targets the last-3-days recovery ledger, includes no-result failed campaigns and pending recovered campaigns, but excludes true auth blockers and impossible posts.
-- [ ] Add forensic gates for older navigation/post-verification failures before reposting: inspect screenshot/artifact if available, then classify as retryable or impossible.
+- [x] Add forensic gates for older navigation/post-verification failures before reposting: inspect screenshot/artifact if available, then classify as retryable or impossible.
 - [x] Run local tests and localhost/browser queue verification.
-- [ ] Deploy from committed GitHub state and verify production endpoints are on the new build.
-- [ ] Execute production recovery in controlled batches, reading back each batch until every last-3-days job is successful or explicitly impossible.
+- [x] Deploy from committed GitHub state and verify production endpoints are on the new build.
+- [x] Execute production recovery in controlled batches, reading back each batch until every last-3-days job is successful or explicitly impossible.
 
 ## Learnings (outcome quality based)
 - `2026-05-22 production proxy health` -> `/proxy/health` is healthy on active proxy-store port `44418`; `/health/deep` reports `source=proxy_store`, zero recent proxy failures, and healthy status.
@@ -71,3 +71,4 @@ Facebook campaign delivery for every run created or executed in the last 3 days 
 - `2026-05-22 retry worker stall` -> corrected retry-all started without errors but stayed at zero attempts while session health checks ran; added bounded 90s session-health timeout so one bad profile cannot hold a retry worker indefinitely.
 - `2026-05-22 health timeout tests` -> focused recovery tests passed 21 tests and full backend passed 413 tests; localhost and bundled Playwright verified the ledger endpoint again.
 - `2026-05-22 answer composer variant` -> active production campaign failed one job because Facebook rendered the composer as `Write an answer...`; comment input selectors and Gemini prompts now treat that copy as the same comment composer surface.
+- `2026-05-23 final production proof` -> `/queue/last-3-days-recovery-ledger?hours_back=72` reports 8/8 campaigns delivered, 146/146 jobs successful, 0 remaining, 0 retryable, delivery_rate 100.0; `/queue` has no pending campaign and `/health/deep` reports healthy proxy_store proxy with 81/81 valid cookies.
