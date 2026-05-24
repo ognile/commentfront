@@ -51,6 +51,16 @@ AUTH_HEALTH_BLOCKING_STATES = {
     AUTH_HEALTH_NEEDS_ATTENTION,
 }
 
+FACEBOOK_TARGET_POST = "post"
+FACEBOOK_TARGET_REEL = "reel"
+FACEBOOK_TARGET_WATCH = "watch"
+FACEBOOK_TARGET_VIDEO = "video"
+FACEBOOK_VIDEO_TARGETS = {
+    FACEBOOK_TARGET_REEL,
+    FACEBOOK_TARGET_WATCH,
+    FACEBOOK_TARGET_VIDEO,
+}
+
 
 def _brief(e: Exception) -> str:
     """Truncate Playwright errors to first line (full call logs can be 60+ lines)."""
@@ -1415,9 +1425,38 @@ async def verify_send_clicked(page: Page) -> bool:
         return False
 
 
-def is_reels_page(url: str) -> bool:
-    """Check if URL is a Reels/Watch page (not a regular post)."""
-    return "/reel/" in url or "/watch/" in url or "/videos/" in url
+def classify_facebook_target(url: str) -> str:
+    """Classify the intended or current Facebook target from its URL path."""
+    try:
+        parsed = urlparse(str(url or "").lower())
+        path = f"/{parsed.path.strip('/')}/"
+    except Exception:
+        path = str(url or "").lower()
+
+    if "/reel/" in path:
+        return FACEBOOK_TARGET_REEL
+    if "/watch/" in path:
+        return FACEBOOK_TARGET_WATCH
+    if "/videos/" in path:
+        return FACEBOOK_TARGET_VIDEO
+    return FACEBOOK_TARGET_POST
+
+
+def is_facebook_video_surface(url: str) -> bool:
+    """True when the URL is one of Facebook's video/reel surfaces."""
+    return classify_facebook_target(url) in FACEBOOK_VIDEO_TARGETS
+
+
+def is_unexpected_video_surface(intended_url: str, current_url: str) -> bool:
+    """Reject accidental drift from an intended post target into video/reel UI."""
+    return (
+        classify_facebook_target(intended_url) not in FACEBOOK_VIDEO_TARGETS
+        and is_facebook_video_surface(current_url)
+    )
+
+
+def _target_label(target_type: str) -> str:
+    return "reel/video" if target_type in FACEBOOK_VIDEO_TARGETS else "post"
 
 
 async def classify_facebook_auth_state(page: Page) -> Dict[str, Any]:
@@ -1535,20 +1574,42 @@ async def classify_facebook_auth_state(page: Page) -> Dict[str, Any]:
         return result
 
 
-async def verify_post_loaded(page: Page) -> bool:
-    """Verify we're on a valid post page, not Reels."""
+async def verify_facebook_target_loaded(page: Page, expected_target_type: str = FACEBOOK_TARGET_POST) -> bool:
+    """Verify the expected Facebook target surface is loaded and authenticated."""
     try:
-        # FAIL FAST: Reject Reels pages
-        if is_reels_page(page.url):
-            logger.error(f"Landed on Reels page: {page.url}")
+        if expected_target_type not in FACEBOOK_VIDEO_TARGETS and is_facebook_video_surface(page.url):
+            logger.error(f"Landed on unexpected video surface for post target: {page.url}")
             return False
 
         auth_state = await classify_facebook_auth_state(page)
         if auth_state["health_status"] in AUTH_HEALTH_BLOCKING_STATES:
             logger.warning(
-                f"Rejecting unauthenticated post shell for {page.url}: "
+                f"Rejecting unauthenticated facebook shell for {page.url}: "
                 f"{auth_state['health_status']} ({auth_state['health_reason']})"
             )
+            return False
+
+        if expected_target_type in FACEBOOK_VIDEO_TARGETS:
+            strong_reel_selectors = [
+                'video',
+                'div[data-pagelet*="Reels"]',
+                '[aria-label*="reel" i]',
+            ]
+            for selector in strong_reel_selectors:
+                if await page.locator(selector).count() > 0:
+                    return True
+
+            if not is_facebook_video_surface(page.url):
+                return False
+
+            reel_comment_selectors = [
+                '[aria-label*="comment" i]',
+                '[role="button"][aria-label*="comment" i]',
+                '[aria-label*="comments" i]',
+            ]
+            for selector in reel_comment_selectors:
+                if await page.locator(selector).count() > 0:
+                    return True
             return False
 
         # 1. Check for 'From your link' (redirect success)
@@ -1584,61 +1645,80 @@ async def verify_post_loaded(page: Page) -> bool:
         await save_debug_screenshot(page, "verification_failed")
         return False # Return False if we can't confirm, but caller might proceed anyway
     except Exception as e:
-        logger.warning(f"Post verification error: {e}")
+        logger.warning(f"Facebook target verification error: {e}")
         return False
 
 
-async def wait_for_post_visible(page: Page, vision, max_attempts: int = 4) -> bool:
+async def verify_post_loaded(page: Page) -> bool:
+    """Verify a regular post page is loaded."""
+    return await verify_facebook_target_loaded(page, FACEBOOK_TARGET_POST)
+
+
+async def wait_for_facebook_target_visible(
+    page: Page,
+    vision,
+    expected_target_type: str = FACEBOOK_TARGET_POST,
+    max_attempts: int = 4,
+) -> bool:
     """
-    Smart wait: Take screenshot, check if post visible, retry with backoff if not.
+    Smart wait: Take screenshot, check if the expected target is visible, retry with backoff if not.
 
     Instead of static sleep, we:
     1. Take a screenshot
-    2. Ask vision if post is visible
+    2. Ask vision if target is visible
     3. If not, wait with exponential backoff and retry
     """
     base_wait = 1.0  # Start with 1 second
+    target_label = _target_label(expected_target_type)
 
     for attempt in range(max_attempts):
-        # Check for Reels FIRST (fail fast)
-        if is_reels_page(page.url):
-            logger.error(f"Landed on Reels page: {page.url}")
+        if expected_target_type not in FACEBOOK_VIDEO_TARGETS and is_facebook_video_surface(page.url):
+            logger.error(f"Landed on unexpected video surface for post target: {page.url}")
             return False
 
-        # Deterministic fallback: accept known post/permalink indicators.
-        if await verify_post_loaded(page):
-            logger.info(f"Post visible via deterministic fallback on attempt {attempt + 1}")
-            await dump_interactive_elements(page, "PAGE LOADED - deterministic post fallback")
+        if await verify_facebook_target_loaded(page, expected_target_type):
+            logger.info(f"{target_label} visible via deterministic fallback on attempt {attempt + 1}")
+            await dump_interactive_elements(page, f"PAGE LOADED - deterministic {target_label} fallback")
             return True
 
         screenshot = await save_debug_screenshot(page, f"wait_attempt_{attempt}")
-        verification = await vision.verify_state(screenshot, "post_visible")
+        prompt_type = "reel_visible" if expected_target_type in FACEBOOK_VIDEO_TARGETS else "post_visible"
+        verification = await vision.verify_state(screenshot, prompt_type)
 
         if verification.success:
             auth_state = await classify_facebook_auth_state(page)
             if auth_state["health_status"] not in AUTH_HEALTH_BLOCKING_STATES:
-                logger.info(f"Post visible on attempt {attempt + 1} (confidence: {verification.confidence:.0%})")
-                # PROACTIVE AUDIT: Dump all interactive elements now that page is loaded
-                await dump_interactive_elements(page, "PAGE LOADED - Gemini confirmed post visible")
+                logger.info(f"{target_label} visible on attempt {attempt + 1} (confidence: {verification.confidence:.0%})")
+                await dump_interactive_elements(page, f"PAGE LOADED - Gemini confirmed {target_label} visible")
                 return True
             logger.warning(
-                f"Gemini post-visible hit rejected by auth gate: "
+                f"Gemini {target_label}-visible hit rejected by auth gate: "
                 f"{auth_state['health_status']} ({auth_state['health_reason']})"
             )
 
         # Exponential backoff: 1s, 2s, 4s, 8s
         wait_time = base_wait * (2 ** attempt)
-        logger.info(f"Post not visible yet, waiting {wait_time:.1f}s... (attempt {attempt + 1}/{max_attempts})")
+        logger.info(f"{target_label} not visible yet, waiting {wait_time:.1f}s... (attempt {attempt + 1}/{max_attempts})")
         await asyncio.sleep(wait_time)
 
     # Final non-vision fallback before hard fail.
-    if await verify_post_loaded(page):
-        logger.info("Post visible via deterministic fallback after vision retries exhausted")
-        await dump_interactive_elements(page, "PAGE LOADED - deterministic fallback after retries")
+    if await verify_facebook_target_loaded(page, expected_target_type):
+        logger.info(f"{target_label} visible via deterministic fallback after vision retries exhausted")
+        await dump_interactive_elements(page, f"PAGE LOADED - deterministic {target_label} fallback after retries")
         return True
 
-    logger.error(f"Post not visible after {max_attempts} attempts")
+    logger.error(f"{target_label} not visible after {max_attempts} attempts")
     return False
+
+
+async def wait_for_post_visible(page: Page, vision, max_attempts: int = 4) -> bool:
+    """Wait for a regular post page to be visible."""
+    return await wait_for_facebook_target_visible(
+        page,
+        vision,
+        expected_target_type=FACEBOOK_TARGET_POST,
+        max_attempts=max_attempts,
+    )
 
 
 async def post_comment(
@@ -1656,7 +1736,8 @@ async def post_comment(
         "comment": comment,
         "error": None,
         "verified": False,
-        "method": "unknown"
+        "method": "unknown",
+        "target_type": classify_facebook_target(url),
     }
 
     if use_vision and not VISION_AVAILABLE:
@@ -1702,8 +1783,11 @@ async def post_comment(
             await asyncio.sleep(5)  # Wait for Facebook to fully load/redirect
             await save_debug_screenshot(page, "navigated")
 
-            if not await verify_post_loaded(page):
-                logger.warning("Could not verify post loaded, trying anyway...")
+            if is_unexpected_video_surface(url, page.url):
+                raise Exception(f"Navigated to unexpected video surface for post target: {page.url}")
+
+            if not await verify_facebook_target_loaded(page, result["target_type"]):
+                logger.warning(f"Could not verify {result['target_type']} target loaded, trying anyway...")
 
             # 1. Open Comment Box (Vision + Fallback)
             comment_selectors = ['[data-action-id="32607"]', 'div[role="button"][aria-label*="Comment"]', 'div[aria-label="Comment"]', 'span:text("Comment")']
@@ -1814,8 +1898,10 @@ async def post_comment_verified(
         "comment": comment,
         "error": None,
         "steps_completed": [],
-        "method": "vision_verified"
+        "method": "vision_verified",
+        "target_type": classify_facebook_target(url),
     }
+    target_type = result["target_type"]
 
     vision = get_vision_client() if VISION_AVAILABLE else None
     if not vision:
@@ -1897,21 +1983,30 @@ async def post_comment_verified(
 
             # ========== STEP 1: Navigate and verify post is visible ==========
             logger.info(f"Step 1: Navigating to {url}")
-            await record_current_event("navigate", {"url": url}, phase="navigate", source="post_comment_verified")
+            await record_current_event(
+                "navigate",
+                {"url": url, "target_type": target_type},
+                phase="navigate",
+                source="post_comment_verified",
+            )
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
 
-            # Check for Reels redirect immediately
-            if is_reels_page(page.url):
-                raise Exception(f"Step 1 FAILED - Navigated to Reels instead of post: {page.url}")
+            if is_unexpected_video_surface(url, page.url):
+                raise Exception(f"Step 1 FAILED - Navigated to unexpected video surface for post target: {page.url}")
 
             # SMART WAIT: Retry with exponential backoff until post is visible
             # 6 attempts = ~63 seconds max wait (1+2+4+8+16+32)
-            if not await wait_for_post_visible(page, vision, max_attempts=6):
-                raise Exception("Step 1 FAILED - Post not visible after 6 attempts")
+            if not await wait_for_facebook_target_visible(page, vision, target_type, max_attempts=6):
+                raise Exception(f"Step 1 FAILED - {_target_label(target_type)} not visible after 6 attempts")
 
-            result["steps_completed"].append("post_visible")
-            await record_current_event("verification", {"step": "post_visible", "success": True}, phase="verify", source="post_comment_verified")
-            logger.info("✓ Step 1: Post visible")
+            result["steps_completed"].append("target_visible")
+            await record_current_event(
+                "verification",
+                {"step": "target_visible", "target_type": target_type, "success": True},
+                phase="verify",
+                source="post_comment_verified",
+            )
+            logger.info(f"✓ Step 1: {_target_label(target_type)} visible")
 
             # ========== STEP 2: Click comment button using self-healing loop ==========
             logger.info("Step 2: Clicking comment button (CSS selectors + Gemini healing)")
@@ -2628,6 +2723,7 @@ async def reconcile_comment_submission(
 
     user_agent = session.get_user_agent() or DEFAULT_USER_AGENT
     viewport = session.get_viewport() or MOBILE_VIEWPORT
+    target_type = classify_facebook_target(url)
     active_proxy = proxy
     if not active_proxy:
         return {"found": None, "confidence": 0.0, "reason": "proxy unavailable"}
@@ -2653,8 +2749,10 @@ async def reconcile_comment_submission(
                     return {"found": None, "confidence": 0.0, "reason": "session cookies unavailable"}
 
                 await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                if not await wait_for_post_visible(page, vision, max_attempts=3):
-                    return {"found": None, "confidence": 0.0, "reason": "post not visible during reconciliation"}
+                if is_unexpected_video_surface(url, page.url):
+                    return {"found": None, "confidence": 0.0, "reason": "unexpected video surface during reconciliation"}
+                if not await wait_for_facebook_target_visible(page, vision, target_type, max_attempts=3):
+                    return {"found": None, "confidence": 0.0, "reason": "target not visible during reconciliation"}
 
                 # Open comments section if possible to increase detection reliability.
                 await click_with_healing(

@@ -170,7 +170,7 @@ def get_observation_context() -> Dict[str, str]:
     return _current_context.copy()
 
 # Configuration from centralized config
-from config import GEMINI_API_KEY, GEMINI_MODEL, CONFIDENCE_THRESHOLD
+from config import GEMINI_API_KEY, CONFIDENCE_THRESHOLD, get_gemini_model
 
 
 @dataclass
@@ -288,6 +288,19 @@ NOT_VERIFIED reason=your reason here
 
 Do NOT write anything else. Just one line in the format above.""",
 
+    "reel_visible": """Analyze this Facebook mobile screenshot.
+
+Check if you can see a Facebook REEL or video target page:
+1. Is there a reel/video surface visible or loaded?
+2. Can you see reel/video controls, a comment button, a comments count, or a comment input surface?
+3. Is this an authenticated Facebook shell rather than a login, checkpoint, or blank loading screen?
+
+IMPORTANT: You MUST respond with ONLY one of these exact formats:
+VERIFIED confidence=0.XX
+NOT_VERIFIED reason=your reason here
+
+Do NOT write anything else. Just one line in the format above.""",
+
     "comments_opened": """Analyze this Facebook mobile screenshot.
 
 Check if the COMMENTS SECTION is now open:
@@ -386,7 +399,7 @@ class GeminiVisionClient:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not set")
         self.client = genai.Client(api_key=self.api_key)
-        self.model = GEMINI_MODEL
+        self.model = get_gemini_model("vision")
         logger.info(f"Initialized Gemini Vision with model: {self.model}")
 
     async def find_element(
@@ -770,7 +783,7 @@ SELECTOR AUDIT (what matched in the DOM):
 Based on the screenshot AND selector audit, decide what I should do next.
 
 You MUST respond with EXACTLY ONE of these actions:
-- ABORT reason=<why> (wrong page type, logged out, content removed, Reels page)
+- ABORT reason=<why> (logged out, content removed, wrong target, or action is impossible)
 - WAIT seconds=<1-5> (page still loading, spinner visible)
 - CLOSE_POPUP selector=<css> (modal/dialog blocking the view)
 - TRY_SELECTOR selector=<css> (suggest a CSS selector you can see might work)
@@ -779,7 +792,7 @@ You MUST respond with EXACTLY ONE of these actions:
 
 Format: ACTION param=value
 Examples:
-ABORT reason=This is a Reels page not a regular post
+ABORT reason=This is a login page, not the authenticated target
 WAIT seconds=2
 TRY_SELECTOR selector=div[role="button"]:has-text("Comment")
 SCROLL direction=down"""

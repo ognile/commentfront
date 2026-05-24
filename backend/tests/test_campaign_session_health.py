@@ -135,6 +135,55 @@ def test_verify_post_loaded_rejects_checkpoint_shell():
     assert _run(comment_bot.verify_post_loaded(page)) is False
 
 
+def test_target_classification_is_explicit_for_video_surfaces():
+    assert comment_bot.classify_facebook_target("https://www.facebook.com/reel/1548728006815458") == comment_bot.FACEBOOK_TARGET_REEL
+    assert comment_bot.classify_facebook_target("https://www.facebook.com/watch/?v=123") == comment_bot.FACEBOOK_TARGET_WATCH
+    assert comment_bot.classify_facebook_target("https://www.facebook.com/page/videos/123") == comment_bot.FACEBOOK_TARGET_VIDEO
+    assert comment_bot.classify_facebook_target("https://www.facebook.com/story.php?story_fbid=123&id=456") == comment_bot.FACEBOOK_TARGET_POST
+
+
+def test_post_target_rejects_accidental_reel_navigation():
+    assert comment_bot.is_unexpected_video_surface(
+        "https://www.facebook.com/story.php?story_fbid=123&id=456",
+        "https://www.facebook.com/reel/1548728006815458",
+    ) is True
+
+    assert comment_bot.is_unexpected_video_surface(
+        "https://www.facebook.com/reel/1548728006815458",
+        "https://www.facebook.com/reel/1548728006815458",
+    ) is False
+
+
+def test_verify_facebook_target_loaded_accepts_intended_reel_surface():
+    page = _FakePage(
+        url="https://www.facebook.com/reel/1548728006815458",
+        body_text="facebook reel comment",
+        selector_counts={"video": 1},
+    )
+
+    assert _run(comment_bot.verify_facebook_target_loaded(page, comment_bot.FACEBOOK_TARGET_REEL)) is True
+
+
+def test_verify_facebook_target_loaded_rejects_reel_for_post_target():
+    page = _FakePage(
+        url="https://www.facebook.com/reel/1548728006815458",
+        body_text="facebook reel comment",
+        selector_counts={"video": 1},
+    )
+
+    assert _run(comment_bot.verify_facebook_target_loaded(page, comment_bot.FACEBOOK_TARGET_POST)) is False
+
+
+def test_verify_facebook_target_loaded_rejects_non_video_page_for_reel_target():
+    page = _FakePage(
+        url="https://m.facebook.com/",
+        body_text="facebook home comment",
+        selector_counts={'[aria-label*="comment" i]': 1},
+    )
+
+    assert _run(comment_bot.verify_facebook_target_loaded(page, comment_bot.FACEBOOK_TARGET_REEL)) is False
+
+
 def test_local_typed_text_evidence_accepts_composer_match():
     page = _FakeEvaluatePage(
         {

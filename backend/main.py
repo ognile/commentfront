@@ -1046,6 +1046,9 @@ class QueueProcessor:
 
             # Process jobs - results list for this run only
             results = []
+            succeeded_profiles = _successful_profiles_for_campaign_target(
+                self.queue_manager.get_campaign(campaign_id)
+            )
 
             for pending_idx, (original_job_idx, job_payload) in enumerate(pending_jobs):
                 job = job_payload
@@ -1083,7 +1086,7 @@ class QueueProcessor:
                     self.logger.info(f"Campaign {campaign_id}: Waiting {delay_seconds:.0f}s before job {original_job_idx}")
                     await asyncio.sleep(delay_seconds)
 
-                job_tried_profiles: Set[str] = set()
+                job_tried_profiles: Set[str] = set(succeeded_profiles)
                 job_finished = False
 
                 while not job_finished:
@@ -1321,6 +1324,9 @@ class QueueProcessor:
                             })
                         elif result.get("throttled") and failure_type == "infrastructure":
                             self.logger.info(f"Skipping restriction for {profile_name} — infrastructure error, not real restriction")
+
+                        if result.get("success"):
+                            succeeded_profiles.add(profile_name)
 
                         job_finished = True
 
@@ -1854,6 +1860,17 @@ def assign_profiles_for_url(count: int, sessions: List[Dict]) -> List[str]:
     valid = [s["profile_name"] for s in sessions if s.get("has_valid_cookies", False)]
     random.shuffle(valid)  # Randomize who comments first
     return valid[:count]
+
+
+def _successful_profiles_for_campaign_target(campaign: Optional[dict]) -> Set[str]:
+    """Profiles that already delivered successfully for this campaign target."""
+    if not campaign:
+        return set()
+    return {
+        str(result.get("profile_name") or "").strip()
+        for result in campaign.get("results", []) or []
+        if result.get("success") and str(result.get("profile_name") or "").strip()
+    }
 
 
 def _is_debug_mode_enabled() -> bool:

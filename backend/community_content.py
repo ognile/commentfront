@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from config import get_gemini_model
+
 logger = logging.getLogger("CommunityContent")
 
 try:
@@ -88,7 +90,7 @@ async def generate_warmup_post(
 Write ONLY the post text. Nothing else. No quotes around it."""
 
     client = genai.Client(api_key=api_key)
-    model = os.getenv("COMMUNITY_TEXT_MODEL", "gemini-2.5-flash")
+    model = get_gemini_model("community_text")
 
     try:
         response = await asyncio.to_thread(
@@ -158,7 +160,7 @@ async def _generate_scenery_image(topic: str, profile_name: str = "unknown") -> 
         return {"success": False, "error": "gemini unavailable"}
 
     client = genai.Client(api_key=api_key)
-    model = os.getenv("PREMIUM_IMAGE_MODEL", "gemini-3-pro-image-preview")
+    model = get_gemini_model("image")
 
     image_prompt = (
         f"Realistic candid lifestyle photo for social media. "

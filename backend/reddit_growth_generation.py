@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from config import GEMINI_API_KEY, get_gemini_model
 from reddit_persona_registry import get_reddit_persona_snapshot
 from reddit_writing_rules import WRITING_RULE_SOURCE_PATHS, get_writing_rule_snapshot
 
@@ -746,7 +746,7 @@ class GenerationResult:
 class RedditGrowthContentGenerator:
     def __init__(self, *, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = str(api_key or GEMINI_API_KEY or "").strip()
-        self.model = str(model or os.getenv("REDDIT_PROGRAM_GENERATION_MODEL") or GEMINI_MODEL or "gemini-3-flash-preview").strip()
+        self.model = str(model or get_gemini_model("reddit_generation")).strip()
         self.enabled = bool(self.api_key and genai and types)
         self.client = genai.Client(api_key=self.api_key) if self.enabled else None
 

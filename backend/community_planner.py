@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from config import get_gemini_model
 from community_store import CommunityStore, get_community_store
 
 logger = logging.getLogger("CommunityPlanner")
@@ -114,7 +115,7 @@ async def generate_daily_plan(
 
     # Call Gemini
     client = genai.Client(api_key=api_key)
-    model = os.getenv("COMMUNITY_PLANNER_MODEL", "gemini-2.5-flash")
+    model = get_gemini_model("community_planner")
 
     try:
         response = await asyncio.to_thread(

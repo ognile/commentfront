@@ -44,11 +44,39 @@ USA_TIMEZONES = [
 ]
 
 # =============================================================================
-# GEMINI VISION
+# GEMINI MODELS
 # =============================================================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+
+GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.5-flash")
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", GEMINI_TEXT_MODEL)
+GEMINI_COMMUNITY_TEXT_MODEL = os.getenv("GEMINI_COMMUNITY_TEXT_MODEL", GEMINI_TEXT_MODEL)
+GEMINI_COMMUNITY_PLANNER_MODEL = os.getenv("GEMINI_COMMUNITY_PLANNER_MODEL", GEMINI_TEXT_MODEL)
+GEMINI_REDDIT_GENERATION_MODEL = os.getenv("GEMINI_REDDIT_GENERATION_MODEL", GEMINI_TEXT_MODEL)
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3-pro-image-preview")
+
+GEMINI_MODELS = {
+    "text": GEMINI_TEXT_MODEL,
+    "vision": GEMINI_VISION_MODEL,
+    "community_text": GEMINI_COMMUNITY_TEXT_MODEL,
+    "community_planner": GEMINI_COMMUNITY_PLANNER_MODEL,
+    "reddit_generation": GEMINI_REDDIT_GENERATION_MODEL,
+    "image": GEMINI_IMAGE_MODEL,
+}
+
+# Public shorthand for the configured vision model.
+GEMINI_MODEL = GEMINI_MODELS["vision"]
+
+
+def get_gemini_model(capability: str) -> str:
+    """Return the configured Gemini model for one objective capability."""
+    try:
+        return GEMINI_MODELS[capability]
+    except KeyError as exc:
+        raise KeyError(f"unknown gemini capability: {capability}") from exc
+
+
 CONFIDENCE_THRESHOLD = float(os.getenv("VISION_CONFIDENCE_THRESHOLD", "0.7"))
 
 # =============================================================================

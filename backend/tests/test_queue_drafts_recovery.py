@@ -98,6 +98,19 @@ def test_queue_structural_invalid_payload_still_returns_400():
     assert exc_info.value.detail.get("message") == "Queue validation failed"
 
 
+def test_successful_profiles_for_campaign_target_only_tracks_successes():
+    campaign = {
+        "results": [
+            {"profile_name": "success alice", "success": True},
+            {"profile_name": "failed bob", "success": False},
+            {"profile_name": "   ", "success": True},
+            {"success": True},
+        ]
+    }
+
+    assert main._successful_profiles_for_campaign_target(campaign) == {"success alice"}
+
+
 def test_draft_crud_and_publish_delete_flow():
     created = asyncio.run(
         main.create_draft(

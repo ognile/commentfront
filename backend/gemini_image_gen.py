@@ -1,7 +1,7 @@
 """
 Gemini Image Generation Module
 
-Generates AI profile photos using Gemini 2.5 Flash Image model.
+Generates AI profile photos using the configured Gemini image model.
 Optimized for realistic, candid iPhone-style selfies.
 """
 
@@ -20,11 +20,12 @@ from PIL import Image
 from google import genai
 from google.genai import types
 
+from config import GEMINI_API_KEY, get_gemini_model
+
 logger = logging.getLogger(__name__)
 
 # Configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-IMAGE_MODEL = "gemini-3-pro-image-preview"  # Gemini 3 image generation model
+IMAGE_MODEL = get_gemini_model("image")
 
 # Output directory for generated images
 IMAGE_OUTPUT_DIR = Path(os.getenv("IMAGE_OUTPUT_DIR", "/tmp/profile_photos"))

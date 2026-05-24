@@ -130,8 +130,13 @@ COMMENT = {
         'div[role="button"][aria-label^="󰍹"]',
         # Backup: partial match with exclusion to avoid reactions counter
         'div[role="button"][aria-label*="omment"]:not([aria-label*="reacted"])',
+        # Reel/video surfaces can expose the same action as button/a instead of div.
+        '[role="button"][aria-label*="comment" i]:not([aria-label*="reacted" i])',
+        'button[aria-label*="comment" i]',
+        'a[aria-label*="comment" i]',
         # Legacy selectors (kept for compatibility)
         'div[aria-label="Comment"]',
+        'button[aria-label="Comment"]',
         'div[aria-label="Leave a comment"]',
         '[data-sigil*="comment"]',
     ],

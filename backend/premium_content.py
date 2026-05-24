@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from config import get_gemini_model
 from fb_session import FacebookSession
 from gemini_image_gen import generate_profile_photo_with_reference
 from premium_rules import (
@@ -81,7 +82,7 @@ async def _generate_ambient_image(prompt: str, profile_name: str) -> Dict:
         return {"success": False, "error": "gemini image generation unavailable"}
 
     client = genai.Client(api_key=api_key)
-    model = os.getenv("PREMIUM_IMAGE_MODEL", "gemini-3-pro-image-preview")
+    model = get_gemini_model("image")
 
     full_prompt = (
         "Generate a realistic candid lifestyle photo for social media. "
