@@ -34,15 +34,81 @@ the first report explains what interaction patterns work. this report explains h
 
 the raw source community contains niche health-method vocabulary. this report intentionally converts those source-specific terms into broad health language. the goal is to preserve the linguistic mechanics while avoiding leaked jargon from the original domain.
 
+## correction from second audit
+
+the first version of this linguistic report over-normalized the language. that was wrong.
+
+language mechanics are not just words and semantic categories. they include:
+
+- casing
+- emoji choice
+- punctuation density
+- repeated exclamation marks
+- title style
+- fragment length
+- sentence rhythm
+- parentheticals
+- casual markers
+- list formatting
+- long personal paragraphs vs short social hits
+
+the source community does not feel alive because everyone uses the same sentence template. it feels alive because many surface forms point toward the same cultural center.
+
+## surface-form statistics
+
+sample base:
+
+- total text records: 5,467
+- post text records: 500
+- comment text records: 4,967
+- comment read failures: 0
+
+surface features detected:
+
+| feature | count | share | what it means |
+|---|---:|---:|---|
+| exclamation marks | 3,451 | 63.1% | warmth, celebration, momentum |
+| micro-text | 3,162 | 57.8% | fast social reinforcement |
+| emoji | 2,090 | 38.2% | emotional color and persona signal |
+| stacked punctuation | 1,186 | 21.7% | excitement, urgency, playfulness |
+| parentheticals | 987 | 18.1% | side thoughts, human imperfection, context |
+| long-story text | 622 | 11.4% | personal proof, vulnerability, narrative |
+| questions | 282 | 5.2% | diagnosis, curiosity, peer support |
+| all-caps words | 238 | 4.4% | announcement energy and emphasis |
+| plain text | 179 | 3.3% | rare; usually informational |
+| casual markers | 57 | 1.0% | "lol", "haha", "idk", playful self-awareness |
+| lists | 27 | 0.5% | routines, steps, updates, structured proof |
+
+title-form features:
+
+| title style | count | share |
+|---|---:|---:|
+| short title | 364 | 72.8% |
+| title case | 122 | 24.4% |
+| emoji title | 102 | 20.4% |
+| lowercase title | 41 | 8.2% |
+| timeframe title | 34 | 6.8% |
+| hype title | 31 | 6.2% |
+| all-caps title | 27 | 5.4% |
+
+the important conclusion:
+
+```text
+semantic consistency + surface variety = authentic community feel
+```
+
+the culture repeats the same values, but the language does not look identical.
+
 ## top linguistic signal
 
-the language works because it blends four registers:
+the language works because it blends five registers:
 
 ```text
 warm belonging
 -> visible proof
 -> concrete action
 -> personal identity
+-> surface-level personality
 ```
 
 the community does not sound like one persona. it sounds like many people orbiting the same core belief system. that is the key.
@@ -65,8 +131,230 @@ but the surface language varies:
 - peers write encouragement and identity mirroring
 - ritual posts use compressed hype language
 - troubleshooting comments use practical language
+- some people use emoji-heavy warmth
+- some people use all-caps announcement energy
+- some people write casual fragments
+- some people write long, reflective paragraphs
+- some people write almost no punctuation
+- some people use parentheticals to sound self-aware
 
 that mix creates authenticity.
+
+## surface archetypes
+
+these are not content categories. they are visible language shapes.
+
+### 1. emoji-warm welcome
+
+shape:
+
+```text
+Welcome!! So glad you're here 😊
+```
+
+signals:
+
+- warmth
+- low friction
+- beginner safety
+- human friendliness
+
+where it works:
+
+- new member posts
+- vulnerable intros
+- first update posts
+
+risk:
+
+- if repeated without context, it becomes fake.
+
+better variant:
+
+```text
+Welcome!! Glad you're here. Your reason for joining makes total sense 😊
+```
+
+### 2. stacked-punctuation hype
+
+shape:
+
+```text
+Amazing progress!!! 🔥
+```
+
+signals:
+
+- celebration
+- high-energy recognition
+- public status reward
+
+where it works:
+
+- wins
+- transformations
+- milestones
+- challenge announcements
+
+risk:
+
+- too much of it makes the community feel shallow.
+
+best use:
+
+```text
+Huge win!!! The consistency is showing 🔥
+```
+
+### 3. plain operational clarity
+
+shape:
+
+```text
+If that section is locked, message your coach and they can help.
+```
+
+signals:
+
+- competence
+- authority
+- support infrastructure
+
+where it works:
+
+- resource confusion
+- onboarding friction
+- question threads
+- support threads
+
+why it matters:
+
+plain language creates trust because not every reply is emotionally inflated.
+
+### 4. lowercase casual peer voice
+
+shape:
+
+```text
+same honestly, i felt stuck for a while too lol
+```
+
+signals:
+
+- peer-to-peer intimacy
+- imperfection
+- low-status honesty
+- casual human presence
+
+where it works:
+
+- vulnerability threads
+- comparison anxiety
+- early progress uncertainty
+
+why it works:
+
+it does not sound like a brand. it sounds like another person.
+
+### 5. title-case announcement voice
+
+shape:
+
+```text
+Weekly Wins 🏆
+```
+
+signals:
+
+- recurring ritual
+- public stage
+- community scoreboard
+
+where it works:
+
+- weekly rituals
+- challenge updates
+- public recognition posts
+
+why it works:
+
+the title itself becomes a container people recognize.
+
+### 6. all-caps countdown / launch voice
+
+shape:
+
+```text
+24 HOURS UNTIL THE UPDATE 🔥
+```
+
+signals:
+
+- urgency
+- event energy
+- shared anticipation
+
+where it works:
+
+- launches
+- revamps
+- challenges
+- live events
+
+risk:
+
+- all-caps should be rare. it is seasoning, not the base voice.
+
+### 7. timeframe proof title
+
+shape:
+
+```text
+1 month update
+Week 0 -> Week 2
+Day 0 / Day 60
+```
+
+signals:
+
+- measurable progress
+- accountability
+- proof over opinion
+
+where it works:
+
+- health routines
+- habit tracking
+- transformation updates
+
+why it works:
+
+numbers make the post feel anchored.
+
+### 8. parenthetical self-awareness
+
+shape:
+
+```text
+I think this is progress (not totally sure yet)
+```
+
+signals:
+
+- honesty
+- hesitation
+- emotional realism
+- non-performative voice
+
+where it works:
+
+- early progress posts
+- uncertain wins
+- vulnerable reflections
+
+why it works:
+
+parentheticals make people sound like they are thinking in real time.
 
 ## vocabulary clusters
 
@@ -145,54 +433,133 @@ that split is why the feed does not feel like pure hype. it has hype, but hype i
 
 ## sentence openers
 
-common sentence openers included:
+common preserved-form sentence openers included:
 
 ```text
-welcome the community
-nice meet you
-thank you for
-new member hello
-welcome wishing you
-glad you are
-welcome the fam
-welcome hope you
-hello and welcome
-wow good job
-thanks for the
-love this thank
-good have you
-just joined the community
-you're the right place
+Welcome!!
+Welcome !!
+Welcome!
+Welcome
+Welcome to the community!
+Welcome to the community!!
+Welcome to the community!!!
+Welcome to the community! Glad you're here
+Best of luck.
+Let's gooo!!!!
+🔥
+W
 ```
 
 the dominant opener pattern is:
 
 ```text
-welcome / glad / nice to meet you
+Welcome / Glad you're here / Best of luck / Let's gooo
 ```
 
-this matters because the community has a high volume of new-member posts. repetitive welcome language can easily become fake. the way to keep it real is to vary the second half.
+this matters because the community has a high volume of new-member posts. repetitive welcome language can easily become fake. the way to keep it real is not to remove repetition completely. the way to keep it real is to vary surface form and contextual tail.
 
 bad:
 
 ```text
-welcome to the community
-welcome to the community
-welcome to the community
+Welcome to the community!
+Welcome to the community!
+Welcome to the community!
 ```
 
 better:
 
 ```text
-welcome, glad you're here
-welcome, you're in the right place
-welcome, excited to follow your progress
-welcome, wishing you the best on the journey
-welcome, this is a great place to start
-welcome, keep us updated
+Welcome!! Glad you're here 😊
+Welcome to the community! You're in the right place.
+Welcome, excited to follow your progress.
+Welcome -- wishing you the best on the journey.
+Welcome! This is a great place to start.
+Welcome, keep us updated.
 ```
 
-the first clause can repeat. the second clause must carry context.
+the first clause can repeat. the second clause must carry context. punctuation and emoji can vary. not every comment needs to look polished.
+
+## punctuation and casing mechanics
+
+punctuation is one of the biggest missing signals if the text is normalized.
+
+### exclamation marks
+
+exclamation marks are the default warmth marker. they appear across greetings, wins, congratulations, and quick encouragement.
+
+different weights:
+
+```text
+Welcome!
+Welcome!!
+Welcome!!!
+```
+
+these do not feel identical:
+
+- one mark = polite warmth
+- two marks = excited friendliness
+- three marks = high-energy celebration
+
+### stacked punctuation
+
+stacked punctuation shows emotional overflow:
+
+```text
+Let's gooo!!!!
+So proud of you!!
+This is huge!!!
+```
+
+it works under wins and rituals. it should not dominate advice threads.
+
+### all caps
+
+all caps is mostly for event energy:
+
+```text
+BIG UPDATE
+LIVE TODAY
+NEW CHALLENGE
+```
+
+all caps creates urgency, but overuse makes the feed feel like ads.
+
+### lowercase titles
+
+lowercase titles make posts feel casual and peer-made:
+
+```text
+1 month update
+daily reminder
+weekly recap
+```
+
+this is valuable because not every post should sound official.
+
+### parentheticals
+
+parentheticals create human texture:
+
+```text
+(not sure if this counts)
+(still figuring it out)
+(probably overthinking this)
+```
+
+they let people show uncertainty without making the whole post heavy.
+
+### ellipses
+
+ellipses create hesitation, suspense, or emotional softness:
+
+```text
+starting again...
+this feels weird...
+not sure yet...
+```
+
+they are especially useful in vulnerable posts.
 
 ## emotional register
 
@@ -225,6 +592,102 @@ short warmth
 + ritual celebration
 ```
 
+## emoji grammar
+
+emoji are not random decoration. they carry emotional role.
+
+common emoji families:
+
+| emoji family | examples | function |
+|---|---|---|
+| strength / effort | 💪 🔥 | effort, discipline, intensity |
+| warmth / affection | ❤️ 💜 🤍 💕 | care, closeness, emotional safety |
+| celebration | 🎉 🥳 👏 | achievement, public recognition |
+| softness / support | 😊 🤗 🫶 | welcome, reassurance, friendliness |
+| sparkle / momentum | ✨ 🌟 ⚡ | optimism, progress, anticipation |
+| vulnerability | 😭 🥹 | emotional honesty, overwhelm, tenderness |
+
+emoji density changes the perceived speaker:
+
+```text
+Great progress.
+Great progress!
+Great progress!! 🔥
+Great progress!! So proud of you 💜
+```
+
+these are not interchangeable:
+
+- no emoji = observational, calmer
+- one emoji = warm and human
+- multiple emoji = high-affect celebration
+- heart emoji = relational closeness
+- fire emoji = performance/status recognition
+
+## punctuation signatures
+
+punctuation creates voice before the words are even read.
+
+| signature | example | felt identity |
+|---|---|---|
+| single bang | `Welcome!` | polite warmth |
+| double bang | `Welcome!!` | friendly energy |
+| triple bang | `Let's go!!!` | celebration |
+| stacked letters | `gooo` | peer excitement |
+| ellipsis | `starting again...` | vulnerability or suspense |
+| parenthetical | `(not sure yet)` | self-aware human thought |
+| question + bang | `How is this possible?!` | disbelief, surprise |
+| all caps | `BIG UPDATE` | announcement / event voice |
+
+this is why templated comments fail. they may say the right semantic thing, but they do not carry the right surface signature.
+
+## anti-template principle
+
+the community can repeat the same function, but it should not repeat the same surface.
+
+same function: welcome a new member.
+
+surface variants:
+
+```text
+Welcome!! Glad you're here 😊
+Welcome to the community! You're in the right place.
+Hey, welcome in. Excited to see your updates.
+Welcome -- wishing you the best on the journey.
+So glad you joined. Keep us posted.
+```
+
+same function: recognize progress.
+
+surface variants:
+
+```text
+Huge win!! 🔥
+This is real progress.
+Your consistency is showing.
+Wow. The change is obvious.
+So proud of you -- keep going!!
+```
+
+same function: redirect someone who feels stuck.
+
+surface variants:
+
+```text
+I feel you. Keep it simple this week.
+Same place here for a while, honestly. The basics helped.
+The good news is you do not need to change everything.
+Start with one routine and post an update in a week.
+```
+
+the rule:
+
+```text
+same job, different voice.
+```
+
+that is what preserves the feeling of many real identities.
+
 ## linguistic compliance mechanics
 
 compliance language does not usually sound like command-and-control. it sounds like identity and momentum.
@@ -232,20 +695,20 @@ compliance language does not usually sound like command-and-control. it sounds l
 high-signal compliance phrases:
 
 ```text
-keep going
-keep posting
-stay consistent
-daily
-routine
-habit tracker
-start with
-just do
-focus on
-make sure
-remember
-measure every 2 weeks
-post your wins
-keep us updated
+Keep going
+Keep posting your wins
+Stay consistent
+Daily
+Routine
+Habit tracker
+Start with...
+Just do the basics this week
+Focus on one thing first
+Make sure you track it
+Remember: progress compounds
+Measure again in 2 weeks
+Post an update after 7 days
+Keep us updated 😊
 ```
 
 the strongest compliance pattern:
@@ -260,9 +723,9 @@ normalize the behavior
 example structure:
 
 ```text
-this is normal at the start.
-just focus on the basic routine this week.
-stay consistent and keep posting updates.
+This is normal at the start.
+Just focus on the basic routine this week.
+Stay consistent and keep posting updates.
 ```
 
 why it works:
@@ -279,17 +742,17 @@ ritual language is compressed, public, and status-oriented.
 common ritual vocabulary:
 
 ```text
-weekly wins
-featured
-free month
-challenge
-countdown
-level
-revamp
-livestream
-biggest
-stay tuned
-keep posting your wins
+Weekly Wins
+Featured
+Free month
+Challenge
+Countdown
+Level
+Update
+Live call
+Biggest
+Stay tuned
+Keep posting your wins
 ```
 
 ritual language works because it creates a predictable game:
@@ -305,11 +768,11 @@ do the work
 useful ritual frames:
 
 ```text
-keep posting your wins
-you could be featured next week
-remember being featured means you win
-new challenge starting soon
-stay tuned
+Keep posting your wins
+You could be featured next week
+Remember: being featured means you win
+New challenge starting soon...
+Stay tuned 🔥
 ```
 
 ritual language should not be too complicated. it should feel like a chant, scoreboard, or public roll call.
@@ -321,16 +784,16 @@ belonging language is the largest cluster by far.
 common belonging frames:
 
 ```text
-welcome
-glad you're here
-nice to meet you
-you're in the right place
-we're happy to have you
-this community is amazing
-we do better together
-love seeing this
-rooting for you
-keep us updated
+Welcome!!
+Glad you're here
+Nice to meet you 😊
+You're in the right place
+We're happy to have you
+This community is amazing
+We do better together
+Love seeing this
+Rooting for you
+Keep us updated
 ```
 
 belonging works best when it does not stop at warmth. it should create a path to participation.
@@ -338,19 +801,19 @@ belonging works best when it does not stop at warmth. it should create a path to
 weak belonging:
 
 ```text
-welcome!
+Welcome!
 ```
 
 stronger belonging:
 
 ```text
-welcome, glad you're here. keep us updated as you start the routine.
+Welcome, glad you're here. Keep us updated as you start the routine.
 ```
 
 best belonging:
 
 ```text
-welcome, you're in the right place. a lot of people start exactly where you are, so post updates as you go.
+Welcome, you're in the right place. A lot of people start exactly where you are, so post updates as you go.
 ```
 
 the best version creates safety, normalizes the starting point, and asks for future action.
@@ -376,14 +839,14 @@ recurring identity markers in the data:
 examples of identity-specific openings:
 
 ```text
-i'm a mother of...
-i joined because...
-i've been struggling with...
-i'm from...
-i started this because...
-i used to...
-i'm currently working on...
-i'm seeing progress in...
+Hey everyone, I'm...
+I just joined because...
+I've been struggling with...
+I'm from...
+I started this because...
+I used to...
+I'm currently working on...
+I'm seeing progress in...
 ```
 
 these details create variety because they make each post anchored in a different life.
@@ -401,12 +864,12 @@ without personal evidence, comments become generic. with personal evidence, even
 ### intro / identity frames
 
 ```text
-hey everyone, i'm...
-i just joined and i'm...
-i'm from...
-i originally joined because...
-i've been on a health journey for...
-i'm excited to start because...
+Hey everyone, I'm...
+I just joined and I'm...
+I'm from...
+I originally joined because...
+I've been on a health journey for...
+I'm excited to start because...
 ```
 
 use case:
@@ -424,13 +887,13 @@ why it works:
 ### proof frames
 
 ```text
-week 0 vs week 2
-one month progress
-three month progress
-before and after
-i've been doing...
-daily: ...
-the biggest change i've noticed is...
+Week 0 vs Week 2
+1 month progress
+Three month progress
+Before / after
+I've been doing...
+Daily: ...
+The biggest change I've noticed is...
 ```
 
 use case:
@@ -448,11 +911,12 @@ why it works:
 ### vulnerability frames
 
 ```text
-i'm feeling stuck because...
-i'm not making the progress i expected...
-starting again...
-i've been struggling with...
-i feel defeated...
+I'm feeling stuck because...
+I'm not making the progress I expected...
+Starting again...
+I've been struggling with...
+I feel defeated...
+Not sure if this counts, but...
 ```
 
 use case:
@@ -470,13 +934,13 @@ why it works:
 ### response / rescue frames
 
 ```text
-i feel you.
-i'm kind of in the same position.
-the good news is...
-start with...
-check the module...
-just focus on...
-keep going.
+I feel you.
+I'm kind of in the same position.
+The good news is...
+Start with...
+Check the module...
+Just focus on...
+Keep going!!
 ```
 
 use case:
@@ -494,11 +958,11 @@ why it works:
 ### recognition frames
 
 ```text
-great progress.
-amazing transformation.
-your consistency is showing.
-the change in your [specific area] is noticeable.
-this is inspiring.
+Great progress.
+Amazing transformation!!
+Your consistency is showing.
+The change in your [specific area] is noticeable.
+This is inspiring 🔥
 ```
 
 use case:
@@ -516,11 +980,11 @@ why it works:
 ### ritual frames
 
 ```text
-keep posting your wins.
-you could be featured next week.
-new challenge starting soon.
-stay tuned.
-remember being featured means...
+Keep posting your wins.
+You could be featured next week.
+New challenge starting soon...
+Stay tuned.
+Remember: being featured means...
 ```
 
 use case:
@@ -569,11 +1033,11 @@ why didn't you
 prefer compliance language that preserves agency:
 
 ```text
-start with the basic routine
-keep it simple this week
-measure again in two weeks
-post an update after 7 days
-focus on consistency first
+Start with the basic routine.
+Keep it simple this week.
+Measure again in two weeks.
+Post an update after 7 days.
+Focus on consistency first.
 ```
 
 ## specific words that increase belonging
@@ -671,13 +1135,13 @@ months
 generic identity:
 
 ```text
-i want to improve myself.
+I want to improve myself.
 ```
 
 authentic identity:
 
 ```text
-i joined because my energy, sleep, and overall health have been inconsistent for years, and i want to finally stay consistent.
+I joined because my energy, sleep, and overall health have been inconsistent for years, and I want to finally stay consistent.
 ```
 
 the second version gives the community actual material to bond with.
@@ -698,7 +1162,7 @@ welcome
 example:
 
 ```text
-welcome, glad you're here. starting because of energy and overall health makes total sense. keep us updated as you go through the first routine.
+Welcome!! Starting because of energy and overall health makes total sense. Keep us updated as you go through the first routine 😊
 ```
 
 ### progress post
@@ -714,7 +1178,7 @@ specific observation
 example:
 
 ```text
-the change in your energy and consistency is already noticeable. your routine is showing. keep tracking this because the next month should be interesting.
+The change in your energy and consistency is already noticeable. Your routine is showing. Keep tracking this because the next month should be interesting 🔥
 ```
 
 ### stuck post
@@ -731,7 +1195,7 @@ emotional mirror
 example:
 
 ```text
-i feel you. a lot of people hit that point where progress feels slower than expected. keep it simple this week: basic routine, measure once, and post an update.
+I feel you. A lot of people hit that point where progress feels slower than expected. Keep it simple this week: basic routine, measure once, and post an update.
 ```
 
 ### question post
@@ -748,7 +1212,7 @@ answer directly
 example:
 
 ```text
-start with the guide before changing everything. the module explains the order clearly. if you post your current routine, people can help you tighten it up.
+Start with the guide before changing everything. The module explains the order clearly. If you post your current routine, people can help you tighten it up.
 ```
 
 ### ritual / win post
@@ -765,7 +1229,7 @@ celebrate
 example:
 
 ```text
-huge win. the change is obvious, and this is exactly why posting updates matters. keep them coming.
+Huge win!! The change is obvious, and this is exactly why posting updates matter. Keep them coming.
 ```
 
 ## what creates the feeling of variety
