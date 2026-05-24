@@ -44,11 +44,11 @@ Key files:
 - `url_utils.py` - Facebook URL parsing, redirect resolution
 
 ### Automation Flow
-1. Load session from JSON file (cookies, proxy, user_agent)
-2. Launch Playwright browser in mobile viewport
-3. Navigate to Facebook post URL
-4. Use Vision API to find elements (comment button, input, send)
-5. Fall back to CSS selectors if Vision fails
+1. Load session from JSON file (cookies, user_agent, viewport, fingerprint metadata)
+2. Resolve the active UI-managed proxy from the central proxy store
+3. Launch Playwright browser in mobile viewport with that session's preserved fingerprint and the active proxy
+4. Navigate to Facebook target URL
+5. Use deterministic CSS selectors for actions and Gemini Vision for state verification
 6. Verify comment posted visually
 7. Broadcast progress via WebSocket
 
@@ -62,9 +62,23 @@ The system uses a two-tier approach:
 ### Session Management
 Sessions are JSON files in `/backend/sessions/` containing:
 - Facebook cookies (requires `c_user`, `xs`)
-- Per-session proxy URL (not global)
 - User agent string
 - Viewport dimensions
+- Device fingerprint data (timezone, locale, and related browser context)
+
+Sessions must not own proxy URLs. Runtime proxy authority comes from the UI-managed central proxy store.
+
+### Real Session Selector Verification
+Anything involving Facebook UI automation, selector discovery, selector validation, visual verification, adaptive learning, or "what elements exist on this page" must be proven through the production-equivalent fingerprinting schema:
+
+- Use a real saved Facebook session that is currently authenticated.
+- Preserve that session's cookies, user agent, viewport, timezone, locale, and fingerprint metadata.
+- Use the active central proxy store, not ad hoc local networking or a clean Playwright context.
+- Run `dump_interactive_elements()` and screenshot/forensic capture from that real session context before changing selectors.
+- Treat local clean-browser tests as unit or plumbing proof only. They are not selector proof for Facebook.
+- If the relevant cookies/proxy/session state lives on Railway volume, selector verification belongs on Railway or through a production-backed diagnostic/test endpoint after explicit approval.
+- For large session pools, choose one healthy session for selector probing unless the failure is profile-specific; do not create a new fingerprint just to learn selectors.
+- Do not wipe, refresh, relogin, or replace cookies/fingerprints while probing selectors. Inspect first, compare working vs broken, then mutate only with a rollback path.
 
 ### Debug Screenshots
 In production, screenshots are saved to Railway's ephemeral container filesystem (`/app/debug/`) and served via FastAPI StaticFiles at `/debug/latest.png`. The frontend (on Vercel) polls this endpoint every 1 second with cache-busting timestamps. Screenshots are lost on container restart.
@@ -133,10 +147,11 @@ When a task fails in production:
 ### 5. SELECTOR DISCOVERY PROCESS
 
 When a selector doesn't work:
-1. Run `dump_interactive_elements()` to see what's actually on the page
-2. Look at the aria-label, role, and text of the target element
-3. Create selector based on ACTUAL attributes, not guesses
-4. Add to `fb_selectors.py` with comment explaining where it came from
+1. Select one currently authenticated saved session and launch it through the same fingerprint/proxy path used by production automation
+2. Run `dump_interactive_elements()` to see what's actually on the page
+3. Look at the aria-label, role, and text of the target element
+4. Create selector based on ACTUAL attributes, not guesses
+5. Add to `fb_selectors.py` with comment explaining where it came from and which real-session audit proved it
 
 **Example:** Send button had `aria-label="Post a comment"` not "Post" or "Send"
 
