@@ -13,11 +13,12 @@ Facebook campaign delivery supports both regular text/post URLs and reel URLs as
 - [ ] Gemini text and vision capability defaults to live-verified `gemini-3.5-flash`. Verify with a live model-list probe and one local Gemini call through the centralized registry.
 - [ ] Gemini image generation remains on an explicitly image-capable model and is not silently switched to `gemini-3.5-flash`. Verify image workflows call the `image` capability from the same registry.
 - [ ] Local proof captured: backend tests pass for target classification, reel workflow, regular post regression, duplicate-success profile exclusion, proxy/session preservation, and Gemini model registry drift detection.
-- [ ] Local proof captured: local dev server plus Browser Use verifies the UI/API path can create or run a reel-target campaign without treating the reel URL as a malformed post.
-- [ ] Production proof captured only after explicit alignment: deploy from committed GitHub state, verify production health/model/proxy readbacks, then run a small approved reel campaign and a regular post regression campaign to prove both target types work.
+- [ ] Local proof captured: local dev server plus Browser Use verifies the UI/API can accept, classify, validate, and display a reel-target campaign without treating the reel URL as a malformed post; any local execution proof uses mocked or isolated session/browser inputs, not production cookies.
+- [ ] Railway/production proof captured only after explicit alignment: deploy from committed GitHub state, verify production health/model/proxy/session readbacks, then run a small approved reel campaign and a regular post regression campaign using the real Railway proxy store and preserved production sessions.
 
 ## Preferences / Constraints
 - Current phase is task definition and audit alignment; no code execution, retry, live posting, production mutation, or deploy is authorized by this task file alone.
+- Local development cannot prove real Facebook delivery with production cookies/proxy state because those live on Railway volume. Local proof is for code behavior, API/UI flow, target classification, tests, and mocked/isolated browser mechanics; real delivery proof belongs to Railway/production after approval.
 - The old reels rejection had a valid safety purpose: it protected regular post campaigns from accidental navigation into reels. The replacement must be target-aware, not a blanket removal.
 - Do not solve reel support by pretending reels are posts. Reels need either a dedicated target adapter or a shared comment workflow with target-specific load/comment verification.
 - Do not wipe, refresh, replace, or relogin sessions as part of reel support. Cookies and fingerprints are scarce state and must be protected.
@@ -41,3 +42,4 @@ Facebook campaign delivery supports both regular text/post URLs and reel URLs as
 - `2026-05-24 Gemini docs probe` -> official Google Gemini 3.5 materials announce the new model family, while local project defaults still point text/vision paths at older or scattered model ids.
 - `2026-05-24 model drift audit` -> `backend/config.py` defaults `GEMINI_MODEL` to `gemini-3-flash-preview`; community text/planner paths default to `gemini-2.5-flash`; reddit generation has its own override/fallback; image paths use `gemini-3-pro-image-preview`.
 - `2026-05-24 capability boundary` -> `gemini-3.5-flash` is verified for text/multimodal generation, not as an image-generation replacement. Image workflows need their own `image` capability model in the same registry.
+- `2026-05-24 local/prod proof boundary` -> local dev server and Browser Use can prove classification, validation, UI/API wiring, and mocked browser behavior, but cannot prove production proxy/cookie-backed delivery because production sessions and the active proxy store are on Railway volume.
