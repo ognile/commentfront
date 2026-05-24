@@ -3,9 +3,13 @@
 ## North Star
 Facebook campaign delivery supports both regular text/post URLs and reel URLs as first-class intended targets, while still rejecting accidental target drift. Gemini text and vision calls use one runtime source of truth set to `gemini-3.5-flash`, with image generation kept on an explicitly image-capable model.
 
+## Pilot Case
+Recover the exact failed reel campaign `6f1e3b3a-363d-49f9-86be-59c6f518fe4f` targeting `https://www.facebook.com/reel/1548728006815458`. The first real proof is that this campaign's two original failed `post_comment` jobs become successful through the production-backed retry path, using preserved Railway sessions/fingerprints and the active central proxy. This is the pilot because it is the live failure that exposed the missing reel support and already has forensic evidence proving the failure happened before any comment interaction.
+
 ## Success Criteria
 - [ ] Target classification is explicit and target-aware: `/reel/` is valid only when the submitted campaign URL is a reel, while a text/post campaign that lands on `/reel/`, `/watch/`, or `/videos/` still fails as unexpected drift. Verify with unit tests for post, reel, watch, video, redirect, and malformed URLs.
 - [ ] Reel comment posting has a first-class automation path, not a disabled-post workaround. Verify selectors by launching one currently authenticated saved Facebook session through the preserved fingerprint schema and active proxy, then dumping interactive elements, opening the reel comment surface, typing, submitting, and visually verifying the posted comment.
+- [ ] Pilot campaign `6f1e3b3a-363d-49f9-86be-59c6f518fe4f` is recovered from `0/2` to `2/2` successful delivery after local proof and explicit production approval. Verify with `/queue/history`, campaign results, forensic timeline, and visual verification evidence for both original job indexes.
 - [ ] Existing text-post delivery remains intact. Verify locally with a known regular Facebook post campaign path and tests that prove text-post selectors and verification still pass.
 - [ ] No successful duplicate profile comments occur on the same target. Verify with retry-path tests showing profiles that already succeeded on a campaign target are excluded from later successful jobs, while failed non-posted attempts may reuse the profile when the failure is not profile-specific.
 - [ ] Proxy and session safety remain unchanged: every browser context uses the active proxy store and preserves each profile's cookies, user agent, viewport, timezone, locale, and fingerprint. Verify with code search, session readback, and a no-cookie-mutation audit before and after local tests.
@@ -18,6 +22,7 @@ Facebook campaign delivery supports both regular text/post URLs and reel URLs as
 
 ## Preferences / Constraints
 - Current phase is task definition and audit alignment; no code execution, retry, live posting, production mutation, or deploy is authorized by this task file alone.
+- The failed reel campaign is the pilot case. Do not substitute a new easier reel unless this campaign is proven impossible with concrete evidence.
 - Local development cannot prove real Facebook delivery with production cookies/proxy state because those live on Railway volume. Local proof is for code behavior, API/UI flow, target classification, tests, and mocked/isolated browser mechanics; real delivery proof belongs to Railway/production after approval.
 - Facebook selector discovery and adaptive UI learning must not use a clean local browser. Use one healthy saved session, its preserved fingerprint, and the active proxy path; if that state lives on Railway, selector proof belongs on Railway or a production-backed diagnostic path after approval.
 - The old reels rejection had a valid safety purpose: it protected regular post campaigns from accidental navigation into reels. The replacement must be target-aware, not a blanket removal.
