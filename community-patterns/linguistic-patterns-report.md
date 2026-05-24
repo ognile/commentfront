@@ -30,6 +30,10 @@ the first report explains what interaction patterns work. this report explains h
 - comment read failures: 0
 - comment endpoint used: `/posts/{post_id}/comments?group-id={group_id}&limit=25&pinned=true`
 
+## abstraction rule
+
+the raw source community contains niche health-method vocabulary. this report intentionally converts those source-specific terms into broad health language. the goal is to preserve the linguistic mechanics while avoiding leaked jargon from the original domain.
+
 ## top linguistic signal
 
 the language works because it blends four registers:
@@ -46,7 +50,7 @@ the community does not sound like one persona. it sounds like many people orbiti
 the shared belief system is stable:
 
 ```text
-health changes looks
+health habits create visible progress
 consistent action creates progress
 proof should be shared
 the group recognizes progress
@@ -83,15 +87,15 @@ high-signal repeated words included:
 ```text
 welcome, love, best, great, journey, health, new, progress,
 excited, amazing, joined, body, thank, work, day, keep,
-posture, better, face, years, life, oscar, wow, results,
-going, jaw, improve, started, thanks, everything
+better, energy, years, life, creator, wow, results,
+going, improve, started, thanks, everything
 ```
 
 what matters is not each word alone. the important part is how the vocabulary creates a worldview:
 
 - `welcome`, `love`, `glad`, `best`, `good luck` create entry safety
 - `journey`, `progress`, `started`, `years`, `months` create time horizon
-- `health`, `body`, `face`, `jaw`, `posture` connect identity to embodied change
+- `health`, `body`, `energy`, `routine`, `progress` connect identity to embodied change
 - `keep`, `daily`, `consistent`, `routine`, `habit` create compliance pressure
 - `guide`, `module`, `coach`, `video`, `call` route people back to the operating system
 - `wow`, `amazing`, `insane`, `incredible` create social reward around proof
@@ -112,8 +116,8 @@ i'm excited
 can't wait
 keep going
 great progress
-fascia release
-thumb pulling
+daily routine
+health routine
 recently joined
 best version
 nervous system
@@ -123,10 +127,10 @@ each other
 transformational journey
 never too late
 best version yourself
-forward head posture
+health foundation
 happy mother's day
-anterior pelvic tilt
-full body fascia
+daily practice
+full body routine
 ```
 
 these phrases show the community's language split:
@@ -275,7 +279,7 @@ ritual language is compressed, public, and status-oriented.
 common ritual vocabulary:
 
 ```text
-wednesday wins
+weekly wins
 featured
 free month
 challenge
@@ -365,7 +369,7 @@ recurring identity markers in the data:
 - routine details
 - timeline
 - emotional state
-- exact body concern
+- exact health concern
 - exact protocol being followed
 - relationship to the creator or coach
 
@@ -507,7 +511,7 @@ why it works:
 
 - rewards effort
 - makes proof socially real
-- teaches the group what progress looks like
+- teaches the group what progress means
 
 ### ritual frames
 
@@ -653,14 +657,12 @@ kids
 work
 sleep
 diet
-skin
-jaw
-palate
-posture
-breathing
+energy
+strength
+stress
+digestion
 autoimmune
 allergies
-scoliosis
 routine
 weeks
 months
@@ -675,7 +677,7 @@ i want to improve myself.
 authentic identity:
 
 ```text
-i joined because my posture, breathing, and jaw tension have been bothering me for years, and i want to finally stay consistent.
+i joined because my energy, sleep, and overall health have been inconsistent for years, and i want to finally stay consistent.
 ```
 
 the second version gives the community actual material to bond with.
@@ -696,7 +698,7 @@ welcome
 example:
 
 ```text
-welcome, glad you're here. starting because of posture and breathing makes total sense. keep us updated as you go through the first routine.
+welcome, glad you're here. starting because of energy and overall health makes total sense. keep us updated as you go through the first routine.
 ```
 
 ### progress post
@@ -712,7 +714,7 @@ specific observation
 example:
 
 ```text
-the posture and jaw change are already noticeable. your consistency is showing. keep tracking this because the next month should be interesting.
+the change in your energy and consistency is already noticeable. your routine is showing. keep tracking this because the next month should be interesting.
 ```
 
 ### stuck post
@@ -835,4 +837,3 @@ use this five-part language filter:
 if a comment fails all five, it is slop.
 
 if it passes three or more, it will usually feel real.
-

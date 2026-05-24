@@ -6,7 +6,7 @@ mode: read-only audit through the already-open authenticated chrome tab
 
 ## objective
 
-study successful interaction patterns inside oscar's community at a meta-framework level:
+study successful interaction patterns inside the source community at a meta-framework level:
 
 - what types of posts create strong community response
 - what types of comments get socially reinforced
@@ -25,6 +25,10 @@ this is not a visual audit. this is a human interaction and community psychology
 - comment records read: 4,967
 - comment read failures: 0
 - posts with at least 10 fetched comments: 485 / 500
+
+## abstraction rule
+
+the raw source community contains niche health-method vocabulary. this report intentionally abstracts those terms into broad health, wellness, routine, progress, and support language so the patterns can be reused without leaking source-specific jargon.
 
 ## strongest signal
 
@@ -89,7 +93,7 @@ high-performing posts repeatedly show or reference concrete change:
 - measurable protocols
 - visible changes noticed by others
 
-proof posts work because they lower skepticism. a community around self-improvement needs repeated evidence that the path is real. without proof, advice starts to feel like theory. with proof, advice becomes instruction.
+proof posts work because they lower skepticism. a health-improvement community needs repeated evidence that the path is real. without proof, advice starts to feel like theory. with proof, advice becomes instruction.
 
 the best proof posts usually combine:
 
@@ -329,4 +333,3 @@ every interaction should either create proof, deepen belonging, answer a real bl
 ```
 
 anything else is noise.
-
