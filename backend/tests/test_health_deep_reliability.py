@@ -151,3 +151,31 @@ def test_health_deep_reports_runtime_proxy_health_fields(monkeypatch):
         "error": None,
         "source": "proxy_store",
     }
+
+
+def test_health_deep_reports_deployment_and_model_readbacks(monkeypatch):
+    _patch_common_health_dependencies(monkeypatch)
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abc123")
+    monkeypatch.setenv("RAILWAY_GIT_BRANCH", "main")
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
+
+    class FakeProxyManager:
+        def list_proxies(self):
+            return []
+
+        def get_active_proxy(self):
+            return None
+
+    monkeypatch.setattr(main, "ProxyManager", FakeProxyManager)
+    monkeypatch.setattr(main, "get_active_proxy", lambda: None)
+
+    result = asyncio.run(main.health_deep())
+
+    assert result["checks"]["deployment"] == {
+        "commit": "abc123",
+        "branch": "main",
+        "environment": "production",
+    }
+    assert result["checks"]["gemini_models"]["text"] == main.get_gemini_model("text")
+    assert result["checks"]["gemini_models"]["vision"] == main.get_gemini_model("vision")
+    assert result["checks"]["gemini_models"]["image"] == main.get_gemini_model("image")

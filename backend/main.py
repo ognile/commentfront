@@ -65,6 +65,7 @@ from fb_session import FacebookSession, list_saved_sessions
 from reddit_session import RedditSession, list_saved_reddit_sessions
 from credentials import CredentialManager
 from proxy_manager import ProxyManager
+from config import get_gemini_model
 from draft_manager import DraftManager
 from campaign_ai_product_store import get_campaign_ai_product_store
 from queue_manager import (
@@ -2939,7 +2940,22 @@ async def health_deep():
         checks["gemini"] = {"error": str(e)}
         overall = "degraded"
 
-    # 2. Session validity
+    # 2. Deployment/model readback
+    checks["deployment"] = {
+        "commit": os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA"),
+        "branch": os.getenv("RAILWAY_GIT_BRANCH") or os.getenv("VERCEL_GIT_COMMIT_REF"),
+        "environment": os.getenv("RAILWAY_ENVIRONMENT_NAME") or os.getenv("VERCEL_ENV"),
+    }
+    checks["gemini_models"] = {
+        "text": get_gemini_model("text"),
+        "vision": get_gemini_model("vision"),
+        "community_text": get_gemini_model("community_text"),
+        "community_planner": get_gemini_model("community_planner"),
+        "reddit_generation": get_gemini_model("reddit_generation"),
+        "image": get_gemini_model("image"),
+    }
+
+    # 3. Session validity
     try:
         sessions = list_saved_sessions()
         valid_count = sum(1 for s in sessions if s.get("has_valid_cookies"))
@@ -2980,7 +2996,7 @@ async def health_deep():
         checks["sessions"] = {"error": str(e)}
         overall = "degraded"
 
-    # 3. Disk usage
+    # 4. Disk usage
     try:
         data_dir = os.getenv("DATA_DIR", "/data")
         if os.path.exists(data_dir):
@@ -2995,7 +3011,7 @@ async def health_deep():
     except Exception as e:
         checks["disk"] = {"error": str(e)}
 
-    # 4. Queue status (read-only against live in-memory manager)
+    # 5. Queue status (read-only against live in-memory manager)
     try:
         pending_count = queue_manager.count_pending()
         processor_running = queue_manager.is_processor_running()
@@ -3009,7 +3025,7 @@ async def health_deep():
     except Exception as e:
         checks["queue"] = {"error": str(e)}
 
-    # 5. Profile stats
+    # 6. Profile stats
     try:
         pm = ProfileManager()
         profiles = pm.state.get("profiles", {})
@@ -3032,7 +3048,7 @@ async def health_deep():
     except Exception as e:
         checks["profiles"] = {"error": str(e)}
 
-    # 6. Proxy health
+    # 7. Proxy health
     try:
         proxy_mgr = ProxyManager()
         proxies = proxy_mgr.list_proxies()
